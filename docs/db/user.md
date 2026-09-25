@@ -268,42 +268,57 @@ PARTITION BY RANGE (TO_DAYS(created_month)) (
 
 ### 字段定义
 
+> **P0-2 修正**:MySQL 8.4 要求**分区字段必须出现在每个 UNIQUE / PRIMARY KEY 中**,否则 `ERROR 1503`。
+> 改造:`partition_key` DATE → `created_month` DATE(由 `created_at` 生成);主键 / 唯一键都加 `created_month`。
+
 | 字段 | 类型 | 约束 | 默认 | 说明 |
 | --- | --- | --- | --- | --- |
 | `id` | `BIGINT UNSIGNED` | PK, AUTO_INCREMENT | — | 主键 |
-| `order_no` | `CHAR(32)` | UNIQUE, NOT NULL | — | 业务支付单号,格式 `PY + YYYYMMDDHHmmss + 12 位随机` |
+| `order_no` | `CHAR(32)` | NOT NULL | — | 业务支付单号,格式 `PY + YYYYMMDDHHmmss + 12 位随机` |
 | `biz_type` | `ENUM('charge','recharge')` | NOT NULL | — | **业务类型**:`charge` 充电付款 / `recharge` 钱包充值 |
 | `biz_id` | `BIGINT UNSIGNED` | NULL | NULL | **关联的业务订单 ID**:`biz_type='charge'` 时 = `charge_order.id`;`biz_type='recharge'` 时 = NULL |
 | `user_id` | `BIGINT UNSIGNED` | NOT NULL | — | 付款用户 |
-| `customer_id` | `BIGINT UNSIGNED` | NOT NULL | — | 客户 ID(冗余) |
 | `parent_order_id` | `BIGINT UNSIGNED` | NULL | NULL | **组合支付场景**:子单的父订单 ID(主单的 parent_order_id = NULL) |
 | `pay_method` | `ENUM('wechat','wallet','mixed')` | NOT NULL | — | 支付方式:**主单** = `mixed`(组合);**子单** = `wechat` / `wallet`;**单独支付** = `wechat` / `wallet` |
 | `pay_components` | `JSON` | NULL | NULL | **组合支付明细**(主单填,子单留空):JSON 数组,每个元素含 `channel`(`wechat`/`wallet`/`coupon`)、`amount_cents`、`channel_ref`(微信 transaction_id / wallet 流水 / coupon_grant_id) |
 | `total_fee_cents` | `BIGINT` | NOT NULL | — | 支付总金额(分)。主单 = 组合金额合计;子单 = 本通道金额;单独支付 = 实际支付金额 |
 | `discount_cents` | `BIGINT` | NOT NULL | `0` | 优惠抵扣(分,仅主单有值) |
 | `paid_fee_cents` | `BIGINT` | NOT NULL | `0` | 实付金额(分,= total - discount) |
-| `wechat_transaction_id` | `VARCHAR(64)` | UNIQUE NULL | NULL | 微信支付 transaction_id(仅 pay_method='wechat' 或组合中含微信时填;幂等键,§ 5.4) |
-| `status` | `ENUM('pending','success','failed','cancelled')` | NOT NULL | `'pending'` | 支付状态 |
+| `wechat_transaction_id` | `VARCHAR(64)` | NULL | NULL | 微信支付 transaction_id(仅 pay_method='wechat' 或组合中含微信时填;幂等键,§ 5.4) |
+| `status` | `ENUM('initiated','success','failed','cancelled','refunded','partial_refunded')` | NOT NULL | `'initiated'` | 支付状态(P0-1 / P1-6 后续会统一到 payment.fsm.md 的状态集) |
 | `fail_reason` | `VARCHAR(256)` | NULL | NULL | 失败原因(`status='failed'` 时填) |
 | `paid_at` | `DATETIME(3)` | NULL | NULL | 支付完成时间(`status='success'` 时填) |
 | `created_at` | `DATETIME(3)` | NOT NULL | — | 创建时间 |
+| `created_month` | `DATE` | GENERATED ALWAYS AS (DATE_FORMAT(`created_at`, '%Y-%m-01')) STORED | — | **P0-2 分区字段**(MySQL 8.4 强制要求出现在每个 UNIQUE / PRIMARY KEY) |
 | `updated_at` | `DATETIME(3)` | NOT NULL | — | 更新时间 |
 | `deleted_at` | `DATETIME(3)` | NULL | NULL | 软删除时间 |
 | `deleted_by` | `BIGINT UNSIGNED` | NULL | NULL | 删除操作者 ID |
-| `partition_key` | `DATE` | NOT NULL | — | 分区键 |
 
 ### 索引
 
+> **P0-2 修正**:所有唯一 / 主键索引包含 `created_month`(MySQL 8.4 强制)。
+
 | 索引名 | 字段 | 类型 | 用途 |
 | --- | --- | --- | --- |
-| `pk_payment_order` | `id` | 主键 | — |
-| `uk_payment_order_no` | `order_no` | 唯一 | 用户查支付单 |
-| `uk_payment_order_wechat_txn` | `wechat_transaction_id` | 唯一(可空) | 微信回调幂等(§ 5.4) |
-| `idx_payment_order_biz` | `biz_type`, `biz_id` | 普通 | 反查"某笔充电的所有支付单" / "某用户的充值记录" |
+| `pk_payment_order` | `id`, `created_month` | 主键 | MySQL 8.4 分区约束:分区字段必须出现在主键 |
+| `uk_payment_order_no` | `order_no`, `created_month` | 唯一 | 用户查支付单(分区字段必带) |
+| `uk_payment_order_wechat_txn` | `wechat_transaction_id`, `created_month` | 唯一(可空) | 微信回调幂等(§ 5.4);牺牲跨月唯一性,但业务上同一 transaction_id 不会跨月 |
+| `idx_payment_order_biz` | `biz_type`, `biz_id` | 普通 | 反查"某笔充电的所有支付单" |
 | `idx_payment_order_user_status` | `user_id`, `status`, `created_at` | 普通 | 我的支付订单列表 |
-| `idx_payment_order_parent` | `parent_order_id` | 普通 | 查"主单的所有子单"(组合支付) |
-| `idx_payment_order_customer_created` | `customer_id`, `created_at` | 普通 | 客户维度对账 |
+| `idx_payment_order_parent` | `parent_order_id` | 普通 | 查"主单的所有子单" |
 | `idx_payment_order_deleted_at` | `deleted_at` | 普通 | 物理归档扫描 |
+
+### 分区策略
+
+按 `created_month` 范围分区(滚动保留 36 个月,详见 `docs/技术规格.md` § 4.8):
+
+```sql
+PARTITION BY RANGE (TO_DAYS(created_month)) (
+  PARTITION p2026m01 VALUES LESS THAN (TO_DAYS('2026-02-01')),
+  ...
+  PARTITION pmax VALUES LESS THAN MAXVALUE
+);
+```
 
 ### 约束
 
@@ -435,38 +450,53 @@ PARTITION BY RANGE (TO_DAYS(created_month)) (
 | `payment_order_id` | `BIGINT UNSIGNED` | NOT NULL | — | **关联 `payment_order.id`**(不再关联 charge_order) |
 | `payment_order_no` | `CHAR(32)` | NOT NULL | — | 冗余支付单号 |
 | `user_id` | `BIGINT UNSIGNED` | NOT NULL | — | 关联 `user.id` |
-| `refund_no` | `CHAR(32)` | UNIQUE, NOT NULL | — | 业务退款单号,格式 `RF + YYYYMMDD + 12 位随机` |
+| `refund_no` | `CHAR(32)` | NOT NULL | — | 业务退款单号,格式 `RF + YYYYMMDD + 12 位随机` |
 | `refund_cents` | `BIGINT` | NOT NULL | — | 退款金额(分) |
-| `refund_reason` | `ENUM('charge_failed','timeout','user_cancel_60s','plug_pulled','meter_abnormal','manual','recharge_refund','post_settled_reversal','start_timeout_30s','balance_insufficient','auto_poweroff')` | NOT NULL | — | 退款原因(需求 § 8.4 完整枚举):`start_timeout_30s` 启动 30 秒内未进入充电状态;`balance_insufficient` 充电中余额不足;`auto_poweroff` 高告警自动断电触发;`recharge_refund` 钱包充值退款;`post_settled_reversal` 仅客户财务可发起,账单已结后反向冲账 |
+| `refund_reason` | `ENUM('charge_failed','timeout','user_cancel_60s','plug_pulled','meter_abnormal','manual','recharge_refund','post_settled_reversal','start_timeout_30s','balance_insufficient','auto_poweroff')` | NOT NULL | — | 退款原因(需求 § 8.4 完整枚举) |
 | `refund_method` | `ENUM('wechat','wallet')` | NOT NULL | — | 退款方式(原路返回) |
-| `wechat_refund_id` | `VARCHAR(64)` | UNIQUE NULL | NULL | 微信退款单号(幂等键) |
-| `status` | `ENUM('pending','retrying','success','failed','manual_review')` | NOT NULL | `'pending'` | 退款状态;`retrying` 表示微信 API 失败后指数退避重试中 |
-| `settled_at` | `DATETIME(3)` | NULL | NULL | **关联 payment_order 的账单结清时间**(NULL = 未结清;非 NULL = 已结清,只有客户财务角色可发起退款) |
-| `frozen_by_risk` | `BOOLEAN` | NOT NULL | `FALSE` | **是否被风控冻结**(频次或金额触发,需人工审核) |
+| `wechat_refund_id` | `VARCHAR(64)` | NULL | NULL | 微信退款单号(幂等键) |
+| `status` | `ENUM('pending','retrying','success','failed','manual_review','settled')` | NOT NULL | `'pending'` | 退款状态;`retrying` 表示微信 API 失败后指数退避重试中;`settled` 表示已线下打款(P1-6 后续统一) |
+| `settled_at` | `DATETIME(3)` | NULL | NULL | **关联 payment_order 的账单结清时间** |
+| `frozen_by_risk` | `BOOLEAN` | NOT NULL | `FALSE` | **是否被风控冻结** |
 | `risk_freeze_log_id` | `BIGINT UNSIGNED` | NULL | NULL | 关联 `risk_freeze_log.id`(被冻结时填) |
-| `fail_reason` | `VARCHAR(256)` | NULL | NULL | 失败原因(微信退款 API 报错等) |
+| `fail_reason` | `VARCHAR(256)` | NULL | NULL | 失败原因 |
 | `retry_count` | `TINYINT UNSIGNED` | NOT NULL | `0` | 已重试次数(最多 3 次) |
 | `requested_at` | `DATETIME(3)` | NOT NULL | — | 退款申请时间 |
-| `completed_at` | `DATETIME(3)` | NULL | NULL | 退款完成时间(success/failed 时填) |
-| `manual_review_note` | `VARCHAR(512)` | NULL | NULL | 人工审核备注(manual_review 时填) |
-| `trigger_event_id` | `VARCHAR(64)` | NOT NULL | — | 触发本次退款的 Redis Stream event_id(§ 5.4 幂等) |
+| `completed_at` | `DATETIME(3)` | NULL | NULL | 退款完成时间 |
+| `manual_review_note` | `VARCHAR(512)` | NULL | NULL | 人工审核备注 |
+| `trigger_event_id` | `VARCHAR(64)` | NOT NULL | — | 触发本次退款的 Redis Stream event_id |
 | `created_at` | `DATETIME(3)` | NOT NULL | — | 创建时间 |
+| `created_month` | `DATE` | GENERATED ALWAYS AS (DATE_FORMAT(`requested_at`, '%Y-%m-01')) STORED | — | **P0-2 分区字段** |
 | `updated_at` | `DATETIME(3)` | NOT NULL | — | 更新时间 |
 | `deleted_at` | `DATETIME(3)` | NULL | NULL | 软删除时间 |
 | `deleted_by` | `BIGINT UNSIGNED` | NULL | NULL | 删除操作者 ID |
 
 ### 索引
 
+> **P0-2 修正**:按月分区表的所有唯一 / 主键索引必须包含分区字段 `created_month`。
+
 | 索引名 | 字段 | 类型 | 用途 |
 | --- | --- | --- | --- |
-| `pk_refund_record` | `id` | 主键 | — |
-| `uk_refund_record_no` | `refund_no` | 唯一 | 用户查退款 |
-| `uk_refund_record_wechat` | `wechat_refund_id` | 唯一(可空) | 微信回调幂等 |
-| `uk_refund_record_event` | `trigger_event_id` | 唯一 | § 5.4 Stream 消费幂等 |
+| `pk_refund_record` | `id`, `created_month` | 主键 | MySQL 8.4 分区约束 |
+| `uk_refund_record_no` | `refund_no`, `created_month` | 唯一 | 用户查退款(分区字段必带) |
+| `uk_refund_record_wechat` | `wechat_refund_id`, `created_month` | 唯一(可空) | 微信回调幂等 |
+| `uk_refund_record_event` | `trigger_event_id`, `created_month` | 唯一 | Stream 消费幂等 |
 | `idx_refund_record_payment_order` | `payment_order_id`, `requested_at` | 普通 | 查支付单的所有退款 |
 | `idx_refund_record_user_status` | `user_id`, `status`, `requested_at` | 普通 | 我的退款列表 |
 | `idx_refund_record_status_retry` | `status`, `retry_count`, `requested_at` | 普通 | worker 扫表重试 |
 | `idx_refund_record_deleted_at` | `deleted_at` | 普通 | 物理归档扫描 |
+
+### 分区策略
+
+按 `created_month` 范围分区(滚动保留 36 个月):
+
+```sql
+PARTITION BY RANGE (TO_DAYS(created_month)) (
+  PARTITION p2026m01 VALUES LESS THAN (TO_DAYS('2026-02-01')),
+  ...
+  PARTITION pmax VALUES LESS THAN MAXVALUE
+);
+```
 
 ### 约束
 
@@ -790,18 +820,32 @@ PARTITION BY RANGE (TO_DAYS(created_month)) (
 | `updated_at` | `DATETIME(3)` | NOT NULL | — | 更新时间 |
 | `deleted_at` | `DATETIME(3)` | NULL | NULL | 软删除时间 |
 | `deleted_by` | `BIGINT UNSIGNED` | NULL | NULL | 删除操作者 ID |
-| `partition_key` | `DATE` | NOT NULL | — | 分区键(冗余 `created_at` 的日期部分) |
+| `created_month` | `DATE` | GENERATED ALWAYS AS (DATE_FORMAT(`created_at`, '%Y-%m-01')) STORED | — | **P0-2 分区字段** |
 
 ### 索引
 
+> **P0-2 修正**:按月分区表所有唯一 / 主键索引必须包含 `created_month`。
+
 | 索引名 | 字段 | 类型 | 用途 |
 | --- | --- | --- | --- |
-| `pk_wallet_txn` | `id` | 主键 | — |
-| `uk_wallet_txn_no` | `txn_no` | 唯一 | 单条流水追溯 |
+| `pk_wallet_txn` | `id`, `created_month` | 主键 | MySQL 8.4 分区约束 |
+| `uk_wallet_txn_no` | `txn_no`, `created_month` | 唯一 | 单条流水追溯(分区字段必带) |
 | `idx_wallet_txn_account_created` | `account_id`, `created_at` | 普通 | 用户"我的余额明细"列表 |
-| `idx_wallet_txn_user_type` | `user_id`, `txn_type`, `created_at` | 普通 | 按类型筛选(我的充值记录 / 我的消费记录) |
+| `idx_wallet_txn_user_type` | `user_id`, `txn_type`, `created_at` | 普通 | 按类型筛选 |
 | `idx_wallet_txn_payment_order` | `related_payment_order_id` | 普通(可空) | 反查"某笔支付触发的所有流水" |
 | `idx_wallet_txn_deleted_at` | `deleted_at` | 普通 | 物理归档扫描 |
+
+### 分区策略
+
+按 `created_month` 范围分区:
+
+```sql
+PARTITION BY RANGE (TO_DAYS(created_month)) (
+  PARTITION p2026m01 VALUES LESS THAN (TO_DAYS('2026-02-01')),
+  ...
+  PARTITION pmax VALUES LESS THAN MAXVALUE
+);
+```
 
 ### 约束
 

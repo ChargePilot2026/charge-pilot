@@ -116,19 +116,22 @@
 
 ---
 
-## 3. Stream 触发表写入矩阵
+## 3. Stream 触发表写入矩阵(P0-3:每消费方独立消费者组)
 
-| Stream | 写入表 | 写入方 |
+> **消费者组命名**:`{stream}.{consumer}-cg`(详见 `docs/技术规格.md` § 5.3)
+> 例如 `charge_ended_stream` 同时被 billing / user / admin 消费,各自独立组 `billing-cg` / `user-cg` / `admin-cg`。
+
+| Stream | 消费方(每方独立 -cg) | 写入表 / 副作用 |
 | --- | --- | --- |
-| `device_event_stream` | gateway_db.device_session / Redis snapshot:{order_id} | worker 消费 → 缓存填充 |
-| `alert_stream` | admin_db.alert_event(经 admin API)| worker 消费 |
-| `charge_started_stream` | gateway_db.device_session(STARTED) | gateway 消费 |
-| `charge_ended_stream` | billing_db.fee_calculation + settlement | billing 消费 / user 消费关轮询 |
-| `refund_required_stream` | user_db.refund_record(status=processing) | admin 消费 |
-| `invoice_required_stream` | admin_db.invoice_review(status=pending) | admin 消费 |
-| `webhook_retry_stream` | worker_db.retry_queue + admin_db.webhook_delivery_log | worker 消费 |
-| `ota_schedule_stream` | gateway_db.ota_command(经 gateway API) | gateway / worker 消费 |
-| `comp_tx_stream` | worker_db.comp_tx_log(全部消费方幂等记录)| 所有消费方 |
+| `device_event_stream` | `worker-cg`(快照填充)、`admin-cg`(可选:状态推送) | Redis `snapshot:{order_id}` + admin_db.alert_event |
+| `alert_stream` | `admin-cg`(落库 + Webhook)、`worker-cg`(可选:周期复核) | admin_db.alert_event + (Webhook 推送) |
+| `charge_started_stream` | `gateway-cg` | gateway 启动设备 + UPDATE `charge_order.status='charging'` |
+| `charge_ended_stream` | `billing-cg`(计费)、`user-cg`(关轮询)、`admin-cg`(可选:订单快照) | billing_db.fee_calculation + settlement / user 关闭 Redis snapshot |
+| `refund_required_stream` | `admin-cg` | user_db.refund_record(status=processing) → admin 调微信退款 |
+| `invoice_required_stream` | `admin-cg` | admin_db.invoice_review(status=pending) |
+| `webhook_retry_stream` | `worker-cg` | worker_db.retry_queue + admin_db.webhook_delivery_log |
+| `ota_schedule_stream` | `worker-cg`(调度)、`gateway-cg`(下发指令) | gateway_db.ota_command(经 gateway API) |
+| `comp_tx_stream` | 各服务的 `comp_tx-cg` | worker_db.comp_tx_log(全部消费方幂等记录) |
 
 ---
 
