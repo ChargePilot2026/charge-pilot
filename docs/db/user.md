@@ -23,6 +23,7 @@
 | 主键索引 | 默认随主键创建 | 无 |
 | 索引命名 | `pk_` / `uk_` / `idx_` / `fk_` 前缀 | 无 |
 | 外键 | **不声明**(跨服务事务用最终一致性,§ 4.3 + § 5.4) | 无 |
+| **`customer_id` 列** | **不带**(P1-6 单客户单部署硬约束,与 README § 核心约束一致);客户级隔离由部署边界保证(每客户独立一套 `user_db` 实例,无跨客户访问) | 无 |
 | **业务状态 vs 软删除二维关系** | `status` 字段(如 `pending` / `success` / `cancelled`)是**业务生命周期状态机**;`deleted_at` 字段是**数据可见性软删除**;**二者独立,不互斥**:被软删的订单 `status` 保持原值(如 `cancelled` 订单被软删后,`status='cancelled'` + `deleted_at NOT NULL`);查询经仓储层封装自动加 `WHERE deleted_at IS NULL`,运维查询可绕过 | 审计日志 / 幂等表 无 status 字段 |
 
 ## 表清单(16 张)
@@ -879,7 +880,7 @@ PARTITION BY RANGE (TO_DAYS(created_month)) (
 **关键业务规则**:
 
 - 模板与发放记录分离:模板 = 配置(可改),发放记录 = 实例(不可改)
-- 客户级配置:每个模板属于某个客户(`customer_id`),不跨客户共享
+- 单客户单部署:配置类元数据按部署边界隔离,无 customer_id 列(见 README § 核心约束)
 - 适用场景:系统活动 / 拉新促活 / 投诉补偿
 - **不软删除**(模板是配置数据,删除走"停用"流程 → `status='disabled'`,不物理删除)
 
@@ -888,7 +889,7 @@ PARTITION BY RANGE (TO_DAYS(created_month)) (
 | 字段 | 类型 | 约束 | 默认 | 说明 |
 | --- | --- | --- | --- | --- |
 | `id` | `BIGINT UNSIGNED` | PK, AUTO_INCREMENT | — | 主键 |
-| `customer_id` | `BIGINT UNSIGNED` | NOT NULL | — | 所属客户(模板客户级隔离) |
+
 | `name` | `VARCHAR(64)` | NOT NULL | — | 优惠券名称(用户可见,如"新人 5 元抵扣券") |
 | `coupon_type` | `ENUM('fixed_amount','percentage','full_reduction')` | NOT NULL | — | 类型:固定金额 / 百分比折扣 / 满减 |
 | `discount_cents` | `BIGINT` | NULL | NULL | 优惠金额(分);`fixed_amount` / `full_reduction` 时填 |
@@ -913,7 +914,7 @@ PARTITION BY RANGE (TO_DAYS(created_month)) (
 | 索引名 | 字段 | 类型 | 用途 |
 | --- | --- | --- | --- |
 | `pk_coupon` | `id` | 主键 | — |
-| `idx_coupon_customer_status` | `customer_id`, `status` | 普通 | 客户 PC 后台查模板列表 |
+
 | `idx_coupon_status_valid` | `status`, `valid_until` | 普通 | 查可发放的有效模板(发券时用) |
 
 ### 约束
@@ -928,7 +929,7 @@ PARTITION BY RANGE (TO_DAYS(created_month)) (
 
 ### 关系
 
-- 多对一 → `admin_db.customer.id`
+
 - 一对多 → `coupon_grant.coupon_id`(每个发券实例关联模板)
 
 ### 业务规则
@@ -958,7 +959,7 @@ PARTITION BY RANGE (TO_DAYS(created_month)) (
 | `id` | `BIGINT UNSIGNED` | PK, AUTO_INCREMENT | — | 主键 |
 | `card_no` | `CHAR(32)` | UNIQUE, NOT NULL | — | 会员卡号,格式 `MC + YYYYMMDD + 8 位随机` |
 | `user_id` | `BIGINT UNSIGNED` | NOT NULL | — | 持卡人 |
-| `customer_id` | `BIGINT UNSIGNED` | NOT NULL | — | 所属客户 |
+
 | `card_type` | `ENUM('monthly','quarterly','yearly')` | NOT NULL | — | 会员类型:月卡 / 季卡 / 年卡 |
 | `price_cents` | `BIGINT` | NOT NULL | — | 购买价格(分) |
 | `discount_percent` | `DECIMAL(5,2)` | NULL | NULL | 充电折扣(如 90 = 9 折),NULL = 无折扣 |
@@ -979,7 +980,7 @@ PARTITION BY RANGE (TO_DAYS(created_month)) (
 | `pk_membership_card` | `id` | 主键 | — |
 | `uk_membership_card_no` | `card_no` | 唯一 | 卡号追溯 |
 | `idx_membership_card_user_status` | `user_id`, `status`, `valid_until` | 普通 | 用户"我的会员卡"列表 |
-| `idx_membership_card_customer_status` | `customer_id`, `status` | 普通 | 客户维度统计 |
+
 | `idx_membership_card_deleted_at` | `deleted_at` | 普通 | 物理归档扫描 |
 
 ### 约束
@@ -991,7 +992,7 @@ PARTITION BY RANGE (TO_DAYS(created_month)) (
 ### 关系
 
 - 多对一 → `user.id`
-- 多对一 → `admin_db.customer.id`
+
 - 多对一 → `payment_order.id`(购买订单,二期填)
 
 ### 业务规则
@@ -1023,7 +1024,7 @@ PARTITION BY RANGE (TO_DAYS(created_month)) (
 | `id` | `BIGINT UNSIGNED` | PK, AUTO_INCREMENT | — | 主键 |
 | `request_no` | `CHAR(32)` | UNIQUE, NOT NULL | — | 申请单号,格式 `INV + YYYYMMDD + 10 位随机` |
 | `user_id` | `BIGINT UNSIGNED` | NOT NULL | — | 申请人 |
-| `customer_id` | `BIGINT UNSIGNED` | NOT NULL | — | 所属客户 |
+
 | `invoice_type` | `ENUM('personal','company')` | NOT NULL | — | 发票类型:个人 / 企业 |
 | `title` | `VARCHAR(128)` | NOT NULL | — | 发票抬头(个人填姓名,企业填公司名) |
 | `tax_id` | `VARCHAR(32)` | NULL | NULL | 税号(企业必填,个人可不填) |
@@ -1051,7 +1052,7 @@ PARTITION BY RANGE (TO_DAYS(created_month)) (
 | `pk_invoice_request` | `id` | 主键 | — |
 | `uk_invoice_request_no` | `request_no` | 唯一 | 申请单号追溯 |
 | `idx_invoice_request_user_status` | `user_id`, `status`, `created_at` | 普通 | 我的发票申请列表 |
-| `idx_invoice_request_customer_status` | `customer_id`, `status`, `created_at` | 普通 | 客户财务审核队列 |
+
 | `idx_invoice_request_status_reviewed` | `status`, `reviewed_at` | 普通 | 查"已通过未开票"的工单 |
 | `idx_invoice_request_deleted_at` | `deleted_at` | 普通 | 物理归档扫描 |
 
@@ -1067,7 +1068,7 @@ PARTITION BY RANGE (TO_DAYS(created_month)) (
 ### 关系
 
 - 多对一 → `user.id`
-- 多对一 → `admin_db.customer.id`
+
 - 多对多 → `payment_order.id`(通过 `related_payment_order_ids` JSON 数组,跨服务无外键)
 
 ### 业务规则
@@ -1292,7 +1293,7 @@ PARTITION BY RANGE (TO_DAYS(created_month)) (
 | `id` | `BIGINT UNSIGNED` | PK, AUTO_INCREMENT | — | 主键 |
 | `report_no` | `CHAR(32)` | UNIQUE, NOT NULL | — | 业务报修单号,格式 `RP + YYYYMMDD + 10 位随机` |
 | `user_id` | `BIGINT UNSIGNED` | NOT NULL | — | 报修人(`user.id`) |
-| `customer_id` | `BIGINT UNSIGNED` | NOT NULL | — | 客户 ID(冗余) |
+
 | `device_id` | `VARCHAR(32)` | NOT NULL | — | 报修设备 ID |
 | `port_id` | `VARCHAR(32)` | NULL | NULL | 具体端口(可选) |
 | `fault_type` | `ENUM('charging_failure','port_damage','display_abnormal','network_failure','other')` | NOT NULL | — | 故障类型 |

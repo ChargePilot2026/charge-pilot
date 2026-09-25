@@ -582,7 +582,13 @@ gateway 服务**主动发布**到以下 Stream(沿用 § 5.1):
 | `alert_stream` | 七重防护字段越界 / 通信中断 / 温度过高等 | `device_id`、`alert_type`、`severity`、`metric`、`value`、`threshold`、`timestamp` |
 | `comp_tx_stream` | 跨服务事务补偿(下游 ACK / 失败) | `tx_id`、`status`、`result`、`timestamp` |
 
-> **不发布** `charge_ended_stream` / `refund_required_stream` / `invoice_required_stream`(由 billing 服务生产,gateway 不参与)。
+> **发布清单**:
+> - ✅ `device_event_stream`(设备状态变更)
+> - ✅ `alert_stream`(七重防护 / 通信中断 / 温度越界)
+> - ✅ `comp_tx_stream`(跨服务事务补偿 — 与所有服务协作)
+> - ✅ `charge_ended_stream`(**P1-7 修正**:gateway 检测设备状态变化后发布,由 billing / user / admin 多消费者组消费,详见 `diagrams/charge-payment-sequence.md` § 1)
+> - ❌ `charge_started_stream`(由 user 服务在微信回调后发布)
+> - ❌ `refund_required_stream` / `invoice_required_stream`(由 billing 服务发布)
 
 ---
 

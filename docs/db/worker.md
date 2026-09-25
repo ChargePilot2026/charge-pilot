@@ -29,8 +29,9 @@
 | `comp_tx_log` | 补偿事务日志(跨服务最终一致性) | 不分 | ~50 万 |
 | `dlq_log` | DLQ 处理日志(Redis Stream 失败消息) | 按月分区 | ~10 万 |
 | `retry_queue` | 重试队列(支付 / Webhook 重试) | 不分 | ~100 万 |
+| **`export_task`** | **导出任务**(账单 / 订单 / 对账 等)(P1-8 新增) | **不分** | **~5000/年** |
 
-> **本文件首批设计全部 5 张表**。
+> **本文件首批设计 5 张表,P1-8 新增 `export_task` 表(导出任务定义 / 每次执行独立记录)**。
 
 ---
 
@@ -327,7 +328,85 @@
 
 ---
 
-**worker_db 全部 5 张表设计完成**
+## 表 6:`worker_db.export_task`(P1-8 新增)
+
+**业务说明**:**导出任务**。每个导出请求 = 一行(账单 / 订单 / 对账 等)。**独立于 `scheduled_task`** —— `scheduled_task` 是定时任务定义,`export_task` 是具体导出任务实例。
+> **为什么需要独立表**:`scheduled_task.task_code` 唯一约束 → 一个 `export_run` 不能多次;但客户财务实际有多个并发导出任务(本期账单 + 上期账单 + 半年对账 等),需要独立记录每份任务的状态 / 文件 / 过期时间。
+
+**关键业务规则**:
+
+- 触发方式:`POST /api/v1/admin/exports` 创建 + 由 `scheduled_task.task_code='export_run'` 周期触发
+- **状态机**:`pending` → `running` → `completed` / `failed` → (30 天后)物理清理
+- **文件存储**:上传到 OSS(本地 MinIO 或客户自购),URL 预签名(30 min 过期)
+- **可重跑**:`status='failed'` 可由客户财务手动触发重跑(创建新行,旧行不删)
+
+### 字段定义
+
+| 字段 | 类型 | 约束 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `id` | `BIGINT UNSIGNED` | PK, AUTO_INCREMENT | — | 主键 |
+| `export_no` | `CHAR(32)` | UNIQUE, NOT NULL | — | 业务导出单号,格式 `EX + YYYYMMDDHHmmss + 10 位随机` |
+| `export_type` | `ENUM('billing_statement','order_history','refund_log','reconcile_diff','customer_list')` | NOT NULL | — | 导出类型 |
+| `format` | `ENUM('csv','excel','pdf')` | NOT NULL | — | 输出格式 |
+| `params` | `JSON` | NULL | NULL | 导出参数(如 `{"date_range": {"from": "2026-01-01", "to": "2026-01-31"}}`) |
+| `trigger_source` | `ENUM('manual','scheduled')` | NOT NULL | — | 触发来源:PC 后台手动 / `export_run` 周期任务 |
+| `triggered_by` | `BIGINT UNSIGNED` | NULL | NULL | 触发人 ID(`trigger_source='manual'` 时填 admin user_id) |
+| `scheduled_task_id` | `BIGINT UNSIGNED` | NULL | NULL | 关联 `scheduled_task.id`(`trigger_source='scheduled'` 时填) |
+| `status` | `ENUM('pending','running','completed','failed','expired')` | NOT NULL | `'pending'` | 任务状态 |
+| `started_at` | `DATETIME(3)` | NULL | NULL | 执行开始时间 |
+| `completed_at` | `DATETIME(3)` | NULL | NULL | 执行完成时间(success / failed) |
+| `duration_seconds` | `INT UNSIGNED` | NULL | NULL | 耗时(秒,completed 时填) |
+| `file_url` | `VARCHAR(512)` | NULL | NULL | OSS 预签名 URL |
+| `file_size_bytes` | `BIGINT UNSIGNED` | NULL | NULL | 文件大小 |
+| `file_expires_at` | `DATETIME(3)` | NULL | NULL | OSS 预签名 URL 过期时间(创建后 30 min) |
+| `row_count` | `INT UNSIGNED` | NULL | NULL | 导出记录数(用于审计) |
+| `error_message` | `VARCHAR(1024)` | NULL | NULL | 失败原因(`status='failed'` 时填) |
+| `attempt_count` | `TINYINT UNSIGNED` | NOT NULL | `0` | 已尝试次数(手动重跑会 +1) |
+| `created_at` | `DATETIME(3)` | NOT NULL | — | 创建时间 |
+| `updated_at` | `DATETIME(3)` | NOT NULL | — | 更新时间 |
+
+### 索引
+
+| 索引名 | 字段 | 类型 | 用途 |
+| --- | --- | --- | --- |
+| `pk_export_task` | `id` | 主键 | — |
+| `uk_export_task_no` | `export_no` | 唯一 | 单号追溯 |
+| `idx_export_task_status_created` | `status`, `created_at` | 普通 | PC 后台"我的导出任务"列表 |
+| `idx_export_task_type_created` | `export_type`, `created_at` | 普通 | 统计各类型导出频次 |
+| `idx_export_task_triggered_by` | `triggered_by`, `created_at` | 普通 | 查某 admin 用户的所有导出 |
+| `idx_export_task_scheduled` | `scheduled_task_id`, `created_at` | 普通 | 周期任务的导出历史 |
+
+### 约束
+
+- **状态机**:`pending` → `running` → `completed` / `failed` → `expired`(30 天后)
+- `status='completed'` 时,`file_url` / `file_size_bytes` / `row_count` / `duration_seconds` NOT NULL
+- `status='failed'` 时,`error_message` NOT NULL
+- **不可软删除**:导出任务是审计证据,30 天后物理清理(合规底线)
+
+### 业务规则
+
+- **创建**(PC 后台):客户财务 / 运营在 admin PC 后台"导出中心"选类型 + 格式 + 时间范围 → 提交 → INSERT `export_task(status='pending', trigger_source='manual', triggered_by=$user_id)`
+- **执行**:worker 周期任务扫表 `status='pending'` → 调 billing / user 内部接口生成数据 → 上传 OSS → INSERT `file_url` + UPDATE `status='completed', completed_at, row_count`
+- **周期触发**:`scheduled_task.task_code='export_run'` cron 触发 → 创建一批 `export_task(trigger_source='scheduled', scheduled_task_id=$id)`,不直接执行
+- **重跑**:PC 后台"重跑"按钮 → INSERT 新行(`attempt_count=1`),旧行保留(审计)
+- **OSS 预签名 URL 过期**:`file_expires_at` 后 URL 失效,客户财务需要重新下载 → 调 admin 内部接口 `/api/v1/internal/export/tasks/{id}/refresh-url` 重新签名
+- **物理归档**:worker 周期任务每日 04:00 扫表 → `status='expired' AND completed_at < NOW() - 30 DAY` → `DELETE`
+
+### 与 scheduled_task 的关系
+
+```
+scheduled_task (task_code='export_run')
+  ↓ 周期触发(每日 03:00)
+  ↓ 创建 N 个 export_task 实例
+  ↓ 每个实例由 worker 异步执行
+export_task (status=pending/running/completed/failed)
+```
+
+**注意**:`scheduled_task` 是"任务定义"(1 行),`export_task` 是"任务实例"(N 行)。两者职责清晰分离。
+
+---
+
+**worker_db 全部 6 张表设计完成**(P1-8 新增 `export_task`)
 
 ---
 
@@ -339,8 +418,8 @@
 | `admin_db` | 23 | `docs/db/admin.md` |
 | `gateway_db` | 6 | `docs/db/gateway.md` |
 | `billing_db` | 5 | `docs/db/billing.md` |
-| `worker_db` | 5 | `docs/db/worker.md` |
-| **合计** | **53 张** | 5 个文件 |
+| `worker_db` | **6**(P1-8 新增 `export_task`) | `docs/db/worker.md` |
+| **合计** | **53 张**(P0-2 前)/ **54 张**(P1-8 后新增 1 张 `export_task`) | 5 个文件 |
 
 **所有 schema 的设计原则一致**:
 - 单客户部署,所有表不带 `customer_id`

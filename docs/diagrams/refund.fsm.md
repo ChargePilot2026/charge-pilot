@@ -1,6 +1,6 @@
-# 退款状态机(`user_db.refund_record.status` + `billing_db` 协作)
+# 退款状态机(`user_db.refund_record.status`)(P1-6 与 db 一致化)
 
-> **配套文档**:`docs/需求分析.md` § 5.3 / § 8.4 / `docs/技术规格.md` § 5.4 / `docs/api/billing.md`
+> **配套文档**:`docs/diagrams/payment.fsm.md` / `docs/db/user.md` § 表 5 `refund_record` / `docs/需求分析.md` § 5.3 / § 8.4 / `docs/技术规格.md` § 5.4
 
 ---
 
@@ -10,9 +10,8 @@
    ┌────────────┐    退款请求入队      ┌────────────┐   调微信退款 API   ┌────────────┐
    │  pending   │ ──────────────────→ │ processing │ ─────────────────→│  waiting   │
    └────────────┘                     └────────────┘                    │ (微信处理中)│
-        ↑                                  │                            └─────┬──────┘
-        │ 触发失败重试                       │ 系统异常(本地失败)                │ 微信回调
-        │                                  ▼                                 │
+        ↑ 触发失败重试                       │ 系统异常(本地失败)                │ 微信回调
+        │ 3 次入人工                          ▼                                 │
    ┌────────────┐                    ┌────────────┐                          ▼
    │  retried   │ ←──── 3 次失败 ────│  failed   │                   ┌────────────┐
    └────────────┘     后转人工       │  (本地)   │                   │  success   │
@@ -31,7 +30,7 @@
 
 ---
 
-## 状态枚举
+## 状态枚举(P1-6 与 `db/user.md` 表 5 refund_record.status ENUM 一致)
 
 | 状态 | 触发进入 | 触发退出 |
 | --- | --- | --- |
@@ -43,6 +42,9 @@
 | `failed` | 本地异常 / 微信不可重试错误码(`INVALID_REQUEST` 等) | 自动入 DLQ → 转 `manual_review` |
 | `manual_review` | 计量异常 / 风控冻结 / 异常订单 | 财务审核 → `success` / `settled`(线下打款) |
 | `settled` | 财务决定线下打款(不走微信原路) | 长期保留(合规底线) |
+
+> **与 `payment.fsm.md` 的关系**:`refund_record.status` 字段从 `pending` 流转到终态(`success` / `settled`)后,会影响父 `payment_order.status`:
+> - 任一 `refund_record` 成功 → `payment_order.status` 切到 `partial_refunded`(累计 < paid_fee_cents)或 `refunded`(累计 = paid_fee_cents)
 
 ---
 
@@ -66,12 +68,3 @@
 - **不可跳状态**:`pending → success` 不允许(必须经过微信回调链路)
 - **不可逆**:`success` / `settled` 不可再发起二次退款;必须创建反向手动调整记录
 - **超时**:admin 调微信退款超时 → 默认 30s → 进入 `retried`(重试状态由微信响应决定)
-
----
-
-## 与支付订单状态机的关系
-
-详见 `payment.fsm.md`;退款成功后:
-- `payment_order.status`:`success` → `refunded`(若全额) / `partial_refunded`(若部分)
-- `charge_order.status`:通常同步转为 `refunded`(一次性清理)
-- `wallet_txn`:写一条负向流水(`type='refund'`, `amount=-原值`)

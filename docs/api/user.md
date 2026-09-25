@@ -531,15 +531,15 @@ Wechatpay-Nonce: ...
 }
 ```
 
-**业务逻辑**:
+**业务逻辑**(P1-7 修正:**禁止跨库直读**,所有跨服务数据走 HTTP 内部接口):
 1. 校验 `order_id` 属于当前 user(防越权)
-2. 查 Redis `snapshot:{order_id}`(TTL 10s,worker 主动填充):
+2. 查 Redis `snapshot:{order_id}`(TTL 10s,**gateway** 通过 `device_event_stream` 主动填充):
    - **Hit** → 返回缓存数据
-   - **Miss** → 查 `gateway_db.telemetry`(最新 1 条)+ `charge_db.charge_order` → 组合 → 回填缓存(TTL 10s)
+   - **Miss** → **HTTP 调 gateway**:`GET /api/v1/internal/devices/{device_id}/snapshot?order_id={order_id}`(详见 `gateway.md` § 四)→ 拿 telemetry 最新数据 → 查 `user_db.charge_order`(本 schema)→ 组合 → 回填 Redis 缓存(TTL 10s)
 3. 推断 `poll_continue`:
    - `status='charging'` → true
    - `status` ∈ {`finished` / `failed` / `cancelled`} → false(前端跳转充电结束页)
-4. 查最新告警(`alert_event` 表中 `device_id` + `status='active'`):
+4. 查最新告警(**HTTP 调 admin**):`GET /api/v1/internal/alerts?device_id={device_id}&status=active`(详见 `admin.md` § E):
    - **有** → 填 `alert` 字段(高告警前端弹窗 + 推送)
    - **无** → `alert=null`
 5. 返回数据(数值字段用字符串防 JS 浮点精度)
@@ -602,13 +602,13 @@ Wechatpay-Nonce: ...
 }
 ```
 
-**业务逻辑**:
+**业务逻辑**(P1-7 修正:跨库走 HTTP):
 1. 校验 `order_id` 属于当前 user(防越权 → `1003`)
-2. 查 `charge_order.started_at` + `ended_at`(若已结束)确定时间窗
-3. 按 `window` 从 `gateway_db.telemetry` 查数据:
-   - `last_5min` / `last_30min` / `last_2h` → 查原始 telemetry(分 16 张表,按 `device_id` hash 路由)
-   - `since_start` → 查 `started_at` 至今的全部 telemetry
-4. **采样压缩**(避免返回过多点):
+2. 查 `user_db.charge_order.started_at` + `ended_at`(若已结束)确定时间窗
+3. **HTTP 调 gateway**:`GET /api/v1/internal/devices/{device_id}/curve?order_id={order_id}&window=last_5min`(详见 `gateway.md` § 四):
+   - gateway 在 `gateway_db` 内部查 telemetry(分 16 张表,按 `device_id` hash 路由)
+   - gateway 返回采样后的时间序列
+4. **采样压缩**(gateway 侧完成):
    - `last_5min` → 每 10 秒 1 点 → ≤ 30 点
    - `last_30min` → 每 1 分钟 1 点 → ≤ 30 点
    - `last_2h` → 每 5 分钟 1 点 → ≤ 24 点
@@ -706,12 +706,12 @@ Wechatpay-Nonce: ...
 }
 ```
 
-**业务逻辑**:
+**业务逻辑**(P1-7 修正:**charge_order 在 user_db,不是 charge_db**):
 1. 校验 JWT 拿 user_id
-2. 查 `charge_db.charge_order WHERE user_id = ? AND deleted_at IS NULL`(仓储层自动过滤)
+2. 查 `user_db.charge_order WHERE user_id = ? AND deleted_at IS NULL`(仓储层自动过滤)
 3. 可选 `status` 过滤
 4. 按 `started_at DESC` 排序 + LIMIT/OFFSET 分页
-5. 关联 `station_name`(JOIN 或缓存冗余)
+5. 关联 `station_name`(**HTTP 调 admin**:`GET /api/v1/internal/stations/{station_id}` 或查 user_db 缓存)
 
 **错误码**:
 - `1001`: JWT 失效
@@ -759,11 +759,12 @@ Wechatpay-Nonce: ...
 }
 ```
 
-**业务逻辑**:
+**业务逻辑**(P1-7 修正):
 1. 校验订单属于当前 user
-2. 查 `charge_db.charge_order` + 关联 `station.station_name` + `payment_order.paid_fee_cents`
-3. 计算 `electric_fee_cents` / `service_fee_cents` / `total_fee_cents`(若尚未结算,从 fee_calculation 拿)
-4. 返回完整明细
+2. 查 `user_db.charge_order`(本 schema) + 关联 `user_db.payment_order`(本 schema,`paid_fee_cents`)
+3. **HTTP 调 admin**:`GET /api/v1/internal/stations/{station_id}` 拿 `station_name`
+4. **HTTP 调 billing**:`GET /api/v1/internal/calculations/{charge_order_id}` 拿 `fee_calculation`(若已结算,否则未结算提示)
+5. 计算 `electric_fee_cents` / `service_fee_cents` / `total_fee_cents` 组合返回
 
 **错误码**:
 - `1001` / `1003` / `1004`(同上)
@@ -817,13 +818,13 @@ Wechatpay-Nonce: ...
 }
 ```
 
-**业务逻辑**:
+**业务逻辑**(P1-7 修正:跨库走 HTTP):
 1. 校验 `order_id` 属于当前 user
-2. 查 `charge_order.started_at` + `ended_at` 确定时间窗
-3. 按 `granularity` 从聚合表查数据:
-   - `15min` → `gateway_db.telemetry_aggregate_15min`(§ 4.6 修订,保留 3 年)
-   - `hourly` → `gateway_db.telemetry_aggregate_hourly`(会话 > 24 h 时用)
-4. 算 `summary` 字段
+2. 查 `user_db.charge_order.started_at` + `ended_at` 确定时间窗
+3. **HTTP 调 gateway**:`GET /api/v1/internal/devices/{device_id}/historical-curve?order_id={order_id}&granularity={15min|hourly}`(详见 `gateway.md` § 四):
+   - gateway 在 `gateway_db` 内部查对应聚合表(`telemetry_aggregate_15min` / `telemetry_aggregate_hourly`)
+   - gateway 返回采样后的时间序列
+4. 算 `summary` 字段(gateway 侧完成)
 5. 返回时间序列 + 摘要
 
 **错误码**:

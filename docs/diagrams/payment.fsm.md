@@ -1,43 +1,46 @@
-# 支付订单状态机(`user_db.payment_order.status`)
+# 支付订单状态机(`user_db.payment_order.status`)(P1-6 与 db 一致化)
 
-> **配套文档**:`docs/需求分析.md` § 9.4 / `docs/api/user.md` § 公开接口 / `docs/技术规格.md` § 5.4
+> **维护者**:后端 user 服务 / 跨服务对齐时检查
+> **配套文档**:`docs/db/user.md` § 表 3 `payment_order` / `docs/diagrams/refund.fsm.md` / `docs/diagrams/charge-order.fsm.md` / `docs/技术规格.md` § 5.4 + § 5.5
 
 ---
 
 ## 状态图
 
 ```
-   ┌────────────┐
-   │ initiated  │  ← user 调微信下单后 INSERT
-   └─────┬──────┘
-         │ 微信回调
-         ├──────→ success          (一次性支付成功)
+   ┌──────────┐
+   │ initiated│  ← user 收到 /scan/start → INSERT payment_order(status='initiated', biz_type='charge', biz_id=charge_order.id)
+   └─────┬────┘
+         │ 微信回调(同步 5 min 内)
+         ├──────→ success          (一次性支付成功,paid_at 落表,业务事件发出)
          │
-         ├──────→ failed           (下单失败 / 微信返回错误)
+         ├──────→ failed           (下单 / 微信返回错误,已生成单据但失败)
          │
-         └──────→ expired          (用户 5 min 内未支付)
+         └──────→ expired          (用户 5 min 内未支付;worker 周期扫描清理)
                 ↓
             (软删除 + 自动退款视业务)
-                                  ┌────────────┐
-                          ┌──────→│  partial   │
-                          │       │ refunded   │  ← 部分退款(单订单多笔退款累计)
-   success ───────────────┤       └────────────┘
-                          │
-                          └──────→ refunded      ← 全额退款完成
+
+   success ───────────┐
+                       │
+                       ├──→ partial_refunded  ← 部分退款(单订单多笔退款累计)
+                       │
+                       └──→ refunded          ← 全额退款完成(>= 1 笔 refund_record.status=success 且累计 = paid_fee_cents)
 ```
 
 ---
 
-## 状态枚举
+## 状态枚举(P1-6 与 `db/user.md` 表 3 payment_order.status ENUM 一致)
 
 | 状态 | 含义 | 触发 |
 | --- | --- | --- |
-| `initiated` | 已下单,等待用户支付 | `POST /payment/wechat/create` 成功后 |
+| `initiated` | 已下单,等待用户支付 | `POST /scan/start` 创建订单 + 微信预下单成功 |
 | `success` | 微信支付成功 | 微信回调 `TRANSACTION.SUCCESS` |
 | `failed` | 支付失败(用户拒付 / 余额不足 / 微信风控) | 微信回调 `TRANSACTION.FAIL` / 本地超时 |
-| `expired` | 用户超过 5 分钟未支付 | 微信侧超时通知 或 worker 周期任务扫描 |
-| `refunded` | 全额退款完成 | `refund_record.status` 全集为 `success` / `settled` |
-| `partial_refunded` | 部分退款 | 至少 1 条 `refund_record` 为 `success`,但仍有未退金额 |
+| `expired` | 用户超过 5 分钟未支付 | 微信侧超时通知 或 worker 周期扫描 |
+| `refunded` | 全额退款完成 | 全部 `refund_record` 成功,且累计 = `paid_fee_cents` |
+| `partial_refunded` | 部分退款 | 至少 1 条 `refund_record.status='success'`,但仍有未退金额 |
+
+> **不在 ENUM 中但常见于退款状态机**:`settled`(财务线下打款,见 `refund.fsm.md`)— **不**写在 `payment_order.status`,只在 `refund_record.status='settled'` 标记。
 
 ---
 
@@ -46,7 +49,7 @@
 | 触发事件 | 动作 |
 | --- | --- |
 | `initiated` 创建 | 写 `payment_callback_idempotent(wechat_transaction_id, status='initiated')` |
-| `success` 切换 | user API 收到回调 → 写幂等成功 → 发 `charge_started_stream`(仅 `biz_type='charge'` 时)/ 发钱包流水完成事件 |
+| `success` 切换 | user API 收到回调 → 写幂等成功 → 发 `charge_started_stream`(仅 `biz_type='charge'`)/ 发钱包流水完成事件 |
 | `failed` | user API 写 `payment_order.status='failed'` + 发 `alert_stream(notice=payment_failed)` |
 | `expired` | worker 周期任务扫描 `initiated` > 5 min → 标 `expired` |
 | 全额 `refunded` | admin 消费 `comp_tx_stream(回执)` → 标 `refunded` |
@@ -58,7 +61,7 @@
 组合支付(微信 + 余额 + 优惠券)有**主单 + 多张子单**:
 
 - 主单:`payment_order(pay_method='mixed', total_amount = 子单合计, status='success')`
-- 子单:`payment_order(parent_order_id = 主单.id, pay_method='wechat'/'wallet'/'coupon', amount = N)`(子单不直接走微信)
+- 子单:`payment_order(parent_order_id = 主单.id, pay_method='wechat'/'wallet', amount = N)`(子单不直接走微信)
 - 退款:**先退子单**(现金通道)→ 主单状态切换
 
 ---

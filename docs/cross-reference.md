@@ -142,26 +142,32 @@
 
 | 调用方 | 被调方 | 调用场景 | 路径(在调用方文档中引用) | 在被调方文档落地位置 |
 | --- | --- | --- | --- | --- |
-| user | gateway | 充电中快照订阅(`charge_started_stream` 消费后 Redis 缓存填充) | 抽象引用 `gateway.md` | `gateway.md` § 五 |
-| user | gateway | 充电结束通知(`charge_ended_stream` 消费关轮询) | 抽象引用 `gateway.md` | `gateway.md` § 五 |
+| user | gateway | 充电中快照订阅(`charge_started_stream` 消费后 Redis 缓存填充) | `/api/v1/internal/devices/{id}/snapshot?order_id={id}` | `gateway.md` § 四 |
+| user | gateway | 充电结束通知(`charge_ended_stream` 消费关轮询) | `charge_ended_stream.user-cg` | `gateway.md` § 五 + `技术规格 § 5.3` |
 | user | gateway | 设备实时状态查询(轮询快照 cache miss 时) | `/api/v1/internal/devices/{id}` | `gateway.md` § 四 |
 | user | gateway | 端口列表(扫描设备码时) | `/api/v1/internal/devices/{id}/ports` | `gateway.md` § 四 |
+| user | gateway | 历史曲线查询(订单回看 + 充电中 detail) | `/api/v1/internal/devices/{id}/curve?order_id={id}&window=last_5min` + `/historical-curve?granularity=15min` | `gateway.md` § 四 |
 | user | billing | 预扣费预估(scan/start 时报价) | `/api/v1/internal/quote` | `billing.md` § 二 |
+| user | billing | 计费快照查询(订单详情页) | `/api/v1/internal/calculations/{charge_order_id}` | `billing.md` § 二 |
+| user | admin | 当前告警查询(充电中页轮询) | `/api/v1/internal/alerts?device_id={id}&status=active` | `admin.md` § E |
+| user | admin | 站点详情查询(找桩) | `/api/v1/internal/stations/{station_id}` | `admin.md` § C |
 | user | 微信支付 API | JSAPI 预下单(scan/start 时) | `https://api.mch.weixin.qq.com/v3/pay/transactions/jsapi` | `user.md` § 扫码与充电 |
-| user | 微信支付 API | 钱包充值退款(同步调用,不走 Stream) | `https://api.mch.weixin.qq.com/v3/refund/...` | 本期 user.md § 用户与钱包 |
-| gateway | billing | 充电结束计费(`charge_ended_stream` 消费) | 抽象引用 `billing.md` | `billing.md` § 三 |
-| admin | user | 退款详情查询 | 抽象引用 `user.md`(跨服务调用约定) | `user.md` |
-| admin | user | 退款审核通过回调 | 抽象引用 `user.md`(跨服务调用约定) | `user.md` |
-| admin | user | 发票详情 / 审核回调 | 抽象引用 `user.md` | `user.md` |
-| admin | user | 优惠券统计 | 抽象引用 `user.md` | `user.md` |
+| user | 微信支付 API | 钱包充值退款(同步调用,不走 Stream) | `https://api.mch.weixin.qq.com/v3/refund/...` | `user.md` § 用户与钱包 |
+| gateway | billing | 充电结束计费(`charge_ended_stream` 消费) | `charge_ended_stream.billing-cg` | `billing.md` § 三 + `技术规格 § 5.3` |
+| admin | user | 退款详情查询 | `/api/v1/internal/refunds/{refund_id}` | `user.md` § 退款 |
+| admin | user | 退款审核通过回调 | `/api/v1/internal/refunds/{refund_id}/approve-callback` | `user.md` § 退款 |
+| admin | user | 发票详情 / 审核回调 | `/api/v1/internal/invoices/{invoice_id}` + `/approve-callback` | `user.md` § 发票 |
+| admin | user | 优惠券统计 | `/api/v1/internal/coupons/stats?coupon_id={id}` | `user.md` § 优惠券 |
+| admin | user | 订单详情查询(财务审核) | `/api/v1/internal/orders/{order_id}` | `user.md` § 订单 |
 | admin | gateway | 设备远程重启 | `/api/v1/internal/devices/{id}/reboot` | `gateway.md` § 五 |
-| admin | gateway | 订单查询 | 抽象引用 `gateway.md`(跨服务调用约定) | `gateway.md` § 四 |
-| admin | billing | 分账 / 账单明细 | 抽象引用 `billing.md` | `billing.md` |
-| admin | worker | 导出任务查询(避免 admin_db 缺 export_task 表) | `/api/v1/internal/export/tasks/{id}` | `worker.md`(本期新增) |
-| billing | admin | 计费规则 / 分账模板查询 | 抽象引用 `admin.md` | `admin.md` § K |
+| admin | gateway | 订单查询 | `/api/v1/internal/devices/{device_id}/orders` | `gateway.md` § 四 |
+| admin | billing | 分账 / 账单明细 | `/api/v1/internal/settlements/{settlement_id}` + `/invoices/{invoice_id}/settle-detail` | `billing.md` § 三 |
+| admin | worker | 导出任务查询(避免 admin_db 缺 export_task 表) | `/api/v1/internal/export/tasks/{id}` | `worker.md` § 二 |
+| billing | admin | 计费规则 / 分账模板查询 | `/api/v1/internal/admin/pricing-rules/{id}` + `/split-templates/{id}` | `admin.md` § K |
+| billing | admin | 订单详情查询(写 fee_calculation 时回查) | `/api/v1/internal/orders/{order_id}` | `admin.md` § C / `user.md` |
 | billing | 微信支付 API | 充电退款执行(billing 发 refund_required_stream → admin 消费 → admin 调微信) | `https://api.mch.weixin.qq.com/v3/refund/...` | `admin.md` § F |
 | worker | gateway | OTA 固件推送 | `/api/v1/internal/devices/{id}/firmware-push` | `gateway.md` § 五 |
-| worker | admin | 告警落库 + 订阅推送 | `/api/v1/admin/alerts`(admin.md § E) | `admin.md` § E |
+| worker | admin | 告警落库 + 订阅推送 | `POST /api/v1/admin/alerts`(admin.md § E) | `admin.md` § E |
 
 ---
 
