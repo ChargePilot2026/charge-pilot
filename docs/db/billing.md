@@ -185,6 +185,8 @@
 | `service_amount_cents` | `BIGINT` | NOT NULL | `0` | 该方服务费分成 |
 | `withdraw_status` | `ENUM('pending','withdrawn','failed')` | NOT NULL | `'pending'` | 该方提现状态 |
 | `withdraw_request_id` | `BIGINT UNSIGNED` | NULL | NULL | 关联 `withdraw_request.id`(已提现时填) |
+| **`next_settlement_at`** | `DATETIME(3)` | NULL | NULL | **下次结算日**(配合 split_party.settlement_cycle,worker 按此日期生成提现申请) |
+| **`last_settled_at`** | `DATETIME(3)` | NULL | NULL | **上次结算日**(已结算的分账记录;NULL = 尚未结算) |
 | `created_at` | `DATETIME(3)` | NOT NULL | — | 创建时间 |
 | `updated_at` | `DATETIME(3)` | NOT NULL | — | 更新时间 |
 | `deleted_at` | `DATETIME(3)` | NULL | NULL | 软删除时间 |

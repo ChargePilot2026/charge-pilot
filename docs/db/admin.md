@@ -22,7 +22,7 @@
 | 索引命名 | `pk_` / `uk_` / `idx_` / `fk_` 前缀 | 无 |
 | 外键 | **不声明**(跨服务事务用最终一致性,§ 4.3 + § 5.4) | 无 |
 
-## 表清单(23 张)
+## 表清单(24 张)
 
 | 表名 | 业务说明 | 分表策略 | 估算行数(单客户 5 年) |
 | --- | --- | --- | --- |
@@ -33,6 +33,7 @@
 | `device_meta` | 设备配置元数据(冗余 gateway_db) | 不分 | ~5000 |
 | `pricing_rule` | 计费规则实例 | 不分 | ~100 |
 | `pricing_template` | 计费规则模板 | 不分 | ~20 |
+| **`coupon`** | **优惠券模板**(用户持有的优惠券规格定义) | 不分 | ~1000 |
 | `split_template` | 分账模板 | 不分 | ~20 |
 | `split_party` | 分账参与方(模板实例) | 不分 | ~200 |
 | `whitelabel_config` | 白标配置 | 不分 | 1(单例) |
@@ -319,8 +320,10 @@
 | 字段 | 类型 | 约束 | 默认 | 说明 |
 | --- | --- | --- | --- | --- |
 | `id` | `BIGINT UNSIGNED` | PK, AUTO_INCREMENT | — | 主键 |
-| `title` | `VARCHAR(128)` | NOT NULL | — | 公告标题 |
-| `content` | `TEXT` | NOT NULL | — | 公告内容(支持 Markdown) |
+| `title` | `VARCHAR(128)` | NOT NULL | — | 公告标题(中文默认) |
+| `title_i18n` | `JSON` | NULL | NULL | **多语言标题**(技术规格 § 15.8:本期只填 `{"zh-CN": "..."}`,en-US 等二期补) |
+| `content` | `TEXT` | NOT NULL | — | 公告内容(支持 Markdown,中文默认) |
+| `content_i18n` | `JSON` | NULL | NULL | **多语言内容**(同上) |
 | `announcement_type` | `ENUM('system_notice','maintenance','promotion')` | NOT NULL | — | 公告类型 |
 | `display_mode` | `ENUM('popup','list','banner','all')` | NOT NULL | `'list'` | 展示方式 |
 | `priority` | `TINYINT UNSIGNED` | NOT NULL | `5` | 优先级(1-10,数字越小优先级越高;同时间多弹窗时按优先级排序) |
@@ -695,7 +698,8 @@
 | 字段 | 类型 | 约束 | 默认 | 说明 |
 | --- | --- | --- | --- | --- |
 | `id` | `BIGINT UNSIGNED` | PK, AUTO_INCREMENT | — | 主键 |
-| `template_name` | `VARCHAR(64)` | NOT NULL | — | 模板名称(如"小区基础模板 - 1 元/度 + 0.5 元/小时服务费") |
+| `template_name` | `VARCHAR(64)` | NOT NULL | — | 模板名称(如"小区基础模板 - 1 元/度 + 0.5 元/小时服务费",中文默认) |
+| `template_name_i18n` | `JSON` | NULL | NULL | **多语言名称**(技术规格 § 15.8:本期只填 `{"zh-CN": "..."}`) |
 | `billing_mode` | `ENUM('by_time','by_kwh','tiered','time_of_use')` | NOT NULL | — | 计费模式 |
 | `electric_fee_config` | `JSON` | NOT NULL | — | 电费配置 JSON(同 pricing_rule) |
 | `service_fee_config` | `JSON` | NOT NULL | — | 服务费配置 JSON |
@@ -731,7 +735,71 @@
 
 ---
 
-## 表 12:`admin_db.split_template`
+## 表 12:`admin_db.coupon`
+
+**业务说明**:**优惠券模板**(用户在客户端看到的优惠券规格定义)。客户运营在 PC 后台"营销管理"配置。**不发模板给用户** —— 发的是 `user_db.coupon_grant` 发放记录。
+
+**关键业务规则**:
+
+- **模板与发放记录分离**:模板是配置(可改),发放记录是实例(不可改)
+- **3 种类型**:固定金额(`fixed_amount`)/ 百分比折扣(`percentage`)/ 满减(`full_reduction`)
+- **不软删除**:模板是配置,启用 / 停用即可
+- 客户级配置:每个模板属于当前客户(单客户部署)
+
+### 字段定义
+
+| 字段 | 类型 | 约束 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `id` | `BIGINT UNSIGNED` | PK, AUTO_INCREMENT | — | 主键 |
+| `name` | `VARCHAR(64)` | NOT NULL | — | 优惠券名称(用户可见,如"新人 5 元抵扣券",中文默认) |
+| **`name_i18n`** | `JSON` | NULL | NULL | **多语言名称**(技术规格 § 15.8:本期只填 `{"zh-CN": "..."}`,en-US 等二期补) |
+| `coupon_type` | `ENUM('fixed_amount','percentage','full_reduction')` | NOT NULL | — | 类型:固定金额 / 百分比折扣 / 满减 |
+| `discount_cents` | `BIGINT` | NULL | NULL | 优惠金额(分);`fixed_amount` / `full_reduction` 时填 |
+| `discount_percent` | `DECIMAL(5,2)` | NULL | NULL | 折扣百分比(0-100,精度 0.01);`percentage` 时填 |
+| `max_discount_cents` | `BIGINT` | NULL | NULL | 折扣上限(分);`percentage` 时填 |
+| `min_spend_cents` | `BIGINT` | NULL | NULL | 最低消费(分);`full_reduction` 时必填 |
+| `valid_days` | `SMALLINT UNSIGNED` | NULL | NULL | 领取后有效天数 |
+| `valid_from` | `DATETIME(3)` | NULL | NULL | 固定生效时间 |
+| `valid_until` | `DATETIME(3)` | NULL | NULL | 固定失效时间 |
+| `total_limit` | `INT UNSIGNED` | NULL | NULL | 总发放数量上限(NULL = 无上限) |
+| `granted_count` | `INT UNSIGNED` | NOT NULL | `0` | 已发放数量 |
+| `user_limit` | `INT UNSIGNED` | NOT NULL | `1` | 单用户最多持有数量 |
+| `scope` | `ENUM('all','specific_station','specific_device')` | NOT NULL | `'all'` | 适用范围 |
+| `scope_ids` | `JSON` | NULL | NULL | 适用范围 ID 列表 |
+| `status` | `ENUM('enabled','disabled','archived')` | NOT NULL | `'enabled'` | 启用 / 停用 / 归档 |
+| `created_by` | `BIGINT UNSIGNED` | NOT NULL | — | 创建人 |
+| `created_at` | `DATETIME(3)` | NOT NULL | — | 创建时间 |
+| `updated_at` | `DATETIME(3)` | NOT NULL | — | 更新时间 |
+
+### 索引
+
+| 索引名 | 字段 | 类型 | 用途 |
+| --- | --- | --- | --- |
+| `pk_coupon` | `id` | 主键 | — |
+| `idx_coupon_status_valid` | `status`, `valid_until` | 普通 | 查可发放的有效模板 |
+
+### 约束
+
+- **类型字段对应**:
+  - `coupon_type='fixed_amount'` → `discount_cents` NOT NULL,其他可空
+  - `coupon_type='percentage'` → `discount_percent` NOT NULL
+  - `coupon_type='full_reduction'` → `discount_cents` + `min_spend_cents` NOT NULL
+- `valid_days` 与 `valid_from`+`valid_until` 二选一(应用层校验)
+- `granted_count <= total_limit`
+
+### 关系
+
+- 一对多 → `user_db.coupon_grant.coupon_id`(每个发券实例关联模板)
+
+### 业务规则
+
+- **创建**:客户运营在 PC 后台"营销管理 → 优惠券模板"新建 → 填类型/面值/门槛 → INSERT
+- **发放**:worker 消费 `coupon_grant_required_stream` → 查 `coupon` 模板 → 校验未超 `total_limit` / 用户未超 `user_limit` → INSERT `user_db.coupon_grant` + UPDATE `coupon.granted_count`
+- **停用 / 归档**:UPDATE `status='disabled'/'archived'`,已发放的 `coupon_grant` 不受影响
+
+---
+
+## 表 13:`admin_db.split_template`
 
 **业务说明**:**分账模板**。定义多方分账方案(N ≤ 8,需求文档 § 9.2)。客户运营在 PC 后台"分账管理"配置,关联 `pricing_rule` 使用。
 
@@ -746,7 +814,8 @@
 | 字段 | 类型 | 约束 | 默认 | 说明 |
 | --- | --- | --- | --- | --- |
 | `id` | `BIGINT UNSIGNED` | PK, AUTO_INCREMENT | — | 主键 |
-| `template_name` | `VARCHAR(64)` | NOT NULL | — | 模板名称(如"万达广场 - 物业分成 30%") |
+| `template_name` | `VARCHAR(64)` | NOT NULL | — | 模板名称(如"万达广场 - 物业分成 30%",中文默认) |
+| `template_name_i18n` | `JSON` | NULL | NULL | **多语言名称**(技术规格 § 15.8:本期只填 `{"zh-CN": "..."}`) |
 | `split_mode` | `ENUM('electric_and_service','service_only')` | NOT NULL | — | 分账模式(A / B) |
 | `total_party_count` | `TINYINT UNSIGNED` | NOT NULL | — | 参与方总数(2-8) |
 | `description` | `VARCHAR(256)` | NULL | NULL | 模板描述 |
@@ -782,7 +851,7 @@
 
 ---
 
-## 表 13:`admin_db.split_party`
+## 表 14:`admin_db.split_party`
 
 **业务说明**:**分账参与方**(模板实例)。每个 `split_template` 对应 N 条 `split_party`,记录每个参与方的银行账号 / 比例 / 类型。
 
@@ -838,7 +907,7 @@
 
 ---
 
-## 表 14:`admin_db.webhook_subscription`
+## 表 15:`admin_db.webhook_subscription`
 
 **业务说明**:**Webhook 订阅**。客户运维在 PC 后台配置接收事件的 URL,系统按事件类型推送(订单事件 / 设备事件 / 告警事件)。**HMAC-SHA256 签名**(§ 9.5)。
 
@@ -896,7 +965,7 @@
 
 ---
 
-## 表 15:`admin_db.webhook_delivery_log`
+## 表 16:`admin_db.webhook_delivery_log`
 
 **业务说明**:**Webhook 推送日志**(每次推送一条)。记录推送 URL / 事件 / 响应 / 重试次数 / 状态。**按月分区 + 物理归档**,**不软删除**。
 
@@ -951,7 +1020,7 @@
 
 ---
 
-## 表 16:`admin_db.ota_package`
+## 表 17:`admin_db.ota_package`
 
 **业务说明**:**OTA 固件包元数据**。客户运维在 PC 后台"OTA 管理"上传固件,系统按设备型号推送。**固件文件存对象存储**(本地 MinIO 或云 OSS),本表只存元数据。
 
@@ -1011,7 +1080,7 @@
 
 ---
 
-## 表 17:`admin_db.ota_schedule`
+## 表 18:`admin_db.ota_schedule`
 
 **业务说明**:**OTA 推送调度**。每次推送固件到一批设备 = 一条 `ota_schedule`。记录推送目标 / 调度时间 / 进度 / 结果。
 
@@ -1073,7 +1142,7 @@
 
 ---
 
-## 表 18:`admin_db.alert_rule`
+## 表 19:`admin_db.alert_rule`
 
 **业务说明**:**告警规则**(§ 3.1.4 客户自配原则)。客户运维在 PC 后台"告警规则"自定义监测条件(过流 / 过温 / SOC 异常 / 通信中断等),触发后推送告警事件。
 
@@ -1094,6 +1163,7 @@
 | `op` | `ENUM('gt','lt','neq','between')` | NOT NULL | — | 比较运算符(> / < / != / 区间) |
 | `threshold` | `JSON` | NOT NULL | — | 阈值 JSON(`{value:32}` 或 `{min:30,max:35}` 或 `{eq:'fault'}`) |
 | `window_seconds` | `INT UNSIGNED` | NOT NULL | `0` | 持续时长(秒,0 = 立即触发;> 0 表示持续 N 秒才触发) |
+| **`charge_duration_max_seconds`** | `INT UNSIGNED` | NULL | NULL | **充电超时阈值**(秒,需求 § 8.4 GB 47371 合规 >10h = 36000;NULL = 不启用超时检测;触发后 is_auto_poweroff 自动断电) |
 | `severity` | `ENUM('low','mid','high')` | NOT NULL | — | **严重程度三级**(需求 § 7.4 / § 8.4):low 提示 / mid 推送 / high 自动断电 |
 | **`is_auto_poweroff`** | `BOOLEAN` | NOT NULL | `FALSE` | **是否自动断电**(需求 § 8.4:高级别告警自动断电;仅 `severity='high'` 时可设 TRUE) |
 | `enabled` | `BOOLEAN` | NOT NULL | `TRUE` | 是否启用 |
@@ -1135,7 +1205,7 @@
 
 ---
 
-## 表 19:`admin_db.alert_subscription`
+## 表 20:`admin_db.alert_subscription`
 
 **业务说明**:**告警订阅**(规则与推送通道的关联)。每条规则可配置多个订阅通道(Webhook / 邮件)。
 
@@ -1184,7 +1254,7 @@
 
 ---
 
-## 表 20:`admin_db.risk_config`
+## 表 21:`admin_db.risk_config`
 
 **业务说明**:**风控配置**(单例表,ID=1)。定义退款风控的频次 / 金额阈值(§ Q3 决策)。客户管理员在 PC 后台"风控配置"调整。
 
@@ -1233,7 +1303,7 @@
 
 ---
 
-## 表 21:`admin_db.settled_record`
+## 表 22:`admin_db.settled_record`
 
 **业务说明**:**账单结清记录**。按账单期(自然月)记录客户应收 / 已收 / 状态。需求文档 § 13.3 + § 9.2 提及。
 
@@ -1293,7 +1363,7 @@
 
 ---
 
-## 表 22:`admin_db.finance_reconcile_log`
+## 表 23:`admin_db.finance_reconcile_log`
 
 **业务说明**:**财务对账日志**(对账差异的处理记录)。与 `user_db.refund_reconcile_diff` 关联(差异本身在 user_db,处理过程在 admin_db)。
 
@@ -1352,7 +1422,7 @@
 
 ---
 
-## 表 23:`admin_db.invoice_review`
+## 表 24:`admin_db.invoice_review`
 
 **业务说明**:**发票审核记录**(客户财务审核 user_db.invoice_request 的过程)。user_db 存申请,admin_db 存审核过程;两者配合形成完整审计链。
 
@@ -1420,7 +1490,7 @@
 
 # 增补:告警事件持久化表
 
-## 表 24:`admin_db.alert_event`
+## 表 25:`admin_db.alert_event`
 
 **业务说明**:**告警事件持久化表**(规则触发后的每条告警存一条)。原本只在 Redis Stream 流转,过期后无法查询;本表用于"最近 24h 哪些设备告警过 / 告警趋势"等查询。**按月分区 + 6 个月物理归档**。
 
