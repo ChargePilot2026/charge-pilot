@@ -151,7 +151,7 @@
 
 ---
 
-## 二、内部 HTTP 端点清单(共 17 个)
+## 二、内部 HTTP 端点清单(共 20 个)
 
 > 所有路径在 `:8083`;**仅内网可达**(Docker Compose 内服务间调用);鉴权为服务间共享密钥。
 
@@ -164,7 +164,7 @@
 | POST | `/api/v1/internal/device/backfill` | 设备断网补传遥测(批量) |
 | POST | `/api/v1/internal/device/log` | 设备日志上报(诊断 / 错误日志) |
 
-### B. 状态查询类(admin / user 调用,6 个)
+### B. 状态查询类(admin / user 调用,9 个)
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
@@ -172,6 +172,9 @@
 | GET | `/api/v1/internal/devices/{device_id}` | 设备实时状态(从 Redis 缓存取) |
 | GET | `/api/v1/internal/devices/{device_id}/ports` | 端口列表(每个端口的空闲 / 充电中 / 故障状态) |
 | GET | `/api/v1/internal/devices/{device_id}/telemetry` | 设备最新遥测快照 |
+| GET | `/api/v1/internal/devices/{device_id}/snapshot` | 指定订单的充电中快照;`order_id` 必填 |
+| GET | `/api/v1/internal/devices/{device_id}/curve` | 指定订单的实时曲线;`window` 必填 |
+| GET | `/api/v1/internal/devices/{device_id}/historical-curve` | 指定订单的历史聚合曲线;`granularity` 必填 |
 | GET | `/api/v1/internal/orders` | 订单列表(按站点 / 状态 / 时间筛选) |
 | GET | `/api/v1/internal/orders/{order_id}` | 订单详情(含原始帧 + 解析后字段) |
 
@@ -403,6 +406,18 @@
 2. 端口状态从 `device:realtime:$device_id` 取(每个端口的实时状态)
 3. `current_order_id` 从 Redis `port:current_order:$port_id` 取(由 user 服务在启动充电时 fill,TTL 与充电时长一致)
 
+### `GET /api/v1/internal/devices/{device_id}/snapshot`
+
+**鉴权**:服务间共享密钥。`order_id` 必填;gateway 仅按 `device_id` + `order_id` 读取本 schema 遥测与设备会话,不访问 `user_db`。响应 `data` 包含 `device_id`、`order_id`、`sampled_at`、`power_w`、`voltage_v`、`current_a`、`soc`、`temperature_c`、`charge_state`;无采样返回 `data=null`。订单归属由调用方 user 服务先验证。未知设备返回 `2001`,下游不可用返回 `5003`。
+
+### `GET /api/v1/internal/devices/{device_id}/curve`
+
+**鉴权**:服务间共享密钥。查询参数:`order_id` 必填,`window` ∈ `last_5min` / `last_30min` / `last_2h` / `since_start`;gateway 按设备 ID 路由原始 telemetry 分表并按窗口采样,返回 `data.points=[{sampled_at,power_w,current_a,soc,temperature_c}]`。不读取 `user_db`;user 服务提供已验证的订单时间窗。非法窗口返回 `1005`,设备不存在返回 `2001`。
+
+### `GET /api/v1/internal/devices/{device_id}/historical-curve`
+
+**鉴权**:服务间共享密钥。查询参数:`order_id`、`started_at`、`ended_at` 必填,`granularity` ∈ `15min` / `hourly`;gateway 从本 schema 聚合表返回 `data.points` 与 `data.summary`。订单归属与时间窗由 user 服务验证;非法时间窗返回 `1005`,设备不存在返回 `2001`。
+
 ### `GET /api/v1/internal/orders/{order_id}`
 
 **鉴权**:服务间共享密钥
@@ -437,7 +452,7 @@
 ```
 
 **业务逻辑**:
-1. 查 `gateway_db.charge_order`(订单在本表,§ 需求 § 8 订单模型)
+1. 查本服务的 `device_session` 与 telemetry;订单主表在 `user_db`,由调用方 user 服务查询
 2. JOIN `device_session`(拿到 session_id)→ LEFT JOIN `telemetry`(取 meter_start / meter_end + 曲线)
 3. `charge_state_timeline` 从 `device_event_log`(状态变更帧聚合)
 4. 详情数据可能从 `billing_db` / `user_db` 拼接(价费分离 / 支付明细),但 gateway **只返回本服务数据**,价费 / 支付部分由 admin 调 user / billing 补齐
@@ -449,7 +464,7 @@
 ### `POST /api/v1/internal/start-charge`
 
 **鉴权**:服务间共享密钥
-**触发场景**:user 服务在用户扫码启动充电时调用
+**触发场景**:gateway 消费 `charge_started_stream` 后在服务内部复用此指令处理逻辑;user 的 `/scan/start` 不调用此端点
 **业务目标**:下发 MQTT / TCP 启动指令 → 等待设备 ACK → 返回结果
 
 **请求体**:
@@ -500,11 +515,10 @@
    - TCP 设备 → 通过 TCP 帧下发 → 等 ACK(超时 5 s)
    - MQTT 设备 → 发 `charge/{vendor_id}/{device_id}/cmd` topic → 订阅 `charge/.../cmd/ack` 等 ACK
 5. **ACK 处理**:
-   - `success` → INSERT `device_event_log(event='charge_started', order_id, started_at)` + Redis `port:current_order:$port_id = order_id` TTL 7200 s
-   - `failed` → UPDATE `device_event_log` + 返回 `2004`
-   - `timeout` → 返回 `next_action: user_should_retry_or_refund`(user 端根据超时决定重试 / 退款)
-6. **事务边界**:事件写入 + Redis 缓存同事务;指令下发失败回滚
-7. 发 `comp_tx_stream` 事件 → 通知 billing 计费开始
+   - `success` → 写 `gateway_db.device_session` + Redis `port:current_order:$port_id = order_id` TTL 7200 s
+   - `failed` / `timeout` → 记录本服务处理结果,不得直接写 `user_db` 或发布 `refund_required_stream`
+6. 用幂等 `event_key` 调 user 的 `POST /api/v1/internal/charge-orders/{order_id}/start-result`,直到 user 确认落库;成功结果由 user 在事务中取得 `active_port_charge` 端口唯一占用。若返回端口占用冲突但设备已经启动,gateway 必须立即下发 STOP、确认断电后报告失败;断电未确认则告警人工处置
+7. 发 `device_event_stream` 表示设备状态变化;仅在 user 已确认结果后 ACK `charge_started_stream` 消费记录
 
 **错误码**:
 - `2002`: 设备离线 / 已停用

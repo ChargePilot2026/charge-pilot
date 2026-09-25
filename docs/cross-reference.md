@@ -6,7 +6,7 @@
 
 > **Redis 实例拆分(P0-3 固化)**:业务缓存与事件流分两个 Redis 容器,避免 allkeys-lru 误淘汰 Stream 事件:
 > - `chargepilot-redis-cache`:DB 0,`allkeys-lru`,业务缓存(`snapshot:{order_id}` 等)
-> - `chargepilot-redis-stream`:DB 0,**`noeviction`**(Stream 不能被 LRU 淘汰),事件流(`device_event_stream` 等 9 个)
+> - `chargepilot-redis-stream`:DB 0,**`noeviction`**(Stream 不能被 LRU 淘汰),事件流(`device_event_stream` 等 11 个)
 > 两个 Redis **独立 `REDIS_PASSWORD`**,网络层走同一 `internal` docker network。
 > 详见 `docs/技术规格.md` § 4.7 + `examples/docker-compose.yml`。
 
@@ -21,7 +21,7 @@
 
 ---
 
-## § 1 Stream 名总账(§ 技术规格 5.1,**9 个**)
+## § 1 Stream 名总账(§ 技术规格 5.1,**11 个**)
 
 | Stream 名 | 生产者 | 消费者 | 用途 | 在哪些 API 文档中出现 |
 | --- | --- | --- | --- | --- |
@@ -34,14 +34,16 @@
 | `webhook_retry_stream` | admin | worker | Webhook 失败重试 | admin.md(§ I), worker.md(§ 一.1.3) |
 | `ota_schedule_stream` | admin | worker / gateway | OTA 推送调度 | admin.md(§ J), worker.md(§ 一.1.2), gateway.md(§ 五) |
 | `comp_tx_stream` | 各服务 | 各服务 | 跨服务补偿事务 | billing.md(§ 六), worker.md(§ 一.1.4), gateway.md(§ 五) |
+| `coupon_grant_required_stream` | admin | user | 运营活动发券请求;user 写 `coupon_grant` | admin.md(§ G), user.md(优惠券) |
+| `pricing_rule_changed_stream` | admin | billing | 计费规则版本更新通知 | admin.md(§ K), billing.md(计费快照) |
 
-> **约束**:9 个 Stream 是穷举的。新增 Stream 必须先在技术规格 § 5.1 登记,再在本表登记,再在 API 文档中使用。
+> **约束**:11 个 Stream 是穷举的。新增 Stream 必须先在技术规格 § 5.1 登记,再在本表登记,再在 API 文档中使用。
 
 ---
 
-## § 2 数据库表总账(5 schema,**59 张**)
+## § 2 数据库表总账(5 schema,**61 张**)
 
-### 2.1 user_db(16 张)
+### 2.1 user_db(18 张)
 
 | 表名 | 服务的端点引用 | 关键端点 |
 | --- | --- | --- |
@@ -58,9 +60,11 @@
 | `refund_reconcile_diff` | `user.md` 内部 | 对账 |
 | `risk_freeze_log` | `user.md` 内部 | 风控 |
 | `invoice_request` | `user.md` § 优惠券与发票 | `POST /invoice/apply` / `GET /invoice/my` |
-| `callback_idempotent` | `user.md` § 公开接口 | 微信支付回调幂等 |
+| `payment_callback_idempotent` | `user.md` § 公开接口 | 微信支付回调幂等 |
 | `feedback` | `user.md` § 扫码与充电 | `POST /charge/{id}/feedback` |
 | `device_fault_report` | `user.md` § 站点与找桩 | `POST /device/report-fault` |
+| `active_port_charge` | `user.md` § 充电启动结果 | 端口进行中订单跨月唯一性 |
+| `event_outbox` | `user.md` § 支付回调 | 可靠发布 `charge_started_stream` / 补偿事件 |
 
 ### 2.2 admin_db(25 张)
 
@@ -148,12 +152,15 @@
 | user | gateway | 端口列表(扫描设备码时) | `/api/v1/internal/devices/{id}/ports` | `gateway.md` § 四 |
 | user | gateway | 历史曲线查询(订单回看 + 充电中 detail) | `/api/v1/internal/devices/{id}/curve?order_id={id}&window=last_5min` + `/historical-curve?granularity=15min` | `gateway.md` § 四 |
 | user | billing | 预扣费预估(scan/start 时报价) | `/api/v1/internal/quote` | `billing.md` § 二 |
-| user | billing | 计费快照查询(订单详情页) | `/api/v1/internal/calculations/{charge_order_id}` | `billing.md` § 二 |
+| user | billing | 计费快照查询(订单详情页) | `/api/v1/internal/orders/{order_id}/fee-breakdown` | `billing.md` § 二 |
 | user | admin | 当前告警查询(充电中页轮询) | `/api/v1/internal/alerts?device_id={id}&status=active` | `admin.md` § E |
 | user | admin | 站点详情查询(找桩) | `/api/v1/internal/stations/{station_id}` | `admin.md` § C |
 | user | 微信支付 API | JSAPI 预下单(scan/start 时) | `https://api.mch.weixin.qq.com/v3/pay/transactions/jsapi` | `user.md` § 扫码与充电 |
 | user | 微信支付 API | 钱包充值退款(同步调用,不走 Stream) | `https://api.mch.weixin.qq.com/v3/refund/...` | `user.md` § 用户与钱包 |
+| gateway | user | 启动 ACK 结果回写(含失败补偿) | `POST /api/v1/internal/charge-orders/{order_id}/start-result` | `user.md` § 内部接口 |
 | gateway | billing | 充电结束计费(`charge_ended_stream` 消费) | `charge_ended_stream.billing-cg` | `billing.md` § 三 + `技术规格 § 5.3` |
+| billing | user | 退款前确认实付金额 | `GET /api/v1/internal/payment-orders/{payment_order_id}` | `user.md` § 内部接口 |
+| admin | user | 幂等领取退款记录与回写结果 | `POST /api/v1/internal/refund-records/claim` + `POST /api/v1/internal/refund-records/{refund_id}/result` | `user.md` § 内部接口 |
 | admin | user | 退款详情查询 | `/api/v1/internal/refunds/{refund_id}` | `user.md` § 退款 |
 | admin | user | 退款审核通过回调 | `/api/v1/internal/refunds/{refund_id}/approve-callback` | `user.md` § 退款 |
 | admin | user | 发票详情 / 审核回调 | `/api/v1/internal/invoices/{invoice_id}` + `/approve-callback` | `user.md` § 发票 |

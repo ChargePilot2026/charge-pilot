@@ -217,6 +217,12 @@
 
 ---
 
+### `GET /api/v1/internal/orders/{order_id}/fee-breakdown`
+
+**鉴权**:服务间共享密钥。billing 只读本 schema 的 `fee_calculation` 及价费快照;响应 `data` 包含 `order_id`、`settlement_status`、`electric_fee_cents`、`service_fee_cents`、`total_fee_cents` 和明细数组。尚未完成计费时返回 `settlement_status='pending'` 与空明细,调用方不得将预估价显示为实结价。`order_id` 无效返回 `1005`,下游暂不可用返回 `5003`。
+
+---
+
 ## 三、分账类(关键端点展开)
 
 ### `POST /api/v1/internal/split`
@@ -382,9 +388,9 @@ billing 服务**主动消费**以下 Stream(沿用 § 5.1):
 | Stream | 来源 | 处理流程 | 产出 |
 | --- | --- | --- | --- |
 | `charge_ended_stream` | gateway | 1. 调 `POST /calculate` → 写 `fee_calculation`<br>2. 调 `POST /split` → 写 `settlement` + `settlement_party_amount`<br>3. 若需退款 → 发 `refund_required_stream`<br>4. 若需发票 → 发 `invoice_required_stream` | `fee_calculation` / `settlement` 落库 + 发 `refund_required_stream` / `invoice_required_stream` |
-| `comp_tx_stream` | 各服务 | 幂等检查 → 更新订单最终状态(如 `charge_order.fee_status='settled'`) | 状态更新 |
+| `comp_tx_stream` | 各服务 | 对 `type='charge_refund_requested'` 的启动失败 / 取消后支付事件,按 `event_key` 幂等确认支付金额(经 user 内部接口读取),发布 `refund_required_stream`;不得直写 `user_db` | 退款事件 |
 
-> **幂等保证**:`comp_tx_log` 表(`worker_db`)记录所有 `event_id` 处理结果,billing 重启 / 重消费时不重复处理。
+> **幂等保证**:消费方按 payload 的稳定 `event_key` 去重;只有 `refund_required_stream` 发布得到确认后才 ACK 上游 `comp_tx_stream`,失败保持 pending 并重试。退款事件使用同一 `event_key`,admin / user 消费端据此防重复退款。billing 不直写 `user_db` 或 `worker_db`。
 
 ---
 

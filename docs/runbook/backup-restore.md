@@ -3,6 +3,8 @@
 > **引用**:`docs/技术规格.md` § 14.4(备份策略)
 > **触发场景**:MySQL 数据丢失 / 误操作 / 机房级故障需要从备份恢复
 > **前置**:`examples/docker-compose.yml` 已采用 `chargepilot-mysql` 容器名 + 启用 binlog(§ 7 校验通过)
+> **部署目录假设**:将 Compose 文件放在 `/opt/chargepilot/` 并从该目录启动,因此 `./mysql/binlog` 与 `./mysql/conf.d` 分别对应宿主机 `/opt/chargepilot/mysql/binlog/`、`/opt/chargepilot/mysql/conf.d/`;若实际目录不同,下文宿主机路径必须同步修改。
+> **密钥来源**:MySQL 容器已由 Compose 注入 `MYSQL_ROOT_PASSWORD`;以下自动脚本在容器内读取该变量。手工命令若在宿主机使用 `$MYSQL_ROOT_PASSWORD`,需先从受限权限的密钥存储加载,不要把真实密码写进 runbook 或提交仓库。
 
 ---
 
@@ -28,8 +30,8 @@
 | 目录 | 内容 | 保留 | 同步 |
 | --- | --- | --- | --- |
 | `/var/backup/mysql/` | mysqldump 全量 | 7 天滚动 | 异地 OSS(`rclone` 每日 03:00) |
-| `/var/lib/mysql/binlog/` | binlog ROW 格式(`mysql-bin.NNNNNN`) | 7 天(配合异地 OSS) | **异地 OSS 同步**(P0-5 新增,旧版缺) |
-| `/etc/mysql/conf.d/` | 自定义配置 | — | 每周全量 tar 备份 |
+| `/opt/chargepilot/mysql/binlog/` | 宿主机 binlog(`mysql-bin.NNNNNN`);容器内挂载为 `/var/lib/mysql/binlog/` | 7 天(配合异地 OSS) | **异地 OSS 同步** |
+| `/opt/chargepilot/mysql/conf.d/` | 宿主机自定义配置;容器内挂载为 `/etc/mysql/conf.d/` | — | 每周全量 tar 备份 |
 
 ### 2.2 异地备份(客户可选二选一)
 
@@ -56,7 +58,7 @@ ls -la /var/backup/mysql/ | head -20
 docker exec chargepilot-mysql ls -la /var/lib/mysql/binlog/ | head -20
 
 # 4. 列异地 OSS 同步结果(检查 rclone 上次同步时间)
-rclone lsl remote:chargepilot-backup/$(date +%Y-%m)/ | head -20
+rclone lsl remote:chargepilot-backup/mysqldump/$(date +%Y-%m-%d)/ | head -20
 ```
 
 ---
@@ -84,48 +86,49 @@ done
 ### 4.2 提取 binlog 位点(关键!)
 
 ```bash
-# 步骤 1:在主库执行,记录当前 binlog 位点 + 文件
-docker exec chargepilot-mysql mysql -uroot -p"$MYSQL_ROOT_PASSWORD" \
-  -e "SHOW MASTER STATUS;"
-# 输出示例:
-# +------------------+----------+--------------+------------------+
-# | File             | Position | Binlog_Do_DB | Binlog_Ignore_DB |
-# +------------------+----------+--------------+------------------+
-# | mysql-bin.000123 | 4589271  |              |                  |
-# +------------------+----------+--------------+------------------+
+# 步骤 1:选定全量备份,从该备份的 --source-data=2 注释读取一致性位点
+DUMP=/var/backup/mysql/full_2026-09-25.sql
+grep -m1 'CHANGE REPLICATION SOURCE TO' "$DUMP"
+# 将输出中的 SOURCE_LOG_FILE / SOURCE_LOG_POS 填入以下变量,不可用当前主库位点替代
+START_BINLOG=mysql-bin.000120
+START_POS=4589271
 
-# 步骤 2:确定目标恢复时间(从备份应用 + binlog replay)
+# 步骤 2:确定目标恢复时间(mysqlbinlog 容器使用 Asia/Shanghai 时区)
 TARGET_TIME="2026-09-25 22:30:00"
-
-# 步骤 3:找出 binlog 起始位置(从最近全量备份后第一个 binlog)
-LATEST_DUMP_BINLOG=$(cat /var/backup/mysql/latest_dump_binlog.txt 2>/dev/null || echo "mysql-bin.000120")
-echo "从 ${LATEST_DUMP_BINLOG} 开始 replay 到 ${TARGET_TIME}"
+echo "从 ${START_BINLOG}:${START_POS} 开始 replay 到 ${TARGET_TIME}"
 ```
 
 ### 4.3 导入 mysqldump
 
 ```bash
-# 下载最新全量备份(来自本机 /var/backup/mysql 或异地 OSS)
+# 下载与上述位点对应的全量备份(来自本机 /var/backup/mysql 或异地 OSS)
 docker exec -i mysql-restore mysql -uroot -prestore_temp_pwd \
-  < /path/to/chargepilot_full_2026-09-25.sql
+  < "$DUMP"
 ```
 
 ### 4.4 Replay binlog 到目标时间
 
 ```bash
-# 从起始 binlog 开始,把所有 binlog 转成 SQL,过滤到目标时间
-for binlog_file in $(ls /var/lib/mysql/binlog/mysql-bin.00* | sort); do
-  binlog_basename=$(basename $binlog_file)
-  docker exec chargepilot-mysql mysqlbinlog \
-    --read-from-remote-server --host=localhost -uroot -p"$MYSQL_ROOT_PASSWORD" \
-    --stop-datetime="$TARGET_TIME" \
-    --verbose \
-    /var/lib/mysql/binlog/$binlog_basename > /tmp/$binlog_basename.sql 2>/dev/null
-done
-
-# 批量应用到临时实例(注意顺序)
-for sql_file in $(ls /tmp/mysql-bin.*.sql | sort); do
-  docker exec -i mysql-restore mysql -uroot -prestore_temp_pwd < $sql_file
+# 在恢复机先把 OSS 各日期目录中从 START_BINLOG 起的文件下载到
+# /opt/chargepilot/mysql/binlog/ 同一目录,按文件名去重并核对连续编号
+# 只回放与所选 dump 对应的起始文件及后续文件;首文件从精确位点开始
+set -euo pipefail
+BINLOG_DIR=/opt/chargepilot/mysql/binlog
+test -f "$BINLOG_DIR/$START_BINLOG" || { echo "缺少起始 binlog: $START_BINLOG"; exit 1; }
+first=1
+for binlog_file in $(find "$BINLOG_DIR" -maxdepth 1 -type f -name 'mysql-bin.[0-9]*' | LC_ALL=C sort); do
+  binlog_basename=$(basename "$binlog_file")
+  [[ "$binlog_basename" < "$START_BINLOG" ]] && continue
+  if [ "$first" -eq 1 ]; then
+    docker run --rm -e TZ=Asia/Shanghai -v "$BINLOG_DIR:/binlog:ro" mysql:8.4 \
+      mysqlbinlog --start-position="$START_POS" --stop-datetime="$TARGET_TIME" "/binlog/$binlog_basename" \
+      | docker exec -i mysql-restore mysql -uroot -prestore_temp_pwd
+    first=0
+  else
+    docker run --rm -e TZ=Asia/Shanghai -v "$BINLOG_DIR:/binlog:ro" mysql:8.4 \
+      mysqlbinlog --stop-datetime="$TARGET_TIME" "/binlog/$binlog_basename" \
+      | docker exec -i mysql-restore mysql -uroot -prestore_temp_pwd
+  fi
 done
 ```
 
@@ -180,10 +183,10 @@ docker exec -i chargepilot-mysql mysql -uroot -p"$MYSQL_ROOT_PASSWORD" < /tmp/re
 ```bash
 # /etc/cron.d/chargepilot-backup
 
-# 1. 每日 02:00 mysqldump 全量(保留 7 天)
+# 1. 每日 02:00 mysqldump 全量(保留 7 天;必须带 --source-data=2 位点)
 0 2 * * * root /opt/chargepilot/scripts/backup-mysqldump.sh
 
-# 2. 每日 03:00 rclone 同步到异地 OSS(包含 mysqldump + binlog + config)
+# 2. 每日 03:00 rclone 同步到异地 OSS(先确认当天 dump 存在,再复制 dump + 已关闭 binlog + config)
 0 3 * * * root /opt/chargepilot/scripts/sync-to-oss.sh
 
 # 3. 每周日 04:00 配置文件 tar 备份
@@ -195,28 +198,52 @@ docker exec -i chargepilot-mysql mysql -uroot -p"$MYSQL_ROOT_PASSWORD" < /tmp/re
 
 ---
 
-## 七、binlog 异地同步脚本(参考)
+## 七、全量备份与 binlog 异地同步脚本(参考)
+
+`backup-mysqldump.sh` 必须在 02:00 完成并检查非空;`--source-data=2` 把与快照一致的 binlog 文件/位点写入 dump 头部。恢复时从该位点开始,不能从文件头或当前主库位点开始。
+
+```bash
+#!/bin/bash
+set -euo pipefail
+DATE=$(date +%Y-%m-%d)
+mkdir -p /var/backup/mysql
+docker exec chargepilot-mysql sh -c 'exec mysqldump --user=root -p"$MYSQL_ROOT_PASSWORD" \
+  --single-transaction --flush-logs --source-data=2 --all-databases' \
+  > "/var/backup/mysql/full_$DATE.sql.tmp"
+test -s "/var/backup/mysql/full_$DATE.sql.tmp"
+grep -q 'CHANGE REPLICATION SOURCE TO' "/var/backup/mysql/full_$DATE.sql.tmp"
+mv "/var/backup/mysql/full_$DATE.sql.tmp" "/var/backup/mysql/full_$DATE.sql"
+```
+
+03:00 的 `sync-to-oss.sh` 只上传已生成的 dump;先执行 `FLUSH BINARY LOGS` 关闭当前 binlog,再排除新打开的活动文件,避免复制正在写入的文件。生产脚本应记录同步清单与校验和,并在任何上传失败时报警。
 
 ```bash
 #!/bin/bash
 # /opt/chargepilot/scripts/sync-to-oss.sh
 # 同步 mysqldump + binlog + config 到客户 OSS
 
-set -eu
+set -euo pipefail
 OSS_REMOTE="remote:chargepilot-backup"
 DATE=$(date +%Y-%m-%d)
+BINLOG_DIR=/opt/chargepilot/mysql/binlog
+test -s "/var/backup/mysql/full_$DATE.sql"
+docker exec chargepilot-mysql sh -c 'exec mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "FLUSH BINARY LOGS;"'
+CURRENT_BINLOG=$(docker exec chargepilot-mysql sh -c 'exec mysql -N -uroot -p"$MYSQL_ROOT_PASSWORD" -e "SHOW BINARY LOG STATUS;"' | awk '{print $1}')
+test -n "$CURRENT_BINLOG"
 
-# 1. mysqldump
-rclone copy /var/backup/mysql/ "$OSS_REMOTE/mysqldump/$DATE/" --progress
+# 1. 上传当日已完成的全量备份
+rclone copyto "/var/backup/mysql/full_$DATE.sql" "$OSS_REMOTE/mysqldump/$DATE/full_$DATE.sql"
 
-# 2. binlog(关键!旧版漏掉)
-docker exec chargepilot-mysql mysqldump --host=localhost --user=root -p"$MYSQL_ROOT_PASSWORD" \
-  --single-transaction --flush-logs --master-data=2 \
-  --all-databases > /var/backup/mysql/full_$DATE.sql
-rclone copy /var/lib/mysql/binlog/ "$OSS_REMOTE/binlog/$DATE/" --progress
+# 2. 上传已关闭的 binlog(不复制当前正在写入的文件)
+for binlog_file in "$BINLOG_DIR"/mysql-bin.[0-9]*; do
+  test -f "$binlog_file" || continue
+  binlog_basename=$(basename "$binlog_file")
+  [ "$binlog_basename" = "$CURRENT_BINLOG" ] && continue
+  rclone copyto "$binlog_file" "$OSS_REMOTE/binlog/$DATE/$binlog_basename"
+done
 
 # 3. config
-rclone copy /etc/mysql/conf.d/ "$OSS_REMOTE/config/$DATE/" --progress
+rclone copy /opt/chargepilot/mysql/conf.d/ "$OSS_REMOTE/config/$DATE/"
 
 # 4. 清理 30 天前的远程备份
 rclone delete "$OSS_REMOTE/mysqldump/$(date -d '30 days ago' +%Y-%m-%d)/" || true
@@ -232,22 +259,23 @@ echo "[$(date)] OSS sync OK"
 #!/bin/bash
 # /opt/chargepilot/scripts/check-binlog-integrity.sh
 
-# 1. 检查最近 7 天每天都有 binlog 文件
-MISSING=$(find /var/lib/mysql/binlog/ -name "mysql-bin.*" -mtime +7 -type f | wc -l)
-if [ $MISSING -lt 7 ]; then
-  echo "[ERROR] binlog 文件少于 7 个(实际 $MISSING)"
+# 1. 检查宿主机目录存在近期 binlog(-mtime +7 会选出过旧文件,不能用于此检查)
+BINLOG_DIR=/opt/chargepilot/mysql/binlog
+RECENT_COUNT=$(find "$BINLOG_DIR" -maxdepth 1 -type f -name 'mysql-bin.[0-9]*' -mmin -180 | wc -l)
+if [ "$RECENT_COUNT" -lt 1 ]; then
+  echo "[ERROR] 最近 3 小时无 binlog 文件更新"
   exit 1
 fi
 
 # 2. 检查 binlog 是否同步到了 OSS
 REMOTE_COUNT=$(rclone lsl remote:chargepilot-backup/binlog/$(date +%Y-%m-%d)/ | wc -l)
-if [ $REMOTE_COUNT -lt 1 ]; then
+if [ "$REMOTE_COUNT" -lt 1 ]; then
   echo "[ERROR] 今日 binlog 未同步到 OSS"
   exit 1
 fi
 
 # 3. 检查 mysql-bin.index 文件是否存在
-if [ ! -f /var/lib/mysql/binlog.index ]; then
+if [ ! -f "$BINLOG_DIR/mysql-bin.index" ]; then
   echo "[ERROR] mysql-bin.index 缺失"
   exit 1
 fi

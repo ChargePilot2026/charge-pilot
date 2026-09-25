@@ -17,12 +17,11 @@
   │
   ▼
 [user] POST /api/v1/user/scan/start
-  │   写:user_db.charge_order(status=pending)
+  │   写:user_db.charge_order(status=pending_payment)
   │   写:user_db.payment_order(status=initiated, biz_type='charge', biz_id=charge_order.id)
-  │   写:Redis: charge:lock:port_xxx(holder=order_id, ttl=30s)
-  │   RPC: gateway POST /internal/start-charge → MQTT 下发启动指令
-  │   RPC: billing POST /internal/quote  (报价)
-  │   RPC: 微信 POST /v3/pay/transactions/jsapi  (下单)
+  │   写:Redis: charge:hold:port_xxx(holder=order_no, ttl=300s)
+  │   RPC: billing POST /api/v1/internal/quote (报价)
+  │   RPC: 微信 POST /v3/pay/transactions/jsapi(out_trade_no=payment_order.order_no)
   │
   ▼
 [user] 调起 wx.requestPayment() → 微信
@@ -30,14 +29,17 @@
   ▼  (异步)
 [user] POST /api/v1/public/payment/wechat/callback
   │   验签 + 解密
-  │   写:user_db.payment_callback_idempotent(transaction_id) ← UNIQUE 幂等
-  │   写:user_db.payment_order(status=success, paid_at, wechat_transaction_id)
-  │   发 Redis Stream: charge_started_stream(payload={order_id, device_id, port_id, ...})
+  │   按 out_trade_no 定位支付单;验金额和商户号
+  │   同一事务写:user_db.payment_callback_idempotent + payment_order(status=success)
+  │   同一事务写:user_db.event_outbox(charge_started_stream,event_key)
+  │   发布器重试发 Redis Stream: charge_started_stream
   │
   ▼ (stream 消费)
 [gateway] 消费 charge_started_stream
   │   → MQTT 下发 charge/{vendor}/{device}/cmd 启动指令到设备
   │   设备 ACK 后 → 写:gateway_db.device_session(started_at)
+  │   → POST user /api/v1/internal/charge-orders/{order_id}/start-result
+  │   → user 同事务写:active_port_charge + charge_order(status=charging)
   │
   ▼ (设备上报)
 [gateway] MQTT 上行 charge/{vendor}/{device}/telemetry
@@ -47,13 +49,13 @@
   │   越界 → 发:alert_stream
   │
   ▼ (stream 消费)
-[worker] 消费 device_event_stream
+[user] 消费 device_event_stream
   │   → 写 Redis: snapshot:{order_id}(TTL=10s) 充电中快照缓存
   │
   ▼ (用户小程序 5s 轮询)
 [user] GET /api/v1/user/charge/ongoing/snapshot?order_id=xxx
   │   读 Redis: snapshot:{order_id}(cache hit > 90%)
-  │   cache miss → 查 gateway_db.telemetry + user_db.charge_order → 回填缓存
+  │   cache miss → HTTP 调 gateway 查询 telemetry + 本地查 user_db.charge_order → 回填缓存
   │   返回 polling 响应(含 poll_continue)
   │
   ▼ (设备停止 / 拔插头 / 充电结束)
@@ -76,9 +78,9 @@
   │
   ▼ (退款流程)
 [admin] 消费 refund_required_stream
-  │   写:user_db.refund_record(status=processing)
+  │   经 user 内部接口领取:user_db.refund_record(status=processing)
   │   RPC: 微信 POST /v3/refund/...
-  │   微信回调 → 写:user_db.refund_record(status=success)
+  │   微信回调 → 经 user 内部接口写:user_db.refund_record(status=success)
   │   发:comp_tx_stream(refund_id)
   │
 [billing] 消费 comp_tx_stream
@@ -125,13 +127,15 @@
 | --- | --- | --- |
 | `device_event_stream` | `worker-cg`(快照填充)、`admin-cg`(可选:状态推送) | Redis `snapshot:{order_id}` + admin_db.alert_event |
 | `alert_stream` | `admin-cg`(落库 + Webhook)、`worker-cg`(可选:周期复核) | admin_db.alert_event + (Webhook 推送) |
-| `charge_started_stream` | `gateway-cg` | gateway 启动设备 + UPDATE `charge_order.status='charging'` |
+| `charge_started_stream` | `gateway-cg` | gateway 启动设备 + 经 user 内部接口更新 `charge_order`;user 事务写 `active_port_charge` |
 | `charge_ended_stream` | `billing-cg`(计费)、`user-cg`(关轮询)、`admin-cg`(可选:订单快照) | billing_db.fee_calculation + settlement / user 关闭 Redis snapshot |
-| `refund_required_stream` | `admin-cg` | user_db.refund_record(status=processing) → admin 调微信退款 |
+| `refund_required_stream` | `admin-cg` | 经 user 内部接口领取 `refund_record` → admin 调微信退款 → 经 user 回写结果 |
 | `invoice_required_stream` | `admin-cg` | admin_db.invoice_review(status=pending) |
 | `webhook_retry_stream` | `worker-cg` | worker_db.retry_queue + admin_db.webhook_delivery_log |
 | `ota_schedule_stream` | `worker-cg`(调度)、`gateway-cg`(下发指令) | gateway_db.ota_command(经 gateway API) |
-| `comp_tx_stream` | 各服务的 `comp_tx-cg` | worker_db.comp_tx_log(全部消费方幂等记录) |
+| `comp_tx_stream` | 各服务各自的消费者组 | worker 将自身补偿记录写 `worker_db.comp_tx_log`;billing 等其他服务按 `event_key` 在本服务处理,不直写 `worker_db` |
+| `coupon_grant_required_stream` | `user-cg` | user 校验活动规则后写 `user_db.coupon_grant`,再回传 admin 更新发放计数 |
+| `pricing_rule_changed_stream` | `billing-cg` | billing 更新本 schema 的计费规则快照 |
 
 ---
 

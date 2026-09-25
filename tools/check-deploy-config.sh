@@ -3,7 +3,7 @@
 # ChargePilot 部署配置校验脚本
 # =============================================================================
 # 触发:CI / 首次部署前 / docker-compose / Caddyfile 变更后
-# 退出码:0=全通过 / 1=有错误
+# 退出码:0=全通过 / 1=检查发现错误 / 2=缺少 Docker 或 Caddy,未完成验证
 # =============================================================================
 
 set -u
@@ -14,6 +14,7 @@ CADDYFILE="$ROOT/examples/Caddyfile"
 
 FAILED=0
 WARNINGS=0
+UNVERIFIED=0
 
 ok()      { printf "  \033[32m✓\033[0m %s\n" "$1"; }
 err()     { printf "  \033[31m✗\033[0m %s\n" "$1"; FAILED=$((FAILED+1)); }
@@ -46,8 +47,14 @@ if command -v caddy >/dev/null 2>&1; then
   caddy adapt --config "$CADDYFILE" --validate >/dev/null 2>&1 \
     && ok "caddy adapt --validate 通过" \
     || err "caddy adapt 失败(运行 'caddy adapt --config $CADDYFILE' 查看细节)"
+elif command -v docker >/dev/null 2>&1; then
+  docker run --rm -v "$CADDYFILE:/etc/caddy/Caddyfile:ro" caddy:2.11-alpine \
+    caddy adapt --config /etc/caddy/Caddyfile --validate >/dev/null 2>&1 \
+    && ok "容器内 caddy adapt --validate 通过" \
+    || err "容器内 caddy adapt 失败(检查 Caddyfile 与镜像可用性)"
 else
-  warn "未检测到 caddy CLI,跳过(运行 'docker run --rm -v $CADDYFILE:/etc/caddy/Caddyfile:ro caddy:2.11 caddy adapt --config /etc/caddy/Caddyfile --validate' 自检)"
+  warn "未检测到 caddy CLI 或 Docker,跳过 Caddy 语法校验"
+  UNVERIFIED=$((UNVERIFIED+1))
 fi
 
 # ---------- 4. docker-compose 内部端口未泄露 ----------
@@ -68,7 +75,7 @@ done
 section "5. 端口映射白名单"
 WHITELIST_PORTS=(80 443 9100 1883)
 ALLOWED=$(awk '/^[[:space:]]*ports:/{p=1; next} p && /^[[:space:]]*-/{print} p && /^[[:space:]]*[a-z]/{p=0}' "$COMPOSE" \
-  | grep -oE '"[0-9]+:[0-9]+"' | sort -u)
+  | grep -oE '"[0-9]+:[0-9]+"' || true)
 UNEXPECTED=""
 for entry in $ALLOWED; do
   host_port=$(echo "$entry" | sed -E 's/"([0-9]+):[0-9]+"/\1/')
@@ -135,15 +142,19 @@ if command -v docker >/dev/null 2>&1; then
     || err "docker compose config 失败(运行 'docker compose -f $COMPOSE config' 查看细节)"
 else
   warn "未检测到 docker CLI,跳过"
+  UNVERIFIED=$((UNVERIFIED+1))
 fi
 
 # ---------- 总结 ----------
 echo ""
 echo "=========================================="
-if [ $FAILED -eq 0 ]; then
-  printf "\033[32m✓ 全部通过(%d 警告)\033[0m\n" "$WARNINGS"
-  exit 0
-else
+if [ "$FAILED" -gt 0 ]; then
   printf "\033[31m✗ %d 处错误,%d 处警告\033[0m\n" "$FAILED" "$WARNINGS"
   exit 1
+elif [ "$UNVERIFIED" -gt 0 ]; then
+  printf "\033[33m! 静态检查通过,但 %d 项未验证(%d 警告);不能判定部署配置全部通过\033[0m\n" "$UNVERIFIED" "$WARNINGS"
+  exit 2
+else
+  printf "\033[32m✓ 全部通过(%d 警告)\033[0m\n" "$WARNINGS"
+  exit 0
 fi

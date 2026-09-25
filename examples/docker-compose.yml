@@ -193,6 +193,7 @@ services:
       WECHAT_PAY_KEY: ${WECHAT_PAY_KEY:?V3 API 密钥}
       GATEWAY_INTERNAL_URL: http://chargepilot-gateway:8083
       BILLING_INTERNAL_URL: http://chargepilot-billing:8084
+      ADMIN_INTERNAL_URL: http://chargepilot-admin:8082
     # 内部 HTTP **仅 expose**,经 caddy 反代
     expose:
       - "8081"

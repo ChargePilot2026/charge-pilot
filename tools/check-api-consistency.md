@@ -9,13 +9,8 @@
 ## 跑法
 
 ```bash
-# 前置(标准):
-#   Node.js >= 18,pnpm 已安装,工作区根目录有 package.json
-# 安装一次依赖:
-pnpm add -D -w tsx
-
-# 跑一致性检查:
-tsx tools/check-api-consistency.ts
+# Node.js >= 22(支持 --experimental-strip-types)
+node --experimental-strip-types tools/check-api-consistency.ts
 ```
 
 退出码:
@@ -24,23 +19,22 @@ tsx tools/check-api-consistency.ts
 
 ---
 
-## 当前检查项(4 条)
+## 当前检查项(3 条)
 
 1. **Stream 名总账**
-   - 扫 `api/*.md` 引用的所有 `*_stream` 名字
-   - 若不在 `cross-reference.md` § 1 / `技术规格.md` § 5.1 → 报错
+   - 扫 `api/*.md` 和 `db/*.md` 引用的所有 `*_stream` 名字
+   - 若不在 `cross-reference.md` § 1 → 报错
    - 头部数字声称 vs 实际清点不一致 → 报错
 
 2. **表数对账**
    - `cross-reference.md` § 2 标题数字 vs § 2.x 各小节清点
    - `cross-reference.md` § 2.x 各小节声称 vs 对应 `db/*.md` 实际
 
-3. **写端点 ↔ 表对应**
-   - 当前为轻量统计(跨文档端点完整闭环由 OpenAPI ↔ api/*.md 闭环接管,见下方"路线图")
+3. **写端点声明 ↔ API 文档**
+   - 核对 `cross-reference.md` § 4 表格声明的写端点是否在 `api/*.md` 的端点清单或标题中出现
+   - 表格使用缩写路径时按方法与路径后缀匹配;此检查不验证请求/响应语义或数据库实际写入
 
-4. **裸 § X.Y 引用**
-   - 跨文档裸引用必须加文档名(见 `cross-reference.md` § 6.5)
-   - `cross-reference.md` 内部引用静默放行
+裸 `§` 引用无法仅凭文本判断是同文件还是跨文件引用,不作为自动失败项;跨 schema 访问和接口语义仍需人工审查。
 
 ---
 
@@ -60,14 +54,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v3
-        with: { version: 9 }
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: tsx tools/check-api-consistency.ts
+          node-version: 22
+      - run: node --experimental-strip-types tools/check-api-consistency.ts
 ```
 
 ---

@@ -90,8 +90,8 @@ checklists/ ← 需求分析 § 13 + 技术规格 § 10 引用
 ## 立即可用的关键事实
 
 - **5 个服务**:`gateway`(设备) / `user`(小程序) / `admin`(PC 后台) / `billing`(计费) / `worker`(后台任务)
-- **5 个 schema**:`gateway_db` 8 张 / `user_db` 16 张 / `admin_db` 25 张 / `billing_db` 5 张 / `worker_db` 5 张 = **59 张**
-- **9 个 Stream**:`device_event_stream` / `alert_stream` / `charge_started_stream` / `charge_ended_stream` / `refund_required_stream` / `invoice_required_stream` / `webhook_retry_stream` / `ota_schedule_stream` / `comp_tx_stream`
+- **5 个 schema**:`gateway_db` 8 张 / `user_db` 18 张 / `admin_db` 25 张 / `billing_db` 5 张 / `worker_db` 5 张 = **61 张**
+- **11 个 Stream**:`device_event_stream` / `alert_stream` / `charge_started_stream` / `charge_ended_stream` / `refund_required_stream` / `invoice_required_stream` / `webhook_retry_stream` / `ota_schedule_stream` / `comp_tx_stream` / `coupon_grant_required_stream` / `pricing_rule_changed_stream`
 - **角色载体**:终端用户→仅小程序;运营 / 财务 / 巡检 / 管理员→同一 PC 后台;**客服坐席→微信原生客服会话**
 - **客户模式**:单客户单部署 = 一套系统 = 一个付费客户,**不内置合伙人 / 区域代理**
 - **首版国标底线**:GB 47371—2026 七重防护;**支付底线**:价费分离;**安全底线**:等保三级

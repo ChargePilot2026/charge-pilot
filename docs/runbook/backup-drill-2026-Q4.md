@@ -27,7 +27,7 @@
 echo "演练开始时间: $(date)" > /tmp/drill_$(date +%Y%m%d).log
 ls -la /var/backup/mysql/ | head -20 >> /tmp/drill_$(date +%Y%m%d).log
 docker exec chargepilot-mysql ls -la /var/lib/mysql/binlog/ | head -20 >> /tmp/drill_$(date +%Y%m%d).log
-rclone lsl remote:chargepilot-backup/$(date +%Y-%m)/ | head -20 >> /tmp/drill_$(date +%Y%m%d).log
+rclone lsl remote:chargepilot-backup/mysqldump/$(date +%Y-%m-%d)/ | head -20 >> /tmp/drill_$(date +%Y%m%d).log
 
 # 记录当前主库关键表行数(对比基线)
 docker exec chargepilot-mysql mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "

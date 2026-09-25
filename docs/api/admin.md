@@ -278,6 +278,17 @@
 
 ---
 
+## 内部只读接口(供 user 服务调用,不计入公开端点数)
+
+| 方法 | 路径 | 参数 | 响应 `data` | 错误码 |
+| --- | --- | --- | --- | --- |
+| GET | `/api/v1/internal/alerts` | `device_id` 必填,`status=active` | `alerts=[{alert_id,device_id,severity,alert_type,created_at}]`,无告警返回空数组 | `1005` 参数错误 / `5003` 暂不可用 |
+| GET | `/api/v1/internal/stations/{station_id}` | 路径站点 ID | `{station_id,station_name,address,longitude,latitude,status}` | `1004` 站点不存在 / `5003` 暂不可用 |
+
+仅 `:8082` 内网监听,要求 `Authorization: Bearer <service_token>`。user 服务只读取本接口返回的 `admin_db` 数据,不直连 admin schema;设备告警按 `device_id` 过滤,仅返回当前有效记录。
+
+---
+
 ## A. 认证与账号
 
 ### `POST /api/v1/admin/auth/login`

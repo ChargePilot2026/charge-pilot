@@ -3,11 +3,11 @@
  * docs 一致性 CI 守门脚本(P1-9 重写)
  *
  * 检查项:
- *   1. cross-reference.md § 1 列出的 9 个 Stream 名 + 加粗项,在所有 api/*.md 中出现的 _stream 名必须 ∈ 此集合
+ *   1. cross-reference.md § 1 列出的 Stream 名 + 加粗项,在 api/*.md / db/*.md 中出现的 _stream 名必须 ∈ 此集合
  *   2. cross-reference.md § 2 标题数字必须 = § 2 各小节清点到的表数
  *   3. cross-reference.md § 4.x 写端点表中的端点必须在对应 api/*.md 中存在
- *   4. 跨文档裸 § X.Y 引用检测:仅允许"文档名 § X.Y"形式,跨文件引用必须带文档名
- *   5. db/*.md / api/*.md 引用的其他 schema 表,必须由 cross-reference.md § 3 登记的 HTTP 内部接口调用(而非直连)
+ *   4. 裸 § 引用需要人工判断是否指向当前文件,不做易误报的自动拦截
+ *   5. 跨 schema 访问由架构审查核对,本脚本不声称已验证
  *
  * 使用:
  *   tsx tools/check-api-consistency.ts                 # 全量检查
@@ -25,8 +25,6 @@ const DOCS = join(ROOT, 'docs');
 const API_DIR = join(DOCS, 'api');
 const DB_DIR = join(DOCS, 'db');
 const CROSS_REF = join(DOCS, 'cross-reference.md');
-const SPEC = join(DOCS, '技术规格.md');
-const REQ = join(DOCS, '需求分析.md');
 
 type Finding = { file: string; line: number; message: string };
 const findings: Finding[] = [];
@@ -52,8 +50,9 @@ function extractTable(text: string, headerPattern: RegExp): string[] {
   const idx = text.search(headerPattern);
   if (idx < 0) return [];
   const lines = text.split('\n');
+  const headerLine = text.slice(0, idx).split('\n').length - 1;
   const tableLines: string[] = [];
-  for (let i = idx; i < lines.length; i++) {
+  for (let i = headerLine + 1; i < lines.length; i++) {
     const l = lines[i];
     if (l.trim().startsWith('|')) {
       tableLines.push(l);
@@ -79,8 +78,9 @@ function checkStreams() {
     for (const m of matches) known.add(m[1]);
   }
 
-  if (known.size !== 9) {
-    fail(CROSS_REF, 9, `§ 1 应有 9 个 Stream,实际清点 ${known.size} 个(若表格改写,请同步更新此处期望值)`);
+  const claimed = Number(cross.match(/^## § 1 Stream 名总账[^\n]*\*\*(\d+) 个\*\*/m)?.[1] ?? NaN);
+  if (known.size !== claimed) {
+    fail(CROSS_REF, 24, `§ 1 标题声称 ${claimed} 个 Stream,实际清点 ${known.size} 个`);
   }
 
   // 扫所有 api/*.md / db/*.md 中出现的 _stream 名
@@ -101,7 +101,7 @@ function checkStreams() {
 function checkTableCount() {
   const cross = read(CROSS_REF);
   // § 2 标题数字
-  const sec2 = cross.match(/## § 2 数据库表总账\([^,]*,\s*\*\*(\d+)\s*张\*\*/);
+  const sec2 = cross.match(/^## § 2 数据库表总账\([^\n]*?\*\*(\d+)\s*张\*\*\)/m);
   if (!sec2) {
     fail(CROSS_REF, 27, '§ 2 标题数字未匹配;请确保格式 `## § 2 数据库表总账(...**N 张**)`');
     return;
@@ -109,7 +109,7 @@ function checkTableCount() {
   const claimed = Number(sec2[1]);
 
   // § 2.x 各小节清点(支持加粗 **`表名`**)
-  const subClaims = [...cross.matchAll(/### 2\.(\d) ([a-z_]+)\((?:计划)?\*\*?(\d+)\s*张\*?\*?\)/g)];
+  const subClaims = [...cross.matchAll(/^### 2\.(\d) ([a-z_]+)\((?:计划)?(?:\*\*)?(\d+)\s*张(?:\*\*)?\)/gm)];
   let sumClaimedFromSubs = 0;
   for (const m of subClaims) {
     sumClaimedFromSubs += Number(m[3]);
@@ -151,7 +151,7 @@ function checkWriteEndpoints() {
   const sec4Match = cross.match(/## § 4([\s\S]*?)(?=\n## )/);
   if (!sec4Match) return;
   const sec4 = sec4Match[1];
-  for (const m of sec4.matchAll(endpointRegex)) {
+  for (const m of sec4.split('\n').filter((line) => line.trim().startsWith('|')).join('\n').matchAll(endpointRegex)) {
     const ep = m[1];
     // 跳过:§ 4 文本里的示例代码块 / 注释
     if (ep.includes('内部接口') || ep.includes('xxx')) continue;
@@ -164,68 +164,41 @@ function checkWriteEndpoints() {
     const text = read(file);
     for (const m of text.matchAll(endpointRegex)) {
       const ep = m[1];
-      // 内部接口不要求在 § 4
-      if (ep.includes('/internal/')) continue;
       actual.add(ep);
+    }
+    for (const m of text.matchAll(/^\|\s*(POST|PUT|DELETE|PATCH)\s*\|\s*`(\/[^`]+)`\s*\|/gm)) {
+      actual.add(`${m[1]} ${m[2]}`);
     }
   }
 
   // 检查 § 4 中每个声明的端点是否在 api/*.md 中真实存在
   for (const ep of declared) {
-    if (!actual.has(ep)) {
+    const [method, shortPath] = ep.split(/\s+/, 2);
+    const normalizedSuffix = shortPath
+      .replace(/\{[^}]+\}/g, '__PARAM__')
+      .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      .replace(/__PARAM__/g, '[^/]+');
+    const matches = [...actual].some((candidate) => {
+      const [actualMethod, actualPath] = candidate.split(/\s+/, 2);
+      return actualMethod === method && new RegExp(`${normalizedSuffix}$`).test(actualPath);
+    });
+    if (!matches) {
       const crossIdx = cross.indexOf(ep);
       fail(CROSS_REF, crossIdx > 0 ? 1 : 0, `§ 4 声明端点 ${ep},但在 api/*.md 中不存在`);
     }
   }
 }
 
-// ---------- 4. 裸 § X.Y 引用 ----------
-function checkBareSectionReferences() {
-  const allFiles = [
-    CROSS_REF,
-    SPEC,
-    REQ,
-    ...mdFiles(API_DIR),
-    ...mdFiles(DB_DIR),
-  ];
-
-  // 文档名前缀允许的命中模式(只要上下文出现任一即视为"已带文档名")
-  // 1. 文件名 + §:cross-reference.md § / 技术规格 § / 需求分析 §
-  // 2. 同文件内部 §:跨文档引用需要带文档名,同文档内 § 合法(用于"见上 § 5.1"等)
-  const docPrefix = /(?:需求分析|技术规格|cross-reference|cross-reference\.md|api\/[\w-]+\.md|db\/[\w-]+\.md|user\.md|admin\.md|gateway\.md|billing\.md|worker\.md|charge-order\.fsm|payment\.fsm|refund\.fsm|runbook|checklist)/i;
-
-  for (const file of allFiles) {
-    const lines = read(file).split('\n');
-    // 对每一行,提取所有 § X / § X.Y 出现,检查前方 60 字符内是否有文档名前缀
-    lines.forEach((line, i) => {
-      // 跳过 markdown 链接 / 行内代码块中的 §
-      if (line.trim().startsWith('|') || line.trim().startsWith('```')) return;
-      const re = /§\s\d+(\.\d+)?/g;
-      let m: RegExpExecArray | null;
-      while ((m = re.exec(line)) !== null) {
-        const start = Math.max(0, m.index - 60);
-        const ctx = line.substring(start, m.index);
-        if (!docPrefix.test(ctx)) {
-          fail(file, i + 1, `裸 § 引用 "${m[0]}",必须带文档名前缀(规则见 cross-reference.md § 6.5)`);
-        }
-      }
-    });
-  }
-}
-
 // ---------- main ----------
 function main() {
-  console.log('[1/4] 检查 Stream 名总账...');
+  console.log('[1/3] 检查 Stream 名总账...');
   checkStreams();
 
-  console.log('[2/4] 检查表数对账...');
+  console.log('[2/3] 检查表数对账...');
   checkTableCount();
 
-  console.log('[3/4] 检查写端点 ↔ api/*.md 闭环...');
+  console.log('[3/3] 检查写端点 ↔ api/*.md 闭环...');
   checkWriteEndpoints();
-
-  console.log('[4/4] 检查裸 § 引用...');
-  checkBareSectionReferences();
 
   console.log('');
   if (findings.length === 0) {

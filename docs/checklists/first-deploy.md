@@ -17,28 +17,29 @@
 - [ ] Docker ≥ 24 + Docker Compose ≥ 2.20 安装
 - [ ] 创建工作目录 `/opt/chargepilot/`(或客户自选)
 - [ ] 拷贝交付物:`docker-compose.yml` + `Caddyfile` + `.env.example`
-- [ ] 修改 `.env` 文件(填数据库密码 / JWT_SECRET / 微信支付凭证)
+- [ ] 复制 `.env.example` 为 `.env`,填数据库密码、`REDIS_PASSWORD`、**不同值的** `REDIS_STREAM_PASSWORD`、`JWT_SECRET`、服务令牌与微信支付凭证
 - [ ] `chmod 600 .env`(权限隔离,不入 Git)
+- [ ] 运行 `bash tools/check-deploy-config.sh`;退出码 `0` 才表示全部验证,`2` 表示缺少 Docker/Caddy 校验能力,需在部署机补跑
 
 ## 三、启动基础设施
 
-- [ ] `docker compose up -d mysql redis` 
+- [ ] `docker compose up -d chargepilot-mysql chargepilot-redis-cache chargepilot-redis-stream`
 - [ ] 等待 MySQL `healthy`(`docker ps` 看 STATUS)
-- [ ] 检查 schema 列表:`docker exec mysql mysql -uroot -e "SHOW DATABASES;"` 应该看到 5 个 db
+- [ ] 检查 schema 列表:`docker exec chargepilot-mysql mysql -uroot -e "SHOW DATABASES;"` 应该看到 5 个业务 schema(需使用受限密钥方式提供密码)
 - [ ] 自动 migration 验证:看 `user` 容器日志是否有 `applied migration` 提示
 
 ## 四、启动 5 个应用服务
 
 - [ ] `docker compose up -d`(全部启动)
-- [ ] 各服务 healthcheck:`curl http://<server>:8081/health`、`curl http://<server>:8082/health`
-- [ ] 看 readiness:`curl http://<server>:8081/ready` 应该返回 200
+- [ ] `docker compose ps` 确认服务健康;8081/8082 仅容器内网开放,不要从宿主机直连
+- [ ] 通过 Caddy HTTPS 路由验证应用 readiness,必要时在容器内网访问 `/health` / `/ready`
 - [ ] Caddy 自动申请证书:日志看 `obtained certificate`
 - [ ] 验证 HTTPS:`curl -v https://<customer-domain>/api/v1/public/auth/login -X POST` 应该 200 而非 SSL 错误
 
 ## 五、PC 后台首次配置
 
 - [ ] 打开 `https://<customer-domain>/admin/login`
-- [ ] 用初始管理员账号登录(密码在 `.env.example` 注释里)
+- [ ] 用交付时安全渠道提供的初始管理员凭证登录
 - [ ] **立即修改密码** + 配置双因素(本期不支持,只改密码)
 - [ ] 上传 Logo / 主题色 / 应用名称
 - [ ] 配置首条公告
@@ -53,7 +54,7 @@
   - 用 test_appid + 真桩(模拟器 / 一台真桩)扫码
   - 看到 order_id 创建 + 微信支付回调 → 设备启动 → 用户结束 → 计费快照写入
 - [ ] **Test 2:退款触发**
-  - 模拟"60 秒内取消" → 应触发 `refund_required_stream` → 自动退款
+  - 模拟支付成功但设备启动失败 → billing 发布 `refund_required_stream` → admin 经 user 内部接口领取退款记录并执行退款;未支付的 60 秒内取消只关单,不退款
 - [ ] **Test 3:Webhook 推送**
   - 在 admin 后台"Webhook 订阅"创建一条 → 触发任意告警 → 看接收方日志收到 HMAC 签名请求
 - [ ] **Test 4:分账计算**

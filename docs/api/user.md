@@ -237,17 +237,18 @@ Wechatpay-Nonce: ...
 **业务逻辑**:
 1. 校验微信签名(用微信平台证书验签,证书通过 API 获取并缓存)
 2. 解密 `resource.ciphertext` 拿到 `transaction_id` / `amount` / `mch_id` 等
-3. 查 `payment_callback_idempotent` 表(`wechat_transaction_id` 唯一):
-   - **已存在** → 直接返回 200 OK(幂等,不重复处理)
-   - **不存在** → INSERT 幂等记录(同一事务内)
-4. 查 `payment_order(wechat_transaction_id)`:
-   - 找到 → UPDATE `status='success'`, `paid_at=NOW()` + 发布 `charge_started_stream` 事件(§ 5.1)
-   - 找不到 → 记录 `alert.dlq`(微信支付了但系统无订单) → 告警运维
-5. 立即返回 200 OK(微信要求 5s 内响应,业务逻辑可异步)
+3. 从解密结果读取 `out_trade_no`、`transaction_id`、`amount.total`、`mchid`;以 `out_trade_no = payment_order.order_no` 查支付单并校验商户号、金额与支付方式。`wechat_transaction_id` 在下单时为 NULL,只能在此处回填,不能用于首次定位订单。
+4. 在 `user_db` 事务内锁定对应 `payment_order` 行;`biz_type='charge'` 时再锁定对应 `charge_order`。以 `payment_callback_idempotent.wechat_transaction_id` 唯一键防重复入账:
+   - 首次成功回调:INSERT 幂等记录,将支付单置为 `success` 并回填 `wechat_transaction_id` / `paid_at`。
+   - 若充电订单仍为 `pending_payment` 且逻辑锁仍属于本 `order_no`,同事务 INSERT `event_outbox(event_key='charge-start:{payment_order_id}', stream_name='charge_started_stream')`。
+   - 若订单已取消 / 超时或锁已属于他人,同事务 INSERT `event_outbox(stream_name='comp_tx_stream', event_key='charge-refund:{payment_order_id}', payload.type='charge_refund_requested')`;不得启动设备。billing 消费该补偿事件后发布 `refund_required_stream`。
+   - 若 `biz_type='recharge'`,同事务按支付单号幂等增加 `wallet_account` 余额并写 `wallet_txn`;不发 `charge_started_stream`。
+   - 若幂等记录已存在,不重复入账;仍须检查对应 outbox 是否待发布,由发布器继续重试。
+5. 事务提交后由 user outbox 发布器 `XADD` 并重试至确认,消费者用 `event_key` 去重。只有数据库事务成功才返回 200;数据库失败返回 5xx 让微信重试。Redis 暂时不可用不丢事件,发布器告警并继续重试。
 
 **错误码**:
 - `3001`: 微信签名验证失败(签名错 / 证书过期 / timestamp 偏差 > 5min)
-- `5001`: 数据库 INSERT 失败(但已写幂等表 → 后续人工补)
+- `5001`: 数据库事务失败(整体回滚,返回 5xx 供微信重试)
 
 ---
 
@@ -301,13 +302,13 @@ Wechatpay-Nonce: ...
    - 失败 → 查 holder 对应订单状态:
      - `pending_payment` 且未超时 → 返回 `2001`(端口被他人支付中)
      - `charging` → 返回 `2001`(端口占用)
-4. 校验 `admin_db.pricing_rule`(注意:是 `admin_db` 不是 `charge_db`)是否对该 port 启用(无则用 station 默认规则)
+4. 经 admin 内部接口校验 `admin_db.pricing_rule` 是否对该 port 启用(无则用 station 默认规则),user 不直连 admin schema
 5. **事务内**:
    - `INSERT charge_order(status='pending_payment', order_no, user_id, device_id, port_id, payment_order_id=NULL, ...)`
    - `INSERT payment_order(status='initiated', biz_type='charge', biz_id=charge_order.id, ...)`
    - `UPDATE charge_order.payment_order_id = payment_order.id`
-6. **RPC billing**:`POST /internal/quote` 拿预估金额(展示用 + 微信下单用)
-7. **调微信 JSAPI 预下单**:`POST https://api.mch.weixin.qq.com/v3/pay/transactions/jsapi` 拿 `prepay_id`
+6. **RPC billing**:`POST /api/v1/internal/quote` 拿预估金额(展示用 + 微信下单用)
+7. **调微信 JSAPI 预下单**:`POST https://api.mch.weixin.qq.com/v3/pay/transactions/jsapi`,令请求的 `out_trade_no = payment_order.order_no`,拿 `prepay_id`
 8. 封装 `payment_params` 返回小程序 → 调 `wx.requestPayment()`
 9. **不要释放逻辑锁** —— 锁由 gateway 在收到 `charge_started_stream` 时验证后释放,或在 `pending_payment` 超时 / 用户取消时释放
 
@@ -337,14 +338,10 @@ Wechatpay-Nonce: ...
 ```
 
 **业务逻辑**:
-1. 校验 `order_no` 归属当前 user + `status='pending_payment'`
-2. 校验 `created_at > NOW() - 60s`(超过 60s 不允许"快速取消",走超时分支)
-3. **事务内**:
-   - `DEL charge:hold:port_xxx` 释放逻辑锁
-   - `UPDATE charge_order.status='cancelled'`, `cancelled_at=NOW()`
-   - `UPDATE payment_order.status='cancelled'`
-4. 若 `payment_order.status='success'`(回调已先于取消到达)→ 发 `refund_required_stream`(走退款)
-5. 返回 200 OK
+1. 以 `order_no` 找到当前 user 的充电订单;在 `user_db` 事务内 `SELECT ... FOR UPDATE` 锁定充电订单及关联支付单,校验 `charge_order.status='pending_payment'`、`payment_order.status='initiated'` 且 `created_at > NOW() - INTERVAL 60 SECOND`。
+2. 若支付回调已先提交、支付单为 `success`,返回 `2018` 并提示用户进入充电中页或停止充电;不得把已支付状态覆盖为 `cancelled`。若取消先提交,迟到的成功回调按上述回调逻辑发起退款,不得启动设备。
+3. 事务内将两张订单分别置为 `cancelled`,记录取消时间;提交后调用微信关单。关单与回调竞争时以已验证回调为准,补偿事件由回调事务写入 outbox。
+4. 仅当 Redis `charge:hold:port_xxx` 的值仍等于本 `order_no` 时,用原子比较删除释放逻辑锁;不得直接 `DEL` 以免误删后来订单的锁。返回 200 OK。
 
 **错误码**:
 - `1001`: JWT 缺失 / 过期
@@ -763,7 +760,7 @@ Wechatpay-Nonce: ...
 1. 校验订单属于当前 user
 2. 查 `user_db.charge_order`(本 schema) + 关联 `user_db.payment_order`(本 schema,`paid_fee_cents`)
 3. **HTTP 调 admin**:`GET /api/v1/internal/stations/{station_id}` 拿 `station_name`
-4. **HTTP 调 billing**:`GET /api/v1/internal/calculations/{charge_order_id}` 拿 `fee_calculation`(若已结算,否则未结算提示)
+4. **HTTP 调 billing**:`GET /api/v1/internal/orders/{order_id}/fee-breakdown` 拿计费明细(若未结算,返回待结算标记)
 5. 计算 `electric_fee_cents` / `service_fee_cents` / `total_fee_cents` 组合返回
 
 **错误码**:
@@ -821,7 +818,7 @@ Wechatpay-Nonce: ...
 **业务逻辑**(P1-7 修正:跨库走 HTTP):
 1. 校验 `order_id` 属于当前 user
 2. 查 `user_db.charge_order.started_at` + `ended_at` 确定时间窗
-3. **HTTP 调 gateway**:`GET /api/v1/internal/devices/{device_id}/historical-curve?order_id={order_id}&granularity={15min|hourly}`(详见 `gateway.md` § 四):
+3. **HTTP 调 gateway**:`GET /api/v1/internal/devices/{device_id}/historical-curve?order_id={order_id}&started_at={started_at}&ended_at={ended_at}&granularity={15min|hourly}`(详见 `gateway.md` § 四):
    - gateway 在 `gateway_db` 内部查对应聚合表(`telemetry_aggregate_15min` / `telemetry_aggregate_hourly`)
    - gateway 返回采样后的时间序列
 4. 算 `summary` 字段(gateway 侧完成)
@@ -1554,6 +1551,39 @@ Wechatpay-Nonce: ...
 **错误码**:
 - `1001` / `2015`(无在线客服)
 - `5001`: 内部错误
+
+---
+
+## 内部接口(仅服务间调用,不计入公开端点数)
+
+所有路径仅在 `:8081` 内网监听,必须携带 `Authorization: Bearer <service_token>`。调用方不能直接连接 `user_db`。
+
+| 方法 | 路径 | 调用方 | 用途 |
+| --- | --- | --- | --- |
+| POST | `/api/v1/internal/charge-orders/{order_id}/start-result` | gateway | 设备启动 ACK 结果回写 |
+| GET | `/api/v1/internal/payment-orders/{payment_order_id}` | billing | 读取支付状态与实付金额,用于退款决策 |
+| POST | `/api/v1/internal/refund-records/claim` | admin | 按 `event_key` 幂等创建 / 领取退款记录 |
+| POST | `/api/v1/internal/refund-records/{refund_id}/result` | admin | 写入微信退款结果 |
+
+### `POST /api/v1/internal/charge-orders/{order_id}/start-result`
+
+请求体:`{event_key, result: "started"|"failed", started_at?, reason?, device_id, port_id}`。`event_key` 由 gateway 为同一次设备指令稳定生成,重试保持不变。
+
+- `result=started`:事务内锁定充电订单,要求 `payment_order.status='success'` 且订单仍为 `pending_payment`;先向不分区的 `active_port_charge` 插入 `(port_id, charge_order_id, order_no)`,成功后更新 `charge_order.status='charging'` / `started_at`。若端口主键冲突或订单已取消,返回 `2003`,gateway 必须立即向设备发送 STOP 并确认断电,然后报告失败;不能让第二笔订单进入 `charging`。
+- `result=failed`:事务内将尚未启动的订单置为 `failed`,并 INSERT `event_outbox(event_key='charge-refund:{payment_order_id}', stream_name='comp_tx_stream', payload.type='charge_refund_requested')`。已完成或重复的结果按 `event_key` 返回已有结果,不重复退款。
+- 成功响应:`{code:0,data:{order_id,status}}`;设备/订单不匹配返回 `1005`,端口占用或状态冲突返回 `2003`,暂时失败返回 `5003`。gateway 在得到持久化确认前保持重试,不得 ACK 原 `charge_started_stream` 消息。
+
+### `GET /api/v1/internal/payment-orders/{payment_order_id}`
+
+返回 `{payment_order_id,order_id,status,paid_fee_cents,wechat_transaction_id}`;无记录返回 `1004`。仅供 billing 核对退款金额和支付状态。
+
+### `POST /api/v1/internal/refund-records/claim`
+
+请求体:`{event_key,payment_order_id,refund_amount_cents,reason}`;事务内锁定对应 `payment_order` 行,跨全部月分区查询 `refund_record.trigger_event_id=event_key`,已有则返回原记录,否则创建退款记录并由 `event_key` 派生稳定的微信商户退款单号。响应 `{refund_id,status,refund_no}`。同一支付单的并发领取由行锁串行化;admin 重试必须沿用原 `refund_no`,不得发起一笔新退款。
+
+### `POST /api/v1/internal/refund-records/{refund_id}/result`
+
+请求体:`{wechat_refund_id,status,completed_at?,failure_reason?}`;user 按合法状态迁移更新本 schema 的 `refund_record`,重复结果幂等返回。admin 不直写 `user_db`。
 
 ---
 

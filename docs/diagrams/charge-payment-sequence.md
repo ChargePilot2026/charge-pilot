@@ -1,207 +1,86 @@
-# 充电 + 支付时序图(P0 权威源)
+# 充电与支付时序(P0 权威源)
 
-> **核心原则**:**扫码 ≠ 启动**。扫码仅展示端口 / 设备,**不锁端口、不发任何 Stream**。
-> **启动时机** = 用户**选择端口** + **微信支付成功回调**之后。
-> **配套文档**:`docs/diagrams/charge-order.fsm.md`(状态机)/ `docs/api/user.md` § 扫码与充电 / `docs/db/user.md` `charge_order` + `payment_order` / `docs/技术规格.md` § 5.4 / § 5.5
-> **本文档覆盖**:**主链路** + **失败分支** + **超时分支** + **取消分支** + **退款链路**
+> **原则**:扫码只读;用户选择端口后创建待支付订单;只有微信成功回调经过持久化处理,才向 gateway 发启动事件。各服务只读写自己的 schema。接口契约见 `docs/api/user.md`、`docs/api/gateway.md`、`docs/api/billing.md`。
 
----
+## § 1 主链路
 
-## § 1 主链路(理想路径)
-
-```
-用户            小程序              user-svc           billing-svc       gateway         设备           Redis           微信
- │                │                    │                  │                │              │              │              │
- │ 1.打开小程序    │                    │                  │                │              │              │              │
- │ 2.wx.login()   │                    │                  │                │              │              │              │
- │  ────────────→ │ POST /public/auth/login                  │                │              │              │              │
- │                │ ─────────────────→│                   │                │              │              │              │
- │                │                   │ code2Session     →│                │              │              │              │
- │                │                   │ ──────────────────────────────────────────────────────────────→ 微信          │
- │                │                   │ ← openid + session_key ───────────────────────────────────────────│              │
- │                │ ← JWT + refresh ← │                   │                │              │              │              │
- │                │                   │                  │                │              │              │              │
- │ 3.扫端口码      │                    │                  │                │              │              │              │
- │                │ POST /user/scan/resolve │              │                │              │              │              │
- │                │ ─────────────────→│ (只读,不锁端口,不写表)               │              │              │              │
- │                │ ← 端口详情 ←       │                  │                │              │              │              │
- │ (若设备码:列表)  │                    │                  │                │              │              │              │
- │                │ POST /user/scan/port │                 │                │              │              │              │
- │                │ ─────────────────→│ (单端口详情)     │                │              │              │              │
- │                │ ← 端口详情 ←       │                  │                │              │              │              │              │
- │                │                   │                  │                │              │              │              │
- │ 4.点"开始充电"   │                    │                  │                │              │              │              │
- │                │ POST /user/scan/start                  │                │              │              │              │
- │                │   body: {port_id}                       │                │              │              │              │
- │                │ ─────────────────→│                  │                │              │              │              │
- │                │                   │ ① SETNX charge:hold:port_xxx (逻辑锁,TTL 5min)               │              │
- │                │                   │ ② INSERT charge_order(status=pending_payment, payment_order_id=NULL)│              │
- │                │                   │ ③ INSERT payment_order(status=initiated, biz_type='charge', biz_id=charge_order.id)│              │
- │                │                   │ ④ RPC billing POST /internal/quote (报价)                   │              │
- │                │                   │ ⑤ POST https://api.mch.weixin.qq.com/v3/pay/transactions/jsapi                │
- │                │                   │ ───────────────────────────────────────────────────────────────────────────────────→ 微信 │
- │                │                   │ ← prepay_id + payment_params ──────────────────────────────────────────────│            │
- │                │ ← payment_params  │                  │                │              │              │              │
- │ ← 拉起支付控件   │                    │                  │                │              │              │              │
- │ 5.wx.requestPayment()               │                  │                │              │              │              │
- │  ────────────→ │ ───────────────────────────────────────────────────────────────────────────────────────────────→ 微信       │
- │ 6.输入密码并付   │                    │                  │                │              │              │              │
- │ 7.微信异步回调   │ POST /public/payment/wechat/callback  │                │              │              │              │
- │                │ ─────────────────→│                  │                │              │              │              │
- │                │                   │ ① 验签(微信平台证书 RSA)             │              │              │              │
- │                │                   │ ② 解密 resource.ciphertext → transaction_id / amount               │              │
- │                │                   │ ③ 查 payment_callback_idempotent(transaction_id) ─────→ MySQL ───┐        │
- │                │                   │   - 已存在 → 直接 200 OK (幂等跳过)        │              │              │
- │                │                   │   - 不存在 ↓                              │              │              │
- │                │                   │ ④ INSERT payment_callback_idempotent ───┤ → 200 OK    │
- │                │                   │ ⑤ UPDATE payment_order.status='success', paid_at=NOW() ──┤              │
- │                │                   │ ⑥ UPDATE charge_order.payment_order_id = payment_order.id ─┤              │
- │                │                   │ ⑦ XADD charge_started_stream ─────→ Redis ────────────┤              │
- │                │                   │ ⑧ 返回 200 OK (微信要求 5s 内响应)    │              │              │
- │                │ ← 200 OK         │                  │                │              │              │              │
- │                │                   │                  │                │              │              │              │
- │                │                   │                  │                │ XREADGROUP charge_started_stream.user-cg →│
- │                │                   │ 关闭"立即等待支付"轮询界面           │              │              │              │
- │                │                   │                  │                │              │              │              │
- │                │                   │                  │                │ XREADGROUP charge_started_stream.gateway-cg ─→
- │                │                   │                  │                │ charge_ended_stream.device_event_stream ───┤
- │                │                   │                  │                │              │              │              │
- │                │                   │                  │                │ ① 验证逻辑锁 charge:hold:port_xxx 仍属本订单
- │                │                   │                  │                │    - 否则 → DEL stream event + refund_required_stream
- │                │                   │                  │                │ ② 释放逻辑锁
- │                │                   │                  │                │ ③ SETNX charge:lock:port_xxx (物理锁,TTL 30s)
- │                │                   │                  │                │ ④ MQTT 下发 charge/{vendor}/{device}/cmd = START ──→
- │                │                   │                  │                │ ← device ACK (relay_closed) ←──────────────┤              │
- │                │                   │                  │                │ ⑤ UPDATE charge_order.status='charging', started_at=NOW() ──┤
- │                │                   │                  │                │ ⑥ DEL 物理锁
- │                │                   │                  │                │ ⑦ 设备开始供电 → 上行 telemetry / event ──→  │
- │                │                   │                  │                │              │              │              │
- │ 8.进入"充电中"页 │ GET /user/charge/ongoing/snapshot?order_id=xxx  │              │              │              │              │
- │                │ ─────────────────→│ (每 5s 1 次)    │                │              │              │              │
- │                │                   │ ① 读 Redis snapshot:{order_id} (cache hit > 90%)                │
- │                │                   │ ② cache miss → SELECT gateway_db.telemetry + user_db.charge_order    │
- │                │                   │ ③ 回填 Redis TTL=10s                              │
- │                │ ← snapshot JSON ← │                  │                │              │              │              │
- │                │                   │                  │                │              │              │              │
- │ ... 5s 轮询 N 次 ...               │                  │                │              │              │              │
- │                │                   │                  │                │              │              │              │
- │ 9.用户拔插头 / 主动停止 / 充满自停  │                  │                │              │              │              │
- │                │                   │                  │                │ ← relay_open / charge_state change ←────│              │
- │                │                   │                  │                │ charge_state 变化 → XADD charge_ended_stream ─→ Redis
- │                │                   │                  │                │ device_event_stream.payload = {order_id, ended_at, reason}    │
- │                │                   │                  │                │              │              │              │
- │                │                   │ XREADGROUP charge_ended_stream.user-cg → Redis                │
- │                │                   │ ① DEL snapshot:{order_id} 缓存         │              │              │              │
- │                │                   │ ② UPDATE charge_order.status='finished', ended_at=NOW()         │
- │                │                   │ ③ 后续轮询 → poll_continue:false → 客户端跳转充电结束页        │
- │                │                   │                  │                │              │              │              │
- │                │                   │                  │ XREADGROUP charge_ended_stream.billing-cg → Redis    │
- │                │                   │                  │ ① SELECT admin_db.pricing_rule(经 Redis cache TTL=10min)                │
- │                │                   │                  │ ② INSERT billing_db.fee_calculation + pricing_tier_snapshot                 │
- │                │                   │                  │ ③ INSERT billing_db.settlement + settlement_party_amount                   │
- │                │                   │                  │ ④ 判断触发退款条件? 详见 § 2 失败分支
- │                │                   │                  │                  │              │              │              │
- │                │                   │                  │ ⑤ 小程序消息推送账单 → user-svc publish notify → 用户收到               │
- │                │ ← 充电结束页      │                  │                │              │              │              │
- │                │                   │                  │                │              │              │              │
- │ (后续可选)       │ POST /charge/{id}/feedback 评价/投诉  │                │              │              │              │
- │                │ POST /invoice/apply 发票申请          │                │              │              │              │
- │                │ ─────────────────→│ 写 user_db.feedback / invoice_request             │
+```text
+小程序             user-svc                 微信             Redis Stream          gateway             billing
+  | POST /scan/resolve |                     |                    |                  |                   |
+  |------------------->| 只读端口信息          |                    |                  |                   |
+  | POST /scan/start   |                     |                    |                  |                   |
+  |------------------->| SET charge:hold:port NX EX 300        |                  |                   |
+  |                    | INSERT charge_order(pending_payment)   |                  |                   |
+  |                    | INSERT payment_order(initiated)        |                  |                   |
+  |                    | POST billing /api/v1/internal/quote ---------------------------->|                   |
+  |                    | JSAPI 预下单(out_trade_no=payment_order.order_no) --> 微信       |                   |
+  |<-- payment_params--|                     |                    |                  |                   |
+  | wx.requestPayment ---------------------->|                    |                  |                   |
+  |                    |<-- 成功回调(含 out_trade_no,transaction_id,amount) --|        |                   |
+  |                    | 按 out_trade_no 找 payment_order;验商户号和金额       |        |                   |
+  |                    | user_db 事务:锁订单,写幂等记录,支付成功,event_outbox  |        |                   |
+  |                    |-- 事务提交后返回 200 --> 微信        |                  |                   |
+  |                    | outbox 发布器重试 XADD charge_started_stream ----->|            |                   |
+  |                    |                     |                    |---- 消费并验逻辑锁 -->|                   |
+  |                    |                     |                    |                  | MQTT START → 设备 ACK|
+  |                    |<-- POST /api/v1/internal/charge-orders/{id}/start-result --------|                   |
+  |                    | user_db 事务:INSERT active_port_charge + status=charging         |                   |
+  |                    |-- 持久化确认 ------->|                    |<---- ACK Stream --|                   |
+  | GET /charge/ongoing/snapshot            |                    |                  |                   |
+  |------------------->| Redis miss → HTTP gateway snapshot;本地查 user_db  |            |                   |
+  |                    |                     |                    |                  | 设备停止 → charge_ended_stream
+  |                    |<--- user-cg 消费,关闭轮询缓存 ------|                  |----> billing-cg 计费分账
 ```
 
----
+**支付回调与事件投递**:
 
-## § 2 失败 / 退款分支
+1. `payment_order.wechat_transaction_id` 在预下单时为 NULL;回调必须用微信返回的 `out_trade_no` 对应本地 `payment_order.order_no` 定位支付单,然后保存 `transaction_id`。
+2. `payment_callback_idempotent` 唯一键防重复入账。支付状态和 `event_outbox(event_key='charge-start:{payment_order_id}')` 必须在同一 `user_db` 事务中提交;不能先提交支付成功再直接 `XADD`。
+3. user 发布器在事务外将 outbox 事件写入 Redis Stream;失败持续重试和告警,成功才标记 `published`。gateway 按稳定 `event_key` 去重;重复回调也不能使待发布事件丢失。
+4. gateway 仅写自己的设备会话和遥测;启动 ACK 通过 user 内部接口回传。user 在同一事务内取得不分区的 `active_port_charge.port_id` 唯一占用并更新 `charge_order`。gateway 在 user 持久化确认前不得 ACK 原 Stream 消息。
 
-### § 2.1 微信支付回调失败(用户拒付 / 余额不足 / 风控)
+## § 2 失败、取消与退款
 
-```
-支付回调 → 验签 / 解密成功 → business_code != "SUCCESS"
-  ├─ user-svc: UPDATE payment_order.status='failed', failed_at=NOW()
-  ├─ DEL charge:hold:port_xxx 逻辑锁(端口释放)
-  ├─ 写 user_db.payment_callback_idempotent (防重放)
-  └─ 用户小程序 UI 显示"支付失败,可重试"
-```
+### § 2.1 支付失败或迟到
 
-### § 2.2 gateway 启动失败(设备 ACK failed / 30s 内未进入 charging)
+- 用户拒付时没有成功回调;小程序依支付结果更新界面,待支付订单由超时任务关闭。收到失败通知时 user 只更新自己的支付单和充电订单,并按 `order_no` 原子比较删除逻辑锁。
+- 成功回调在订单已取消、超时或锁属于他人后到达:user 仍记录真实支付成功,但同事务写 `event_outbox(type='charge_refund_requested', stream_name='comp_tx_stream')`,不写启动事件。billing 消费补偿事件、查询 user 支付金额后,按 `event_key` 幂等发布 `refund_required_stream`。
 
-```
-gateway 收到 charge_started_stream → MQTT START → 设备 ACK `failed` / 超时 30s
-  ├─ UPDATE charge_order.status='failed', failed_reason='gateway_no_ack'
-  ├─ DEL charge:hold:port_xxx 逻辑锁
-  ├─ XADD refund_required_stream.payload = {order_id, payment_order_id, reason='start_failed'}
-  │   → admin-svc 消费
-  │     ├─ INSERT user_db.refund_record(status='processing')
-  │     ├─ POST 微信 refund API
-  │     ├─ 微信回调 → UPDATE refund_record.status='success'
-  │     └─ XADD comp_tx_stream.payload = {refund_id} → billing-svc 消费
-  │       └─ UPDATE billing_db.settlement.status='refunded'
-  └─ 小程序消息推送退款通知给用户
+### § 2.2 gateway 启动失败
+
+```text
+gateway 消费 charge_started_stream → MQTT START → 设备 ACK failed / 超时
+  → POST user /api/v1/internal/charge-orders/{order_id}/start-result(result=failed)
+  → user 事务:charge_order=failed + event_outbox(type=charge_refund_requested)
+  → user 发布 comp_tx_stream → billing 发布 refund_required_stream
+  → admin 消费并调 user 内部接口领取 refund_record → 微信退款 → 调 user 回写结果
 ```
 
-### § 2.3 充电超时(>10h,GB 47371)
+gateway 不直接更新 `user_db`,也不发布 `refund_required_stream`。若设备已经闭合继电器但 user 的端口占用唯一键冲突,gateway 必须先发 STOP 并确认断电,再报告失败;未确认断电时告警并转人工处置。
 
-```
-gateway 检测充电时长 > 10h
-  ├─ MQTT STOP → 设备断电
-  ├─ XADD charge_ended_stream.payload = {reason='timeout'}
-  └─ billing-svc 消费 → fee_calculation → settlement → refund_required_stream (自动退款)
-```
+### § 2.3 充电结束或超时
 
-### § 2.4 用户主动取消(60s 内)
+gateway 检测设备停止或超过最长充电时间时发 `charge_ended_stream`;user 消费后更新 `charge_order` 并以 `port_id` + `charge_order_id` 删除 `active_port_charge`,关闭轮询缓存。billing 独立消费并写本 schema 计费/分账表;符合退款条件时由 billing 发布 `refund_required_stream`。
 
-```
-用户在小程序"支付等待"页 → 点"取消"
-  ├─ POST /user/scan/cancel {order_id}
-  ├─ user-svc:
-  │   ├─ 校验 order 状态 ∈ {pending_payment},且 created_at > NOW() - 60s (超过 60s 不可取消,走超时分支)
-  │   ├─ DEL charge:hold:port_xxx 逻辑锁
-  │   ├─ UPDATE charge_order.status='cancelled', cancelled_at=NOW()
-  │   ├─ UPDATE payment_order.status='cancelled'
-  │   └─ 若已支付 (微信回调先到 / 取消时已成功):XADD refund_required_stream
-  └─ 用户 UI 回到扫码页
-```
+### § 2.4 用户 60 秒内主动取消
 
-### § 2.5 计量异常 / 余额不足 → 不自动退款(走人工)
+`POST /api/v1/user/scan/cancel {order_no}` 在 `user_db` 事务中锁定充电单与支付单,仅允许 `pending_payment` + `initiated`。支付回调若先提交,取消返回 `2018`,不能把 `success` 覆盖为 `cancelled`;取消若先提交,迟到的成功回调走 § 2.1 退款分支。提交取消后微信关单,并仅在 Redis 锁值仍为本 `order_no` 时原子删除。
 
-```
-billing-svc 计算后检测异常 → 不发 refund_required_stream
-  ├─ UPDATE charge_order.status='manual_review'
-  ├─ INSERT user_db.refund_record(status='manual_review')
-  ├─ XADD alert_stream.payload = {type='manual_review_required', order_id}
-  ├─ admin PC 后台告警列表 → 客户财务 / 客服人工介入
-  └─ 微信消息通知用户"订单待人工审核"
-```
+## § 3 端口并发约束
 
----
+| 层 | 键或表 | 生效范围 | 释放条件 |
+| --- | --- | --- | --- |
+| 支付前逻辑锁 | `charge:hold:port_xxx` = `order_no` | 5 分钟,防同时支付 | 取消 / 超时 / 启动处理时比较持有者后删除 |
+| 启动物理锁 | `charge:lock:port_xxx` = `order_no` | 30 秒,防重复下发指令 | ACK 后比较持有者删除 |
+| 数据库唯一占用 | `user_db.active_port_charge.port_id` 主键 | 跨月,整个充电期间 | user 核对设备已停后按 `port_id` + `charge_order_id` 删除 |
 
-## § 3 端口锁分层(取代单一 SETNX 30s 锁)
+`charge_order` 按 `created_month` 分区。MySQL 分区表的每个唯一键都必须含分区列,因此不能用 `(port_id,active_charging)` 在该表上实现跨月唯一约束。Redis TTL 到期不等于设备已断电;不得仅凭 TTL 清除数据库占用。
 
-| 锁类型 | Redis key | TTL | 时机 | 作用 |
-| --- | --- | --- | --- | --- |
-| **逻辑锁**(端口预约) | `charge:hold:port_xxx` | **5 min** | `POST /scan/start` 时占位(支付前) | 同一端口同时只能被一人支付中;TTL 长,容许用户支付迟疑 |
-| **物理锁**(启动链路) | `charge:lock:port_xxx` | **30 s** | gateway 准备下发 START 指令时 | 启动链路的并发互斥;ACK 后立即 DEL |
+## § 4 文档同步清单
 
-**双重校验**:
-1. **逻辑锁**:防止两个用户同时点"开始充电 → 支付"
-2. **物理锁**:防止支付回调与重发 / 重试导致的重复启动
-3. **DB 兜底**:`charge_order` 用 generated column `active_charging BOOLEAN GENERATED AS (CASE WHEN status='charging' THEN 1 ELSE NULL END) STORED` + `UNIQUE (port_id, active_charging)`,DB 层兜底唯一性(NULL 不参与)
-
-**逻辑锁的悬空保护**:
-- 用户付完款但回调延迟 5 min → 锁过期 → 别的用户扫码
-- 解决:微信回调成功后,网关收到 `charge_started_stream` 时**先验证 `charge:hold:port_xxx` 仍属本订单** → 否则退款
-- 若锁已过期且无他人占位 → 正常启动(用户已付钱)
-- 若锁已过期且他人正在支付 → DEL stream event → refund_required_stream(给前用户退款)
-
----
-
-## § 4 与现有文档的同步点
-
-| 文档 | 需要修改的地方 |
+| 契约 | 权威位置 |
 | --- | --- |
-| `docs/diagrams/charge-order.fsm.md` | 加 `pending_payment` 状态;连接 § 3 锁分层 |
-| `docs/api/user.md` | `POST /scan/start`:明确不直接启动 + 创建 pending_payment + 预下单;新增 `POST /scan/cancel` |
-| `docs/db/user.md` | `charge_order.status` ENUM 加 `pending_payment`;新增 `active_charging` generated column + UNIQUE 索引 |
-| `docs/cross-reference.md` | § 4.1 user 端点表新增 `POST /scan/cancel`;§ 4.2 状态流转图 |
-| `docs/技术规格.md` | § 2.1.3 充电支付时序改为本文档引用;§ 5.5 锁分层对齐本文档 § 3 |
-| `docs/diagrams/data-lineage.md` | 主链路图加 `pending_payment` 节点 |
+| 微信回调、取消、gateway 结果回写及 outbox | `docs/api/user.md`、`docs/db/user.md` |
+| gateway 设备指令与状态查询 | `docs/api/gateway.md` |
+| 退款事件单生产者与计费 | `docs/api/billing.md`、`docs/cross-reference.md` |
+| 订单状态迁移 | `docs/diagrams/charge-order.fsm.md` |

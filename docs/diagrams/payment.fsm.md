@@ -1,75 +1,32 @@
-# 支付订单状态机(`user_db.payment_order.status`)(P1-6 与 db 一致化)
+# 支付订单状态机(`user_db.payment_order.status`)
 
-> **维护者**:后端 user 服务 / 跨服务对齐时检查
-> **配套文档**:`docs/db/user.md` § 表 3 `payment_order` / `docs/diagrams/refund.fsm.md` / `docs/diagrams/charge-order.fsm.md` / `docs/技术规格.md` § 5.4 + § 5.5
+> 字段与 ENUM 以 `docs/db/user.md` 表 3 为准;微信回调与取消的竞争处理见 `docs/diagrams/charge-payment-sequence.md`。
 
----
+## 状态迁移
 
-## 状态图
-
-```
-   ┌──────────┐
-   │ initiated│  ← user 收到 /scan/start → INSERT payment_order(status='initiated', biz_type='charge', biz_id=charge_order.id)
-   └─────┬────┘
-         │ 微信回调(同步 5 min 内)
-         ├──────→ success          (一次性支付成功,paid_at 落表,业务事件发出)
-         │
-         ├──────→ failed           (下单 / 微信返回错误,已生成单据但失败)
-         │
-         └──────→ expired          (用户 5 min 内未支付;worker 周期扫描清理)
-                ↓
-            (软删除 + 自动退款视业务)
-
-   success ───────────┐
-                       │
-                       ├──→ partial_refunded  ← 部分退款(单订单多笔退款累计)
-                       │
-                       └──→ refunded          ← 全额退款完成(>= 1 笔 refund_record.status=success 且累计 = paid_fee_cents)
+```text
+initiated ── 微信成功回调 ──→ success ── 部分退款成功 ──→ partial_refunded ── 剩余退款成功 ──→ refunded
+     ├──── 微信关单或 60 秒内取消 ──→ cancelled
+     └──── 本地预下单失败 / 超时确认未支付 ──→ failed
+cancelled / failed ── 迟到且验签通过的真实成功回调 ──→ success ──→ 退款补偿
 ```
 
----
-
-## 状态枚举(P1-6 与 `db/user.md` 表 3 payment_order.status ENUM 一致)
-
-| 状态 | 含义 | 触发 |
+| 状态 | 含义 | 写入方 |
 | --- | --- | --- |
-| `initiated` | 已下单,等待用户支付 | `POST /scan/start` 创建订单 + 微信预下单成功 |
-| `success` | 微信支付成功 | 微信回调 `TRANSACTION.SUCCESS` |
-| `failed` | 支付失败(用户拒付 / 余额不足 / 微信风控) | 微信回调 `TRANSACTION.FAIL` / 本地超时 |
-| `expired` | 用户超过 5 分钟未支付 | 微信侧超时通知 或 worker 周期扫描 |
-| `refunded` | 全额退款完成 | 全部 `refund_record` 成功,且累计 = `paid_fee_cents` |
-| `partial_refunded` | 部分退款 | 至少 1 条 `refund_record.status='success'`,但仍有未退金额 |
+| `initiated` | 已创建支付单,等待微信支付 | user `/scan/start` |
+| `success` | 微信实际支付成功,含取消后迟到的成功回调 | user 微信回调 |
+| `failed` | 已确认支付失败或超时未付 | user 超时任务 / 失败处理 |
+| `cancelled` | 取消先于支付成功回调提交 | user `/scan/cancel` |
+| `partial_refunded` | 实付金额部分退款成功 | user 处理退款结果 |
+| `refunded` | 实付金额全部退款成功 | user 处理退款结果 |
 
-> **不在 ENUM 中但常见于退款状态机**:`settled`(财务线下打款,见 `refund.fsm.md`)— **不**写在 `payment_order.status`,只在 `refund_record.status='settled'` 标记。
+`expired`、`settled` 不在本表 ENUM 中,不能写入 `payment_order.status`。支付单 `failed` / `cancelled` 后若仍收到经过验证的成功回调,必须记录真实支付成功并发起退款补偿,不能直接丢弃回调。
 
----
+## 回调与事件
 
-## 跨服务动作
+1. `/scan/start` 创建 `payment_order(status='initiated', wechat_transaction_id=NULL)`,微信预下单的 `out_trade_no` 使用本地 `order_no`。此时**不**写 `payment_callback_idempotent`。
+2. 微信成功回调按 `out_trade_no` 找支付单,校验商户号和金额,再用 `transaction_id` 写不分区的 `payment_callback_idempotent`。支付状态、幂等记录和 `event_outbox` 在同一 `user_db` 事务中提交。
+3. `biz_type='charge'` 且订单仍可启动时写 `charge_started_stream` outbox;取消/超时已提交时写 `comp_tx_stream` 退款请求 outbox。`biz_type='recharge'` 时在同一事务增加余额并写 `wallet_txn`,不发充电启动事件。发布器重试至 Redis 确认;消费方按稳定 `event_key` 去重。
+4. 退款成功后 user 按累计成功退款额将支付单迁移至 `partial_refunded` 或 `refunded`;admin 不直写 `user_db`。
 
-| 触发事件 | 动作 |
-| --- | --- |
-| `initiated` 创建 | 写 `payment_callback_idempotent(wechat_transaction_id, status='initiated')` |
-| `success` 切换 | user API 收到回调 → 写幂等成功 → 发 `charge_started_stream`(仅 `biz_type='charge'`)/ 发钱包流水完成事件 |
-| `failed` | user API 写 `payment_order.status='failed'` + 发 `alert_stream(notice=payment_failed)` |
-| `expired` | worker 周期任务扫描 `initiated` > 5 min → 标 `expired` |
-| 全额 `refunded` | admin 消费 `comp_tx_stream(回执)` → 标 `refunded` |
-
----
-
-## 子单 vs 主单(组合支付)
-
-组合支付(微信 + 余额 + 优惠券)有**主单 + 多张子单**:
-
-- 主单:`payment_order(pay_method='mixed', total_amount = 子单合计, status='success')`
-- 子单:`payment_order(parent_order_id = 主单.id, pay_method='wechat'/'wallet', amount = N)`(子单不直接走微信)
-- 退款:**先退子单**(现金通道)→ 主单状态切换
-
----
-
-## 边界规则
-
-- **幂等**:`payment_callback_idempotent` 是支付回调的**唯一去重 key**(独立于 `event_id`)
-- **不可逆**:`success` 不可改回 `initiated` / `failed`
-- **不可跳跃**:`initiated → refunded` 不允许(必须 `initiated → success → refunded`)
-- **超时清理**:`expired` 订单不退款(用户没付钱),但若有预扣款(余额 / 优惠券)需解冻
-- **对账**:`refunded` 状态写入后,**次日**对账必须出现在微信账单(`billing_db.finance_reconcile_log` 跟踪差异)
+组合支付的主单与子单规则见 `docs/db/user.md` 表 3。微信子单使用自己的 `order_no` 作为 `out_trade_no`;回调只更新该微信子单,再由 user 汇总主单支付状态。

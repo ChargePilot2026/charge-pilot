@@ -795,7 +795,7 @@
 ### 业务规则
 
 - **创建**:客户运营在 PC 后台"营销管理 → 优惠券模板"新建 → 填类型/面值/门槛 → INSERT
-- **发放**:worker 消费 `coupon_grant_required_stream` → 查 `coupon` 模板 → 校验未超 `total_limit` / 用户未超 `user_limit` → INSERT `user_db.coupon_grant` + UPDATE `coupon.granted_count`
+- **发放**:admin 发布 `coupon_grant_required_stream`,user 消费并写入自己 schema 的 `coupon_grant`;admin 收到幂等结果后更新本表 `granted_count`,不直写 `user_db`
 - **停用 / 归档**:UPDATE `status='disabled'/'archived'`,已发放的 `coupon_grant` 不受影响
 
 ---
@@ -1298,7 +1298,7 @@
 
 - **初始化**:系统首次部署时,初始化脚本 INSERT 一条默认记录(ID=1,频率=3/5min,金额规则 disabled)
 - **客户管理员调整**:PC 后台"风控配置"页 → 改阈值 → UPDATE(变更即时生效)
-- **触发逻辑**:worker 退款前查 `risk_config` → 按规则判断是否冻结;触发的冻结记录写 `user_db.risk_freeze_log` + 关联本表的 `threshold_snapshot` JSON 字段(便于审计当时阈值)
+- **触发逻辑**:admin 退款前查本 schema `risk_config` → 按规则判断是否冻结;若需写风控冻结记录,调用 user 内部接口由 user 写 `risk_freeze_log`,admin 不直写 `user_db`
 - **缓存**:user 服务缓存本表配置(TTL 5 min,§ 4.7)
 
 ---
@@ -1555,4 +1555,3 @@
 ---
 
 **admin_db 全部 24 张表设计完成**
-

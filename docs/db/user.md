@@ -26,7 +26,7 @@
 | **`customer_id` 列** | **不带**(P1-6 单客户单部署硬约束,与 README § 核心约束一致);客户级隔离由部署边界保证(每客户独立一套 `user_db` 实例,无跨客户访问) | 无 |
 | **业务状态 vs 软删除二维关系** | `status` 字段(如 `pending` / `success` / `cancelled`)是**业务生命周期状态机**;`deleted_at` 字段是**数据可见性软删除**;**二者独立,不互斥**:被软删的订单 `status` 保持原值(如 `cancelled` 订单被软删后,`status='cancelled'` + `deleted_at NOT NULL`);查询经仓储层封装自动加 `WHERE deleted_at IS NULL`,运维查询可绕过 | 审计日志 / 幂等表 无 status 字段 |
 
-## 表清单(16 张)
+## 表清单(18 张)
 
 | 表名 | 业务说明 | 分表策略 | 估算行数(单客户 5 年) |
 | --- | --- | --- | --- |
@@ -46,8 +46,10 @@
 | `payment_callback_idempotent` | 微信支付回调幂等表 | 不分 | ~200 万 |
 | **`feedback`** | **评价 / 投诉记录**(每笔订单唯一评价) | 不分 | ~200 万 |
 | **`device_fault_report`** | **设备报修记录**(用户报修 + 巡检处理) | 不分 | ~5 万 |
+| **`active_port_charge`** | **端口当前充电占用**,跨月唯一性兜底 | 不分 | ≤ 端口数 |
+| **`event_outbox`** | **user 服务待发布 Stream 事件**,与业务状态同事务落库 | 不分 | 按处理状态滚动清理 |
 
-> **本文件包含全部 16 张表**:首批 8 张 + 第二批 6 张 + 第三批 2 张(API 补漏)。
+> **本文件包含全部 18 张表**:原 16 张业务表 + 端口占用表 + 事件 outbox。
 > 业务场景覆盖:用户管理 / 充电 / 支付 / 退款 / 钱包 / 优惠券 / 会员 / 发票 / 找桩 / 微信支付幂等 / **评价 / 投诉 / 设备报修**。
 
 ### 容量估算假设前提
@@ -158,7 +160,7 @@
 **关键业务规则**:
 
 - 状态机:`pending` → `pending_payment` → `charging` → `finished` / `cancelled` / `failed`(详见 `diagrams/charge-order.fsm.md`)
-- 端口唯一约束:`(port_id, active_charging)` 用 generated column 实现,等价于 `(port_id, status='charging')` 部分唯一索引,但 MySQL 8.4 不支持 partial index —— 必须用 generated column
+- 端口唯一约束:由不分区的 `active_port_charge.port_id` 主键实现;`charge_order` 按月分区,无法在分区表上建立不带分区列的跨月唯一键(见 [MySQL 8.4 分区唯一键约束](https://dev.mysql.com/doc/refman/8.4/en/partitioning-limitations-partitioning-keys-unique-keys.html))
 - 估算订单:§ 6.5 B 方案的离线补传兜底,订单带 `billing_mode='estimated'` 标记
 - 不存支付信息:`electric_fee_cents` / `service_fee_cents` / `paid_fee_cents` / 微信 transaction_id **全部移到 `payment_order`**
 
@@ -188,7 +190,6 @@
 | `fail_reason` | `VARCHAR(256)` | NULL | NULL | 失败原因(`status=failed` 时填) |
 | `cancel_reason` | `VARCHAR(256)` | NULL | NULL | 取消原因(`cancelled` 时填) |
 | `cancel_initiator` | `ENUM('user','system','timeout')` | NULL | NULL | 取消发起方 |
-| **`active_charging`** | `TINYINT UNSIGNED` | GENERATED ALWAYS AS (CASE WHEN `status`='charging' THEN 1 ELSE NULL END) STORED | — | **生成列**,用于端口唯一性约束(等价 `status='charging'` 部分唯一索引,MySQL 8.4 不支持 partial index) |
 | `created_at` | `DATETIME(3)` | NOT NULL | — | 订单创建时间 |
 | `updated_at` | `DATETIME(3)` | NOT NULL | — | 更新时间 |
 | `deleted_at` | `DATETIME(3)` | NULL | NULL | 软删除时间(NULL = 未删除) |
@@ -201,7 +202,7 @@
 | --- | --- | --- | --- |
 | `pk_charge_order` | `id`, `created_month` | 主键 | MySQL 8.4 分区约束:分区字段必须出现在主键 |
 | `uk_charge_order_no` | `order_no`, `created_month` | 唯一 | 用户查充电订单(分区字段必带) |
-| `uk_charge_order_port_active` | `port_id`, `active_charging` | 唯一(NULL 不参与) | **等价于 `(port_id, status='charging')` 部分唯一索引**,防同一端口双订单;NULL 不参与唯一性 → 多条 status≠charging 订单可共存 |
+| `idx_charge_order_port_status` | `port_id`, `status` | 普通 | 查端口订单;当前占用唯一性由 `active_port_charge` 保证 |
 | `idx_charge_order_payment_order` | `payment_order_id` | 普通 | 跨表查询 |
 | `idx_charge_order_user_created` | `user_id`, `created_at` | 普通 | 用户充电订单列表 |
 | `idx_charge_order_device_started` | `device_id`, `started_at` | 普通 | 设备维度订单查询 |
@@ -237,15 +238,15 @@ PARTITION BY RANGE (TO_DAYS(created_month)) (
 ### 关系
 
 - 多对一 → `user.id`
-- 一对一 → `payment_order`(通过 `payment_order_id`;扫码时未创建,NULL;支付回调后回填)
+- 一对一 → 充电支付主单 `payment_order`(通过 `payment_order_id`;`/scan/start` 事务内创建支付单后回填)
 - 多对一 → `admin_db.pricing_rule`(通过 `charge_rule_id`,跨服务,无外键)
 
 ### 业务规则
 
 - **订单创建**(`status=pending_payment`):user 收到 `/scan/start` 请求 → 占逻辑锁 `charge:hold:port_xxx` → `INSERT charge_order(status='pending_payment', payment_order_id=NULL, started_at=NULL)` + `INSERT payment_order(status='initiated', biz_type='charge', biz_id=charge_order.id)` → `UPDATE charge_order.payment_order_id = payment_order.id` → 调微信 JSAPI 预下单 → **不启动设备**
-- **订单启动**(`pending_payment` → `charging`):微信支付回调成功 → user 写 `payment_callback_idempotent` + UPDATE `payment_order.status='success'` + 发 `charge_started_stream` → gateway 消费 → 验证逻辑锁 → SETNX 物理锁 → MQTT 下发启动指令 → ACK → UPDATE `charge_order.status='charging', started_at=NOW()`
-- **订单结束**(`status=finished`):gateway 收到 `charge_ended_stream` 事件 → user 写 `ended_at` / `meter_kwh` / `power_w` / `duration_seconds`
-- **触发退款**(失败 / 超时 / 60s 内取消 / 拔出插头):发布 `refund_required_stream` 事件 → admin 创建 `refund_record`
+- **订单启动**(`pending_payment` → `charging`):微信成功回调 → user 同事务写支付状态与 `event_outbox(charge_started_stream)` → gateway 消费并下发指令 → ACK 后调用 user 内部接口 → user 同事务插入 `active_port_charge` 并更新 `charge_order.status='charging'`。
+- **订单结束**(`status=finished`):gateway 发布 `charge_ended_stream` → user 消费后写 `ended_at` / `meter_kwh` / `power_w` / `duration_seconds`,并按订单 ID 释放 `active_port_charge`。
+- **触发退款**:启动失败或取消后迟到支付时,user 同事务写 `event_outbox(comp_tx_stream,charge_refund_requested)`;billing 消费并发布 `refund_required_stream`;admin 经 user 内部接口创建/领取 `refund_record`。
 - **估算订单提示**:`billing_mode='estimated'` 时,小程序充电结束页底部显示"本次计费基于设备离线数据,如有问题请联系客服"
 
 ---
@@ -303,7 +304,7 @@ PARTITION BY RANGE (TO_DAYS(created_month)) (
 | --- | --- | --- | --- |
 | `pk_payment_order` | `id`, `created_month` | 主键 | MySQL 8.4 分区约束:分区字段必须出现在主键 |
 | `uk_payment_order_no` | `order_no`, `created_month` | 唯一 | 用户查支付单(分区字段必带) |
-| `uk_payment_order_wechat_txn` | `wechat_transaction_id`, `created_month` | 唯一(可空) | 微信回调幂等(§ 5.4);牺牲跨月唯一性,但业务上同一 transaction_id 不会跨月 |
+| `uk_payment_order_wechat_txn` | `wechat_transaction_id`, `created_month` | 唯一(可空) | 分区内防重复;跨月回调幂等以不分区的 `payment_callback_idempotent.wechat_transaction_id` 为准 |
 | `idx_payment_order_biz` | `biz_type`, `biz_id` | 普通 | 反查"某笔充电的所有支付单" |
 | `idx_payment_order_user_status` | `user_id`, `status`, `created_at` | 普通 | 我的支付订单列表 |
 | `idx_payment_order_parent` | `parent_order_id` | 普通 | 查"主单的所有子单" |
@@ -465,7 +466,7 @@ PARTITION BY RANGE (TO_DAYS(created_month)) (
 | `requested_at` | `DATETIME(3)` | NOT NULL | — | 退款申请时间 |
 | `completed_at` | `DATETIME(3)` | NULL | NULL | 退款完成时间 |
 | `manual_review_note` | `VARCHAR(512)` | NULL | NULL | 人工审核备注 |
-| `trigger_event_id` | `VARCHAR(64)` | NOT NULL | — | 触发本次退款的 Redis Stream event_id |
+| `trigger_event_id` | `VARCHAR(128)` | NOT NULL | — | 稳定业务 `event_key`(跨 Redis 重投递保持不变),用于退款领取幂等 |
 | `created_at` | `DATETIME(3)` | NOT NULL | — | 创建时间 |
 | `created_month` | `DATE` | GENERATED ALWAYS AS (DATE_FORMAT(`requested_at`, '%Y-%m-01')) STORED | — | **P0-2 分区字段** |
 | `updated_at` | `DATETIME(3)` | NOT NULL | — | 更新时间 |
@@ -481,7 +482,7 @@ PARTITION BY RANGE (TO_DAYS(created_month)) (
 | `pk_refund_record` | `id`, `created_month` | 主键 | MySQL 8.4 分区约束 |
 | `uk_refund_record_no` | `refund_no`, `created_month` | 唯一 | 用户查退款(分区字段必带) |
 | `uk_refund_record_wechat` | `wechat_refund_id`, `created_month` | 唯一(可空) | 微信回调幂等 |
-| `uk_refund_record_event` | `trigger_event_id`, `created_month` | 唯一 | Stream 消费幂等 |
+| `uk_refund_record_event` | `trigger_event_id`, `created_month` | 唯一 | 同月 Stream 消费幂等;跨月重复由领取接口锁支付单并跨分区查询兜底 |
 | `idx_refund_record_payment_order` | `payment_order_id`, `requested_at` | 普通 | 查支付单的所有退款 |
 | `idx_refund_record_user_status` | `user_id`, `status`, `requested_at` | 普通 | 我的退款列表 |
 | `idx_refund_record_status_retry` | `status`, `retry_count`, `requested_at` | 普通 | worker 扫表重试 |
@@ -522,13 +523,13 @@ PARTITION BY RANGE (TO_DAYS(created_month)) (
 ### 业务规则
 
 **核心退款流程(全自动)**:
-- **触发**:`charge_order` 状态变更为 `failed` / `cancelled`(60s 内)→ user 反查对应的 `payment_order`(通过 `biz_id` + `biz_type='charge'`)→ 写 `refund_record(payment_order_id=...)` + 发布 `refund_required_stream` 事件
-- **执行**:worker 消费事件 → 调微信退款 API → 成功:更新 `status='success'` + `wechat_refund_id` + 发布 `comp_tx_stream`;失败:**指数退避重试** 4 次(1s / 5s / 30s / 2min),期间 `status='retrying'`;4 次全失败 → `status='failed'` + 客户财务 PC 后台人工处理
+- **触发**:启动失败或取消后迟到支付时,user 写补偿 outbox;billing 按支付实额发布 `refund_required_stream`。仅 `payment_order.status='success'` 才能触发微信退款。
+- **执行**:admin 消费退款事件 → 调 user 内部接口幂等领取 `refund_record` → 调微信退款 API → 经 user 内部接口回写成功/失败;失败由 user 定时任务按原退款单号查询并重试,4 次全失败转客户财务人工处理。
 
 **微信 API 失败重试策略(资金安全关键)**:
-- 重试触发:worker 调微信退款 API 返回非 success,且错误码属于"可重试"类(5xx / 网络超时 / `INVALID_REQUEST` 但未明确拒绝)
+- 重试触发:admin 调微信退款 API 返回非 success,且错误码属于"可重试"类(5xx / 网络超时 / 状态未知);user 记录下次重试时间并与 admin 协同复核微信原退款单号
 - 不可重试(立即入人工):商户号异常(`MERCHANT_NOT_EXISTS`) / 余额不足(`NOT_ENOUGH`) / 已退款(`REFUND_NOT_AVAILABLE`)/ 超 1 年(`TRADE_OVER_TIME`) / 风控拦截(`RISK_CONTROL`)
-- 重试期间 `status='retrying'`,记录 `retry_count`;每次重试前 publish `refund_retry_stream` 事件,worker 消费重试
+- 重试期间 `status='retrying'`,记录 `retry_count` / `next_retry_at`;由 user 服务定时任务扫描本 schema 待重试退款,经微信查询原退款单号后再决定是否重试,不依赖未登记的 Stream
 - 4 次全失败:`status='failed'`,`fail_reason` 填最后一次的错误信息 + 告警运维 + DLQ 兜底
 
 **已结算后退款(仅客户财务可发起)**:
@@ -638,7 +639,7 @@ PARTITION BY RANGE (TO_DAYS(created_month)) (
 
 ### 业务规则
 
-- **发放**(系统活动):worker 消费 `coupon_grant_required_stream` → 查 `coupon` 模板 → 校验未超 `total_limit` / 用户未超 `user_limit` → INSERT `coupon_grant(status='unused')` + UPDATE `coupon.granted_count`
+- **发放**(系统活动):user 消费 `coupon_grant_required_stream` → 经 admin 内部接口查 `coupon` 模板 → 校验未超 `total_limit` / 用户未超 `user_limit` → INSERT `coupon_grant(status='unused')`;admin 的 `granted_count` 由发券结果回传更新
 - **发放**(手机号绑定):user 完成手机号绑定 → 查"绑定赠送"类模板 → INSERT `coupon_grant` + 推送"您获得 X 优惠券"小程序消息
 - **使用**(组合支付下单核销):user 收到组合支付请求 → 校验 `coupon_grant.status='unused'` + 在有效期 + 满足 `min_spend_cents` → 创建主单 `payment_order(pay_components 含 coupon 项)` → 事务内 UPDATE `coupon_grant(status='used', used_payment_order_id=$主单.id, used_at)`(优惠券核销与主单创建在同事务,避免券被重复使用)
 - **过期清理**:worker 每日扫表 → `status='unused'` 且 `valid_until < NOW()` → UPDATE `status='expired'`
@@ -1179,7 +1180,7 @@ PARTITION BY RANGE (TO_DAYS(created_month)) (
 
 ### 业务规则
 
-- **写入**:`POST /api/v1/user/payment/wechat/callback` 入口处理回调 → 校验签名 → 查 `payment_callback_idempotent` → 不存在则 INSERT + 处理回调;存在则直接返回 200 OK(不重复处理)
+- **写入**:`POST /api/v1/public/payment/wechat/callback` 验签后按 `out_trade_no` 定位支付单;首次成功回调在同一事务内 INSERT 本表、更新支付单并写 `event_outbox`;重复回调不重复入账,但必须保留待发布 outbox 供发布器重试
 - **清理**:worker 每日 04:00 跑 `DELETE FROM payment_callback_idempotent WHERE created_at < NOW() - 30 DAY`(物理删除,不软删)
 - **不存敏感信息**:`wechat_raw_payload` 仅保留必要字段(支付单号/金额/时间),不存用户敏感数据
 
@@ -1344,5 +1345,39 @@ PARTITION BY RANGE (TO_DAYS(created_month)) (
 
 ---
 
-**user_db 全部 16 张表设计完成**
+## 表 17:`user_db.active_port_charge`
 
+**业务说明**:端口当前充电占用的数据库兜底表,不分区。Redis 逻辑锁和物理锁只负责短期协调;跨月唯一性由本表的 `port_id` 主键保证。
+
+| 字段 | 类型 | 约束 | 说明 |
+| --- | --- | --- | --- |
+| `port_id` | `VARCHAR(32)` | PK, NOT NULL | 全局端口 ID;一端口最多一行 |
+| `charge_order_id` | `BIGINT UNSIGNED` | UNIQUE, NOT NULL | 当前充电订单 ID |
+| `order_no` | `CHAR(32)` | UNIQUE, NOT NULL | 当前订单号,供 Redis 锁持有者比对 |
+| `started_at` | `DATETIME(3)` | NOT NULL | 占用生效时间 |
+
+user 服务收到 gateway 的启动成功结果后,**在同一 `user_db` 事务内**先 `INSERT active_port_charge`,再将对应 `charge_order` 更新为 `charging`;主键冲突时不得把第二笔订单置为 `charging`,应进入启动异常与退款补偿。订单结束、启动失败或人工确认设备断电后,仅执行带 `port_id` **和** `charge_order_id` 条件的删除。超时不能仅凭 Redis TTL 删除本表;必须核对设备状态与订单状态。禁止 gateway 直写本表。
+
+---
+
+## 表 18:`user_db.event_outbox`
+
+**业务说明**:支付回调等事务需要可靠发布的 Stream 事件。写业务状态与写 outbox 在同一 `user_db` 事务内完成;事务外的 user 发布器按 `next_retry_at` 扫描并重试,收到 Redis `XADD` 确认后才标记 `published`。
+
+| 字段 | 类型 | 约束 | 说明 |
+| --- | --- | --- | --- |
+| `id` | `BIGINT UNSIGNED` | PK, AUTO_INCREMENT | outbox ID |
+| `event_key` | `VARCHAR(128)` | UNIQUE, NOT NULL | 业务幂等键,如 `charge-start:{payment_order_id}` |
+| `stream_name` | `VARCHAR(64)` | NOT NULL | 目标 Stream,如 `charge_started_stream` / `comp_tx_stream` |
+| `payload` | `JSON` | NOT NULL | 含 `event_key`、`order_id`、事件类型和必要参数 |
+| `status` | `ENUM('pending','published')` | NOT NULL | 发布状态 |
+| `attempt_count` | `INT UNSIGNED` | NOT NULL | 已尝试次数 |
+| `next_retry_at` | `DATETIME(3)` | NOT NULL | 下次重试时间 |
+| `published_at` | `DATETIME(3)` | NULL | 成功发布时间 |
+| `created_at` | `DATETIME(3)` | NOT NULL | 创建时间 |
+
+发布器可重复 `XADD`;消费方以 `event_key` 去重,不得只依赖 Redis 自动生成的 Stream entry ID。未发布记录持续重试并告警;已发布记录至少保留至消费确认和对账完成。回调幂等表只阻止重复入账,**不能替代 outbox 的投递状态**。
+
+---
+
+**user_db 全部 18 张表设计完成**
