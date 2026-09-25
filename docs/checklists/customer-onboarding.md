@@ -14,7 +14,7 @@
 ## 二、客户环境就绪
 
 - [ ] 云服务器到位(最低 4 核 / 8GB / 100GB SSD,带 ≥ 10 Mbps 公网带宽)
-- [ ] 域名 ICP 备案 + 解析到服务器公网 IP(`api.<customer-domain>`)
+- [ ] 域名 ICP 备案 + 解析到服务器公网 IP(`<customer-domain>`)
 - [ ] 域名 SSL 准备(Let's Encrypt 自动走 Caddy;若有自有证书,先导入)
 - [ ] OSS / 对象存储桶(如客户自购阿里云 OSS 或 AWS S3,用于 OTA 固件包)
 - [ ] 异地备份目标到位(OSS 桶 / 备用机,二选一)

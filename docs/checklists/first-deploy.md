@@ -8,7 +8,7 @@
 ## 一、服务器准备
 
 - [ ] 服务器合规:最低 4 核 8GB 100GB SSD(见 `技术规格.md` § 10.2)
-- [ ] 公网 IP + 域名解析到位(`api.<customer-domain>`)
+- [ ] 公网 IP + 域名解析到位(`<customer-domain>`)
 - [ ] 80 / 443 端口可对外(Let's Encrypt ACME HTTP-01 需要)
 - [ ] 9100 / 1883 端口仅在内网 / 设备网段开放(不进公网!)
 
@@ -33,11 +33,11 @@
 - [ ] 各服务 healthcheck:`curl http://<server>:8081/health`、`curl http://<server>:8082/health`
 - [ ] 看 readiness:`curl http://<server>:8081/ready` 应该返回 200
 - [ ] Caddy 自动申请证书:日志看 `obtained certificate`
-- [ ] 验证 HTTPS:`curl -v https://api.<customer-domain>/api/v1/public/auth/login -X POST` 应该 200 而非 SSL 错误
+- [ ] 验证 HTTPS:`curl -v https://<customer-domain>/api/v1/public/auth/login -X POST` 应该 200 而非 SSL 错误
 
 ## 五、PC 后台首次配置
 
-- [ ] 打开 `https://api.<customer-domain>/admin/login`
+- [ ] 打开 `https://<customer-domain>/admin/login`
 - [ ] 用初始管理员账号登录(密码在 `.env.example` 注释里)
 - [ ] **立即修改密码** + 配置双因素(本期不支持,只改密码)
 - [ ] 上传 Logo / 主题色 / 应用名称
@@ -79,8 +79,8 @@
 ## 九、合规 / 安全
 
 - [ ] 等保三级:`docs/checklists/equal-protection-l3.md` 跑通
-- [ ] TLS 1.3 + 强加密套件:`nmap --script ssl-enum-ciphers api.<customer-domain>` 看输出
-- [ ] HSTS:`curl -I https://api.<customer-domain>` 看 `Strict-Transport-Security` header
+- [ ] TLS 1.3 + 强加密套件:`nmap --script ssl-enum-ciphers <customer-domain>` 看输出
+- [ ] HSTS:`curl -I https://<customer-domain>` 看 `Strict-Transport-Security` header
 - [ ] JWT 密钥轮转演练:`技术规格.md` § 9.2 — 模拟改 JWT_SECRET → 重启 → 旧 token 失效
 
 ## 十、上线报告
