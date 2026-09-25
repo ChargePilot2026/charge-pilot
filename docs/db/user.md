@@ -32,6 +32,8 @@
 | `wallet_account` | 用户余额账户(1:1) | 不分 | ~50 万 |
 | `wallet_txn` | 余额流水 | 按月分区(§ 4.8) | ~500 万 |
 | `refund_record` | 退款记录(关联 `payment_order.id`) | 按月分区(隐含) | ~200 万 |
+| **`refund_reconcile_diff`** | **每日对账差异记录**(微信账单 vs 内部退款) | 不分 | ~5000/年 |
+| **`risk_freeze_log`** | **风控冻结记录**(频次/金额触发) | 不分 | ~1000/年 |
 | `coupon` | 优惠券模板 | 不分 | ~1000 |
 | `coupon_grant` | 优惠券发放记录(用户持有,使用时关联 `payment_order.id`) | 不分 | ~500 万 |
 | `membership_card` | 会员卡(本期预留,数据可能为空) | 不分 | ~10 万 |
@@ -39,7 +41,7 @@
 | `port_view` | 找桩缓存(冗余自 gateway_db,加速查询) | 不分 | ~5000 |
 | `payment_callback_idempotent` | 微信支付回调幂等表 | 不分 | ~200 万 |
 
-> **本文件首批设计 6 张核心表**:`user` / `charge_order` / `payment_order` / `wallet_account` / `refund_record` / `coupon_grant`。
+> **本文件首批设计 8 张核心表**:`user` / `charge_order` / `payment_order` / `wallet_account` / `refund_record` / `refund_reconcile_diff` / `risk_freeze_log` / `coupon_grant`。
 > 剩余 6 张(`wallet_txn` / `coupon` / `membership_card` / `invoice_request` / `port_view` / `payment_callback_idempotent`)在第二批设计。
 
 ### 关键架构决策(本批次)
@@ -383,10 +385,13 @@
 | `user_id` | `BIGINT UNSIGNED` | NOT NULL | — | 关联 `user.id` |
 | `refund_no` | `CHAR(32)` | UNIQUE, NOT NULL | — | 业务退款单号,格式 `RF + YYYYMMDD + 12 位随机` |
 | `refund_cents` | `BIGINT` | NOT NULL | — | 退款金额(分) |
-| `refund_reason` | `ENUM('charge_failed','timeout','user_cancel_60s','plug_pulled','meter_abnormal','manual','recharge_refund')` | NOT NULL | — | 退款原因;`recharge_refund` 用于钱包充值退款场景 |
+| `refund_reason` | `ENUM('charge_failed','timeout','user_cancel_60s','plug_pulled','meter_abnormal','manual','recharge_refund','post_settled_reversal')` | NOT NULL | — | 退款原因;`recharge_refund` 用于钱包充值退款;`post_settled_reversal` 仅客户财务可发起,账单已结后反向冲账 |
 | `refund_method` | `ENUM('wechat','wallet')` | NOT NULL | — | 退款方式(原路返回) |
 | `wechat_refund_id` | `VARCHAR(64)` | UNIQUE NULL | NULL | 微信退款单号(幂等键) |
-| `status` | `ENUM('pending','success','failed','manual_review')` | NOT NULL | `'pending'` | 退款状态 |
+| `status` | `ENUM('pending','retrying','success','failed','manual_review')` | NOT NULL | `'pending'` | 退款状态;`retrying` 表示微信 API 失败后指数退避重试中 |
+| `settled_at` | `DATETIME(3)` | NULL | NULL | **关联 payment_order 的账单结清时间**(NULL = 未结清;非 NULL = 已结清,只有客户财务角色可发起退款) |
+| `frozen_by_risk` | `BOOLEAN` | NOT NULL | `FALSE` | **是否被风控冻结**(频次或金额触发,需人工审核) |
+| `risk_freeze_log_id` | `BIGINT UNSIGNED` | NULL | NULL | 关联 `risk_freeze_log.id`(被冻结时填) |
 | `fail_reason` | `VARCHAR(256)` | NULL | NULL | 失败原因(微信退款 API 报错等) |
 | `retry_count` | `TINYINT UNSIGNED` | NOT NULL | `0` | 已重试次数(最多 3 次) |
 | `requested_at` | `DATETIME(3)` | NOT NULL | — | 退款申请时间 |
@@ -426,10 +431,42 @@
 
 ### 业务规则
 
+**核心退款流程(全自动)**:
 - **触发**:`charge_order` 状态变更为 `failed` / `cancelled`(60s 内)→ user 反查对应的 `payment_order`(通过 `biz_id` + `biz_type='charge'`)→ 写 `refund_record(payment_order_id=...)` + 发布 `refund_required_stream` 事件
-- **执行**:worker 消费事件 → 调微信退款 API → 成功:更新 `status='success'` + `wechat_refund_id` + 发布 `comp_tx_stream`;失败:重试 3 次 → `status='failed'` → 客户财务 PC 后台人工处理
-- **计量异常**:billing 检测到电量异常 → 不自动退款 → `refund_record(status='manual_review')` + 客户 PC 后台通知运维
-- **充值退款**:`recharge_refund` 场景下,用户申请退回充值款项 → 写 `refund_record(payment_order_id=$充值订单.id)` + 走微信退款原路返回
+- **执行**:worker 消费事件 → 调微信退款 API → 成功:更新 `status='success'` + `wechat_refund_id` + 发布 `comp_tx_stream`;失败:**指数退避重试** 4 次(1s / 5s / 30s / 2min),期间 `status='retrying'`;4 次全失败 → `status='failed'` + 客户财务 PC 后台人工处理
+
+**微信 API 失败重试策略(资金安全关键)**:
+- 重试触发:worker 调微信退款 API 返回非 success,且错误码属于"可重试"类(5xx / 网络超时 / `INVALID_REQUEST` 但未明确拒绝)
+- 不可重试(立即入人工):商户号异常(`MERCHANT_NOT_EXISTS`) / 余额不足(`NOT_ENOUGH`) / 已退款(`REFUND_NOT_AVAILABLE`)/ 超 1 年(`TRADE_OVER_TIME`) / 风控拦截(`RISK_CONTROL`)
+- 重试期间 `status='retrying'`,记录 `retry_count`;每次重试前 publish `refund_retry_stream` 事件,worker 消费重试
+- 4 次全失败:`status='failed'`,`fail_reason` 填最后一次的错误信息 + 告警运维 + DLQ 兜底
+
+**已结算后退款(仅客户财务可发起)**:
+- **前置条件**:`payment_order.settled_at IS NOT NULL`(账单已结清)
+- **权限控制**:仅 `customer_finance` 角色可发起;普通客服 / 巡检 / 用户自身**均不可发起**
+- **流程**:客户财务在 admin PC 后台"售后管理"选 payment_order → 填金额 → 提交 → 写 `refund_record(refund_reason='post_settled_reversal', settled_at=...)` + 强制走微信原路退 + 反向冲账记账
+- **审计**:PC 后台记录"谁 / 何时 / 为什么退"的完整操作日志(不可删)
+
+**风控冻结(频次 + 金额双重)**:
+- **频次规则**:同用户 5 min 内发起 ≥ 3 笔退款 → 自动冻结
+- **金额规则**:单笔退款 ≥ 500 元 → 自动冻结
+- **触发流程**:worker 在调微信退款前先校验规则;命中 → `refund_record(status='manual_review', frozen_by_risk=TRUE, risk_freeze_log_id=$对应记录.id)`,**不调微信 API** + 推送"您的退款需要审核"小程序消息
+- **人工审核**:客户财务 / 客服坐席在 admin PC 后台"风控冻结队列"处理 → 通过:UPDATE `status='pending'` + worker 继续调微信退;拒绝:UPDATE `status='failed', fail_reason='risk_rejected'` + 推送"退款未通过审核"
+- **规则配置**:阈值(频次 N / 时间窗 / 金额)在 admin PC 后台"风控配置"中可调
+
+**每日对账(03:00)**:
+- worker 拉昨日微信退款账单(`/v3/merchant/fund/refund/out-bill-no` 接口)
+- 与 `refund_record` JOIN 对比:
+  - 微信有退 + 系统无记录 → `refund_reconcile_diff(diff_type='missing_internal')` —— 严重,**需立即人工**(钱可能漏记账)
+  - 系统有记录 + 微信无退 → `diff_type='missing_wechat'` —— 检查 `status`,可能重试中或失败
+  - 金额不一致 → `diff_type='amount_mismatch'`
+  - 状态不一致(微信 success / 系统 retrying)→ `diff_type='status_mismatch'`
+- 差异入 `refund_reconcile_diff` 表 + Webhook 告警客户财务
+- 客户财务处理后 UPDATE `resolved=TRUE, resolved_by, resolved_at, resolved_note`
+
+**其他规则**:
+- **计量异常**:billing 检测到电量异常 → 不自动退款 → `refund_record(status='manual_review', refund_reason='meter_abnormal')` + 客户 PC 后台通知运维
+- **充值退款**:`recharge_refund` 场景下,用户申请退回充值款项 → 系统校验余额与累计可退额 → 写 `refund_record(payment_order_id=$充值订单.id, refund_reason='recharge_refund')` + 走微信退款原路返回
 - **多次部分退款**:支持,但需应用层校验累计不超 `payment_order.paid_fee_cents`
 
 ---
@@ -502,5 +539,142 @@
 ---
 
 **本批次结束**
+
+> 剩余 6 张表(`wallet_txn` / `coupon` 模板 / `membership_card` / `invoice_request` / `port_view` / `payment_callback_idempotent`)将在第二批设计,沿用本文件的"通用约定"和表设计格式。
+
+---
+
+## 表 7:`user_db.refund_reconcile_diff`
+
+**业务说明**:**每日对账差异记录**(微信账单 vs 内部 `refund_record`)。每日 03:00 worker 拉微信退款账单,与 `refund_record` 对比,差异入表 + 告警。
+
+**关键业务规则**:
+
+- 每日对账,覆盖昨日全部退款
+- 4 种差异类型,严重程度不同:`missing_internal` 最严重(钱可能漏记账)
+- 差异入表后**必须**人工处理,不能自动修复
+- 软删除:差异处理完成后软删,保留审计追溯
+
+### 字段定义
+
+| 字段 | 类型 | 约束 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `id` | `BIGINT UNSIGNED` | PK, AUTO_INCREMENT | — | 主键 |
+| `reconcile_date` | `DATE` | NOT NULL | — | 对账日期(对账的是哪天的数据) |
+| `wechat_refund_id` | `VARCHAR(64)` | NULL | NULL | 微信退款单号(微信账单侧) |
+| `wechat_amount_cents` | `BIGINT` | NULL | NULL | 微信账单金额(分) |
+| `wechat_status` | `VARCHAR(32)` | NULL | NULL | 微信账单退款状态(SUCCESS / PROCESSING / CLOSED 等) |
+| `internal_refund_id` | `BIGINT UNSIGNED` | NULL | NULL | 内部 `refund_record.id`(系统侧) |
+| `internal_amount_cents` | `BIGINT` | NULL | NULL | 内部 `refund_record.refund_cents` |
+| `internal_status` | `ENUM('pending','retrying','success','failed','manual_review')` | NULL | NULL | 内部退款状态 |
+| `diff_type` | `ENUM('missing_internal','missing_wechat','amount_mismatch','status_mismatch')` | NOT NULL | — | **差异类型**:`missing_internal` 微信退了但系统无记录(最严重)/ `missing_wechat` 系统有但微信无(可能重试中)/ `amount_mismatch` 金额不一致 / `status_mismatch` 状态不一致 |
+| `severity` | `ENUM('critical','high','medium','low')` | NOT NULL | — | 严重程度,critical = `missing_internal`,其他按情况 |
+| `resolved` | `BOOLEAN` | NOT NULL | `FALSE` | 是否已处理 |
+| `resolved_by` | `BIGINT UNSIGNED` | NULL | NULL | 处理人(客户财务 user_id) |
+| `resolved_at` | `DATETIME(3)` | NULL | NULL | 处理时间 |
+| `resolved_note` | `VARCHAR(512)` | NULL | NULL | 处理备注 |
+| `created_at` | `DATETIME(3)` | NOT NULL | — | 创建时间 |
+| `updated_at` | `DATETIME(3)` | NOT NULL | — | 更新时间 |
+| `deleted_at` | `DATETIME(3)` | NULL | NULL | 软删除时间 |
+| `deleted_by` | `BIGINT UNSIGNED` | NULL | NULL | 删除操作者 ID |
+
+### 索引
+
+| 索引名 | 字段 | 类型 | 用途 |
+| --- | --- | --- | --- |
+| `pk_refund_reconcile_diff` | `id` | 主键 | — |
+| `idx_refund_reconcile_diff_date_resolved` | `reconcile_date`, `resolved` | 普通 | 客户财务查未处理差异列表 |
+| `idx_refund_reconcile_diff_type_severity` | `diff_type`, `severity`, `resolved` | 普通 | 按类型筛选(优先处理 critical) |
+| `idx_refund_reconcile_diff_deleted_at` | `deleted_at` | 普通 | 物理归档扫描 |
+
+### 约束
+
+- `resolved=TRUE` 时,`resolved_by` / `resolved_at` / `resolved_note` 必须 NOT NULL
+- `diff_type='missing_internal'` 时,`wechat_refund_id` NOT NULL,`internal_refund_id` NULL
+- `diff_type='missing_wechat'` 时,`internal_refund_id` NOT NULL,`wechat_refund_id` NULL
+- `diff_type IN ('amount_mismatch','status_mismatch')` 时,两个 id 都不能 NULL
+
+### 关系
+
+- 可选关联 → `refund_record.id`(差异类型含 internal 时)
+- 不关联 `payment_order` / `charge_order`(只看退款本身)
+
+### 业务规则
+
+- **触发**:worker 每日 03:00 拉昨日微信退款账单(微信 `/v3/merchant/fund/refund/out-bill-no` 接口)
+- **对比**:逐笔与 `refund_record` 按 `wechat_refund_id` 关联对比 → 不一致即写入
+- **告警**:`severity='critical'` 立即触发 Webhook + 短信(若客户配置)→ 客户财务;其他类型次日 PC 后台提醒
+- **处理**:客户财务在 admin PC 后台"对账差异"页面查未处理项 → 选处理方式(补记 / 联系微信客服 / 标记为已知)+ 填备注 → UPDATE `resolved=TRUE`
+- **不自动修复**:差异是资金问题,任何自动修复都可能放大错误,**只人工处理**
+
+---
+
+## 表 8:`user_db.risk_freeze_log`
+
+**业务说明**:**风控冻结记录**。频次(5 min 内 ≥ 3 笔)或金额(单笔 ≥ 500 元)触发退款风控时,写一条冻结记录 + 关联的 `refund_record.status='manual_review'`。
+
+**关键业务规则**:
+
+- **频次 + 金额双重风控**(老杨师傅决策)
+- 触发 = 自动冻结,不调微信 API
+- 必须人工审核(客户财务 / 客服坐席)后才继续走退款
+- 软删除:审核完成后软删,保留审计
+
+### 字段定义
+
+| 字段 | 类型 | 约束 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `id` | `BIGINT UNSIGNED` | PK, AUTO_INCREMENT | — | 主键 |
+| `user_id` | `BIGINT UNSIGNED` | NOT NULL | — | 触发用户 |
+| `freeze_type` | `ENUM('frequency_5min_3','amount_500')` | NOT NULL | — | **冻结类型**:`frequency_5min_3` 频次规则(5 min 内 ≥ 3 笔退款)/ `amount_500` 金额规则(单笔 ≥ 500 元) |
+| `trigger_refund_id` | `BIGINT UNSIGNED` | NOT NULL | — | 触发的 `refund_record.id`(被冻结的那笔退款) |
+| `trigger_amount_cents` | `BIGINT` | NOT NULL | — | 触发金额(分) |
+| `trigger_count_5min` | `TINYINT UNSIGNED` | NULL | NULL | 频次规则触发时:5 min 内的退款笔数 |
+| `threshold_snapshot` | `JSON` | NULL | NULL | 触发当时的阈值快照(`{frequency_count:3, frequency_window_seconds:300, amount_cents:50000}`),便于审计 |
+| `status` | `ENUM('frozen','approved','rejected')` | NOT NULL | `'frozen'` | 状态:frozen 待审 / approved 通过(继续退款)/ rejected 拒绝(不退款) |
+| `reviewed_by` | `BIGINT UNSIGNED` | NULL | NULL | 审核人(客户财务 / 客服坐席 user_id) |
+| `reviewed_at` | `DATETIME(3)` | NULL | NULL | 审核时间 |
+| `review_note` | `VARCHAR(512)` | NULL | NULL | 审核备注 |
+| `push_notified` | `BOOLEAN` | NOT NULL | `FALSE` | 是否已推送"您的退款需要审核"小程序消息 |
+| `created_at` | `DATETIME(3)` | NOT NULL | — | 创建时间 |
+| `updated_at` | `DATETIME(3)` | NOT NULL | — | 更新时间 |
+| `deleted_at` | `DATETIME(3)` | NULL | NULL | 软删除时间 |
+| `deleted_by` | `BIGINT UNSIGNED` | NULL | NULL | 删除操作者 ID |
+
+### 索引
+
+| 索引名 | 字段 | 类型 | 用途 |
+| --- | --- | --- | --- |
+| `pk_risk_freeze_log` | `id` | 主键 | — |
+| `idx_risk_freeze_log_user_status` | `user_id`, `status`, `created_at` | 普通 | 查某用户的所有冻结记录 |
+| `idx_risk_freeze_log_status_created` | `status`, `created_at` | 普通 | 客户财务查待审队列 |
+| `idx_risk_freeze_log_trigger_refund` | `trigger_refund_id` | 唯一 | 1 笔退款 = 最多 1 条冻结记录 |
+| `idx_risk_freeze_log_deleted_at` | `deleted_at` | 普通 | 物理归档扫描 |
+
+### 约束
+
+- `freeze_type='frequency_5min_3'` 时,`trigger_count_5min` NOT NULL(≥ 3)
+- `freeze_type='amount_500'` 时,`trigger_amount_cents >= 50000`(分)
+- `status='approved'` 时,`reviewed_by` / `reviewed_at` NOT NULL;审核后对应的 `refund_record.status` 更新为 `'pending'`,worker 继续调微信退
+- `status='rejected'` 时,`reviewed_by` / `reviewed_at` / `review_note` NOT NULL;对应的 `refund_record.status` 更新为 `'failed', fail_reason='risk_rejected'`
+- `status='frozen'` 时,`reviewed_by` / `reviewed_at` NULL
+
+### 关系
+
+- 多对一 → `user.id`(触发用户)
+- 一对一 → `refund_record.id`(触发的退款记录,`trigger_refund_id` 唯一索引保证)
+
+### 业务规则
+
+- **触发 - 频次**:worker 在调微信退款前查 `refund_record` 近 5 min 内同 user_id 的笔数(不含已 rejected) → ≥ 3 → INSERT `risk_freeze_log` + UPDATE 触发的 `refund_record(status='manual_review', frozen_by_risk=TRUE, risk_freeze_log_id=$id)`
+- **触发 - 金额**:worker 校验 `refund_record.refund_cents >= 50000` → 同上
+- **不调微信 API**:冻结后**直接跳过**微信退款调用,等人工审核
+- **推送通知**:`push_notified=TRUE` 后发小程序消息"您的退款正在审核中,预计 2 小时内完成"
+- **人工审核**:客户财务 / 客服坐席在 admin PC 后台"风控冻结队列" → 通过:`status='approved'` + 触发 `refund_record.status='pending'` + worker 重新调度;拒绝:`status='rejected'` + 触发 `refund_record.status='failed'` + 推送"退款审核未通过"消息
+- **阈值可配**:客户在 admin PC 后台"风控配置"调整阈值(`frequency_count` / `frequency_window_seconds` / `amount_cents`),调整时 UPDATE `threshold_snapshot` 字段记录历史
+
+---
+
+**本批次结束(8 张核心表)**
 
 > 剩余 6 张表(`wallet_txn` / `coupon` 模板 / `membership_card` / `invoice_request` / `port_view` / `payment_callback_idempotent`)将在第二批设计,沿用本文件的"通用约定"和表设计格式。
