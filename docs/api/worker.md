@@ -44,6 +44,94 @@
 - worker **不直接面向用户或 PC 后台**
 - worker **通过 HTTP 回调 admin / user / gateway / billing 服务**实现业务动作(详见各任务流程)
 - worker **只对自己的 schema(worker_db)有读写权限**(§ 4.2)
+- worker **对外提供 3 个内部 HTTP 端点**(详见 § 零),供 admin 等服务查询任务状态(因为任务存于 `worker_db.scheduled_task`,admin 服务不直连)
+
+---
+
+## 零、内部 HTTP 端点(共 3 个)
+
+> 所有路径在 worker 服务监听 `:8085`(**仅内网可达**,Docker Compose 内服务间调用);鉴权为服务间共享密钥(§ 通用约定)。
+> worker 服务以 **Stream 消费 + 定时任务** 为主,本节 HTTP 端点仅供 **任务状态查询**(因为任务数据在 `worker_db`,其他服务通过 HTTP 拉,避免跨 schema 直连)。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/v1/internal/export/tasks/{task_id}` | 查询导出任务状态(admin 端 `GET /api/v1/admin/export/tasks/{task_id}` 调此) |
+| GET | `/api/v1/internal/scheduled-tasks/{task_code}/last-run` | 查询某个定时任务最近一次执行状态(供 admin 监控面板) |
+| POST | `/api/v1/internal/scheduled-tasks/{task_code}/trigger` | 手动触发某个定时任务(供运维 / admin 调试用) |
+
+### `GET /api/v1/internal/export/tasks/{task_id}`
+
+**鉴权**:服务间共享密钥
+**触发场景**:admin 端导出任务面板轮询(本期每 2s 一次)
+
+**响应(200)**:
+```json
+{
+  "code": 0,
+  "data": {
+    "task_id": 501,
+    "task_code": "export_run",
+    "status": "completed",                  // "queued" / "running" / "completed" / "failed"
+    "estimated_rows": 12345,
+    "estimated_size_mb": 5,
+    "file_url": "https://oss.example.com/exports/orders-2026-09-25.csv?sign=xxx",
+    "file_url_expires_at": "2026-09-25T17:30:00Z",  // OSS 临时签名 URL 30 min 过期
+    "error_message": null,
+    "created_at": "2026-09-25T17:00:00Z",
+    "completed_at": "2026-09-25T17:00:30Z"
+  }
+}
+```
+
+**业务逻辑**:
+1. 查 `worker_db.scheduled_task WHERE task_code='export_run' AND id=$task_id` → 不存在返回 `1004`
+2. 从 `task_execution_log` 拿最近一次执行状态(STATUS / 耗时 / OSS 文件 URL)
+3. `status='completed'` 时返回 `file_url`(OSS 预签名 URL,30 min 过期)
+4. `status='failed'` 时返回 `error_message`(供 admin 端展示)
+
+**错误码**:
+- `1004`: 任务不存在
+- `5003`: worker_db 暂时不可用
+
+### `GET /api/v1/internal/scheduled-tasks/{task_code}/last-run`
+
+**响应(200)**:
+```json
+{
+  "code": 0,
+  "data": {
+    "task_code": "daily_refund_reconcile",
+    "last_run_at": "2026-09-25T03:00:00Z",
+    "last_run_status": "success",           // success / failed / timeout
+    "last_run_duration_ms": 1234,
+    "consecutive_fail_count": 0,
+    "next_run_at": "2026-09-26T03:00:00Z"
+  }
+}
+```
+
+### `POST /api/v1/internal/scheduled-tasks/{task_code}/trigger`
+
+**鉴权**:服务间共享密钥(限制仅 admin 服务可调)
+**业务目标**:运维手动触发某个定时任务(例如某次对账失败后人工补跑)
+
+**请求体**:
+```json
+{
+  "trigger_reason": "对账失败人工补跑",  // 必填,写 task_execution_log.comment
+  "force": false                          // true = 强制执行,即使 status='paused'
+}
+```
+
+**业务逻辑**:
+1. 查 `scheduled_task WHERE task_code=$code AND status IN ('enabled','paused')`
+2. `force=false` 时,仅 `enabled` 状态可触发;`force=true` 时允许 paused 状态
+3. 异步触发 `handler`(立即入队,不等下次 cron)
+4. 写 `task_execution_log(triggered_by='admin_api', trigger_reason=...)`
+
+**错误码**:
+- `1004`: 任务码不存在
+- `1005`: 状态不允许(`enabled` 之外 + `force=false`)
 
 ---
 
@@ -137,6 +225,7 @@ worker 消费 comp_tx_stream 事件
 | `alert_active_resolve` | internal | `0 */6 * * *`(每 6 小时) | `worker::alert_scan::auto_resolve` | 自动关闭超时未处理的告警(> 7 天) |
 | `dlq_replay_notice` | internal | `0 9 * * *`(每日 09:00) | `worker::dlq::daily_summary` | DLQ 日报(统计未处理数 + 发邮件给运维) |
 | `risk_config_warm_cache` | internal | `*/30 * * * *`(每 30 min) | `worker::cache::warm_risk_config` | 风控配置缓存预热 |
+| **`export_run`** | internal | **事件触发**(由 admin `POST /api/v1/admin/export/orders` 触发) | **`worker::export::run`** | **admin 导出任务执行器(本期承接 admin 端 `export_task` 表,跨服务方案) |
 
 > 客户可新增 `customer_config` 类型任务(如"每日导出某站点订单"),通过 admin 后台"定时任务"页创建;`handler` 受限(`worker::customer::*` 命名空间),cron 表达式合法性校验。
 
@@ -152,7 +241,9 @@ worker 消费 comp_tx_stream 事件
 **处理流程**:
 
 ```
-1. 拉取昨日微信退款账单(微信 API /v3/refund/.../refund-day)
+1. 拉取昨日微信退款账单(**TODO**:精确的微信 V3 账单下载 API path
+   本期未核实;候选:`/v3/bill/fundflowbill` 或 `/v3/pay/downloadfundflow`,
+   待 AI 协作者开工前查微信支付 V3 文档确认)
    → 写入临时表 `wechat_refund_bill_temp`(Redis 缓存足够)
 2. 拉取内部 user_db.refund_record WHERE created_at BETWEEN 昨日 00:00 - 今日 00:00
    → 通过 HTTP 调 user 服务(避免直连 user_db)

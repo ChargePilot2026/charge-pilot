@@ -73,9 +73,9 @@
 
 ### 审计要求(关键)
 
-- **所有写操作**(POST / PUT / DELETE)**必须产生 `audit_log`**:包含 `actor_id`(操作人)、`action`(操作类型)、`resource_type` / `resource_id`、`before_snapshot` / `after_snapshot`、`request_ip`、`created_at`
+- **所有写操作**(POST / PUT / PATCH / DELETE)**必须产生 `audit_log`**:包含 `actor_id`(操作人)、`action`(操作类型)、`resource_type` / `resource_id`、`before_snapshot` / `after_snapshot`、`request_ip`、`created_at`
 - 审计日志**不可修改 / 不可删除**(应用层 + 数据库权限双重保护)
-- 客户合规检查 / 等保测评会拉审计日志
+- 客户合规检查 / 等保测评会拉审计日志(沿用技术规格 § 9.5)
 
 ### 跨服务调用约定(关键)
 
@@ -1403,9 +1403,11 @@
 
 **业务逻辑**:
 1. 校验时间窗 ≤ 90 天(防止超大数据量导出导致 OOM)
-2. INSERT `export_task(status='queued', created_by=$actor.id, params=...)` + 写 `audit_log`
-3. **异步触发** worker 消费 `worker_db.scheduled_task`(按 worker 服务 § 3.5 `export_run` 任务调度)→ 生成 CSV → 上传 OSS → UPDATE `status='completed', file_url=...`
-4. 前端轮询 `GET /export/tasks/{task_id}` 查进度,完成后调 `/download` 拿 30 min 有效签名 URL
+2. 校验参数(filter / format / fields)合法
+3. **HTTP 调 worker 服务** `POST /api/v1/internal/scheduled-tasks/export_run/trigger`(路径详见 `docs/api/worker.md` § 零),请求体携带 filter / format / fields + 触发人信息
+4. 拿到 worker 返回的 `task_id` + 写 `admin_db.audit_log(action='export.create', params=...)`
+5. 前端轮询 `GET /api/v1/admin/export/tasks/{task_id}`(本节)→ admin 内部**透传**到 worker `GET /api/v1/internal/export/tasks/{task_id}`,从 worker 拿状态 / file_url
+6. 完成后前端调 `/download`(本节)→ admin 拿 worker 的 file_url(OSS 预签名 URL,30 min 过期)**直接返回给前端**(不再二次签名)
 
 **错误码**:
 - `1005`: 时间窗 > 90 天
@@ -1416,9 +1418,11 @@
 **鉴权**:[角色] `export.download`
 
 **业务逻辑**:
-1. 查 `export_task WHERE id=$task_id AND created_by=$actor.id` → 不存在返回 `2020`
+1. **HTTP 调 worker** `GET /api/v1/internal/export/tasks/{task_id}`(路径见 `docs/api/worker.md` § 零)
 2. 校验 `status='completed'` → 否则返回 `1005`(任务未完成)
-3. 生成 OSS **临时签名 URL**(30 min 过期)+ 返回
+3. 把 worker 返回的 `file_url`(OSS 临时签名 URL,**已含签名**,30 min 过期)直接透传给前端
+
+> **设计说明**:导出任务状态全部存于 `worker_db.scheduled_task`(本期方案,沿用 cross-reference § 4.2 注释);admin 端不建 `export_task` 表,避免跨 schema 直连(§ 4.2)。
 
 ---
 
@@ -1427,5 +1431,6 @@
 - 修改本文件需在 PR 标题写 `api(admin): <简短描述>`,并在 PR 描述中说明影响哪些端点
 - 任何新增 / 删除 / 修改端点必须同步更新 `services/admin/src/openapi.rs` 与本文件
 - CI 检查:OpenAPI 规范与本文件端点清单必须一致(脚本 `tools/check-api-consistency.ts`)
-- **跨服务一致性**:admin 通过 HTTP 调 user / gateway / billing 的内部接口命名,必须与对应服务 API 文档一致;新增 admin 端点若依赖 user / gateway / billing 接口,必须先在那两个服务的 API 文档中落地
+- **跨服务一致性**:admin 通过 HTTP 调 user / gateway / billing / worker 的内部接口命名,必须与对应服务 API 文档一致;新增 admin 端点若依赖其他服务接口,必须先在对方服务的 API 文档中落地路径
 - **审计一致性**:任何 admin 写端点必须在 `services/admin/src/audit_log.rs` 的 `audit_action!()` 宏中注册,否则 CI 拒绝合并
+- **导出任务**:统一由 worker 服务承接,详见 `docs/api/worker.md` § 零(本期新增 3 个内部 HTTP 端点)
