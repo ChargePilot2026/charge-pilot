@@ -47,6 +47,8 @@
 
 ### 字段定义
 
+> **P0-2 修正**:按月分区表 → 主键 / 唯一键加 `created_month` generated column(MySQL 8.4 强制要求分区字段出现在每个 UNIQUE / PRIMARY KEY)。
+
 | 字段 | 类型 | 约束 | 默认 | 说明 |
 | --- | --- | --- | --- | --- |
 | `id` | `BIGINT UNSIGNED` | PK, AUTO_INCREMENT | — | 主键 |
@@ -66,16 +68,30 @@
 | `pricing_rule_snapshot` | `JSON` | NOT NULL | — | **计费规则快照**(冗余当时的 `pricing_rule` 完整字段,即使规则改版也不影响审计) |
 | `calculated_at` | `DATETIME(3)` | NOT NULL | — | 计算时间 |
 | `created_at` | `DATETIME(3)` | NOT NULL | — | 入库时间 |
-| `partition_key` | `DATE` | NOT NULL | — | 分区键 |
+| `created_month` | `DATE` | GENERATED ALWAYS AS (DATE_FORMAT(`created_at`, '%Y-%m-01')) STORED | — | **P0-2 分区字段** |
 
 ### 索引
 
 | 索引名 | 字段 | 类型 | 用途 |
 | --- | --- | --- | --- |
-| `pk_fee_calculation` | `id` | 主键 | — |
-| `uk_fee_calculation_charge_order` | `charge_order_id` | 唯一 | 一笔充电订单 = 一条计费快照 |
+| `pk_fee_calculation` | `id`, `created_month` | 主键 | MySQL 8.4 分区约束 |
+| `uk_fee_calculation_charge_order` | `charge_order_id`, `created_month` | 唯一 | 一笔充电订单 = 一条计费快照(分区字段必带) |
 | `idx_fee_calculation_user_calculated` | `user_id`, `calculated_at` | 普通 | 用户计费历史查询 |
 | `idx_fee_calculation_pricing_rule` | `pricing_rule_id`, `calculated_at` | 普通 | 统计某规则的使用情况 |
+
+### 分区策略
+
+按 `created_month` 范围分区(滚动保留 36 个月):
+
+```sql
+PARTITION BY RANGE (TO_DAYS(created_month)) (
+  PARTITION p2026m01 VALUES LESS THAN (TO_DAYS('2026-02-01')),
+  ...
+  PARTITION pmax VALUES LESS THAN MAXVALUE
+);
+```
+
+物理归档:`DROP PARTITION` 3 年前的分区(`> 36 个月`)。
 
 ### 约束
 

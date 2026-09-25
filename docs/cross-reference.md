@@ -4,6 +4,21 @@
 > **维护工具**:`tools/check-api-consistency.ts`(检查端点路径、Stream 名、表名是否在文档中一致出现)
 > **最近一次同步**:2026-09-26(随 6 次 API docs commits 落地)
 
+> **Redis 实例拆分(P0-3 固化)**:业务缓存与事件流分两个 Redis 容器,避免 allkeys-lru 误淘汰 Stream 事件:
+> - `chargepilot-redis-cache`:DB 0,`allkeys-lru`,业务缓存(`snapshot:{order_id}` 等)
+> - `chargepilot-redis-stream`:DB 0,**`noeviction`**(Stream 不能被 LRU 淘汰),事件流(`device_event_stream` 等 9 个)
+> 两个 Redis **独立 `REDIS_PASSWORD`**,网络层走同一 `internal` docker network。
+> 详见 `docs/技术规格.md` § 4.7 + `examples/docker-compose.yml`。
+
+> **MySQL 8.4 分区约束(P0-2 固化)**:所有按月分区表,**主键 + 所有 UNIQUE 索引都必须包含分区字段**(否则 `ERROR 1503`)。
+> 分区字段统一用 generated column 命名:
+> - 按 `created_at` 分区:`created_month DATE`(默认)
+> - 聚合表按聚合时间:`bucket_month` / `hour_month`
+> 详见 `docs/技术规格.md` § 4.8 + 各 `db/*.md` 表的"索引"段。
+
+> **8 张核心按月分区表已落地 P0-2**:`user_db.charge_order` / `user_db.payment_order` / `user_db.refund_record` / `user_db.wallet_txn` / `user_db.feedback` / `billing_db.fee_calculation` / `gateway_db.telemetry_aggregate_15min` / `gateway_db.telemetry_aggregate_hourly`。
+> 其余按月分区表(admin 审计 / alert_event / webhook_delivery_log;gateway device_session / raw_frame_log / ota_command;worker task_execution_log / dlq_log 等)按相同模式迁移,本期不展开(由代码动工时按本规则生成)。
+
 ---
 
 ## § 1 Stream 名总账(§ 技术规格 5.1,**9 个**)

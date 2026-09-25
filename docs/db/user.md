@@ -1208,22 +1208,25 @@ PARTITION BY RANGE (TO_DAYS(created_month)) (
 
 ### 字段定义
 
+> **P0-2 修正**:按月分区表 → 主键 / 唯一键加 `created_month` generated column(MySQL 8.4 强制要求分区字段出现在每个 UNIQUE / PRIMARY KEY)。
+
 | 字段 | 类型 | 约束 | 默认 | 说明 |
 | --- | --- | --- | --- | --- |
 | `id` | `BIGINT UNSIGNED` | PK, AUTO_INCREMENT | — | 主键 |
-| `feedback_no` | `CHAR(32)` | UNIQUE, NOT NULL | — | 业务评价单号,格式 `FB + YYYYMMDD + 10 位随机` |
+| `feedback_no` | `CHAR(32)` | NOT NULL | — | 业务评价单号,格式 `FB + YYYYMMDD + 10 位随机` |
 | `user_id` | `BIGINT UNSIGNED` | NOT NULL | — | 关联 `user.id` |
 | `order_id` | `BIGINT UNSIGNED` | NOT NULL | — | 关联 `charge_order.id` |
 | `rating` | `TINYINT UNSIGNED` | NOT NULL | — | 评分 1-5(1 = 投诉最差 / 5 = 最佳) |
 | `comment` | `TEXT` | NULL | NULL | 文字评论(选填) |
-| `category` | `ENUM('experience','device','fee','speed','other')` | NOT NULL | — | 评价类别(体验/设备/费用/速度/其他) |
-| `is_complaint` | `BOOLEAN` | NOT NULL | `FALSE` | **是否投诉**(TRUE = 客户运营重点跟进) |
+| `category` | `ENUM('experience','device','fee','speed','other')` | NOT NULL | — | 评价类别 |
+| `is_complaint` | `BOOLEAN` | NOT NULL | `FALSE` | **是否投诉** |
 | `contact_back` | `BOOLEAN` | NOT NULL | `FALSE` | **是否希望客服回复** |
 | `status` | `ENUM('pending','reviewed','closed')` | NOT NULL | `'pending'` | 状态:待处理 / 已回复 / 已关闭 |
-| `reviewed_by` | `BIGINT UNSIGNED` | NULL | NULL | 处理人(客户运营 / 客服坐席 user_id) |
+| `reviewed_by` | `BIGINT UNSIGNED` | NULL | NULL | 处理人 |
 | `reviewed_at` | `DATETIME(3)` | NULL | NULL | 处理时间 |
-| `reply_comment` | `TEXT` | NULL | NULL | 客服回复内容(`contact_back=TRUE` 时填) |
+| `reply_comment` | `TEXT` | NULL | NULL | 客服回复内容 |
 | `created_at` | `DATETIME(3)` | NOT NULL | — | 创建时间 |
+| `created_month` | `DATE` | GENERATED ALWAYS AS (DATE_FORMAT(`created_at`, '%Y-%m-01')) STORED | — | **P0-2 分区字段** |
 | `updated_at` | `DATETIME(3)` | NOT NULL | — | 更新时间 |
 | `deleted_at` | `DATETIME(3)` | NULL | NULL | 软删除时间 |
 | `deleted_by` | `BIGINT UNSIGNED` | NULL | NULL | 删除操作者 ID |
@@ -1232,12 +1235,24 @@ PARTITION BY RANGE (TO_DAYS(created_month)) (
 
 | 索引名 | 字段 | 类型 | 用途 |
 | --- | --- | --- | --- |
-| `pk_feedback` | `id` | 主键 | — |
-| `uk_feedback_no` | `feedback_no` | 唯一 | 单号追溯 |
-| **`uk_feedback_order_user`** | `order_id`, `user_id` | **唯一** | **每笔订单每用户仅一次评价**(防重复) |
+| `pk_feedback` | `id`, `created_month` | 主键 | MySQL 8.4 分区约束 |
+| `uk_feedback_no` | `feedback_no`, `created_month` | 唯一 | 单号追溯(分区字段必带) |
+| **`uk_feedback_order_user`** | `order_id`, `user_id`, `created_month` | **唯一** | **每笔订单每用户仅一次评价**(分区字段必带) |
 | `idx_feedback_user_created` | `user_id`, `created_at` | 普通 | 用户历史评价查询 |
 | `idx_feedback_complaint_status` | `is_complaint`, `status`, `created_at` | 普通 | 客户运营查投诉队列 |
 | `idx_feedback_deleted_at` | `deleted_at` | 普通 | 物理归档扫描 |
+
+### 分区策略
+
+按 `created_month` 范围分区(滚动保留 36 个月):
+
+```sql
+PARTITION BY RANGE (TO_DAYS(created_month)) (
+  PARTITION p2026m01 VALUES LESS THAN (TO_DAYS('2026-02-01')),
+  ...
+  PARTITION pmax VALUES LESS THAN MAXVALUE
+);
+```
 
 ### 约束
 

@@ -431,6 +431,8 @@
 
 ### 字段定义
 
+> **P0-2 修正**:按月分区表 → 主键 / 唯一键加 `bucket_month` generated column(MySQL 8.4 强制要求分区字段出现在每个 UNIQUE / PRIMARY KEY)。
+
 | 字段 | 类型 | 约束 | 默认 | 说明 |
 | --- | --- | --- | --- | --- |
 | `id` | `BIGINT UNSIGNED` | PK, AUTO_INCREMENT | — | 主键 |
@@ -447,15 +449,27 @@
 | `meter_kwh_end` | `DECIMAL(10,3)` | NULL | NULL | 累计电量桶末尾值 |
 | `sample_count` | `INT UNSIGNED` | NOT NULL | `0` | 聚合的原始条数(异常检测用) |
 | `aggregation_run_at` | `DATETIME(3)` | NOT NULL | — | 聚合执行时间 |
-| `partition_key` | `DATE` | NOT NULL | — | 分区键(冗余 `bucket_start` 的日期) |
+| `bucket_month` | `DATE` | GENERATED ALWAYS AS (DATE_FORMAT(`bucket_start`, '%Y-%m-01')) STORED | — | **P0-2 分区字段** |
 
 ### 索引
 
 | 索引名 | 字段 | 类型 | 用途 |
 | --- | --- | --- | --- |
-| `pk_telemetry_aggregate_15min` | `id` | 主键 | — |
-| **`uk_telemetry_aggregate_15min_device_bucket`** | `device_id`, `bucket_start` | 唯一 | 一设备一时间窗一条聚合 |
+| `pk_telemetry_aggregate_15min` | `id`, `bucket_month` | 主键 | MySQL 8.4 分区约束 |
+| **`uk_telemetry_aggregate_15min_device_bucket`** | `device_id`, `bucket_start`, `bucket_month` | 唯一 | 一设备一时间窗一条聚合(分区字段必带) |
 | `idx_telemetry_aggregate_15min_bucket` | `bucket_start` | 普通 | 时间范围查询 |
+
+### 分区策略
+
+按 `bucket_month` 范围分区(滚动保留 36 个月):
+
+```sql
+PARTITION BY RANGE (TO_DAYS(bucket_month)) (
+  PARTITION p2026m01 VALUES LESS THAN (TO_DAYS('2026-02-01')),
+  ...
+  PARTITION pmax VALUES LESS THAN MAXVALUE
+);
+```
 
 ### 约束
 
@@ -488,6 +502,8 @@
 
 ### 字段定义
 
+> **P0-2 修正**:按月分区表 → 主键 / 唯一键加 `hour_month` generated column(MySQL 8.4 强制要求分区字段出现在每个 UNIQUE / PRIMARY KEY)。
+
 | 字段 | 类型 | 约束 | 默认 | 说明 |
 | --- | --- | --- | --- | --- |
 | `id` | `BIGINT UNSIGNED` | PK, AUTO_INCREMENT | — | 主键 |
@@ -506,15 +522,19 @@
 | `meter_kwh_end` | `DECIMAL(10,3)` | NULL | NULL | 累计电量末尾 |
 | `sample_count` | `INT UNSIGNED` | NOT NULL | `0` | 聚合的原始条数 |
 | `aggregation_run_at` | `DATETIME(3)` | NOT NULL | — | 聚合执行时间 |
-| `partition_key` | `DATE` | NOT NULL | — | 分区键 |
+| `hour_month` | `DATE` | GENERATED ALWAYS AS (DATE_FORMAT(`hour_start`, '%Y-%m-01')) STORED | — | **P0-2 分区字段** |
 
 ### 索引
 
 | 索引名 | 字段 | 类型 | 用途 |
 | --- | --- | --- | --- |
-| `pk_telemetry_aggregate_hourly` | `id` | 主键 | — |
-| **`uk_telemetry_aggregate_hourly_device_hour`** | `device_id`, `hour_start` | 唯一 | 一设备一小时一条 |
+| `pk_telemetry_aggregate_hourly` | `id`, `hour_month` | 主键 | MySQL 8.4 分区约束 |
+| **`uk_telemetry_aggregate_hourly_device_hour`** | `device_id`, `hour_start`, `hour_month` | 唯一 | 一设备一小时一条(分区字段必带) |
 | `idx_telemetry_aggregate_hourly_hour` | `hour_start` | 普通 | 时间范围查询 |
+
+### 分区策略
+
+按 `hour_month` 范围分区(滚动保留 36 个月):
 
 ### 约束
 
