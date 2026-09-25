@@ -800,6 +800,7 @@
 | `party_name` | `VARCHAR(64)` | NOT NULL | — | 参与方名称(如"万达物业"、"平台运营") |
 | `party_type` | `ENUM('platform','property','franchisee','owner','customer_self','other')` | NOT NULL | — | 参与方类型 |
 | `split_percent` | `DECIMAL(5,2)` | NOT NULL | — | 分账比例(% 精度 0.01,如 30.00 = 30%) |
+| **`settlement_cycle`** | `ENUM('daily','weekly','monthly')` | NOT NULL | `'monthly'` | **结算周期**(需求 § 9.3,日清 / 周结 / 月结) |
 | `bank_account_name` | `VARCHAR(64)` | NULL | NULL | 银行账户名 |
 | `bank_account_no_enc` | `VARBINARY(255)` | NULL | NULL | 银行账号 AES_ENCRYPT 密文(§ 9.3) |
 | `bank_name` | `VARCHAR(64)` | NULL | NULL | 开户行 |
@@ -1092,7 +1093,8 @@
 | `op` | `ENUM('gt','lt','neq','between')` | NOT NULL | — | 比较运算符(> / < / != / 区间) |
 | `threshold` | `JSON` | NOT NULL | — | 阈值 JSON(`{value:32}` 或 `{min:30,max:35}` 或 `{eq:'fault'}`) |
 | `window_seconds` | `INT UNSIGNED` | NOT NULL | `0` | 持续时长(秒,0 = 立即触发;> 0 表示持续 N 秒才触发) |
-| `severity` | `ENUM('warning','critical','fatal')` | NOT NULL | — | 严重程度 |
+| `severity` | `ENUM('low','mid','high')` | NOT NULL | — | **严重程度三级**(需求 § 7.4 / § 8.4):low 提示 / mid 推送 / high 自动断电 |
+| **`is_auto_poweroff`** | `BOOLEAN` | NOT NULL | `FALSE` | **是否自动断电**(需求 § 8.4:高级别告警自动断电;仅 `severity='high'` 时可设 TRUE) |
 | `enabled` | `BOOLEAN` | NOT NULL | `TRUE` | 是否启用 |
 | `trigger_count_24h` | `INT UNSIGNED` | NOT NULL | `0` | 24h 内触发次数(用于"频繁告警"识别) |
 | `last_triggered_at` | `DATETIME(3)` | NULL | NULL | 最近触发时间 |

@@ -385,7 +385,7 @@
 | `user_id` | `BIGINT UNSIGNED` | NOT NULL | — | 关联 `user.id` |
 | `refund_no` | `CHAR(32)` | UNIQUE, NOT NULL | — | 业务退款单号,格式 `RF + YYYYMMDD + 12 位随机` |
 | `refund_cents` | `BIGINT` | NOT NULL | — | 退款金额(分) |
-| `refund_reason` | `ENUM('charge_failed','timeout','user_cancel_60s','plug_pulled','meter_abnormal','manual','recharge_refund','post_settled_reversal')` | NOT NULL | — | 退款原因;`recharge_refund` 用于钱包充值退款;`post_settled_reversal` 仅客户财务可发起,账单已结后反向冲账 |
+| `refund_reason` | `ENUM('charge_failed','timeout','user_cancel_60s','plug_pulled','meter_abnormal','manual','recharge_refund','post_settled_reversal','start_timeout_30s','balance_insufficient','auto_poweroff')` | NOT NULL | — | 退款原因(需求 § 8.4 完整枚举):`start_timeout_30s` 启动 30 秒内未进入充电状态;`balance_insufficient` 充电中余额不足;`auto_poweroff` 高告警自动断电触发;`recharge_refund` 钱包充值退款;`post_settled_reversal` 仅客户财务可发起,账单已结后反向冲账 |
 | `refund_method` | `ENUM('wechat','wallet')` | NOT NULL | — | 退款方式(原路返回) |
 | `wechat_refund_id` | `VARCHAR(64)` | UNIQUE NULL | NULL | 微信退款单号(幂等键) |
 | `status` | `ENUM('pending','retrying','success','failed','manual_review')` | NOT NULL | `'pending'` | 退款状态;`retrying` 表示微信 API 失败后指数退避重试中 |

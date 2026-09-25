@@ -109,6 +109,7 @@
 | --- | --- | --- | --- | --- |
 | `id` | `BIGINT UNSIGNED` | PK, AUTO_INCREMENT | — | 主键 |
 | `device_id` | `VARCHAR(32)` | UNIQUE, NOT NULL | — | 设备 ID(§ 6.2 格式) |
+| `device_serial_no` | `VARCHAR(64)` | UNIQUE, NOT NULL | — | **设备 SN**(客户首次扫码/录入的设备序列号,需求 § 7.1) |
 | `vendor_id` | `BIGINT UNSIGNED` | NOT NULL | — | 关联 `vendor.id` |
 | `model` | `VARCHAR(64)` | NOT NULL | — | 设备型号 |
 | `station_id` | `BIGINT UNSIGNED` | NULL | NULL | 所属站点(冗余自 admin_db) |
