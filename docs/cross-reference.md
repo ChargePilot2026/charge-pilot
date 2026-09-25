@@ -118,14 +118,23 @@
 
 > **约束**:跨服务 HTTP 调用必须经过本表登记,新增 admin → X 的内部接口必须先在 X 的 API 文档落地路径,再在本表登记。
 
+### § 3.1 充电启动时序权威源(P0-1)
+
+> **核心约定**:**扫码 ≠ 启动**(P0-1 老杨师傅决策)。扫码 / 选端口 = 仅展示;启动 = 微信支付回调成功 + 发 `charge_started_stream` + gateway 启动。
+> 完整时序(主链路 + 失败 / 超时 / 取消 / 退款分支 + 端口锁分层)见 `docs/diagrams/charge-payment-sequence.md`,**本文档以此为权威源**。
+
+### § 3.2 跨服务 HTTP 调用表
+
 | 调用方 | 被调方 | 调用场景 | 路径(在调用方文档中引用) | 在被调方文档落地位置 |
 | --- | --- | --- | --- | --- |
-| user | gateway | 启动充电 | `/api/v1/internal/start-charge` | `gateway.md` § 五 |
-| user | gateway | 停止充电 | `/api/v1/internal/stop-charge` | `gateway.md` § 五 |
-| user | gateway | 设备实时状态 | `/api/v1/internal/devices/{id}` | `gateway.md` § 四 |
-| user | gateway | 端口列表 | `/api/v1/internal/devices/{id}/ports` | `gateway.md` § 四 |
-| user | billing | 预扣费预估 | `/api/v1/internal/quote` | `billing.md` § 二 |
+| user | gateway | 充电中快照订阅(`charge_started_stream` 消费后 Redis 缓存填充) | 抽象引用 `gateway.md` | `gateway.md` § 五 |
+| user | gateway | 充电结束通知(`charge_ended_stream` 消费关轮询) | 抽象引用 `gateway.md` | `gateway.md` § 五 |
+| user | gateway | 设备实时状态查询(轮询快照 cache miss 时) | `/api/v1/internal/devices/{id}` | `gateway.md` § 四 |
+| user | gateway | 端口列表(扫描设备码时) | `/api/v1/internal/devices/{id}/ports` | `gateway.md` § 四 |
+| user | billing | 预扣费预估(scan/start 时报价) | `/api/v1/internal/quote` | `billing.md` § 二 |
+| user | 微信支付 API | JSAPI 预下单(scan/start 时) | `https://api.mch.weixin.qq.com/v3/pay/transactions/jsapi` | `user.md` § 扫码与充电 |
 | user | 微信支付 API | 钱包充值退款(同步调用,不走 Stream) | `https://api.mch.weixin.qq.com/v3/refund/...` | 本期 user.md § 用户与钱包 |
+| gateway | billing | 充电结束计费(`charge_ended_stream` 消费) | 抽象引用 `billing.md` | `billing.md` § 三 |
 | admin | user | 退款详情查询 | 抽象引用 `user.md`(跨服务调用约定) | `user.md` |
 | admin | user | 退款审核通过回调 | 抽象引用 `user.md`(跨服务调用约定) | `user.md` |
 | admin | user | 发票详情 / 审核回调 | 抽象引用 `user.md` | `user.md` |
@@ -151,9 +160,10 @@
 | --- | --- | --- |
 | `POST /auth/login` | `user`(UPSERT) | ✅ |
 | `POST /phone/bind` | `user`(UPDATE phone_enc) | ✅ |
-| `POST /scan/resolve` | 不写表(只读) | ✅ |
-| `POST /scan/port` | 不写表(只读) | ✅ |
-| `POST /scan/start` | `charge_order` | ✅ |
+| `POST /scan/resolve` | 不写表(只读,**不锁端口**) | ✅ |
+| `POST /scan/port` | 不写表(只读,**不锁端口**) | ✅ |
+| `POST /scan/start` | `charge_order` + `payment_order`(**pending_payment**,**不启动设备**) | ✅ |
+| `POST /scan/cancel` | `charge_order` + `payment_order`(60s 窗口内取消) | ✅(P0-1 新增) |
 | `POST /charge/stop` | `charge_order` | ✅ |
 | `POST /charge/{id}/feedback` | `feedback` | ✅(已加) |
 | `POST /wallet/recharge` | `payment_order` + `wallet_account` + `wallet_txn` | ✅ |

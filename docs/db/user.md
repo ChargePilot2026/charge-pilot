@@ -151,12 +151,13 @@
 
 ## 表 2:`user_db.charge_order`
 
-**业务说明**:**充电会话生命周期表**。一笔 `charge_order` = 用户一次完整的充电过程(扫码 → 启动 → 充电中 → 结束 / 取消 / 失败)。**不含任何支付字段** —— 支付通过 `payment_order` 关联。
+**业务说明**:**充电会话生命周期表**。一笔 `charge_order` = 用户一次完整的充电过程(扫码 → 选端口 → 微信支付回调 → 启动 → 充电中 → 结束 / 取消 / 失败)。**不含任何支付字段** —— 支付通过 `payment_order` 关联。
+**核心变更(P0-1)**:`status` ENUM 新增 `pending_payment`(扫码选端口后,等待微信支付回调);`started_at` / `payment_order_id` 允许 NULL;`customer_id` 字段已移除(单客户单部署,客户级隔离由部署边界保证)。
 
 **关键业务规则**:
 
-- 状态机:`pending` → `charging` → `finished` / `cancelled` / `failed`
-- 唯一约束:`(port_id, status='charging')` 部分唯一索引,防同一端口双订单(§ 5.5)
+- 状态机:`pending` → `pending_payment` → `charging` → `finished` / `cancelled` / `failed`(详见 `diagrams/charge-order.fsm.md`)
+- 端口唯一约束:`(port_id, active_charging)` 用 generated column 实现,等价于 `(port_id, status='charging')` 部分唯一索引,但 MySQL 8.4 不支持 partial index —— 必须用 generated column
 - 估算订单:§ 6.5 B 方案的离线补传兜底,订单带 `billing_mode='estimated'` 标记
 - 不存支付信息:`electric_fee_cents` / `service_fee_cents` / `paid_fee_cents` / 微信 transaction_id **全部移到 `payment_order`**
 
@@ -167,48 +168,67 @@
 | `id` | `BIGINT UNSIGNED` | PK, AUTO_INCREMENT | — | 主键 |
 | `order_no` | `CHAR(32)` | UNIQUE, NOT NULL | — | 业务订单号,格式 `CH + YYYYMMDDHHmmss + 12 位随机`(用户侧展示"充电订单号") |
 | `user_id` | `BIGINT UNSIGNED` | NOT NULL | — | 关联 `user.id` |
-| `customer_id` | `BIGINT UNSIGNED` | NOT NULL | — | 关联 `admin_db.customer.id`(冗余,便于跨服务查询) |
 | `device_id` | `VARCHAR(32)` | NOT NULL | — | 充电桩设备 ID(§ 6.2 格式约定) |
 | `port_id` | `VARCHAR(32)` | NOT NULL | — | 端口 ID(同一 device 下的物理插槽) |
 | `vendor_id` | `VARCHAR(8)` | NOT NULL | — | 厂商 ID(2-4 字母前缀) |
 | `station_id` | `BIGINT UNSIGNED` | NULL | NULL | 站点 ID(冗余自 admin_db,便于统计) |
 | `charge_rule_id` | `BIGINT UNSIGNED` | NOT NULL | — | 使用的计费规则 ID(对应 admin_db 计费规则模板) |
-| `started_at` | `DATETIME(3)` | NOT NULL | — | 充电开始时间(用户视角) |
+| `payment_order_id` | `BIGINT UNSIGNED` | **NULL** | NULL | 关联 `payment_order.id`(扫码时未创建,NULL;支付回调后回填) |
+| `started_at` | `DATETIME(3)` | **NULL** | NULL | 充电开始时间(`pending` / `pending_payment` 状态时 NULL;`charging` 时必填) |
 | `ended_at` | `DATETIME(3)` | NULL | NULL | 充电结束时间(可能为 NULL 表示进行中) |
 | `duration_seconds` | `INT UNSIGNED` | NULL | NULL | 充电时长(秒),结束回填 |
 | `meter_kwh` | `DECIMAL(10,3)` | NULL | NULL | 实走表电量(kWh,精度 0.001) |
 | `power_w` | `DECIMAL(10,2)` | NULL | NULL | 平均功率(W),结束回填 |
-| `status` | `ENUM('pending','charging','finished','cancelled','failed')` | NOT NULL | — | 订单状态 |
+| `status` | `ENUM('pending','pending_payment','charging','finished','cancelled','failed')` | NOT NULL | — | 订单状态(P0-1 新增 `pending_payment`) |
 | `billing_mode` | `ENUM('normal','estimated')` | NOT NULL | `'normal'` | 计费模式:normal 真实遥测 / estimated § 6.5 B 方案估算 |
-| **`actual_kwh`** | `DECIMAL(10,3)` | NULL | NULL | **实际消耗电量**(kWh,需求 § 8.4 按已充结算字段;正常结束时 = meter_kwh,提前结束时 < meter_kwh) |
-| **`actual_fee_cents`** | `BIGINT` | NULL | NULL | **实结费用**(分,= electric_fee + service_fee;提前结束时按已充计算) |
-| **`refundable_cents`** | `BIGINT` | NULL | NULL | **应退金额**(分,提前结束时 = paid_fee - actual_fee;正常结束 = 0) |
+| `actual_kwh` | `DECIMAL(10,3)` | NULL | NULL | **实际消耗电量**(kWh,需求 § 8.4 按已充结算字段) |
+| `actual_fee_cents` | `BIGINT` | NULL | NULL | **实结费用**(分,= electric_fee + service_fee) |
+| `refundable_cents` | `BIGINT` | NULL | NULL | **应退金额**(分,提前结束时 = paid_fee - actual_fee;正常结束 = 0) |
 | `fail_reason` | `VARCHAR(256)` | NULL | NULL | 失败原因(`status=failed` 时填) |
 | `cancel_reason` | `VARCHAR(256)` | NULL | NULL | 取消原因(`cancelled` 时填) |
 | `cancel_initiator` | `ENUM('user','system','timeout')` | NULL | NULL | 取消发起方 |
+| **`active_charging`** | `TINYINT UNSIGNED` | GENERATED ALWAYS AS (CASE WHEN `status`='charging' THEN 1 ELSE NULL END) STORED | — | **生成列**,用于端口唯一性约束(等价 `status='charging'` 部分唯一索引,MySQL 8.4 不支持 partial index) |
 | `created_at` | `DATETIME(3)` | NOT NULL | — | 订单创建时间 |
 | `updated_at` | `DATETIME(3)` | NOT NULL | — | 更新时间 |
 | `deleted_at` | `DATETIME(3)` | NULL | NULL | 软删除时间(NULL = 未删除) |
 | `deleted_by` | `BIGINT UNSIGNED` | NULL | NULL | 删除操作者 ID |
-| `partition_key` | `DATE` | NOT NULL | — | 分区键(冗余 `started_at` 的日期部分) |
+| `created_month` | `DATE` | GENERATED ALWAYS AS (DATE_FORMAT(`created_at`, '%Y-%m-01')) STORED | — | 分区键(MySQL 8.4 要求分区字段出现在每个 UNIQUE / PRIMARY KEY 中) |
 
 ### 索引
 
 | 索引名 | 字段 | 类型 | 用途 |
 | --- | --- | --- | --- |
-| `pk_charge_order` | `id` | 主键 | — |
-| `uk_charge_order_no` | `order_no` | 唯一 | 用户查充电订单 |
-| `uk_charge_order_port_charging` | `port_id`, `status` | 部分唯一(`status='charging'`) | 防同一端口双订单(§ 5.5) |
-| `idx_charge_order_user_started` | `user_id`, `started_at` | 普通 | 用户充电订单列表 |
+| `pk_charge_order` | `id`, `created_month` | 主键 | MySQL 8.4 分区约束:分区字段必须出现在主键 |
+| `uk_charge_order_no` | `order_no`, `created_month` | 唯一 | 用户查充电订单(分区字段必带) |
+| `uk_charge_order_port_active` | `port_id`, `active_charging` | 唯一(NULL 不参与) | **等价于 `(port_id, status='charging')` 部分唯一索引**,防同一端口双订单;NULL 不参与唯一性 → 多条 status≠charging 订单可共存 |
+| `idx_charge_order_payment_order` | `payment_order_id` | 普通 | 跨表查询 |
+| `idx_charge_order_user_created` | `user_id`, `created_at` | 普通 | 用户充电订单列表 |
 | `idx_charge_order_device_started` | `device_id`, `started_at` | 普通 | 设备维度订单查询 |
-| `idx_charge_order_customer_started` | `customer_id`, `started_at` | 普通 | 客户维度订单查询 |
+| `idx_charge_order_status_started` | `status`, `started_at` | 普通 | 状态筛选扫描 |
 | `idx_charge_order_deleted_at` | `deleted_at` | 普通 | worker 物理归档扫描 |
+
+### 分区策略
+
+按 `created_month` 范围分区(滚动保留 36 个月):
+
+```sql
+PARTITION BY RANGE (TO_DAYS(created_month)) (
+  PARTITION p2026m01 VALUES LESS THAN (TO_DAYS('2026-02-01')),
+  PARTITION p2026m02 VALUES LESS THAN (TO_DAYS('2026-03-01')),
+  ...
+  PARTITION pmax VALUES LESS THAN MAXVALUE
+);
+```
+
+由 `worker_db.data_retention` 周期任务每月 1 日滚动创建下月分区 + 删除超龄分区。
 
 ### 约束
 
 - **状态机合法迁移**:仅允许以下迁移(应用层校验)
-  - `pending` → `charging` / `cancelled`
+  - `pending` → `pending_payment` / `cancelled`
+  - `pending_payment` → `charging` / `failed` / `cancelled`
   - `charging` → `finished` / `cancelled` / `failed`
+- `status='charging'` 时,`started_at` / `payment_order_id` 必须 NOT NULL
 - `status='finished'` 时,`ended_at` / `duration_seconds` / `meter_kwh` 必须 NOT NULL
 - `billing_mode='estimated'` 时,`meter_kwh` 可为 NULL(§ 6.5 B 方案按功率估算)
 - `deleted_at` NOT NULL 时,该订单不可再触发任何业务流程(状态冻结)
@@ -216,14 +236,15 @@
 ### 关系
 
 - 多对一 → `user.id`
-- 多对一 → `admin_db.customer.id`(跨服务,无外键)
-- 一对多 → `payment_order`(通过 `payment_order.biz_id` 字段 + `biz_type='charge'` 关联;一笔充电订单 = 一笔或零笔支付订单,组合支付场景下支付订单是主单+多张子单结构)
+- 一对一 → `payment_order`(通过 `payment_order_id`;扫码时未创建,NULL;支付回调后回填)
+- 多对一 → `admin_db.pricing_rule`(通过 `charge_rule_id`,跨服务,无外键)
 
 ### 业务规则
 
-- **订单创建**(`status=pending`):user 收到扫码请求 → 校验端口空闲 → `INSERT charge_order(status='pending')` → 通知 gateway 启动 → 等待设备确认 → 切到 `charging`
-- **订单结束**(`status=finished`):gateway 收到 `charge_ended_stream` 事件 → user 写 `ended_at` / `meter_kwh` / `power_w` / `duration_seconds` → 触发 `payment_order` 创建(支付环节独立于本表)
-- **触发退款**(失败 / 超时 / 60s 内取消 / 拔出插头):**不直接创建 refund_record**,而是发布 `refund_required_stream` 事件 → user 找到对应的 `payment_order`(通过 `biz_id=charge_order.id` + `biz_type='charge'`)→ 创建 `refund_record`
+- **订单创建**(`status=pending_payment`):user 收到 `/scan/start` 请求 → 占逻辑锁 `charge:hold:port_xxx` → `INSERT charge_order(status='pending_payment', payment_order_id=NULL, started_at=NULL)` + `INSERT payment_order(status='initiated', biz_type='charge', biz_id=charge_order.id)` → `UPDATE charge_order.payment_order_id = payment_order.id` → 调微信 JSAPI 预下单 → **不启动设备**
+- **订单启动**(`pending_payment` → `charging`):微信支付回调成功 → user 写 `payment_callback_idempotent` + UPDATE `payment_order.status='success'` + 发 `charge_started_stream` → gateway 消费 → 验证逻辑锁 → SETNX 物理锁 → MQTT 下发启动指令 → ACK → UPDATE `charge_order.status='charging', started_at=NOW()`
+- **订单结束**(`status=finished`):gateway 收到 `charge_ended_stream` 事件 → user 写 `ended_at` / `meter_kwh` / `power_w` / `duration_seconds`
+- **触发退款**(失败 / 超时 / 60s 内取消 / 拔出插头):发布 `refund_required_stream` 事件 → admin 创建 `refund_record`
 - **估算订单提示**:`billing_mode='estimated'` 时,小程序充电结束页底部显示"本次计费基于设备离线数据,如有问题请联系客服"
 
 ---

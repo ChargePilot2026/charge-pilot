@@ -53,7 +53,7 @@
 | 4xxx | 限流 | 4291 超过限流 |
 | 5xxx | 服务器错误 | 5001 内部错误 / 5003 服务暂时不可用 |
 
-## 端点清单(共 29 个)
+## 端点清单(共 30 个)
 
 ### 公开接口(无需鉴权)
 
@@ -65,11 +65,14 @@
 
 ### 扫码与充电(5s 轮询链路)
 
+**核心语义(P0-1):扫码 ≠ 启动**。扫码 / 选端口 = 仅展示;启动必须等支付回调成功 → `charge_started_stream` → gateway 启动。
+
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| POST | `/api/v1/user/scan/resolve` | 扫码路由:端口码 → 详情 / 设备码 → 端口列表 |
-| POST | `/api/v1/user/scan/port` | 单端口详情(从设备列表点选后调用) |
-| POST | `/api/v1/user/scan/start` | 启动充电(基于 port_id,不重复扫码) |
+| POST | `/api/v1/user/scan/resolve` | 扫码路由:端口码 → 详情 / 设备码 → 端口列表(**只读,不锁端口**) |
+| POST | `/api/v1/user/scan/port` | 单端口详情(**只读,不锁端口**) |
+| POST | `/api/v1/user/scan/start` | 创建订单 + 微信 JSAPI 预下单 + 占逻辑锁,**不直接启动设备** |
+| POST | `/api/v1/user/scan/cancel` | 60s 窗口内取消未支付订单(P0-1 新增) |
 | GET | `/api/v1/user/charge/ongoing/snapshot` | 充电中 5s 轮询快照(含告警) |
 | GET | `/api/v1/user/charge/ongoing/curve` | 充电中曲线(功率/电流/SOC/温度) |
 | POST | `/api/v1/user/charge/stop` | 主动停止充电 |
@@ -255,7 +258,8 @@ Wechatpay-Nonce: ...
 **鉴权**:[JWT]
 **限流**:每 user 5 req/min
 **触发场景**:小程序"端口详情"页面 → 用户点击"开始充电"
-**业务目标**:基于已确认的 port_id 启动充电会话(§ 5.5 端口级并发控制)
+**业务目标**:基于已确认的 `port_id` 创建充电订单 + 微信 JSAPI 预下单,**返回拉起支付控件所需的参数**。
+**重要语义**:**此端点不会直接启动设备**。设备启动 = 微信支付回调成功 + 发 `charge_started_stream` 后由 gateway 完成(详见 `docs/diagrams/charge-payment-sequence.md`)。
 
 **请求体**:
 ```json
@@ -273,39 +277,81 @@ Wechatpay-Nonce: ...
     "port_id": "xx_001_01",
     "device_id": "xx_001",
     "station_id": 100,
-    "started_at": "2026-09-25T14:00:00.123Z",
+    "payment_params": {           // 微信 JSAPI 拉起支付控件所需参数
+      "appId": "wx...",
+      "timeStamp": "1695638400",
+      "nonceStr": "5K8264ILTKCH...",
+      "package": "prepay_id=wx201...",
+      "signType": "RSA",
+      "paySign": "oR9d8PuhnIc+Y..."
+    },
     "estimated_rate": {           // 预估费率(展示用)
       "electric_cents_per_kwh": 55,
       "service_cents_per_kwh": 50
-    }
+    },
+    "hold_expires_at": "2026-09-25T14:05:00Z"  // 逻辑锁过期时间,超时请重新扫码
   }
 }
 ```
 
 **业务逻辑**:
-1. 校验 `port_id` 格式合法(§ 6.2)
+1. 校验 `port_id` 格式合法(§ 技术规格.md 6.2)
 2. 反查 `gateway_db.device` 拿 `device_id` + `station_id`,校验 `status='enabled'` + `online=TRUE`(最近 30 min 内有心跳)
-3. **端口级短锁**(`SETNX charge:lock:port_xxx`,holder=order_id,TTL=30s):
-   - 失败 → 查 holder 对应订单:
-     - status='charging' → 返回 `2001`(端口被占用)
-     - status='created' 但 30s 内未启动 → 强制释放 + 重试
-4. 校验 `charge_db.charge_rule` 是否对该 port 启用(无则用 station 默认规则)
-5. `INSERT charge_order(status='pending', order_no, user_id, device_id, port_id, ...)`
-6. **HTTP RPC 调 gateway 内部 API**(`POST /api/v1/internal/gateway/start_charge`):
-   - user 同步阻塞调用,网关再通过 MQTT 下发启动指令到设备的 `charge/{vendor_id}/{device_id}/cmd` Topic
-7. 等待设备 ACK(同步阻塞,timeout 30s):
-   - ACK `started` → UPDATE `charge_order.status='charging'`,`started_at=NOW()` + 主动释放锁
-   - ACK `failed` → UPDATE `status='failed'` + 标 `refund_pending=TRUE` + 返回 `2002`(**不发布 `refund_required_stream`;由 billing 消费 `charge_ended_stream` 后统一算费判退款**)
-   - Timeout → 释放锁 + 返回 `5003`(网关无响应,提示用户重试)
+3. **逻辑锁占位**(`SET charge:hold:port_xxx <order_no> NX EX 300`,TTL=5 min):
+   - 失败 → 查 holder 对应订单状态:
+     - `pending_payment` 且未超时 → 返回 `2001`(端口被他人支付中)
+     - `charging` → 返回 `2001`(端口占用)
+4. 校验 `admin_db.pricing_rule`(注意:是 `admin_db` 不是 `charge_db`)是否对该 port 启用(无则用 station 默认规则)
+5. **事务内**:
+   - `INSERT charge_order(status='pending_payment', order_no, user_id, device_id, port_id, payment_order_id=NULL, ...)`
+   - `INSERT payment_order(status='initiated', biz_type='charge', biz_id=charge_order.id, ...)`
+   - `UPDATE charge_order.payment_order_id = payment_order.id`
+6. **RPC billing**:`POST /internal/quote` 拿预估金额(展示用 + 微信下单用)
+7. **调微信 JSAPI 预下单**:`POST https://api.mch.weixin.qq.com/v3/pay/transactions/jsapi` 拿 `prepay_id`
+8. 封装 `payment_params` 返回小程序 → 调 `wx.requestPayment()`
+9. **不要释放逻辑锁** —— 锁由 gateway 在收到 `charge_started_stream` 时验证后释放,或在 `pending_payment` 超时 / 用户取消时释放
+
+> **错误码**:
+> - `1001`: JWT 缺失 / 过期
+> - `2001`: 端口被占用(逻辑锁失败)
+> - `2002`: 设备已停用 / 离线
+> - `2004`: 计费规则未配置(需客户运营先配置)
+> - `3001`: 微信预下单失败(签名 / 证书 / 频次)
+> - `4291`: 超过限流(5 req/min)
+> - `5003`: billing 报价失败
+
+---
+
+### `POST /api/v1/user/scan/cancel`
+
+**鉴权**:[JWT]
+**限流**:每 user 5 req/min
+**触发场景**:小程序"等待支付"页面 → 用户点"取消"(仅在 60s 窗口内可生效)
+**业务目标**:**取消未支付订单**;若微信回调已先到(已支付)则转入退款流程
+
+**请求体**:
+```json
+{
+  "order_no": "CH20260925140000123"
+}
+```
+
+**业务逻辑**:
+1. 校验 `order_no` 归属当前 user + `status='pending_payment'`
+2. 校验 `created_at > NOW() - 60s`(超过 60s 不允许"快速取消",走超时分支)
+3. **事务内**:
+   - `DEL charge:hold:port_xxx` 释放逻辑锁
+   - `UPDATE charge_order.status='cancelled'`, `cancelled_at=NOW()`
+   - `UPDATE payment_order.status='cancelled'`
+4. 若 `payment_order.status='success'`(回调已先于取消到达)→ 发 `refund_required_stream`(走退款)
+5. 返回 200 OK
 
 **错误码**:
 - `1001`: JWT 缺失 / 过期
-- `2001`: 端口被占用(锁失败)
-- `2002`: 设备已停用 / 离线
-- `2003`: 该端口已存在 charging 订单(DB 唯一约束兜底)
-- `2004`: 计费规则未配置(需客户运营先配置)
-- `4291`: 超过限流(5 req/min)
-- `5003`: 网关无响应
+- `2017`: 订单不存在 / 不属于当前用户
+- `2018`: 订单不在 `pending_payment` 状态(可能已支付 / 已失败 / 已超时)
+- `2019`: 超过 60s 取消窗口,走超时分支
+- `4291`: 超过限流
 
 ---
 
@@ -389,6 +435,7 @@ Wechatpay-Nonce: ...
    - 既不是端口码也不是设备码 → `2016`(二维码无效)
 3. **端口码分支**:查 `port_status` + `pricing_rule` → 直接返回详情(无需再调 `/scan/port`)
 4. **设备码分支**:查 `port_view` 该设备下所有端口 + 实时状态 → 返回端口列表(前端展示);用户点选某个端口后再调 `/scan/port` 拿单端口详情
+5. **本端点不锁端口、不写表、不创建订单**(P0-1 核心约束:扫码 ≠ 启动;启动需用户选端口后调 `/scan/start`)
 
 **错误码**:
 - `1001`: JWT 失效
@@ -403,7 +450,7 @@ Wechatpay-Nonce: ...
 **鉴权**:[JWT]
 **限流**:每 user 30 req/min(浏览端口详情频次中等)
 **触发场景**:从"设备码 → 端口列表"页面**用户点选某个端口后**调用,获取单端口详情
-**业务目标**:展示单端口的实时状态 + 计费规则,**不创建订单**
+**业务目标**:展示单端口的实时状态 + 计费规则,**不创建订单、不锁端口**(P0-1 核心约束:扫码 ≠ 启动)
 
 **请求体**:
 ```json
