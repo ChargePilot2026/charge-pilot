@@ -1073,9 +1073,8 @@ Wechatpay-Nonce: ...
 
 **业务逻辑**:
 1. 校验 `amount_cents > 0` 且 ≤ `wallet.available_cents`(否则 `2009`)
-2. 校验风控规则(§ 9.4):
+2. 校验风控规则(§ 9.4):**二轮车 1-2 元/单场景下金额阈值无意义,本期仅频次规则**
    - 同用户 5 min 内 ≥ 3 笔退款 → 冻结 + 入人工审
-   - 单笔 ≥ 50 元(5000 分) → 冻结 + 入人工审
 3. 校验余额退款的笔次凑(§ 资金安全 4 决策):
    - 按时间顺序遍历 `payment_order WHERE biz_type='recharge' AND status='success'`
    - 每笔可退 = `paid_fee_cents - 该笔已退金额`

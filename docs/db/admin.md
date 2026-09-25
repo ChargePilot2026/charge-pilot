@@ -1271,8 +1271,7 @@
 | `frequency_enabled` | `BOOLEAN` | NOT NULL | `TRUE` | 是否启用频次风控 |
 | `frequency_count` | `TINYINT UNSIGNED` | NOT NULL | `3` | 频次阈值(同用户 N 笔触发) |
 | `frequency_window_seconds` | `INT UNSIGNED` | NOT NULL | `300` | 频次时间窗(秒,默认 5 min) |
-| `amount_enabled` | `BOOLEAN` | NOT NULL | `TRUE` | 是否启用金额风控 |
-| `amount_threshold_cents` | `BIGINT UNSIGNED` | NOT NULL | `5000` | 金额阈值(分,默认 50 元) |
+| `amount_rule_enabled` | `BOOLEAN` | NOT NULL | `FALSE` | 是否启用金额风控(**本期固定 FALSE**:二轮车 1-2 元/单场景下任何金额阈值均无意义;字段保留以便二期扩展) |
 | `updated_by` | `BIGINT UNSIGNED` | NULL | NULL | 最近修改人 |
 | `updated_at` | `DATETIME(3)` | NOT NULL | — | 更新时间 |
 | `created_at` | `DATETIME(3)` | NOT NULL | — | 创建时间 |
@@ -1295,7 +1294,7 @@
 
 ### 业务规则
 
-- **初始化**:系统首次部署时,初始化脚本 INSERT 一条默认记录(ID=1,频率=3/5min,金额=50元)
+- **初始化**:系统首次部署时,初始化脚本 INSERT 一条默认记录(ID=1,频率=3/5min,金额规则 disabled)
 - **客户管理员调整**:PC 后台"风控配置"页 → 改阈值 → UPDATE(变更即时生效)
 - **触发逻辑**:worker 退款前查 `risk_config` → 按规则判断是否冻结;触发的冻结记录写 `user_db.risk_freeze_log` + 关联本表的 `threshold_snapshot` JSON 字段(便于审计当时阈值)
 - **缓存**:user 服务缓存本表配置(TTL 5 min,§ 4.7)

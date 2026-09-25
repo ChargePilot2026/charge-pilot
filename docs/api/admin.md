@@ -888,13 +888,12 @@
 **请求体**:
 ```json
 {
-  "refund_high_freq_count": 3,        // 5 分钟内 ≥ 3 次退款触发风控
+  "refund_high_freq_count": 3,           // 5 分钟内 ≥ 3 次退款触发风控
   "refund_high_freq_window_sec": 300,
-  "refund_high_amount_cents": 5000,   // 单笔退款 ≥ 50 元(5000 分)触发风控
-  "refund_double_sign_required": true,// 双签要求(本期固定 true)
-  "auto_block_enabled": true,         // 命中风控自动拦截(默认开)
-  "block_duration_min": 60,           // 拦截 60 min 后允许重试
-  "updated_reason": "调高金额阈值应对近期羊毛党"  // 必填审计
+  "refund_double_sign_required": true,   // 双签要求(本期固定 true)
+  "auto_block_enabled": true,            // 命中风控自动拦截(默认开)
+  "block_duration_min": 60,              // 拦截 60 min 后允许重试
+  "updated_reason": "调高频次阈值应对近期羊毛党"  // 必填审计
 }
 ```
 

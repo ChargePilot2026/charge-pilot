@@ -466,9 +466,9 @@
 - **流程**:客户财务在 admin PC 后台"售后管理"选 payment_order → 填金额 → 提交 → 写 `refund_record(refund_reason='post_settled_reversal', settled_at=...)` + 强制走微信原路退 + 反向冲账记账
 - **审计**:PC 后台记录"谁 / 何时 / 为什么退"的完整操作日志(不可删)
 
-**风控冻结(频次 + 金额双重)**:
+**风控冻结(频次单重,金额规则本期禁用)**:
 - **频次规则**:同用户 5 min 内发起 ≥ 3 笔退款 → 自动冻结
-- **金额规则**:单笔退款 ≥ 50 元(5000 分) → 自动冻结
+- **金额规则**:**本期禁用**(二轮车 1-2 元/单场景下任何金额阈值形同虚设;`risk_freeze_log.freeze_type` 枚举保留 `amount_50` 值待二期启用)
 - **触发流程**:worker 在调微信退款前先校验规则;命中 → `refund_record(status='manual_review', frozen_by_risk=TRUE, risk_freeze_log_id=$对应记录.id)`,**不调微信 API** + 推送"您的退款需要审核"小程序消息
 - **人工审核**:客户财务 / 客服坐席在 admin PC 后台"风控冻结队列"处理 → 通过:UPDATE `status='pending'` + worker 继续调微信退;拒绝:UPDATE `status='failed', fail_reason='risk_rejected'` + 推送"退款未通过审核"
 - **规则配置**:阈值(频次 N / 时间窗 / 金额)在 admin PC 后台"风控配置"中可调
@@ -647,7 +647,7 @@
 
 ## 表 8:`user_db.risk_freeze_log`
 
-**业务说明**:**风控冻结记录**。频次(5 min 内 ≥ 3 笔)或金额(单笔 ≥ 50 元)触发退款风控时,写一条冻结记录 + 关联的 `refund_record.status='manual_review'`。
+**业务说明**:**风控冻结记录**。频次(5 min 内 ≥ 3 笔)触发退款风控时,写一条冻结记录 + 关联的 `refund_record.status='manual_review'`。**金额规则本期禁用**(freeze_type 枚举保留 `amount_50` 以备二期启用)。
 
 **关键业务规则**:
 
@@ -702,8 +702,8 @@
 
 ### 业务规则
 
-- **触发 - 频次**:worker 在调微信退款前查 `refund_record` 近 5 min 内同 user_id 的笔数(不含已 rejected) → ≥ 3 → INSERT `risk_freeze_log` + UPDATE 触发的 `refund_record(status='manual_review', frozen_by_risk=TRUE, risk_freeze_log_id=$id)`
-- **触发 - 金额**:worker 校验 `refund_record.refund_cents >= 5000` → 同上
+- **触发 - 频次**:worker 在调微信退款前查 `refund_record` 近 5 min 内同 user_id 的笔数(不含已 rejected) → ≥ 3 → INSERT `risk_freeze_log(freeze_type='frequency_5min_3')` + UPDATE 触发的 `refund_record(status='manual_review', frozen_by_risk=TRUE, risk_freeze_log_id=$id)`
+- **触发 - 金额**:**本期禁用**(`amount_rule_enabled=FALSE`);worker 跳过金额检查。`risk_freeze_log.freeze_type='amount_50'` 枚举值保留以备二期
 - **不调微信 API**:冻结后**直接跳过**微信退款调用,等人工审核
 - **推送通知**:`push_notified=TRUE` 后发小程序消息"您的退款正在审核中,预计 2 小时内完成"
 - **人工审核**:客户财务 / 客服坐席在 admin PC 后台"风控冻结队列" → 通过:`status='approved'` + 触发 `refund_record.status='pending'` + worker 重新调度;拒绝:`status='rejected'` + 触发 `refund_record.status='failed'` + 推送"退款审核未通过"消息
