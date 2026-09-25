@@ -125,7 +125,7 @@
 | user | gateway | 设备实时状态 | `/api/v1/internal/devices/{id}` | `gateway.md` § 四 |
 | user | gateway | 端口列表 | `/api/v1/internal/devices/{id}/ports` | `gateway.md` § 四 |
 | user | billing | 预扣费预估 | `/api/v1/internal/quote` | `billing.md` § 二 |
-| user | admin | 发票详情查询 | `/api/v1/admin/invoice/...`(admin.md § F) | `admin.md` § F |
+| user | 微信支付 API | 钱包充值退款(同步调用,不走 Stream) | `https://api.mch.weixin.qq.com/v3/refund/...` | 本期 user.md § 用户与钱包 |
 | admin | user | 退款详情查询 | 抽象引用 `user.md`(跨服务调用约定) | `user.md` |
 | admin | user | 退款审核通过回调 | 抽象引用 `user.md`(跨服务调用约定) | `user.md` |
 | admin | user | 发票详情 / 审核回调 | 抽象引用 `user.md` | `user.md` |
@@ -133,10 +133,11 @@
 | admin | gateway | 设备远程重启 | `/api/v1/internal/devices/{id}/reboot` | `gateway.md` § 五 |
 | admin | gateway | 订单查询 | 抽象引用 `gateway.md`(跨服务调用约定) | `gateway.md` § 四 |
 | admin | billing | 分账 / 账单明细 | 抽象引用 `billing.md` | `billing.md` |
+| admin | worker | 导出任务查询(避免 admin_db 缺 export_task 表) | `/api/v1/internal/export/tasks/{id}` | `worker.md`(本期新增) |
 | billing | admin | 计费规则 / 分账模板查询 | 抽象引用 `admin.md` | `admin.md` § K |
+| billing | 微信支付 API | 充电退款执行(billing 发 refund_required_stream → admin 消费 → admin 调微信) | `https://api.mch.weixin.qq.com/v3/refund/...` | `admin.md` § F |
 | worker | gateway | OTA 固件推送 | `/api/v1/internal/devices/{id}/firmware-push` | `gateway.md` § 五 |
 | worker | admin | 告警落库 + 订阅推送 | `/api/v1/admin/alerts`(admin.md § E) | `admin.md` § E |
-| worker | user | 退款执行(未来扩展) | 待 user.md 落地 | `user.md` § 用户与钱包 |
 
 ---
 

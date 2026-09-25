@@ -1305,19 +1305,20 @@
 }
 ```
 
-> **`ratio_bp` 单位**:基点(bps),10000 = 100.00%。**全部参与方 `ratio_bp` 之和必须 = 10000**,否则返回 `1005`。
+> **`ratio_bp` 单位**:基点(bps),10000 = 100.00%。**admin 端只校验单条比例格式**(`0 < ratio_bp < 10000`,整数);`SUM(ratio_bp) = 10000` 的聚合校验**由 billing 服务在消费 `charge_ended_stream` 后实际算分账时执行**(详见 `docs/api/billing.md` § 三 `POST /split`),避免两端缓存不一致导致校验绕过。
 
 **业务逻辑**:
 1. 校验 `tpl_id` 存在 + `status='enabled'`
-2. **事务内**:
+2. **单条校验**(每条):`0 < ratio_bp < 10000` + 整数 + 不重复 `party_type`(同参与方不重复)→ 失败返回 `1005`
+3. **事务内**:
    - DELETE 旧 `split_party WHERE tpl_id=$tpl_id`
    - INSERT 新 `split_party`(按数组顺序)
-3. 校验 `SUM(ratio_bp) = 10000` → 不等则 `ROLLBACK` 返回 `1005`
-4. 写 `audit_log`(before / after snapshot 必填,比例变更是高敏操作)
-5. **缓存失效**:`DEL split_template:$tpl_id`(user / billing 服务缓存)
+4. **不校验 SUM**(聚合校验下放到 billing,见 `docs/api/billing.md`)
+5. 写 `audit_log`(before / after snapshot 必填,比例变更是高敏操作)
+6. **缓存失效**:`DEL split_template:$tpl_id`(user / billing 服务缓存)
 
 **错误码**:
-- `1005`: 比例之和不等于 10000
+- `1005`: 单条比例格式错(非整数 / ≤ 0 / ≥ 10000 / 重复参与方)
 - `2011`: 模板已被引用且不允许修改
 
 ---

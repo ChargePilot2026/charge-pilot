@@ -290,7 +290,7 @@ Wechatpay-Nonce: ...
    - user 同步阻塞调用,网关再通过 MQTT 下发启动指令到设备的 `charge/{vendor_id}/{device_id}/cmd` Topic
 7. 等待设备 ACK(同步阻塞,timeout 30s):
    - ACK `started` → UPDATE `charge_order.status='charging'`,`started_at=NOW()` + 主动释放锁
-   - ACK `failed` → UPDATE `status='failed'` + 发布 `refund_required_stream` 事件 + 返回 `2002`
+   - ACK `failed` → UPDATE `status='failed'` + 标 `refund_pending=TRUE` + 返回 `2002`(**不发布 `refund_required_stream`;由 billing 消费 `charge_ended_stream` 后统一算费判退款**)
    - Timeout → 释放锁 + 返回 `5003`(网关无响应,提示用户重试)
 
 **错误码**:
@@ -600,14 +600,13 @@ Wechatpay-Nonce: ...
 
 **业务逻辑**:
 1. 校验订单属于当前 user + status='charging'
-2. **启动后 > 60 秒**:按已充结算(§ 8.4):
-   - **HTTP RPC 调 gateway**(`POST /api/v1/internal/gateway/stop_charge`)→ 网关通过 MQTT 下发断电指令
-   - 设备 ACK 后 → 计费 + 支付
-   - **退款逻辑**:用户已支付金额 - 实际消费 = 应退金额 → 原路退(发布 `refund_required_stream`)
-3. **启动后 ≤ 60 秒**:按"充电失败"处理(全额原路退):
-   - 同样 HTTP RPC 调 gateway 下发断电 → 发布 `refund_required_stream`(全额退)
-4. 同步返回 `status='cancelling'`,前端跳转到"结算中"页面
-5. 最终结果通过 `charge_ended_stream` 异步通知 + 推送小程序消息
+2. **HTTP RPC 调 gateway**(`POST /api/v1/internal/stop-charge`)→ 网关通过 MQTT 下发断电指令 → 等设备 ACK
+3. 同步返回 `status='cancelling'`,前端跳转到"结算中"页面
+4. **退款判定 + 执行全部异步**:
+   - 设备 ACK 后 gateway 发 `charge_ended_stream` → billing 消费 → 算费 + 判退款
+   - 若需退款(全额 / 部分):**billing 发布 `refund_required_stream`** → admin 消费 → 调微信退款 API(详见 `docs/api/billing.md` § 六 + `docs/api/admin.md` § F)
+   - 最终结果通过 `charge_ended_stream` + `refund_required_stream` 异步通知 user → 推送小程序消息
+5. **本期 user 服务不发 `refund_required_stream`**(沿用 cross-reference § 1 真实生产者清单:billing 单生产)
 
 **错误码**:
 - `1001`: JWT 失效
@@ -1081,9 +1080,9 @@ Wechatpay-Nonce: ...
    - 按时间顺序遍历 `payment_order WHERE biz_type='recharge' AND status='success'`
    - 每笔可退 = `paid_fee_cents - 该笔已退金额`
    - 凑到 `amount_cents` 为止(或所有笔次耗尽)
-4. 对每笔生成 `refund_record(payment_order_id, refund_cents, refund_reason='recharge_refund')` + 发布 `refund_required_stream`
-5. worker 异步调微信退款原路返回 + 写入 `wallet_txn(txn_type='refund')`
-6. 同步返回"已受理"(`request_id`),实际到账异步通过小程序消息通知
+4. **事务内**:对每笔生成 `refund_record(payment_order_id, refund_cents, refund_reason='recharge_refund', status='pending')` + 冻结对应 `wallet_account.available_cents`(预扣,防双花)
+5. **同步调用微信退款 API**(不走 Stream,user 自己发起同步调用;`refund_required_stream` 仅用于充电退款,billing 单生产)→ 写 `wallet_txn(txn_type='refund', status=success/failed)` + UPDATE `refund_record.status`
+6. 同步返回"已受理"(`request_id`),实际到账通过微信回调异步确认;失败时回滚冻结 + 标 `refund_record.status='failed'` + 触发风控复核
 
 **错误码**:
 - `1001` / `2009`(余额不足)
