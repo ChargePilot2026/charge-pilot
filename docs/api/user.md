@@ -48,7 +48,7 @@
 | 4xxx | 限流 | 4291 超过限流 |
 | 5xxx | 服务器错误 | 5001 内部错误 / 5003 服务暂时不可用 |
 
-## 端点清单(共 22 个)
+## 端点清单(共 23 个)
 
 ### 公开接口(无需鉴权)
 
@@ -62,8 +62,9 @@
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| POST | `/api/v1/user/scan/start` | 扫码启动充电(设备码 / 端口码) |
-| POST | `/api/v1/user/scan/port` | 端口详情(扫码后展示) |
+| POST | `/api/v1/user/scan/resolve` | 扫码路由:端口码 → 详情 / 设备码 → 端口列表 |
+| POST | `/api/v1/user/scan/port` | 单端口详情(从设备列表点选后调用) |
+| POST | `/api/v1/user/scan/start` | 启动充电(基于 port_id,不重复扫码) |
 | GET | `/api/v1/user/charge/ongoing/snapshot` | 充电中 5s 轮询快照 |
 | POST | `/api/v1/user/charge/stop` | 主动停止充电 |
 | GET | `/api/v1/user/charge/history` | 历史订单列表 |
@@ -244,15 +245,13 @@ Wechatpay-Nonce: ...
 
 **鉴权**:[JWT]
 **限流**:每 user 5 req/min
-**触发场景**:小程序扫码 → 用户点击"开始充电"
-**业务目标**:启动充电会话(扫设备码 / 端口码两种入口,§ 5.5 端口级并发控制)
+**触发场景**:小程序"端口详情"页面 → 用户点击"开始充电"
+**业务目标**:基于已确认的 port_id 启动充电会话(§ 5.5 端口级并发控制)
 
 **请求体**:
 ```json
 {
-  "code": "xx_001_01",          // 扫码得到的字符串(端口码或设备码)
-  "code_type": "port",          // "port" 端口码 / "device" 设备码
-  "port_id": "xx_001_01"        // code_type=device 时必填,用于选定具体端口
+  "port_id": "xx_001_01"        // 必须从 /scan/port 或 /scan/resolve 拿到的 port_id
 }
 ```
 
@@ -275,10 +274,8 @@ Wechatpay-Nonce: ...
 ```
 
 **业务逻辑**:
-1. 解析 code:
-   - `code_type='port'` → `code` 即 port_id;从 `port_id` 反查 `device_id` + `station_id`
-   - `code_type='device'` → 校验 `device_id` + `port_id` 关联合法
-2. 校验设备状态:`gateway_db.device.status='enabled'`,且 `online=TRUE`(最近 30 min 内有心跳)
+1. 校验 `port_id` 格式合法(§ 6.2)
+2. 反查 `gateway_db.device` 拿 `device_id` + `station_id`,校验 `status='enabled'` + `online=TRUE`(最近 30 min 内有心跳)
 3. **端口级短锁**(`SETNX charge:lock:port_xxx`,holder=order_id,TTL=30s):
    - 失败 → 查 holder 对应订单:
      - status='charging' → 返回 `2001`(端口被占用)
@@ -302,17 +299,106 @@ Wechatpay-Nonce: ...
 
 ---
 
-### `POST /api/v1/user/scan/port`
+### `POST /api/v1/user/scan/resolve`
 
 **鉴权**:[JWT]
-**触发场景**:扫码后展示端口详情(空闲 / 充电中 / 故障 + 计费规则预览)
-**业务目标**:在用户确认充电前展示信息,**不创建订单**
+**限流**:每 user 20 req/min(扫码频次低)
+**触发场景**:小程序扫码后**第一步必须调用**(路由分发)
+**业务目标**:根据扫码内容智能判断是端口码还是设备码,返回对应数据
+- **端口码**(二维码印在插头旁)→ 直接返回单端口详情
+- **设备码**(二维码印在设备外壳)→ 返回该设备下所有端口列表
 
 **请求体**:
 ```json
 {
-  "code": "xx_001_01",
-  "code_type": "port"
+  "code": "xx_001_01"           // 扫码得到的原始字符串
+}
+```
+
+**响应(200) — 端口码场景**:
+```json
+{
+  "code": 0,
+  "data": {
+    "resolve_type": "port",        // 路由结果:port / device
+    "port": {                      // resolve_type='port' 时填
+      "port_id": "xx_001_01",
+      "device_id": "xx_001",
+      "station_name": "万达广场地下停车场",
+      "station_address": "北京市朝阳区...",
+      "port_status": "idle",       // "idle" / "charging" / "fault"
+      "pricing_rule": {
+        "rule_name": "万达广场 - 白天",
+        "electric_cents_per_kwh": 55,
+        "service_cents_per_kwh": 50
+      }
+    },
+    "ports": null                  // resolve_type='port' 时为 null
+  }
+}
+```
+
+**响应(200) — 设备码场景**:
+```json
+{
+  "code": 0,
+  "data": {
+    "resolve_type": "device",      // 路由结果
+    "port": null,                  // resolve_type='device' 时为 null
+    "ports": [                     // 该设备下所有端口列表(空闲 + 充电中 + 故障)
+      {
+        "port_id": "xx_001_01",
+        "port_status": "idle",
+        "current_order_no": null
+      },
+      {
+        "port_id": "xx_001_02",
+        "port_status": "charging",
+        "current_order_no": "CH..."
+      },
+      {
+        "port_id": "xx_001_03",
+        "port_status": "fault",
+        "current_order_no": null
+      }
+    ],
+    "device_id": "xx_001",
+    "station_name": "万达广场地下停车场",
+    "station_address": "北京市朝阳区..."
+  }
+}
+```
+
+**业务逻辑**:
+1. 解析 `code`:
+   - 端口码格式:`<vendor>_<device>_<port>`(8-32 字符)
+   - 设备码格式:`<vendor>_<device>`(短于端口码,不含端口)
+2. 服务端智能判断(正则匹配 / 查数据库是否存在):
+   - 匹配 `gateway_db.device.port_id` → 端口码 → `resolve_type='port'`
+   - 匹配 `gateway_db.device.device_id` → 设备码 → `resolve_type='device'`
+   - 既不是端口码也不是设备码 → `2016`(二维码无效)
+3. **端口码分支**:查 `port_status` + `pricing_rule` → 直接返回详情(无需再调 `/scan/port`)
+4. **设备码分支**:查 `port_view` 该设备下所有端口 + 实时状态 → 返回端口列表(前端展示);用户点选某个端口后再调 `/scan/port` 拿单端口详情
+
+**错误码**:
+- `1001`: JWT 失效
+- `1004`: device_id / port_id 都不存在
+- `2016`: 二维码无效(格式不匹配 / 厂商未注册)
+- `4291`: 超过限流(20 req/min)
+
+---
+
+### `POST /api/v1/user/scan/port`
+
+**鉴权**:[JWT]
+**限流**:每 user 30 req/min(浏览端口详情频次中等)
+**触发场景**:从"设备码 → 端口列表"页面**用户点选某个端口后**调用,获取单端口详情
+**业务目标**:展示单端口的实时状态 + 计费规则,**不创建订单**
+
+**请求体**:
+```json
+{
+  "port_id": "xx_001_01"        // 必须从 /scan/resolve 或 /station/{id} 拿到的 port_id
 }
 ```
 
@@ -325,7 +411,7 @@ Wechatpay-Nonce: ...
     "device_id": "xx_001",
     "station_name": "万达广场地下停车场",
     "station_address": "北京市朝阳区...",
-    "port_status": "idle",      // "idle" / "charging" / "fault"
+    "port_status": "idle",       // "idle" / "charging" / "fault"
     "pricing_rule": {
       "rule_name": "万达广场 - 白天",
       "electric_cents_per_kwh": 55,
@@ -336,16 +422,15 @@ Wechatpay-Nonce: ...
 ```
 
 **业务逻辑**:
-1. 解析 code(同 `/scan/start`)
-2. 校验 `device_id` 存在 + enabled
-3. 查 `gateway_db.device` 实时状态(`port_status` 从 telemetry 最新一条推断)
-4. 查 `charge_db.charge_rule`(取 station 默认规则)
-5. 返回展示数据(不创建订单,不触发副作用)
+1. 校验 `port_id` 格式
+2. 查 `gateway_db.device` + `port_view` 拿 `port_status`(从最新 telemetry 推断)
+3. 查 `admin_db.pricing_rule`(取 station 默认规则)
+4. 返回展示数据(不创建订单,不触发副作用)
 
 **错误码**:
-- `2001`: 端口被占用(展示场景返回 port_status=charging,不算错误)
+- `2001`: 端口被占用(展示场景返回 `port_status='charging'`,不算错误)
 - `2002`: 设备已停用
-- `1004`: 设备不存在
+- `1004`: port_id 不存在
 
 ---
 
