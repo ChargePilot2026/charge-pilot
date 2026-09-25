@@ -303,6 +303,9 @@
 | `failure_reason` | `VARCHAR(256)` | NULL | NULL | 失败原因 |
 | `processed_at` | `DATETIME(3)` | NULL | NULL | 处理时间 |
 | `completed_at` | `DATETIME(3)` | NULL | NULL | 完成时间 |
+| **`reviewed_by`** | `BIGINT UNSIGNED` | NULL | NULL | **审核人**(需求 § 9.3 客户财务审核,关联 `admin_db.admin_user_role.id`) |
+| **`reviewed_at`** | `DATETIME(3)` | NULL | NULL | **审核时间** |
+| **`review_note`** | `VARCHAR(512)` | NULL | NULL | **审核备注**(通过 / 拒绝原因) |
 | `created_at` | `DATETIME(3)` | NOT NULL | — | 申请时间 |
 | `updated_at` | `DATETIME(3)` | NOT NULL | — | 更新时间 |
 | `deleted_at` | `DATETIME(3)` | NULL | NULL | 软删除时间 |

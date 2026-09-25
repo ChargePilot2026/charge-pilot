@@ -48,6 +48,7 @@
 | `settled_record` | 账单结清记录 | 不分 | ~5000 |
 | `finance_reconcile_log` | 财务对账日志(对账差异处理) | 不分 | ~1000/年 |
 | `invoice_review` | 发票审核记录(冗余 user_db.invoice_request) | 不分 | ~50 万 |
+| **`alert_event`** | **告警事件持久化**(规则触发记录,便于查询历史) | 按月分区 | ~50 万 |
 | `audit_log` | 所有 admin 写操作审计 | 按月分区 | ~500 万 |
 
 > **本文件首批设计 7 张核心表**:`admin_user_role` / `role` / `permission` / `whitelabel_config` / `announcement` / `customer_service_config` / `audit_log`。
@@ -1414,4 +1415,74 @@
 > 文件结构:`通用约定` → `表清单(23 张)` → `关键架构决策` → 表 1 ~ 表 23 → 文档结束。
 >
 > **下一文件**:`docs/db/gateway.md`(gateway_db,设备 / 遥测 / 告警 / 会话)。
+
+---
+
+# 增补:告警事件持久化表
+
+## 表 24:`admin_db.alert_event`
+
+**业务说明**:**告警事件持久化表**(规则触发后的每条告警存一条)。原本只在 Redis Stream 流转,过期后无法查询;本表用于"最近 24h 哪些设备告警过 / 告警趋势"等查询。**按月分区 + 6 个月物理归档**。
+
+**关键业务规则**:
+
+- **每条告警 = 一行**:gateway 实时匹配 `alert_rule` → 触发后发布 `alert_stream` 事件 + INSERT 本表(异步批量)
+- **状态机**:`active` 触发中 → `acknowledged` 运维确认 → `resolved` 已恢复
+- **不软删除**:日志类,按月分区
+
+### 字段定义
+
+| 字段 | 类型 | 约束 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `id` | `BIGINT UNSIGNED` | PK, AUTO_INCREMENT | — | 主键 |
+| `event_no` | `CHAR(32)` | UNIQUE, NOT NULL | — | 告警单号,格式 `AL + YYYYMMDDHHmmss + 10 位随机` |
+| `rule_id` | `BIGINT UNSIGNED` | NOT NULL | — | 关联 `alert_rule.id` |
+| `device_id` | `VARCHAR(32)` | NOT NULL | — | 设备 ID |
+| `port_id` | `VARCHAR(32)` | NULL | NULL | 端口 ID |
+| `metric` | `VARCHAR(32)` | NOT NULL | — | 触发的监测字段(冗余自 alert_rule) |
+| `severity` | `ENUM('low','mid','high')` | NOT NULL | — | 严重程度(冗余) |
+| `is_auto_poweroff` | `BOOLEAN` | NOT NULL | `FALSE` | 是否触发自动断电 |
+| `trigger_value` | `VARCHAR(64)` | NULL | NULL | 触发时的实际值(如 `current_a=35.5`) |
+| `threshold_value` | `VARCHAR(64)` | NULL | NULL | 触发时的阈值(冗余自 alert_rule) |
+| `triggered_at` | `DATETIME(3)` | NOT NULL | — | 触发时间 |
+| `acknowledged_by` | `BIGINT UNSIGNED` | NULL | NULL | 确认人(客户巡检 / 客服) |
+| `acknowledged_at` | `DATETIME(3)` | NULL | NULL | 确认时间 |
+| `resolved_at` | `DATETIME(3)` | NULL | NULL | 恢复时间(条件消除后自动填) |
+| `status` | `ENUM('active','acknowledged','resolved','false_positive')` | NOT NULL | `'active'` | 状态 |
+| `resolution_note` | `VARCHAR(512)` | NULL | NULL | 处理备注 |
+| `partition_key` | `DATE` | NOT NULL | — | 分区键 |
+
+### 索引
+
+| 索引名 | 字段 | 类型 | 用途 |
+| --- | --- | --- | --- |
+| `pk_alert_event` | `id` | 主键 | — |
+| `uk_alert_event_no` | `event_no` | 唯一 | 单号追溯 |
+| `idx_alert_event_device_triggered` | `device_id`, `triggered_at` | 普通 | 查某设备的告警历史 |
+| `idx_alert_event_status_triggered` | `status`, `triggered_at` | 普通 | 查未处理的告警 |
+| `idx_alert_event_severity_triggered` | `severity`, `triggered_at` | 普通 | 按严重程度筛选 |
+| `idx_alert_event_rule_triggered` | `rule_id`, `triggered_at` | 普通 | 查某规则的所有告警 |
+
+### 约束
+
+- `status='acknowledged'` 时,`acknowledged_by` / `acknowledged_at` NOT NULL
+- `status='resolved'` 时,`resolved_at` NOT NULL
+- `status='false_positive'` 时,`resolution_note` NOT NULL(说明误报原因)
+
+### 关系
+
+- 多对一 → `alert_rule.id`
+- 多对一 → `gateway_db.device.id`(跨服务,无外键)
+
+### 业务规则
+
+- **触发**:gateway 实时匹配 `alert_rule` → 命中后 INSERT `alert_event(status='active')` + 发布 `alert_stream` 事件 → 订阅方推送 Webhook / 小程序
+- **确认**:客户巡检 / 客服在 PC 后台"告警中心"看到 → 点击确认 → UPDATE `status='acknowledged', acknowledged_by, acknowledged_at`
+- **恢复**:gateway 检测到设备状态恢复(条件不再满足)→ UPDATE `status='resolved', resolved_at`(自动)
+- **误报**:运维标 `status='false_positive'` + 填原因(便于后续规则调优)
+- **物理归档**:worker 每日扫表 → `triggered_at < NOW() - 6 MONTH` → `DELETE`(DROP PARTITION)
+
+---
+
+**admin_db 全部 24 张表设计完成**
 

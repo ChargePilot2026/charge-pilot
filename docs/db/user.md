@@ -158,6 +158,9 @@
 | `power_w` | `DECIMAL(10,2)` | NULL | NULL | 平均功率(W),结束回填 |
 | `status` | `ENUM('pending','charging','finished','cancelled','failed')` | NOT NULL | — | 订单状态 |
 | `billing_mode` | `ENUM('normal','estimated')` | NOT NULL | `'normal'` | 计费模式:normal 真实遥测 / estimated § 6.5 B 方案估算 |
+| **`actual_kwh`** | `DECIMAL(10,3)` | NULL | NULL | **实际消耗电量**(kWh,需求 § 8.4 按已充结算字段;正常结束时 = meter_kwh,提前结束时 < meter_kwh) |
+| **`actual_fee_cents`** | `BIGINT` | NULL | NULL | **实结费用**(分,= electric_fee + service_fee;提前结束时按已充计算) |
+| **`refundable_cents`** | `BIGINT` | NULL | NULL | **应退金额**(分,提前结束时 = paid_fee - actual_fee;正常结束 = 0) |
 | `fail_reason` | `VARCHAR(256)` | NULL | NULL | 失败原因(`status=failed` 时填) |
 | `cancel_reason` | `VARCHAR(256)` | NULL | NULL | 取消原因(`cancelled` 时填) |
 | `cancel_initiator` | `ENUM('user','system','timeout')` | NULL | NULL | 取消发起方 |
