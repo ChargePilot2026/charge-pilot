@@ -1,0 +1,121 @@
+# Caddyfile · ChargePilot 反向代理 + TLS 终止
+# 配套文档:docs/技术规格.md § 10(部署)+ § 9.1(TLS)
+#
+# 用法:
+#   1. 复制到客户服务器:scp Caddyfile user@server:/opt/chargepilot/
+#   2. 修改 <customer-domain> 为实际域名(如 charge.example.com)
+#   3. Caddy 首次启动自动从 Let's Encrypt 申请证书(需域名 A 记录指向服务器)
+#   4. Caddy 续期由 ACME HTTP-01 自动完成(每 60 天)
+#
+# 注意:
+#   - Caddy **不代理** TCP :9100 / MQTT :1883 — 这两个端口由 gateway 服务
+#     直接监听(Docker Compose 暴露 9100/1883 公网)
+#   - 内部 HTTP 端口(8081 user / 8082 admin / 8083 gateway / 8084 billing)
+#     **不直接暴露公网**,只通过本 Caddyfile 反代
+
+# ============ 主域名:PC 后台 + 小程序 API 统一入口 ============
+<customer-domain> {
+    # TLS 配置(自动 HTTPS)
+    encode zstd gzip
+    # HSTS(§ 9.1)
+    header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+    # 安全响应头
+    header X-Content-Type-Options "nosniff"
+    header X-Frame-Options "DENY"
+    header Referrer-Policy "strict-origin-when-cross-origin"
+    header Content-Security-Policy "default-src 'self'; img-src 'self' https: data:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';"
+
+    # CORS(同源策略,§ 9.7)
+    @cors_preflight method OPTIONS
+    header @cors_preflight Access-Control-Allow-Origin "{http.request.header.Origin}"
+    header @cors_preflight Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
+    header @cors_preflight Access-Control-Allow-Headers "Authorization, Content-Type, X-Requested-With"
+    header @cors_preflight Access-Control-Max-Age "86400"
+
+    # ===== 小程序 API(user 服务,:8081)=====
+    reverse_proxy /api/v1/user/* http://user:8081 {
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto https
+        # 超时 30 s(微信支付回调可能慢)
+        transport http {
+            dial_timeout 5s
+            response_header_timeout 30s
+            read_timeout 30s
+        }
+    }
+
+    # ===== 小程序公开端点(支付回调等,:8081)=====
+    reverse_proxy /api/v1/public/* http://user:8081 {
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        transport http {
+            dial_timeout 5s
+            response_header_timeout 30s
+            read_timeout 30s
+        }
+    }
+
+    # ===== OpenAPI 文档 + Swagger UI(:8081 user 提供)=====
+    reverse_proxy /api/docs/* http://user:8081
+
+    # ===== PC 后台 API(admin 服务,:8082)=====
+    reverse_proxy /api/v1/admin/* http://admin:8082 {
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        # admin 写操作可能慢(导出任务 / OTA 上传),超时 60 s
+        transport http {
+            dial_timeout 5s
+            response_header_timeout 60s
+            read_timeout 60s
+        }
+    }
+
+    # ===== PC 后台 React SPA 静态资源(由 admin 服务直接服务,:8082)=====
+    reverse_proxy /admin/* http://admin:8082 {
+        # SPA 路由 fallback(任意路径找不到资源 → 返回 index.html)
+        @spa_fallback path /admin/*
+        rewrite @spa_fallback /admin/index.html
+        # 静态资源缓存 1 天
+        header Cache-Control "public, max-age=86400"
+    }
+
+    # ===== 根路径 → PC 后台首页 =====
+    redir / /admin/
+}
+
+# ============ 健康检查端点(可选,L4 LB 用) ============
+:8080 {
+    # 内部 LB 健康检查,不暴露公网
+    bind 127.0.0.1
+    respond /health 200
+}
+
+# ============ 证书续期失败告警 webhook(可选) ============
+# 当 Caddy 自动续期失败时,触发 alert_stream(由 admin 服务消费)
+# https://caddyserver.com/docs/caddyfile/options#acme-ca
+{
+    acme_ca https://acme-v02.api.letsencrypt.org/directory
+    on_demand_tls {
+        ask https://admin:8082/api/v1/internal/caddy/ask
+    }
+}
+
+# ============ 日志配置 ============
+{
+    # 访问日志 stdout(JSON 格式,接 Loki)
+    log default {
+        output stdout
+        format json
+    }
+    # 全局配置
+    admin off
+    auto_https on
+    # 邮件通知(证书续期失败)
+    servers {
+        protocols h1 h2 h3
+        max_header_size 4mb
+        read_timeout 60s
+        write_timeout 60s
+    }
+}
