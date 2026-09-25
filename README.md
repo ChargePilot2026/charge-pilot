@@ -16,9 +16,9 @@ ChargePilot 是一套**单客户单部署**的二轮车(电动自行车)充电�
 docs/
 ├── 需求分析.md                 ← 业务层:做什么、合规边界、业务规则
 ├── 技术规格.md                 ← 技术实现层:怎么做的全局技术决策
-├── db/                         ← 数据层:5 个 schema,54 张表的字段级定义
+├── db/                         ← 数据层:5 个 schema,59 张表的字段级定义
 │   ├── user.md      (16 张表)
-│   ├── admin.md     (24 张表)
+│   ├── admin.md     (25 张表)
 │   ├── gateway.md   ( 8 张表)
 │   ├── billing.md   ( 5 张表)
 │   └── worker.md    ( 5 张表)
@@ -71,7 +71,7 @@ tools/                           ← 开发 / 维护工具
 7. **telemetry 保留策略**:原始 1 月 + 15 分钟聚合 3 年 + 小时聚合 3 年(单表 + 双粒度设计,§ 技术规格 § 4.6)。
 8. **扫码 3 端点**:拆为 `/scan/resolve`(路由分发)+ `/scan/port`(单端口详情)+ `/scan/start`(启动,基于 `port_id`),各自限流。
 9. **i18n 预留**:`announcement` / `pricing_template` / `split_template` / `coupon` 加 `_i18n JSON` 字段,本期只填 `zh-CN`。
-10. **Stream 名严格沿用 § 5.1 真实列表**(8 个):`device_event_stream` / `alert_stream` / `charge_ended_stream` / `refund_required_stream` / `invoice_required_stream` / `webhook_retry_stream` / `ota_schedule_stream` / `comp_tx_stream`。**新增 Stream 必须先在技术规格登记,不允许在文档里随意取名**。
+10. **Stream 名严格沿用 § 5.1 真实列表**(9 个):`device_event_stream` / `alert_stream` / `charge_started_stream` / `charge_ended_stream` / `refund_required_stream` / `invoice_required_stream` / `webhook_retry_stream` / `ota_schedule_stream` / `comp_tx_stream`。**新增 Stream 必须先在技术规格登记,不允许在文档里随意取名**。
 
 ---
 
@@ -79,7 +79,7 @@ tools/                           ← 开发 / 维护工具
 
 - ✅ 需求分析 v1.0(15 章 + 附录 A)
 - ✅ 技术规格 v1.0(15 章 + 术语表)
-- ✅ 5 个 schema 的 54 张数据库表字段级设计
+- ✅ 5 个 schema 的 59 张数据库表字段级设计
 - ✅ 5 个服务的 API 详细设计(共 167 个 HTTP 端点 + 任务/Stream 消费约定)
 - ✅ 一致性对账文档(API ↔ DB ↔ Stream)
 - ✅ 部署范例(Docker Compose / Caddyfile)

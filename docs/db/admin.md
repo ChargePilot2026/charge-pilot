@@ -52,8 +52,7 @@
 | **`alert_event`** | **告警事件持久化**(规则触发记录,便于查询历史) | 按月分区 | ~50 万 |
 | `audit_log` | 所有 admin 写操作审计 | 按月分区 | ~500 万 |
 
-> **本文件首批设计 7 张核心表**:`admin_user_role` / `role` / `permission` / `whitelabel_config` / `announcement` / `customer_service_config` / `audit_log`。
-> 剩余 16 张(`station` / `device_meta` / `pricing_rule` / `pricing_template` / `split_template` / `split_party` / `webhook_subscription` / `webhook_delivery_log` / `ota_package` / `ota_schedule` / `alert_rule` / `alert_subscription` / `risk_config` / `settled_record` / `finance_reconcile_log` / `invoice_review`)在第二批设计。
+> **本文件包含全部 25 张表**:首批 7 张核心 + 第二批 17 张运营型(`station` / `device_meta` / `pricing_rule` / `pricing_template` / `coupon` / `split_template` / `split_party` / `webhook_subscription` / `webhook_delivery_log` / `ota_package` / `ota_schedule` / `alert_rule` / `alert_subscription` / `risk_config` / `settled_record` / `finance_reconcile_log` / `invoice_review`) + 第三批 1 张(`alert_event`,按月分区持久化告警事件)。
 
 ### 关键架构决策(本批次)
 

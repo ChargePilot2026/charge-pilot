@@ -47,7 +47,7 @@
 | `feedback` | `user.md` § 扫码与充电 | `POST /charge/{id}/feedback` |
 | `device_fault_report` | `user.md` § 站点与找桩 | `POST /device/report-fault` |
 
-### 2.2 admin_db(24 张)
+### 2.2 admin_db(25 张)
 
 | 表名 | 服务的端点引用 | 关键端点 |
 | --- | --- | --- |
