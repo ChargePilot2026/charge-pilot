@@ -8,6 +8,8 @@
 
 > **单客户部署约定**:billing_db 是**单客户专用数据库**,所有表都**不带 `customer_id` 列**。
 
+> **软删除策略**:跨 schema 对账见 `docs/cross-reference.md` § 5.5(权威源),本文档通用约定与之一致;若冲突,以 cross-reference 为准。
+
 ## 通用约定
 
 | 项目 | 约定 | 例外 |
