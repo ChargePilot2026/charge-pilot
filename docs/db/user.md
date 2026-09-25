@@ -23,7 +23,7 @@
 | 外键 | **不声明**(跨服务事务用最终一致性,§ 4.3 + § 5.4) | 无 |
 | **业务状态 vs 软删除二维关系** | `status` 字段(如 `pending` / `success` / `cancelled`)是**业务生命周期状态机**;`deleted_at` 字段是**数据可见性软删除**;**二者独立,不互斥**:被软删的订单 `status` 保持原值(如 `cancelled` 订单被软删后,`status='cancelled'` + `deleted_at NOT NULL`);查询经仓储层封装自动加 `WHERE deleted_at IS NULL`,运维查询可绕过 | 审计日志 / 幂等表 无 status 字段 |
 
-## 表清单(12 张)
+## 表清单(16 张)
 
 | 表名 | 业务说明 | 分表策略 | 估算行数(单客户 5 年) |
 | --- | --- | --- | --- |
@@ -41,9 +41,11 @@
 | `invoice_request` | 发票申请记录 | 不分 | ~50 万 |
 | `port_view` | 找桩缓存(冗余自 gateway_db,加速查询) | 不分 | ~5000 |
 | `payment_callback_idempotent` | 微信支付回调幂等表 | 不分 | ~200 万 |
+| **`feedback`** | **评价 / 投诉记录**(每笔订单唯一评价) | 不分 | ~200 万 |
+| **`device_fault_report`** | **设备报修记录**(用户报修 + 巡检处理) | 不分 | ~5 万 |
 
-> **本文件包含全部 14 张表**:`user` / `charge_order` / `payment_order` / `wallet_account` / `wallet_txn` / `refund_record` / `refund_reconcile_diff` / `risk_freeze_log` / `coupon` / `coupon_grant` / `membership_card` / `invoice_request` / `port_view` / `payment_callback_idempotent`。
-> 首批 8 张已设计完毕,第二批 6 张紧随其后。
+> **本文件包含全部 16 张表**:首批 8 张 + 第二批 6 张 + 第三批 2 张(API 补漏)。
+> 业务场景覆盖:用户管理 / 充电 / 支付 / 退款 / 钱包 / 优惠券 / 会员 / 发票 / 找桩 / 微信支付幂等 / **评价 / 投诉 / 设备报修**。
 
 ### 关键架构决策(本批次)
 
