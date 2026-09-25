@@ -41,8 +41,8 @@
 | `port_view` | 找桩缓存(冗余自 gateway_db,加速查询) | 不分 | ~5000 |
 | `payment_callback_idempotent` | 微信支付回调幂等表 | 不分 | ~200 万 |
 
-> **本文件首批设计 8 张核心表**:`user` / `charge_order` / `payment_order` / `wallet_account` / `refund_record` / `refund_reconcile_diff` / `risk_freeze_log` / `coupon_grant`。
-> 剩余 6 张(`wallet_txn` / `coupon` / `membership_card` / `invoice_request` / `port_view` / `payment_callback_idempotent`)在第二批设计。
+> **本文件包含全部 14 张表**:`user` / `charge_order` / `payment_order` / `wallet_account` / `wallet_txn` / `refund_record` / `refund_reconcile_diff` / `risk_freeze_log` / `coupon` / `coupon_grant` / `membership_card` / `invoice_request` / `port_view` / `payment_callback_idempotent`。
+> 首批 8 张已设计完毕,第二批 6 张紧随其后。
 
 ### 关键架构决策(本批次)
 
@@ -678,3 +678,396 @@
 **本批次结束(8 张核心表)**
 
 > 剩余 6 张表(`wallet_txn` / `coupon` 模板 / `membership_card` / `invoice_request` / `port_view` / `payment_callback_idempotent`)将在第二批设计,沿用本文件的"通用约定"和表设计格式。
+
+---
+
+# 第二批:6 张支撑型表
+
+## 表 9:`user_db.wallet_txn`
+
+**业务说明**:**余额流水**。每次 `wallet_account` 余额变动都同步写一条流水,用于对账、审计、查询"我的余额明细"。
+
+**关键业务规则**:
+
+- **流水类型**:`recharge`(充值入账)/ `consume`(消费扣减)/ `refund`(退款入账)/ `freeze`(支付冻结)/ `unfreeze`(冻结回退)/ `admin_adjust`(管理员调整)
+- **必须事务**:余额变动 + 流水写入在同一事务,严禁只改余额不写流水
+- **金额守恒**:`SUM(amount_cents) WHERE txn_type IN ('recharge','refund') - WHERE txn_type IN ('consume') = wallet_account.available_cents + wallet_account.frozen_cents`
+- 软删除启用:异常流水(测试数据 / 误操作)由客户财务软删
+
+### 字段定义
+
+| 字段 | 类型 | 约束 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `id` | `BIGINT UNSIGNED` | PK, AUTO_INCREMENT | — | 主键 |
+| `txn_no` | `CHAR(32)` | UNIQUE, NOT NULL | — | 业务流水号,格式 `WT + YYYYMMDDHHmmss + 12 位随机` |
+| `account_id` | `BIGINT UNSIGNED` | NOT NULL | — | 关联 `wallet_account.id` |
+| `user_id` | `BIGINT UNSIGNED` | NOT NULL | — | 冗余,便于查询 |
+| `txn_type` | `ENUM('recharge','consume','refund','freeze','unfreeze','admin_adjust')` | NOT NULL | — | 流水类型 |
+| `amount_cents` | `BIGINT` | NOT NULL | — | 变动金额(分,**正负值**,recharge/refund/unfreeze 为正,consume/freeze 为负) |
+| `balance_after_cents` | `BIGINT` | NOT NULL | — | **变动后余额快照**(便于审计,无需再 JOIN wallet_account) |
+| `related_payment_order_id` | `BIGINT UNSIGNED` | NULL | NULL | 关联 `payment_order.id`(recharge/consume/freeze 时填) |
+| `related_refund_id` | `BIGINT UNSIGNED` | NULL | NULL | 关联 `refund_record.id`(refund 时填) |
+| `related_charge_order_id` | `BIGINT UNSIGNED` | NULL | NULL | 关联 `charge_order.id`(consume 时填,便于追溯"哪笔充电花了多少") |
+| `remark` | `VARCHAR(256)` | NULL | NULL | 备注(admin_adjust 时必填,如"客户投诉补偿 50 元") |
+| `operator_id` | `BIGINT UNSIGNED` | NULL | NULL | 操作者(admin_adjust 时填,记录管理员 ID;自动类型为 NULL) |
+| `created_at` | `DATETIME(3)` | NOT NULL | — | 流水时间 |
+| `updated_at` | `DATETIME(3)` | NOT NULL | — | 更新时间 |
+| `deleted_at` | `DATETIME(3)` | NULL | NULL | 软删除时间 |
+| `deleted_by` | `BIGINT UNSIGNED` | NULL | NULL | 删除操作者 ID |
+| `partition_key` | `DATE` | NOT NULL | — | 分区键(冗余 `created_at` 的日期部分) |
+
+### 索引
+
+| 索引名 | 字段 | 类型 | 用途 |
+| --- | --- | --- | --- |
+| `pk_wallet_txn` | `id` | 主键 | — |
+| `uk_wallet_txn_no` | `txn_no` | 唯一 | 单条流水追溯 |
+| `idx_wallet_txn_account_created` | `account_id`, `created_at` | 普通 | 用户"我的余额明细"列表 |
+| `idx_wallet_txn_user_type` | `user_id`, `txn_type`, `created_at` | 普通 | 按类型筛选(我的充值记录 / 我的消费记录) |
+| `idx_wallet_txn_payment_order` | `related_payment_order_id` | 普通(可空) | 反查"某笔支付触发的所有流水" |
+| `idx_wallet_txn_deleted_at` | `deleted_at` | 普通 | 物理归档扫描 |
+
+### 约束
+
+- `txn_type IN ('recharge','refund','unfreeze')` 时,`amount_cents > 0`
+- `txn_type IN ('consume','freeze')` 时,`amount_cents < 0`
+- `txn_type='admin_adjust'` 时,`amount_cents` 可正可负,`operator_id` 必须 NOT NULL,`remark` 必须 NOT NULL
+- `txn_type='recharge'` 时,`related_payment_order_id` NOT NULL(关联 `biz_type='recharge'` 的 payment_order)
+- `txn_type='refund'` 时,`related_refund_id` NOT NULL
+
+### 关系
+
+- 多对一 → `wallet_account.id`
+- 多对一 → `user.id`(冗余)
+- 可选关联 → `payment_order.id` / `refund_record.id` / `charge_order.id`(按类型填)
+
+### 业务规则
+
+- **充值流水**:`payment_order(biz_type='recharge')` 微信回调成功 → 事务内 UPDATE `wallet_account.available_cents += X` + INSERT `wallet_txn(txn_type='recharge', amount_cents=+X, balance_after, related_payment_order_id, remark='钱包充值')`
+- **消费冻结**(组合支付扣余额):事务内 UPDATE `wallet_account.available_cents -= X, frozen_cents += X` + INSERT `wallet_txn(txn_type='freeze', amount_cents=-X, balance_after, related_payment_order_id, related_charge_order_id, remark='充电消费冻结')`
+- **冻结转扣减**(订单结束扣款成功):UPDATE `wallet_account.frozen_cents -= X, total_consumed += X` + INSERT `wallet_txn(txn_type='consume', amount_cents=-X, balance_after, related_charge_order_id, remark='充电消费扣款')`
+- **冻结回退**(支付失败):UPDATE `wallet_account.frozen_cents -= X` + INSERT `wallet_txn(txn_type='unfreeze', amount_cents=+X, balance_after, remark='冻结回退')`
+- **退款入账**:`refund_record.status='success'` → UPDATE `wallet_account.available_cents += X, total_refunded += X` + INSERT `wallet_txn(txn_type='refund', amount_cents=+X, balance_after, related_refund_id, remark='退款入账')`
+- **管理员调整**:客户财务在 PC 后台填金额 + 备注 → 事务内 UPDATE wallet_account + INSERT `wallet_txn(txn_type='admin_adjust', operator_id, remark='客户投诉补偿 50 元')`,**强制审计日志**(`audit_log` 表同时记录)
+
+---
+
+## 表 10:`user_db.coupon`
+
+**业务说明**:**优惠券模板**(维度:面值 / 类型 / 门槛 / 有效期 / 适用范围 / 发放限制)。客户运营在 admin PC 后台配置。**不发优惠券模板给用户**——发的是 `coupon_grant` 发放记录(表 6)。
+
+**关键业务规则**:
+
+- 模板与发放记录分离:模板 = 配置(可改),发放记录 = 实例(不可改)
+- 客户级配置:每个模板属于某个客户(`customer_id`),不跨客户共享
+- 适用场景:系统活动 / 拉新促活 / 投诉补偿
+- **不软删除**(模板是配置数据,删除走"停用"流程 → `status='disabled'`,不物理删除)
+
+### 字段定义
+
+| 字段 | 类型 | 约束 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `id` | `BIGINT UNSIGNED` | PK, AUTO_INCREMENT | — | 主键 |
+| `customer_id` | `BIGINT UNSIGNED` | NOT NULL | — | 所属客户(模板客户级隔离) |
+| `name` | `VARCHAR(64)` | NOT NULL | — | 优惠券名称(用户可见,如"新人 5 元抵扣券") |
+| `coupon_type` | `ENUM('fixed_amount','percentage','full_reduction')` | NOT NULL | — | 类型:固定金额 / 百分比折扣 / 满减 |
+| `discount_cents` | `BIGINT` | NULL | NULL | 优惠金额(分);`fixed_amount` / `full_reduction` 时填 |
+| `discount_percent` | `DECIMAL(5,2)` | NULL | NULL | 折扣百分比(0-100,精度 0.01);`percentage` 时填(如 80 = 8 折) |
+| `max_discount_cents` | `BIGINT` | NULL | NULL | 折扣上限(分);`percentage` 时填(如"最高减 10 元") |
+| `min_spend_cents` | `BIGINT` | NULL | NULL | 最低消费(分);`full_reduction` 时必填(如"满 30 减 5"),其他类型可空 |
+| `valid_days` | `SMALLINT UNSIGNED` | NULL | NULL | 领取后有效天数(如 30 天);`valid_from`/`valid_until` 二选一 |
+| `valid_from` | `DATETIME(3)` | NULL | NULL | 固定生效时间(模板级,不用 `valid_days` 时填) |
+| `valid_until` | `DATETIME(3)` | NULL | NULL | 固定失效时间(模板级) |
+| `total_limit` | `INT UNSIGNED` | NULL | NULL | 总发放数量上限(NULL = 无上限) |
+| `granted_count` | `INT UNSIGNED` | NOT NULL | `0` | 已发放数量(发券时 +1,作废时不减) |
+| `user_limit` | `INT UNSIGNED` | NOT NULL | `1` | 单用户最多持有数量(默认 1) |
+| `scope` | `ENUM('all','specific_station','specific_device')` | NOT NULL | `'all'` | 适用范围:全部 / 指定站点 / 指定设备 |
+| `scope_ids` | `JSON` | NULL | NULL | 适用范围 ID 列表(根据 `scope` 填站点或设备 ID 数组) |
+| `status` | `ENUM('enabled','disabled','archived')` | NOT NULL | `'enabled'` | 状态:启用 / 停用 / 归档 |
+| `created_by` | `BIGINT UNSIGNED` | NOT NULL | — | 创建人(客户运营 user_id) |
+| `created_at` | `DATETIME(3)` | NOT NULL | — | 创建时间 |
+| `updated_at` | `DATETIME(3)` | NOT NULL | — | 更新时间 |
+
+### 索引
+
+| 索引名 | 字段 | 类型 | 用途 |
+| --- | --- | --- | --- |
+| `pk_coupon` | `id` | 主键 | — |
+| `idx_coupon_customer_status` | `customer_id`, `status` | 普通 | 客户 PC 后台查模板列表 |
+| `idx_coupon_status_valid` | `status`, `valid_until` | 普通 | 查可发放的有效模板(发券时用) |
+
+### 约束
+
+- **类型字段对应**:
+  - `coupon_type='fixed_amount'` → `discount_cents` NOT NULL,`discount_percent` / `min_spend_cents` NULL
+  - `coupon_type='percentage'` → `discount_percent` NOT NULL,`discount_cents` / `min_spend_cents` NULL,`max_discount_cents` 可空
+  - `coupon_type='full_reduction'` → `discount_cents` NOT NULL,`min_spend_cents` NOT NULL,`discount_percent` NULL
+- **有效期字段对应**:`valid_days` 与 `valid_from`+`valid_until` 二选一(应用层校验)
+- `scope IN ('specific_station','specific_device')` 时,`scope_ids` NOT NULL
+- `granted_count <= total_limit`(应用层校验,超限不发)
+
+### 关系
+
+- 多对一 → `admin_db.customer.id`
+- 一对多 → `coupon_grant.coupon_id`(每个发券实例关联模板)
+
+### 业务规则
+
+- **创建模板**:客户运营在 admin PC 后台"营销管理 → 优惠券模板"新建 → 填写类型/面值/门槛/有效期/范围 → INSERT `coupon(status='enabled')`
+- **发放**(系统活动):worker 消费活动事件 → 查 `coupon` 模板 → 校验 `status='enabled'` + `granted_count < total_limit` + 用户未超 `user_limit` → INSERT `coupon_grant` + UPDATE `coupon.granted_count += 1`
+- **停用**:客户运营手动 `UPDATE coupon SET status='disabled'`,已发放的 `coupon_grant` 不受影响(继续可用直到过期)
+- **归档**:长期停用的模板 `status='archived'`,从列表隐藏但保留审计
+- **过期**:模板的 `valid_until` 过期后,**已发放的 coupon_grant 仍按各自 valid_until 生效**(模板级过期 ≠ 发券实例过期)
+
+---
+
+## 表 11:`user_db.membership_card`
+
+**业务说明**:**会员卡**(本期预留,数据可能为空)。二期扩展场景:用户购买月度 / 年度会员,享折扣 + 优先客服。
+
+**关键业务规则**:
+
+- 本期**预留 schema**,实际功能二期实施
+- 会员卡 = 用户付费购买的时间段权限(可叠加优惠券)
+- 软删除启用:会员过期不删,只标 `status='expired'`
+
+### 字段定义
+
+| 字段 | 类型 | 约束 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `id` | `BIGINT UNSIGNED` | PK, AUTO_INCREMENT | — | 主键 |
+| `card_no` | `CHAR(32)` | UNIQUE, NOT NULL | — | 会员卡号,格式 `MC + YYYYMMDD + 8 位随机` |
+| `user_id` | `BIGINT UNSIGNED` | NOT NULL | — | 持卡人 |
+| `customer_id` | `BIGINT UNSIGNED` | NOT NULL | — | 所属客户 |
+| `card_type` | `ENUM('monthly','quarterly','yearly')` | NOT NULL | — | 会员类型:月卡 / 季卡 / 年卡 |
+| `price_cents` | `BIGINT` | NOT NULL | — | 购买价格(分) |
+| `discount_percent` | `DECIMAL(5,2)` | NULL | NULL | 充电折扣(如 90 = 9 折),NULL = 无折扣 |
+| `valid_from` | `DATETIME(3)` | NOT NULL | — | 生效时间 |
+| `valid_until` | `DATETIME(3)` | NOT NULL | — | 失效时间 |
+| `auto_renew` | `BOOLEAN` | NOT NULL | `FALSE` | 是否自动续费(二期) |
+| `status` | `ENUM('active','expired','cancelled')` | NOT NULL | `'active'` | 状态:active 有效 / expired 过期 / cancelled 取消 |
+| `purchase_payment_order_id` | `BIGINT UNSIGNED` | NULL | NULL | 购买时的支付订单 ID(`payment_order.biz_type='membership'`,二期填) |
+| `created_at` | `DATETIME(3)` | NOT NULL | — | 创建时间(购买时间) |
+| `updated_at` | `DATETIME(3)` | NOT NULL | — | 更新时间 |
+| `deleted_at` | `DATETIME(3)` | NULL | NULL | 软删除时间 |
+| `deleted_by` | `BIGINT UNSIGNED` | NULL | NULL | 删除操作者 ID |
+
+### 索引
+
+| 索引名 | 字段 | 类型 | 用途 |
+| --- | --- | --- | --- |
+| `pk_membership_card` | `id` | 主键 | — |
+| `uk_membership_card_no` | `card_no` | 唯一 | 卡号追溯 |
+| `idx_membership_card_user_status` | `user_id`, `status`, `valid_until` | 普通 | 用户"我的会员卡"列表 |
+| `idx_membership_card_customer_status` | `customer_id`, `status` | 普通 | 客户维度统计 |
+| `idx_membership_card_deleted_at` | `deleted_at` | 普通 | 物理归档扫描 |
+
+### 约束
+
+- `valid_until > valid_from`(应用层校验)
+- `status='cancelled'` 时,该卡立即失效,即使 `valid_until` 未到
+- `status='expired'` 时,`valid_until < NOW()`(应用层校验或 worker 任务标)
+
+### 关系
+
+- 多对一 → `user.id`
+- 多对一 → `admin_db.customer.id`
+- 多对一 → `payment_order.id`(购买订单,二期填)
+
+### 业务规则
+
+- **本期**:此表无业务逻辑,仅 schema 占位;客户运营可在 admin PC 后台手动 INSERT 测试数据
+- **二期触发**:
+  1. 客户合同要求会员功能
+  2. 业务引入会员体系
+  3. 用户反馈"希望长期打折"
+- **二期流程**(预留):用户支付 → INSERT `membership_card(status='active')` + INSERT `payment_order(biz_type='membership', biz_id=card.id)`;充电下单时校验有效会员 → 自动应用 `discount_percent`
+
+---
+
+## 表 12:`user_db.invoice_request`
+
+**业务说明**:**发票申请记录**。用户提交发票申请(抬头 + 税号 + 邮箱),客户财务在 admin PC 后台人工审核,通过后生成电子发票 + 邮件发送。
+
+**关键业务规则**:
+
+- **人工审核**:需求文档已定,客户财务审核,不自动开票
+- **关联支付订单**:可申请一张发票包含多笔 payment_order(累计开票)
+- **电子发票 PDF**:开票后上传 OSS,URL 存 `invoice_file_url`
+- 软删除启用:异常申请 / 用户撤回可软删
+
+### 字段定义
+
+| 字段 | 类型 | 约束 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `id` | `BIGINT UNSIGNED` | PK, AUTO_INCREMENT | — | 主键 |
+| `request_no` | `CHAR(32)` | UNIQUE, NOT NULL | — | 申请单号,格式 `INV + YYYYMMDD + 10 位随机` |
+| `user_id` | `BIGINT UNSIGNED` | NOT NULL | — | 申请人 |
+| `customer_id` | `BIGINT UNSIGNED` | NOT NULL | — | 所属客户 |
+| `invoice_type` | `ENUM('personal','company')` | NOT NULL | — | 发票类型:个人 / 企业 |
+| `title` | `VARCHAR(128)` | NOT NULL | — | 发票抬头(个人填姓名,企业填公司名) |
+| `tax_id` | `VARCHAR(32)` | NULL | NULL | 税号(企业必填,个人可不填) |
+| `email` | `VARCHAR(128)` | NOT NULL | — | 接收发票的邮箱 |
+| `amount_cents` | `BIGINT` | NOT NULL | — | 申请开票金额(分) |
+| `related_payment_order_ids` | `JSON` | NOT NULL | — | 关联的支付订单 ID 列表(JSON 数组,支持一张发票包含多笔订单) |
+| `status` | `ENUM('pending','approved','rejected','issued','failed')` | NOT NULL | `'pending'` | 状态:待审 / 已通过 / 已拒绝 / 已开票 / 开票失败 |
+| `reviewed_by` | `BIGINT UNSIGNED` | NULL | NULL | 审核人(客户财务 user_id) |
+| `reviewed_at` | `DATETIME(3)` | NULL | NULL | 审核时间 |
+| `review_note` | `VARCHAR(512)` | NULL | NULL | 审核备注(拒绝时必填) |
+| `invoice_file_url` | `VARCHAR(512)` | NULL | NULL | 电子发票 PDF 的 OSS URL(`status='issued'` 时填) |
+| `invoice_no` | `VARCHAR(64)` | NULL | NULL | 发票号码(税务局系统分配) |
+| `issued_at` | `DATETIME(3)` | NULL | NULL | 开票时间 |
+| `email_sent_at` | `DATETIME(3)` | NULL | NULL | 邮件发送时间 |
+| `email_send_fail_count` | `TINYINT UNSIGNED` | NOT NULL | `0` | 邮件发送失败次数(> 0 时人工跟进) |
+| `created_at` | `DATETIME(3)` | NOT NULL | — | 申请时间 |
+| `updated_at` | `DATETIME(3)` | NOT NULL | — | 更新时间 |
+| `deleted_at` | `DATETIME(3)` | NULL | NULL | 软删除时间 |
+| `deleted_by` | `BIGINT UNSIGNED` | NULL | NULL | 删除操作者 ID |
+
+### 索引
+
+| 索引名 | 字段 | 类型 | 用途 |
+| --- | --- | --- | --- |
+| `pk_invoice_request` | `id` | 主键 | — |
+| `uk_invoice_request_no` | `request_no` | 唯一 | 申请单号追溯 |
+| `idx_invoice_request_user_status` | `user_id`, `status`, `created_at` | 普通 | 我的发票申请列表 |
+| `idx_invoice_request_customer_status` | `customer_id`, `status`, `created_at` | 普通 | 客户财务审核队列 |
+| `idx_invoice_request_status_reviewed` | `status`, `reviewed_at` | 普通 | 查"已通过未开票"的工单 |
+| `idx_invoice_request_deleted_at` | `deleted_at` | 普通 | 物理归档扫描 |
+
+### 约束
+
+- `invoice_type='company'` 时,`tax_id` NOT NULL(应用层校验)
+- `status='approved'` 时,`reviewed_by` / `reviewed_at` NOT NULL
+- `status='rejected'` 时,`reviewed_by` / `reviewed_at` / `review_note` NOT NULL
+- `status='issued'` 时,`invoice_file_url` / `invoice_no` / `issued_at` / `email_sent_at` NOT NULL
+- `status='failed'` 时,`email_send_fail_count > 0`
+- 关联的支付订单 `SUM(paid_fee_cents) = amount_cents`(应用层校验)
+
+### 关系
+
+- 多对一 → `user.id`
+- 多对一 → `admin_db.customer.id`
+- 多对多 → `payment_order.id`(通过 `related_payment_order_ids` JSON 数组,跨服务无外键)
+
+### 业务规则
+
+- **申请**:小程序"我的 → 申请发票"选要开票的支付订单(可多选累计)→ 填抬头/税号/邮箱 → 提交 → INSERT `invoice_request(status='pending')`
+- **金额校验**:系统自动校验所选订单 `SUM(paid_fee_cents)` = 用户填的 `amount_cents`(防误填);不一致则提示用户
+- **审核**:客户财务在 admin PC 后台"发票管理 → 待审核"队列 → 校验抬头 / 税号格式 → 通过 / 拒绝 + 备注 → UPDATE `status='approved'/'rejected'`
+- **开票**:审核通过后,客户财务在 admin PC 后台"开票"操作(对接客户税务系统 / 第三方电子发票平台,如"票易通")→ 生成 PDF → 上传 OSS → 写 `invoice_file_url` + `invoice_no` → 发邮件 → UPDATE `status='issued', issued_at, email_sent_at`
+- **邮件失败重试**:邮件发送失败 → `email_send_fail_count += 1` + 写 `alert_stream` + 客户财务人工跟进(查看 OSS URL 手动转发)
+- **撤回**:用户申请后未审核前可撤回 → UPDATE `status='cancelled'`(实际不在 status 枚举中,改为 `deleted_at` 软删 + status='rejected' + review_note='用户撤回')
+
+---
+
+## 表 13:`user_db.port_view`
+
+**业务说明**:**找桩缓存**(冗余自 `gateway_db.device` / `gateway_db.port`,加速用户"找桩 / 地图"查询)。`gateway_db` 写主表,`user_db.port_view` 是只读缓存,由 worker 周期任务同步。
+
+**关键业务规则**:
+
+- **缓存性质**:不存真实状态(空闲 / 充电中),只存静态信息(站点 / 经纬度 / 端口数)
+- **不软删除**:缓存数据陈旧时由 worker 覆盖更新,无需软删
+- **数据来源**:admin 配置站点 → 写入 admin_db;worker 从 admin_db + gateway_db 同步到 user_db.port_view
+
+### 字段定义
+
+| 字段 | 类型 | 约束 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `id` | `BIGINT UNSIGNED` | PK, AUTO_INCREMENT | — | 主键 |
+| `port_id` | `VARCHAR(32)` | UNIQUE, NOT NULL | — | 端口 ID(冗余自 gateway_db) |
+| `device_id` | `VARCHAR(32)` | NOT NULL | — | 设备 ID |
+| `vendor_id` | `VARCHAR(8)` | NOT NULL | — | 厂商 ID |
+| `station_id` | `BIGINT UNSIGNED` | NOT NULL | — | 所属站点 |
+| `station_name` | `VARCHAR(128)` | NOT NULL | — | 站点名称(冗余,避免 JOIN) |
+| `longitude` | `DECIMAL(10,6)` | NOT NULL | — | 经度(精度 6 位 ≈ 0.1 m) |
+| `latitude` | `DECIMAL(10,6)` | NOT NULL | — | 纬度 |
+| `address` | `VARCHAR(256)` | NULL | NULL | 详细地址 |
+| `total_ports` | `TINYINT UNSIGNED` | NOT NULL | — | 设备总端口数 |
+| `online` | `BOOLEAN` | NOT NULL | `FALSE` | 设备是否在线(worker 周期从 gateway_db 同步) |
+| `last_sync_at` | `DATETIME(3)` | NOT NULL | — | 最近同步时间 |
+
+### 索引
+
+| 索引名 | 字段 | 类型 | 用途 |
+| --- | --- | --- | --- |
+| `pk_port_view` | `id` | 主键 | — |
+| `uk_port_view_port_id` | `port_id` | 唯一 | 按端口 ID 查 |
+| `idx_port_view_station` | `station_id` | 普通 | 按站点查 |
+| `idx_port_view_geo` | `longitude`, `latitude` | 普通 | 地理范围查询(找桩附近) |
+| `idx_port_view_online_sync` | `online`, `last_sync_at` | 普通 | 找"需要重新同步"的端口 |
+
+### 约束
+
+- `longitude` 范围 `-180.000000` ~ `180.000000`,`latitude` 范围 `-90.000000` ~ `90.000000`(应用层校验)
+- `online=FALSE` 且 `NOW() - last_sync_at > 1 HOUR` → 标记"可能离线"
+
+### 关系
+
+- 多对一 → `admin_db.station.id`(跨服务,无外键)
+- 多对一 → `gateway_db.device`(跨服务,无外键)
+
+### 业务规则
+
+- **同步触发**:worker 每 5 min 跑一次 → 查 `gateway_db.device` 状态 + `admin_db.station` 元数据 → UPSERT `user_db.port_view`
+- **找桩查询**:小程序"找桩"页 → user 查 `port_view`(`online=TRUE` + 按距离排序)→ 直接展示,无需跨服务
+- **实时状态**:端口"空闲 / 充电中"状态不缓存,需要时由小程序扫码后 user 调 `gateway` HTTP 接口查实时
+- **过期清理**:`port_view` 数据仅作缓存,源数据删除时由 worker 自动覆盖;无需软删除
+
+---
+
+## 表 14:`user_db.payment_callback_idempotent`
+
+**业务说明**:**微信支付回调幂等表**(§ 5.4 微信支付回调幂等维度)。按微信 `transaction_id` 去重,**与 Redis Stream 的 `event_id` 幂等是正交两套**。
+
+**关键业务规则**:
+
+- **不软删除**:幂等表是日志性质,30 天后物理清理
+- **唯一键**:`wechat_transaction_id`(微信交易号,同一笔不会被记录两次)
+- **保留期**:30 天(微信退款有效期 1 年,但幂等只需覆盖重复推送窗口 5 min + 余量)
+
+### 字段定义
+
+| 字段 | 类型 | 约束 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `id` | `BIGINT UNSIGNED` | PK, AUTO_INCREMENT | — | 主键 |
+| `wechat_transaction_id` | `VARCHAR(64)` | UNIQUE, NOT NULL | — | 微信 transaction_id(幂等键) |
+| `payment_order_id` | `BIGINT UNSIGNED` | NOT NULL | — | 关联 `payment_order.id`(第一次处理时记录) |
+| `wechat_amount_cents` | `BIGINT` | NOT NULL | — | 微信回调金额(分) |
+| `processed_at` | `DATETIME(3)` | NOT NULL | — | 处理时间(首次写入时间) |
+| `wechat_raw_payload` | `JSON` | NULL | NULL | 微信回调原始 payload(便于排查) |
+| `created_at` | `DATETIME(3)` | NOT NULL | — | 创建时间 |
+
+### 索引
+
+| 索引名 | 字段 | 类型 | 用途 |
+| --- | --- | --- | --- |
+| `pk_payment_callback_idempotent` | `id` | 主键 | — |
+| `uk_payment_callback_idempotent_txn` | `wechat_transaction_id` | 唯一 | 幂等去重(微信回调重复推送时直接返回 200 OK) |
+| `idx_payment_callback_idempotent_created` | `created_at` | 普通 | worker 周期清理 30 天前记录 |
+
+### 约束
+
+- `wechat_amount_cents > 0`(应用层校验)
+- 唯一约束保证同一 `wechat_transaction_id` 不会写入两条(数据库层面)
+
+### 关系
+
+- 多对一 → `payment_order.id`
+
+### 业务规则
+
+- **写入**:`POST /api/v1/user/payment/wechat/callback` 入口处理回调 → 校验签名 → 查 `payment_callback_idempotent` → 不存在则 INSERT + 处理回调;存在则直接返回 200 OK(不重复处理)
+- **清理**:worker 每日 04:00 跑 `DELETE FROM payment_callback_idempotent WHERE created_at < NOW() - 30 DAY`(物理删除,不软删)
+- **不存敏感信息**:`wechat_raw_payload` 仅保留必要字段(支付单号/金额/时间),不存用户敏感数据
+
+---
+
+**user_db 全部 14 张表设计完成**
+
+> 文件结构:`通用约定` → `表清单(14 张)` → `关键架构决策` → 表 1 ~ 表 14 → `本批次结束`。
+> 第二批新增 6 张支撑型表已覆盖余额流水 / 优惠券模板 / 会员卡预留 / 发票申请 / 找桩缓存 / 微信支付幂等的全部业务场景。
+>
+> **下一文件**:`docs/db/admin.md`(admin_db,客户管理 / 角色权限 / 白标 / 公告 / Webhook / OTA / 客服配置 / 财务审核 / 审计日志)。
+
