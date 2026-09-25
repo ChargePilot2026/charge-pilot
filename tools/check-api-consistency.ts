@@ -32,6 +32,7 @@ const DB_DIR = path.join(DOCS, 'db');
 const KNOWN_STREAMS = new Set([
   'device_event_stream',
   'alert_stream',
+  'charge_started_stream',
   'charge_ended_stream',
   'refund_required_stream',
   'invoice_required_stream',

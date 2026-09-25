@@ -6,12 +6,13 @@
 
 ---
 
-## § 1 Stream 名总账(§ 技术规格 5.1,8 个)
+## § 1 Stream 名总账(§ 技术规格 5.1,**9 个**)
 
 | Stream 名 | 生产者 | 消费者 | 用途 | 在哪些 API 文档中出现 |
 | --- | --- | --- | --- | --- |
 | `device_event_stream` | gateway | admin / user | 设备状态变更 + 充电中快照缓存填充 | gateway.md(§ 六), admin.md(跨服务调用), user.md(轮询) |
 | `alert_stream` | gateway | admin / worker | 告警事件(Webhook 推送) | gateway.md(§ 六), admin.md(§ E 告警), worker.md(§ 一.1.1) |
+| **`charge_started_stream`** | **user** | **gateway** | **充电启动(微信支付回调成功后 → 下发设备启动指令)** | **user.md § 公开接口 payment/wechat/callback,技术规格 § 5.4** |
 | `charge_ended_stream` | gateway | billing / user | 充电结束(触发计费 / 分账 / 退款 + 关闭 user 轮询) | gateway.md(§ 五), billing.md(§ 六), user.md(轮询关闭) |
 | `refund_required_stream` | billing | admin / user | 退款触发(自动退款 / 调微信 API) | billing.md(§ 六), admin.md(§ F), user.md(退款编排) |
 | `invoice_required_stream` | billing | admin | 发票申请(待人工审核) | billing.md(§ 六), admin.md(§ F) |
@@ -19,7 +20,7 @@
 | `ota_schedule_stream` | admin | worker / gateway | OTA 推送调度 | admin.md(§ J), worker.md(§ 一.1.2), gateway.md(§ 五) |
 | `comp_tx_stream` | 各服务 | 各服务 | 跨服务补偿事务 | billing.md(§ 六), worker.md(§ 一.1.4), gateway.md(§ 五) |
 
-> **约束**:8 个 Stream 是穷举的。新增 Stream 必须先在技术规格 § 5.1 登记,再在本表登记,再在 API 文档中使用。
+> **约束**:9 个 Stream 是穷举的。新增 Stream 必须先在技术规格 § 5.1 登记,再在本表登记,再在 API 文档中使用。
 
 ---
 
