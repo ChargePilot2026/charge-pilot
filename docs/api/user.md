@@ -48,7 +48,7 @@
 | 4xxx | 限流 | 4291 超过限流 |
 | 5xxx | 服务器错误 | 5001 内部错误 / 5003 服务暂时不可用 |
 
-## 端点清单(共 23 个)
+## 端点清单(共 29 个)
 
 ### 公开接口(无需鉴权)
 
@@ -65,10 +65,13 @@
 | POST | `/api/v1/user/scan/resolve` | 扫码路由:端口码 → 详情 / 设备码 → 端口列表 |
 | POST | `/api/v1/user/scan/port` | 单端口详情(从设备列表点选后调用) |
 | POST | `/api/v1/user/scan/start` | 启动充电(基于 port_id,不重复扫码) |
-| GET | `/api/v1/user/charge/ongoing/snapshot` | 充电中 5s 轮询快照 |
+| GET | `/api/v1/user/charge/ongoing/snapshot` | 充电中 5s 轮询快照(含告警) |
+| GET | `/api/v1/user/charge/ongoing/curve` | 充电中曲线(功率/电流/SOC/温度) |
 | POST | `/api/v1/user/charge/stop` | 主动停止充电 |
 | GET | `/api/v1/user/charge/history` | 历史订单列表 |
 | GET | `/api/v1/user/charge/{order_id}` | 订单详情 |
+| GET | `/api/v1/user/charge/{order_id}/curve` | 历史订单曲线回看 |
+| POST | `/api/v1/user/charge/{order_id}/feedback` | 提交评价 / 投诉 |
 
 ### 用户与钱包
 
@@ -77,6 +80,7 @@
 | GET | `/api/v1/user/profile` | 个人中心 |
 | POST | `/api/v1/user/phone/bind` | 绑定手机号(可选,绑送奖励) |
 | GET | `/api/v1/user/wallet/balance` | 钱包余额查询 |
+| POST | `/api/v1/user/wallet/recharge` | 钱包充值(微信支付下单) |
 | GET | `/api/v1/user/wallet/txns` | 余额流水(分页) |
 | POST | `/api/v1/user/wallet/refund` | 余额退款申请 |
 
@@ -86,6 +90,7 @@
 | --- | --- | --- |
 | GET | `/api/v1/user/station/nearby` | 附近站点(经纬度 + 半径) |
 | GET | `/api/v1/user/station/{station_id}` | 站点详情(端口列表 + 实时空闲数) |
+| POST | `/api/v1/user/device/report-fault` | 用户报修充电桩故障 |
 
 ### 优惠券与发票
 
@@ -101,7 +106,7 @@
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/api/v1/user/announcement/list` | 当前生效公告 |
-| POST | `/api/v1/user/customer-service/entry` | 进入客服会话(拿微信客服 URL) |
+| POST | `/api/v1/user/customer-service/entry` | 分配客服坐席(前端用 wx.openCustomerServiceChat 唤起) |
 
 ---
 
@@ -463,6 +468,12 @@ Wechatpay-Nonce: ...
     "estimated_remaining_minutes": 120,   // 按实时功率估算充满时间
     "current_fee_cents": 12,        // 当前预估费用(电费 + 服务费)
     "poll_continue": true,         // **关键字段**:false 时前端停止轮询,跳到充电结束页
+    "alert": {                    // **告警**(无告警时为 null)
+      "level": "mid",             // "low" / "mid" / "high"
+      "type": "temperature_high", // 告警类型(参考需求 § 7.4)
+      "message": "桩端温度偏高(72°C),请注意充电安全",
+      "suggest_action": "check_environment"
+    },
     "server_ts": "2026-09-25T14:08:00.123Z"
   }
 }
@@ -476,12 +487,88 @@ Wechatpay-Nonce: ...
 3. 推断 `poll_continue`:
    - `status='charging'` → true
    - `status` ∈ {`finished` / `failed` / `cancelled`} → false(前端跳转充电结束页)
-4. 返回数据(数值字段用字符串防 JS 浮点精度)
+4. 查最新告警(`alert_event` 表中 `device_id` + `status='active'`):
+   - **有** → 填 `alert` 字段(高告警前端弹窗 + 推送)
+   - **无** → `alert=null`
+5. 返回数据(数值字段用字符串防 JS 浮点精度)
 
 **错误码**:
 - `1001`: JWT 失效
 - `1004`: 订单不存在
 - `1003`: 订单不属于当前 user(越权)
+
+---
+
+### `GET /api/v1/user/charge/ongoing/curve`
+
+**鉴权**:[JWT]
+**限流**:每 user 6 req/min(曲线查询频次低)
+**触发场景**:小程序"充电中"页面 → 用户点击"查看充电曲线"
+**业务目标**:返回充电会话内的遥测时间序列(功率 / 电流 / 电压 / SOC / 温度 / 累计电量)
+
+**请求 query**:
+| 参数 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `order_id` | int | — | 充电订单 ID(必填) |
+| `window` | string | `last_30min` | 时间窗:`last_5min` / `last_30min` / `last_2h` / `since_start` |
+
+**响应(200)**:
+```json
+{
+  "code": 0,
+  "data": {
+    "order_id": 12345,
+    "window": "last_30min",
+    "sample_interval_seconds": 60,        // 实际采样间隔(由后端压缩决定)
+    "series": [
+      {
+        "ts": "2026-09-25T14:00:00Z",
+        "voltage_v": "220.5",
+        "current_a": "3.20",
+        "power_w": "704.0",
+        "temperature_c": "32.5",
+        "battery_soc": 60,
+        "meter_kwh": "0.020"
+      },
+      {
+        "ts": "2026-09-25T14:01:00Z",
+        "voltage_v": "221.0",
+        "current_a": "3.18",
+        "power_w": "703.0",
+        "temperature_c": "32.8",
+        "battery_soc": 62,
+        "meter_kwh": "0.041"
+      }
+    ],
+    "summary": {                       // 曲线摘要
+      "max_power_w": "750.0",
+      "max_temperature_c": "36.2",
+      "max_current_a": "3.40",
+      "total_kwh": "0.520"
+    }
+  }
+}
+```
+
+**业务逻辑**:
+1. 校验 `order_id` 属于当前 user(防越权 → `1003`)
+2. 查 `charge_order.started_at` + `ended_at`(若已结束)确定时间窗
+3. 按 `window` 从 `gateway_db.telemetry` 查数据:
+   - `last_5min` / `last_30min` / `last_2h` → 查原始 telemetry(分 16 张表,按 `device_id` hash 路由)
+   - `since_start` → 查 `started_at` 至今的全部 telemetry
+4. **采样压缩**(避免返回过多点):
+   - `last_5min` → 每 10 秒 1 点 → ≤ 30 点
+   - `last_30min` → 每 1 分钟 1 点 → ≤ 30 点
+   - `last_2h` → 每 5 分钟 1 点 → ≤ 24 点
+   - `since_start` → 自适应:< 30 min 用 10 秒;30 min ~ 2 h 用 1 min;> 2 h 用 5 min(上限 200 点)
+5. 算 `summary` 字段(最大功率 / 最高温度 / 峰值电流 / 累计电量)
+6. 返回时间序列 + 摘要
+
+**错误码**:
+- `1001` / `1003` / `1004`
+- `2017`: 订单未在充电中(`window=since_start` 仅适用于 finished 订单,charging 订单只能用 last_xxx)
+
+---
 
 ---
 
@@ -629,6 +716,120 @@ Wechatpay-Nonce: ...
 
 **错误码**:
 - `1001` / `1003` / `1004`(同上)
+
+---
+
+### `GET /api/v1/user/charge/{order_id}/curve`
+
+**鉴权**:[JWT]
+**限流**:每 user 10 req/min
+**触发场景**:小程序"订单详情"页面 → 用户点击"查看充电曲线"
+**业务目标**:返回历史订单的充电曲线(从聚合表查,与 `ongoing/curve` 数据源不同)
+
+**路径参数**:
+| 参数 | 类型 | 说明 |
+| --- | --- | --- |
+| `order_id` | int | 订单 ID |
+
+**请求 query**:
+| 参数 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `granularity` | string | `15min` | 粒度:`15min` / `hourly`(超长会话用 hourly) |
+
+**响应(200)**:
+```json
+{
+  "code": 0,
+  "data": {
+    "order_id": 12345,
+    "granularity": "15min",
+    "series": [
+      {
+        "bucket_start": "2026-09-25T14:00:00Z",
+        "voltage_v_avg": "220.5",
+        "voltage_v_max": "221.0",
+        "current_a_avg": "3.20",
+        "current_a_max": "3.40",
+        "temperature_c_avg": "32.5",
+        "temperature_c_max": "34.0",
+        "battery_soc_end": 62,
+        "meter_kwh_end": "0.080"
+      }
+    ],
+    "summary": {
+      "max_power_w": "750.0",
+      "max_temperature_c": "36.2",
+      "total_kwh": "0.520",
+      "avg_power_w": "700.0"
+    }
+  }
+}
+```
+
+**业务逻辑**:
+1. 校验 `order_id` 属于当前 user
+2. 查 `charge_order.started_at` + `ended_at` 确定时间窗
+3. 按 `granularity` 从聚合表查数据:
+   - `15min` → `gateway_db.telemetry_aggregate_15min`(§ 4.6 修订,保留 3 年)
+   - `hourly` → `gateway_db.telemetry_aggregate_hourly`(会话 > 24 h 时用)
+4. 算 `summary` 字段
+5. 返回时间序列 + 摘要
+
+**错误码**:
+- `1001` / `1003` / `1004`(同上)
+- `2018`: 订单时间窗超过聚合表保留期(3 年)
+
+---
+
+### `POST /api/v1/user/charge/{order_id}/feedback`
+
+**鉴权**:[JWT]
+**限流**:每 user 1 req/order(每笔订单只能评价一次)
+**触发场景**:小程序"充电结束页" → 用户点击"评价 / 投诉"
+**业务目标**:用户对充电体验评分 + 文字反馈 / 投诉分类(需求 § 5.3)
+
+**路径参数**:
+| 参数 | 类型 | 说明 |
+| --- | --- | --- |
+| `order_id` | int | 订单 ID |
+
+**请求体**:
+```json
+{
+  "rating": 5,                    // 1-5 星(投诉场景可填 1)
+  "comment": "充电很快,设备正常",   // 文字评论(选填)
+  "category": "experience",       // "experience" 体验 / "device" 设备 / "fee" 费用
+  "is_complaint": false,          // true = 投诉(客户运营重点跟进)
+  "contact_back": true            // 是否希望客服回复(留微信号等)
+}
+```
+
+**响应(200)**:
+```json
+{
+  "code": 0,
+  "data": {
+    "feedback_id": 54321,
+    "created_at": "2026-09-25T15:00:00Z",
+    "estimated_response_hours": 24  // 若 contact_back=true,客户客服响应 SLA
+  }
+}
+```
+
+**业务逻辑**:
+1. 校验 `order_id` 属于当前 user + `status='finished'`
+2. 校验是否已评价过(查 `feedback` 表唯一索引 `uk_feedback_order_user`)→ 已评过返回 `2019`
+3. **事务**:
+   - INSERT `feedback(rating, comment, category, is_complaint, contact_back)`
+   - `is_complaint=true` → 写 `alert_stream` 事件(优先级 mid)+ 推送客户运营 PC 后台 + 客服微信通知
+   - `contact_back=true` + `is_complaint=false` → 写入客服待回访队列
+4. 推送小程序消息"评价已收到,感谢您的反馈"
+5. 同步返回 `feedback_id`
+
+**错误码**:
+- `1001` / `1003` / `1004`
+- `2005`: 订单未结束
+- `2019`: 已评价过(每笔订单仅一次)
 
 ---
 
@@ -783,6 +984,60 @@ Wechatpay-Nonce: ...
 
 **错误码**:
 - `1001` / 标准
+
+---
+
+### `POST /api/v1/user/wallet/recharge`
+
+**鉴权**:[JWT]
+**限流**:每 user 10 req/min
+**触发场景**:小程序"钱包"页 → 用户点击"充值"→ 选档位 → 跳微信支付
+**业务目标**:创建充值支付订单(走微信直连或汇付天下,§ 9.3)
+
+**请求体**:
+```json
+{
+  "amount_cents": 10000,           // 充值金额(分)
+  "pay_channel": "wechat"          // "wechat" 微信直连 / "huifu" 汇付天下(由客户配置)
+}
+```
+
+**响应(200)**:
+```json
+{
+  "code": 0,
+  "data": {
+    "payment_order_no": "PY20260925...",
+    "amount_cents": 10000,
+    "wechat_pay_params": {          // 前端用此唤起 wx.requestPayment
+      "appId": "wx...",
+      "timeStamp": "...",
+      "nonceStr": "...",
+      "package": "...",
+      "signType": "RSA",
+      "paySign": "..."
+    },
+    "expires_at": "2026-09-25T14:15:00Z"   // 支付单过期时间(默认 15 min)
+  }
+}
+```
+
+**业务逻辑**:
+1. 校验 `amount_cents > 0`(下限由客户配置,默认 100 分 = 1 元)
+2. 校验 `pay_channel` 在客户配置中启用(读 `customer.whitelabel_config.pay_channels`)
+3. 创建 `payment_order(biz_type='recharge', biz_id=NULL, parent_order_id=NULL, pay_method=$channel, total_fee_cents=$amount, status='pending')`
+4. 调微信支付 V3 API(根据 `pay_channel` 路由):
+   - 微信直连 → `POST /v3/pay/transactions/jsapi`
+   - 汇付天下 → 调汇付 SDK(占位)
+5. 拿到 `wechat_pay_params` 返回给前端
+6. 等待微信回调(异步,走 `payment/wechat/callback` 端点):
+   - 回调成功 → UPDATE `payment_order.status='success'` + 钱包入账 + 写 `wallet_txn`
+   - 超时(15 min)→ 定时任务标 `status='failed'`
+
+**错误码**:
+- `1001` / `2020`(金额低于客户配置下限)
+- `3001`: 微信支付下单失败
+- `5001`: 数据库错误
 
 ---
 
@@ -1153,6 +1408,63 @@ Wechatpay-Nonce: ...
 
 **错误码**:
 - `1001`
+
+---
+
+### `POST /api/v1/user/device/report-fault`
+
+**鉴权**:[JWT]
+**限流**:每 user 5 req/day(防骚扰,真故障一天报一次足够)
+**触发场景**:小程序"站点详情"页 → 用户点击"报修"按钮
+**业务目标**:用户上报充电桩故障 → 客户巡检跟进
+
+**请求体**:
+```json
+{
+  "device_id": "xx_001",            // 报修的设备 ID
+  "port_id": "xx_001_03",          // 可选,具体哪个端口故障
+  "fault_type": "charging_failure", // 故障类型枚举
+  "description": "插头插上后无反应",  // 文字描述
+  "photos": [                      // 可选,照片 URL 列表(小程序上传到 OSS 后)
+    "https://bucket.oss/photo1.jpg"
+  ]
+}
+```
+
+`fault_type` 枚举:
+- `charging_failure`:充电失败(插上无反应 / 启动失败)
+- `port_damage`:硬件损坏(插头 / 端口物理损伤)
+- `display_abnormal`:显示异常(屏幕 / 指示灯)
+- `network_failure`:网络故障(扫码后无法连接)
+- `other`:其他
+
+**响应(200)**:
+```json
+{
+  "code": 0,
+  "data": {
+    "report_id": 88888,
+    "report_no": "RP20260925...",
+    "status": "pending",             // "pending" / "dispatched" / "resolved" / "closed"
+    "estimated_response_hours": 24,  // 客户巡检响应 SLA(可配)
+    "created_at": "2026-09-25T14:00:00Z"
+  }
+}
+```
+
+**业务逻辑**:
+1. 校验 `device_id` 存在(查 `gateway_db.device`)
+2. 校验 `port_id` 属于该 `device_id`(若提供)
+3. 校验 `fault_type` 在枚举中
+4. INSERT `device_fault_report(device_id, port_id, fault_type, description, photos, status='pending', user_id=$current)`
+5. 发布 `alert_stream` 事件(`severity='low'`,路由给客户巡检 PC 后台)
+6. 推送小程序消息"报修已收到,客服将于 24 小时内联系您"
+7. 同步返回 `report_no` + `status`
+
+**错误码**:
+- `1001` / `1004`
+- `2021`: 同一设备 24h 内已报修过(防骚扰)
+- `2022`: 故障类型非法
 
 ---
 
