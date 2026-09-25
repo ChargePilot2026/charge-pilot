@@ -1105,3 +1105,142 @@
 >
 > **下一文件**:`docs/db/admin.md`(admin_db,客户管理 / 角色权限 / 白标 / 公告 / Webhook / OTA / 客服配置 / 财务审核 / 审计日志)。
 
+---
+
+# 第三批:2 张用户交互表(API 补漏)
+
+## 表 15:`user_db.feedback`
+
+**业务说明**:**评价 / 投诉记录**。用户在充电结束页对本次体验评分 + 文字反馈(需求 § 5.3)。**每笔订单仅能评价一次**(唯一约束)。
+
+**关键业务规则**:
+
+- `is_complaint=TRUE` → 客户运营重点跟进 + 推 `alert_stream` 事件
+- `contact_back=TRUE` → 写入客服待回访队列
+- **每笔订单唯一评价**:`uk_feedback_order_user` 唯一索引防重复
+- 软删除启用:误操作可软删,保留审计
+
+### 字段定义
+
+| 字段 | 类型 | 约束 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `id` | `BIGINT UNSIGNED` | PK, AUTO_INCREMENT | — | 主键 |
+| `feedback_no` | `CHAR(32)` | UNIQUE, NOT NULL | — | 业务评价单号,格式 `FB + YYYYMMDD + 10 位随机` |
+| `user_id` | `BIGINT UNSIGNED` | NOT NULL | — | 关联 `user.id` |
+| `order_id` | `BIGINT UNSIGNED` | NOT NULL | — | 关联 `charge_order.id` |
+| `rating` | `TINYINT UNSIGNED` | NOT NULL | — | 评分 1-5(1 = 投诉最差 / 5 = 最佳) |
+| `comment` | `TEXT` | NULL | NULL | 文字评论(选填) |
+| `category` | `ENUM('experience','device','fee','speed','other')` | NOT NULL | — | 评价类别(体验/设备/费用/速度/其他) |
+| `is_complaint` | `BOOLEAN` | NOT NULL | `FALSE` | **是否投诉**(TRUE = 客户运营重点跟进) |
+| `contact_back` | `BOOLEAN` | NOT NULL | `FALSE` | **是否希望客服回复** |
+| `status` | `ENUM('pending','reviewed','closed')` | NOT NULL | `'pending'` | 状态:待处理 / 已回复 / 已关闭 |
+| `reviewed_by` | `BIGINT UNSIGNED` | NULL | NULL | 处理人(客户运营 / 客服坐席 user_id) |
+| `reviewed_at` | `DATETIME(3)` | NULL | NULL | 处理时间 |
+| `reply_comment` | `TEXT` | NULL | NULL | 客服回复内容(`contact_back=TRUE` 时填) |
+| `created_at` | `DATETIME(3)` | NOT NULL | — | 创建时间 |
+| `updated_at` | `DATETIME(3)` | NOT NULL | — | 更新时间 |
+| `deleted_at` | `DATETIME(3)` | NULL | NULL | 软删除时间 |
+| `deleted_by` | `BIGINT UNSIGNED` | NULL | NULL | 删除操作者 ID |
+
+### 索引
+
+| 索引名 | 字段 | 类型 | 用途 |
+| --- | --- | --- | --- |
+| `pk_feedback` | `id` | 主键 | — |
+| `uk_feedback_no` | `feedback_no` | 唯一 | 单号追溯 |
+| **`uk_feedback_order_user`** | `order_id`, `user_id` | **唯一** | **每笔订单每用户仅一次评价**(防重复) |
+| `idx_feedback_user_created` | `user_id`, `created_at` | 普通 | 用户历史评价查询 |
+| `idx_feedback_complaint_status` | `is_complaint`, `status`, `created_at` | 普通 | 客户运营查投诉队列 |
+| `idx_feedback_deleted_at` | `deleted_at` | 普通 | 物理归档扫描 |
+
+### 约束
+
+- `rating` 范围 1-5(应用层校验)
+- 同一 `(order_id, user_id)` 唯一(防重复评价)
+- `status='reviewed'` 时,`reviewed_by` / `reviewed_at` NOT NULL
+- `contact_back=TRUE` 且 `status='reviewed'` 时,`reply_comment` NOT NULL
+
+### 关系
+
+- 多对一 → `user.id`
+- 多对一 → `charge_order.id`(跨服务逻辑关联)
+
+### 业务规则
+
+- **创建**:用户提交评价 → 校验订单属于当前 user + 已 finished + 未评价过 → INSERT `feedback(status='pending', is_complaint, contact_back)`
+- **触发告警**:`is_complaint=TRUE` → 推 `alert_stream`(`severity='mid'`)+ 推送客户运营 PC 后台
+- **客服回复**:`contact_back=TRUE` 评价 → 客服 PC 后台回复 → UPDATE `status='reviewed', reply_comment`
+- **唯一性**:DB 唯一约束防重复评价(应用层先查,DB 层兜底)
+
+---
+
+## 表 16:`user_db.device_fault_report`
+
+**业务说明**:**设备报修记录**。用户在小程序"站点详情"上报修充电桩故障(限每设备 24h 一次,防骚扰)。
+
+**关键业务规则**:
+
+- **限频**:同一设备 24h 内只能报修一次(应用层 + DB 部分约束)
+- 报修后写 `alert_stream` 事件给客户巡检
+- 软删除启用
+
+### 字段定义
+
+| 字段 | 类型 | 约束 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `id` | `BIGINT UNSIGNED` | PK, AUTO_INCREMENT | — | 主键 |
+| `report_no` | `CHAR(32)` | UNIQUE, NOT NULL | — | 业务报修单号,格式 `RP + YYYYMMDD + 10 位随机` |
+| `user_id` | `BIGINT UNSIGNED` | NOT NULL | — | 报修人(`user.id`) |
+| `customer_id` | `BIGINT UNSIGNED` | NOT NULL | — | 客户 ID(冗余) |
+| `device_id` | `VARCHAR(32)` | NOT NULL | — | 报修设备 ID |
+| `port_id` | `VARCHAR(32)` | NULL | NULL | 具体端口(可选) |
+| `fault_type` | `ENUM('charging_failure','port_damage','display_abnormal','network_failure','other')` | NOT NULL | — | 故障类型 |
+| `description` | `TEXT` | NOT NULL | — | 文字描述 |
+| `photos` | `JSON` | NULL | NULL | 照片 URL 列表(用户上传到 OSS) |
+| `status` | `ENUM('pending','dispatched','resolved','closed')` | NOT NULL | `'pending'` | 状态:待派单 / 已派单 / 已修复 / 已关闭 |
+| `dispatched_to` | `BIGINT UNSIGNED` | NULL | NULL | 派单给巡检员(`admin_user_role.id`) |
+| `dispatched_at` | `DATETIME(3)` | NULL | NULL | 派单时间 |
+| `resolved_at` | `DATETIME(3)` | NULL | NULL | 修复时间 |
+| `resolution_note` | `VARCHAR(512)` | NULL | NULL | 修复备注(巡检员填) |
+| `closed_by` | `BIGINT UNSIGNED` | NULL | NULL | 关闭人 |
+| `created_at` | `DATETIME(3)` | NOT NULL | — | 创建时间 |
+| `updated_at` | `DATETIME(3)` | NOT NULL | — | 更新时间 |
+| `deleted_at` | `DATETIME(3)` | NULL | NULL | 软删除时间 |
+| `deleted_by` | `BIGINT UNSIGNED` | NULL | NULL | 删除操作者 ID |
+
+### 索引
+
+| 索引名 | 字段 | 类型 | 用途 |
+| --- | --- | --- | --- |
+| `pk_device_fault_report` | `id` | 主键 | — |
+| `uk_device_fault_report_no` | `report_no` | 唯一 | 单号追溯 |
+| **`idx_device_fault_report_device_recent`** | `device_id`, `created_at` | 普通 | **查同设备最近报修**(应用层 24h 防重) |
+| `idx_device_fault_report_status_created` | `status`, `created_at` | 普通 | 巡检员查待处理队列 |
+| `idx_device_fault_report_dispatched` | `dispatched_to`, `status` | 普通 | 巡检员查我的工单 |
+| `idx_device_fault_report_device_created` | `device_id`, `created_at` | 普通 | 查某设备的报修历史 |
+| `idx_device_fault_report_deleted_at` | `deleted_at` | 普通 | 物理归档扫描 |
+
+### 约束
+
+- 同一 `device_id` 24h 内只能报修一次(应用层查询 `created_at > NOW() - 24 HOUR` 防重)
+- `status='dispatched'` 时,`dispatched_to` / `dispatched_at` NOT NULL
+- `status='resolved'` 时,`resolved_at` / `resolution_note` NOT NULL
+- `status='closed'` 时,`closed_by` NOT NULL
+
+### 关系
+
+- 多对一 → `user.id`(报修人)
+- 多对一 → `gateway_db.device`(跨服务逻辑关联)
+
+### 业务规则
+
+- **创建**:用户报修 → 校验 24h 内同设备无报修 → INSERT `device_fault_report(status='pending')` + 推 `alert_stream`(`severity='low'`,路由巡检)
+- **派单**:巡检员 PC 后台"待派单"队列 → 选报修 → 选巡检员 → UPDATE `status='dispatched', dispatched_to, dispatched_at`
+- **修复**:巡检员现场修复 → 填备注 + 拍现场照片 → UPDATE `status='resolved', resolved_at, resolution_note`
+- **关闭**:客户运营确认 → UPDATE `status='closed', closed_by`
+- **限频**:同设备 24h 内只能 1 条未删除报修(防骚扰;紧急情况由巡检员直接录入)
+
+---
+
+**user_db 全部 16 张表设计完成**
+
