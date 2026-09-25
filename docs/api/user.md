@@ -281,10 +281,11 @@ Wechatpay-Nonce: ...
      - status='created' 但 30s 内未启动 → 强制释放 + 重试
 4. 校验 `charge_db.charge_rule` 是否对该 port 启用(无则用 station 默认规则)
 5. `INSERT charge_order(status='pending', order_no, user_id, device_id, port_id, ...)`
-6. 发布 `charge_start_request_stream` 事件 → gateway 消费 → 通过 MQTT 下发启动指令
+6. **HTTP RPC 调 gateway 内部 API**(`POST /api/v1/internal/gateway/start_charge`):
+   - user 同步阻塞调用,网关再通过 MQTT 下发启动指令到设备的 `charge/{vendor_id}/{device_id}/cmd` Topic
 7. 等待设备 ACK(同步阻塞,timeout 30s):
    - ACK `started` → UPDATE `charge_order.status='charging'`,`started_at=NOW()` + 主动释放锁
-   - ACK `failed` → UPDATE `status='failed'` + 触发 `refund_required_stream` + 返回 `2002`
+   - ACK `failed` → UPDATE `status='failed'` + 发布 `refund_required_stream` 事件 + 返回 `2002`
    - Timeout → 释放锁 + 返回 `5003`(网关无响应,提示用户重试)
 
 **错误码**:
@@ -513,11 +514,11 @@ Wechatpay-Nonce: ...
 **业务逻辑**:
 1. 校验订单属于当前 user + status='charging'
 2. **启动后 > 60 秒**:按已充结算(§ 8.4):
-   - 发布 `charge_stop_request_stream` 事件 → gateway 消费 → 下发断电指令
+   - **HTTP RPC 调 gateway**(`POST /api/v1/internal/gateway/stop_charge`)→ 网关通过 MQTT 下发断电指令
    - 设备 ACK 后 → 计费 + 支付
-   - **退款逻辑**:用户已支付金额 - 实际消费 = 应退金额 → 原路退
+   - **退款逻辑**:用户已支付金额 - 实际消费 = 应退金额 → 原路退(发布 `refund_required_stream`)
 3. **启动后 ≤ 60 秒**:按"充电失败"处理(全额原路退):
-   - 同样下发断电 → 触发 `refund_required_stream`(全额退)
+   - 同样 HTTP RPC 调 gateway 下发断电 → 发布 `refund_required_stream`(全额退)
 4. 同步返回 `status='cancelling'`,前端跳转到"结算中"页面
 5. 最终结果通过 `charge_ended_stream` 异步通知 + 推送小程序消息
 
@@ -672,14 +673,14 @@ Wechatpay-Nonce: ...
 ### `POST /api/v1/user/phone/bind`
 
 **鉴权**:[JWT]
-**触发场景**:小程序"绑定手机号"按钮
+**触发场景**:小程序"绑定手机号"按钮 → 前端用 `wx.getPhoneNumber` 拿明文手机号
 **业务目标**:手机号绑定 + **触发绑送奖励**(§ 5.3.2,需求文档)
 
 **请求体**:
 ```json
 {
-  "phone": "13800138000",         // 明文(小程序前端从 wx.getPhoneNumber 拿)
-  "verification_code": "1234"     // 短信验证码(防刷)
+  "phone": "13800138000",         // 明文,前端从 wx.getPhoneNumber 拿到(微信已做合法性校验,后端再做格式校验)
+  "code": "..."                   // wx.getPhoneNumber 返回的动态令牌(后端需调微信接口解密,本期简化不验证)
 }
 ```
 
@@ -702,19 +703,17 @@ Wechatpay-Nonce: ...
 
 **业务逻辑**:
 1. 校验手机号格式(11 位 + 1[3-9]开头)
-2. 校验短信验证码(Redis 存的 code,5 min 有效)
-3. 校验手机号未绑定其他账号(查 `user.phone_hash` 唯一):
+2. 校验手机号未绑定其他账号(查 `user.phone_hash` 唯一):
    - 已绑定 → 返回 `2006`(该手机号已被其他账号绑定)
-4. **事务**:
+3. **事务**:
    - `UPDATE user SET phone_enc=AES_ENCRYPT($phone, $key), phone_hash=SHA256($phone), registered_at 不变`
    - 查 `coupon` 模板中 `grant_source='phone_bind'` 的模板
    - 对每个模板 INSERT `coupon_grant(status='unused')`(发券,本期不送余额)
-5. 推送小程序消息"您已绑定手机号,获得 X 优惠券"
-6. 记录 `audit_log`("用户绑定手机号")
+4. 推送小程序消息"您已绑定手机号,获得 X 优惠券"
+5. 记录 `audit_log`("用户绑定手机号")
 
 **错误码**:
 - `1001` / `2006`(已绑其他账号)
-- `2007`: 短信验证码错误 / 过期
 - `2008`: 手机号格式不合法
 
 ---
@@ -1160,7 +1159,7 @@ Wechatpay-Nonce: ...
 ### `POST /api/v1/user/customer-service/entry`
 
 **鉴权**:[JWT]
-**业务目标**:获取微信原生客服会话入口(需求 § 5.5 微信原生客服)
+**业务目标**:分配客服坐席并返回坐席信息(需求 § 5.5 微信原生客服)
 
 **请求体**:
 ```json
@@ -1174,9 +1173,10 @@ Wechatpay-Nonce: ...
 {
   "code": 0,
   "data": {
-    "chat_url": "wxacommsg://...",   // 微信原生客服会话 URL
+    "agent_id": 101,                // 客服坐席 ID(前端用于展示)
     "agent_name": "客服小张",
-    "estimated_response_seconds": 60  // 首响 SLA(从 customer_service_config 读)
+    "agent_avatar_url": "https://...",  // 坐席头像(可选)
+    "estimated_response_seconds": 60   // 首响 SLA(从 customer_service_config 读)
   }
 }
 ```
@@ -1185,12 +1185,12 @@ Wechatpay-Nonce: ...
 1. 查 `customer_service_config WHERE status='online' AND current_chat_count < max_concurrent_chats`,按 `current_chat_count ASC` 选第一个(负载最低)
 2. 选不到 → `2015`(客服繁忙,请稍后再试)
 3. UPDATE `current_chat_count += 1`(临时占用,会话结束 webhook 回调时减回)
-4. 调微信 `customerServiceMessage` API 拿 `chat_url`(签名 + ticket)
-5. 返回 URL + 客服名 + SLA
+4. 返回坐席信息(前端**自行用 `wx.openCustomerServiceChat` 唤起客服会话**,本端点不返回 URL,因为微信客服唤起是前端 API,不走 URL scheme)
+5. 前端唤起成功后,微信客服消息转发到客户的客服坐席微信(已在 admin 后台配置)
 
 **错误码**:
 - `1001` / `2015`(无在线客服)
-- `3003`: 微信客服 API 失败
+- `5001`: 内部错误
 
 ---
 
