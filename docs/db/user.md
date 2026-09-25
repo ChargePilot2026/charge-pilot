@@ -21,6 +21,7 @@
 | 主键索引 | 默认随主键创建 | 无 |
 | 索引命名 | `pk_` / `uk_` / `idx_` / `fk_` 前缀 | 无 |
 | 外键 | **不声明**(跨服务事务用最终一致性,§ 4.3 + § 5.4) | 无 |
+| **业务状态 vs 软删除二维关系** | `status` 字段(如 `pending` / `success` / `cancelled`)是**业务生命周期状态机**;`deleted_at` 字段是**数据可见性软删除**;**二者独立,不互斥**:被软删的订单 `status` 保持原值(如 `cancelled` 订单被软删后,`status='cancelled'` + `deleted_at NOT NULL`);查询经仓储层封装自动加 `WHERE deleted_at IS NULL`,运维查询可绕过 | 审计日志 / 幂等表 无 status 字段 |
 
 ## 表清单(12 张)
 
@@ -264,6 +265,12 @@
 
 ### 约束
 
+- **状态机合法迁移**(应用层校验):
+  - `pending` → `success`(支付完成)/ `failed`(支付失败)/ `cancelled`(用户撤销)
+  - `success` → `cancelled`(已支付后撤销,触发原路退款)
+  - `failed` / `cancelled` → **终态**(不再迁移)
+  - **不允许 `success` → `failed`**(避免审计混乱)
+  - **子单状态独立迁移**:子单失败时,主单 status 仍可能为 `pending`(等所有子单结果后聚合)
 - **主单 / 子单关系**(应用层校验):
   - 主单:`parent_order_id IS NULL` + `pay_method='mixed'` + `pay_components` NOT NULL
   - 子单:`parent_order_id NOT NULL` + `pay_method IN ('wechat','wallet')` + `pay_components IS NULL`
@@ -421,6 +428,13 @@
 
 ### 约束
 
+- **状态机合法迁移**(应用层校验):
+  - `pending` → `retrying`(微信 API 失败进入指数退避)
+  - `retrying` → `success` / `failed` / `manual_review`
+  - `pending` → `success` / `failed` / `manual_review`(不经过 retrying)
+  - `failed` → `manual_review`(客户财务升级处理)
+  - `manual_review` → `success`(手动补退成功)/ `failed`(手动也失败)
+  - **不允许 `success` → 其他状态**(成功即终态,避免对账混乱)
 - `status='success'` 时,`completed_at` 必须 NOT NULL
 - `status='failed'` 时,`fail_reason` 必须 NOT NULL
 - `status='manual_review'` 时,`manual_review_note` 必须 NOT NULL
@@ -472,6 +486,18 @@
 - **充值退款**:`recharge_refund` 场景下,用户申请退回充值款项 → 系统校验余额与累计可退额 → 写 `refund_record(payment_order_id=$充值订单.id, refund_reason='recharge_refund')` + 走微信退款原路返回
 - **多次部分退款**:支持,但需应用层校验累计不超 `payment_order.paid_fee_cents`
 
+**退款失败 + 账单已结清的资金缺口 SOP**(需求 § 9.3 资金安全兜底):
+- **触发条件**:`refund_record.status='failed'` 且 `payment_order.settled_at IS NOT NULL`(重试 4 次全失败,且账单已结清)
+- **资金缺口定义**:用户实际支付的钱(`paid_fee_cents`)已经进入客户银行账户,但因退款失败未原路返回,形成"客户应收但用户未收到"的资金缺口
+- **客户财务 PC 后台处理流程**:
+  1. 客户财务在"售后管理 → 退款失败"看到该笔,核对微信侧交易号(`wechat_refund_id` 为空说明确实未退)
+  2. 登录微信商户平台手动发起退款(走平台自有通道)
+  3. 拿到银行流水号后,在 PC 后台补填:`UPDATE refund_record SET resolution='manual_fixed', wechat_refund_id=$手动退款流水号, status='success', completed_at=NOW(), manual_review_note='客户财务手动补退'` + INSERT `audit_log`
+  4. 系统将 `refund_reconcile_diff.resolution='manual_fixed'` 标记差异已处理
+- **平台承担场景**(极少数):如客户不愿手动补退 / 微信通道异常无法退款 → 标记 `resolution='platform_loss'` + 客户财务走内部流程(对账亏损)→ `payment_order` 标记特殊状态(`refund_status='platform_loss'`)
+- **资金安全底线**:**不允许** `status='failed'` 且 `payment_order.settled_at IS NOT NULL` 的订单长期滞留(>7 天)→ worker 每日扫表 → 滞留告警 → 客户财务必须处理
+- **追溯链**:从 `refund_record` 一路可追到 `payment_order` → `charge_order` → `device_id`,任何资金缺口都可定位到具体订单 / 设备 / 用户
+
 ---
 
 ## 表 6:`user_db.coupon_grant`
@@ -521,6 +547,11 @@
 
 ### 约束
 
+- **状态机合法迁移**(应用层校验):
+  - `unused` → `used`(组合支付核销)/ `expired`(过期清理)/ `frozen`(风控冻结)
+  - `frozen` → `unused`(风控解除)/ `expired`(冻结期过期)
+  - `used` / `expired` → **终态**(不再迁移)
+  - **不允许 `used` → `unused`**(已使用不可回退,避免重复使用)
 - `status='used'` 时,`used_payment_order_id` / `used_at` 必须 NOT NULL
 - `status='expired'` 时,`valid_until < NOW()`(应用层校验)
 - `status='frozen'` 时,`frozen_reason` 必须 NOT NULL
