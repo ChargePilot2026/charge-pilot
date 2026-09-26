@@ -1571,11 +1571,13 @@ Wechatpay-Nonce: ...
 
 ### `POST /api/v1/internal/charge-orders/{order_id}/start-result`
 
-请求体:`{event_key, result: "started"|"failed", started_at?, reason?, device_id, port_id}`。`event_key` 由 gateway 为同一次设备指令稳定生成,重试保持不变。
+当前请求体：`{order_no, command_id, device_id, port_no, port_id?, success, error?}`。`order_id` 路径值为充电订单号；`command_id` 是 gateway 为设备启动指令生成的 UUID，重试保持不变；`port_id` 是 gateway 的数字设备端口 ID，成功确认时必填，不能传印刷二维码字符串。接口继续使用 `X-Service-Token`。
 
-- `result=started`:事务内锁定充电订单,要求 `payment_order.status='success'` 且订单仍为 `pending_payment`;先向不分区的 `active_port_charge` 插入 `(port_id, charge_order_id, order_no)`,成功后更新 `charge_order.status='charging'` / `started_at`。若端口主键冲突或订单已取消,返回 `2003`,gateway 必须立即向设备发送 STOP 并确认断电,然后报告失败;不能让第二笔订单进入 `charging`。
-- `result=failed`:事务内将尚未启动的订单置为 `failed`,并 INSERT `event_outbox(event_key='charge-refund:{payment_order_id}', stream_name='comp_tx_stream', payload.type='charge_refund_requested')`。已完成或重复的结果按 `event_key` 返回已有结果,不重复退款。
-- 成功响应:`{code:0,data:{order_id,status}}`;设备/订单不匹配返回 `1005`,端口占用或状态冲突返回 `2003`,暂时失败返回 `5003`。gateway 在得到持久化确认前保持重试,不得 ACK 原 `charge_started_stream` 消息。
+- 先锁支付单、再锁充电订单；核对付款关联、设备和端口，首次确认要求两者均为 `paid`。
+- `success=true`：按真实数字端口 ID 写入 `active_port_charge` 并将订单设为 `charging`，全部同事务。其他未结束订单已占用该端口时返回 HTTP 409，绝不覆盖；gateway 必须处理冲突并确认设备停止，不能把 HTTP 冲突当作启动成功。
+- `success=false`：同事务记录失败、创建尚未被其他退款记录覆盖的待退金额及 refund_required outbox。创建退款记录不代表已经完成退款。
+- `charge_start_receipt` 持久化指令、结果和端口 ID。完全相同的确认幂等返回，即使订单之后已结束；相反结果或不同指令返回 HTTP 409。首次成功时间不被重放刷新。
+- 提交成功后按印刷端口码 CAS 释放本订单的逻辑锁，不能删除其他订单的新锁。成功响应为 `{code:0,data:{ok:true}}`；无效参数 HTTP 400、不存在 HTTP 404、冲突 HTTP 409、基础设施失败 HTTP 5xx。gateway 得到持久化确认前不得 ACK 原启动 Stream。
 
 ### `GET /api/v1/internal/payment-orders/{payment_order_id}`
 
@@ -1620,3 +1622,19 @@ GET /user/wallet/balance 的 data 包含 available_cents、frozen_cents、status
 ### 报价确认与下单保护
 
 `POST /user/scan/quote` 额外返回 UUID `quote_id`，服务端在 Redis 保存最多五分钟的报价上下文。`POST /user/scan/start` 当前需 `{quote_id,port_id,estimated_kwh,estimated_minutes}`（可选 coupon_grant_id 尚不支持抵扣）。报价必须属于当前用户和端口，预计参数一致，且规则、版本及所有费用分项经重新计算后未变。缺 quote_id 为 400；报价过期、参数/价格变化或已用于订单为 409；他人或不同端口的报价为 404。确认快照与订单、支付单在同一事务中持久化，同一 quote_id 只能创建一次订单；前端支付确认与已创建订单的预支付恢复仍待接通。
+
+
+### 微信支付回调实现约定
+
+`POST /api/v1/public/payment/wechat/callback` 使用微信原始通知报文和 Wechatpay-* 签名头，配置的平台公钥验签通过后才解密 resource。仅接受本商户/appid 的 JSAPI 成功付款，并核对支付单金额、支付方式和付款用户。成功返回 **HTTP 204、空 body**（不使用业务 ApiEnvelope）；签名无效为 401，内容或订单冲突为 400/409，基础设施失败为 5xx，均不确认通知。
+
+幂等重放不重复入账或启动。取消/过期等无法启动的充电订单收到付款时创建待退款记录；普通钱包充值增加余额并记录流水。支付、订单或钱包、幂等记录及事件在同一事务内提交；事件由 user 自有 outbox 发布器重试投递。退款记录创建不表示退款已经完成，充电付款确认不表示设备已经启动。
+
+
+### 主动停止与结束确认实现（2026-09-26）
+
+`POST /api/v1/user/charge/stop` 校验当前用户的订单，再请求 gateway。当前 data 为 `{accepted,stopped,command_id}`，首次仅 accepted=true；小程序继续轮询等待设备确认，不能把 HTTP 成功当作已断电。已完成的同一主动停止可重放取得原结果。
+
+内部 `POST /api/v1/internal/charge-orders/{order_no}/end-result`（X-Service-Token）请求 `{order_no,start_command_id,stop_command_id,device_id,port_no,port_id,meter:{charged_wh,charged_seconds,ended_at}}`。校验已持久化的成功启动指令、真实端口、充电状态和时间范围；最终读数、completed 状态、活动端口结束时间、回执及时间线同事务保存。相同结果幂等，读数变化或身份冲突 HTTP 409。晚到重放不能释放已经被下一订单占用的端口。
+
+结束时收费字段保持原值/未知，不以预计金额或零代替正式结算。poll_continue=false 表示设备结束确认已完成，不代表计费/退款完成。gateway 在收到 `{ok:true}` 后发布 charge_ended；user 消费后只失效遥测缓存，不从通知伪造最终状态。

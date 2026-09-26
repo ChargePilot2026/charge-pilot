@@ -634,3 +634,47 @@ gateway 服务**主动发布**到以下 Stream(沿用 § 5.1):
 - 新增 HTTP 端点必须同步更新 `services/gateway/src/openapi.rs`
 - **Stream 名必须从 § 5.1 8 个真实 Stream 中选**,新增 Stream 必须先在技术规格登记
 - CI 检查:OpenAPI 规范与本文件端点清单一致(脚本 `tools/check-api-consistency.ts`)
+
+
+### 当前 TCP 启动与确认协议（2026-09-26）
+
+当前实现为 9100 上的换行分隔 JSON 适配器，已建档、启用设备及启用厂商才可连接。首帧必须为 heartbeat；同一连接不能改变 device_id，同一设备新连接会使旧会话失效。帧最大 64 KiB，120 秒未收帧断开。厂商真实二进制协议和 MQTT Broker 尚未接入，不能把 1883 的兼容占位监听视为生产 MQTT。
+
+设备首帧示例（ts 使用当前 UTC 时间）：
+```json
+{"device_id":"DEVICE001","port_no":1,"msg_type":"heartbeat","payload":{},"ts":"2026-09-26T07:00:00Z"}
+```
+
+付款启动事件经 user 内部订单接口核对身份和 paid 状态后，在 gateway_db.charge_command 持久化。同一订单只生成一个 START command_id 和一个补偿 STOP command_id；不再查询 gateway 库中不存在的 charge_order，也不复用 OTA 表。
+
+下发帧与设备确认分别为：
+```json
+{"device_id":"DEVICE001","port_no":1,"msg_type":"cmd","payload":{"command":"START","command_id":"<UUID>","order_no":"ORD-..."},"ts":"2026-09-26T07:00:00Z"}
+{"device_id":"DEVICE001","port_no":1,"msg_type":"ack","payload":{"command":"START","command_id":"<同一 UUID>","success":true},"ts":"2026-09-26T07:00:01Z"}
+```
+
+确认必须匹配连接会话、设备、端口、命令类型及 UUID，且显式包含 success 布尔值。START success=false 表示设备确认未启动；STOP success=true 必须表示设备确认已停止输出，不是仅收到命令。设备应按 command_id 幂等执行。TCP 写入完成不是设备确认。
+
+- pending：已预留 gateway 端口，尚未发送。检查同一订单的 Redis 逻辑锁和实际连接后获取短锁，先记录 sent 再写 socket。
+- sent：等待真实 ACK。20 秒超时或写入结果不确定转 stopping；重启后不盲目重发 START。
+- acked：已收到正确 START 确认，调用 user 的完整 start-result 路径。只有 user 返回持久化成功才 result_reported=true 并允许 Stream ACK；发生订单冲突转 stopping。
+- stopping：重发同一个 STOP UUID，允许新连接会话继续处理。确认停止前保留持久化占用，迟到 START ACK 不取消停止补偿。
+- rejected：已知未发送/设备拒绝，或已确认 STOP；向 user 报告失败并触发待退款。仅释放本命令建立的端口占用，不覆盖其他占用。
+
+恢复任务周期扫描未报告指令，不依赖 Stream 是否已进入死信。当前连接表为单网关进程内存表；跨实例设备路由尚未实现。扫码结果在数据库状态 idle 但已有启动占用时返回 reserved，前端显示“启动处理中”且不可选。
+
+开发验证：`scripts/test-charge-start.ps1` 使用真实 MySQL/Redis、user/gateway HTTP 与模拟 TCP 设备；加 `-RestartGateway` 会在未确认 START 后重启开发网关并验证重连后的 STOP 补偿。无真实付款或实体设备控制。
+
+
+### 主动停止与最终读数（2026-09-26）
+
+`POST /api/v1/internal/charge-orders/stop` 当前请求 `{order_no,user_id,source:"user_app"}`。校验归属及 user 订单处于 charging，持久化独立于启动补偿的 STOP 指令。返回 `{accepted:true,stopped:false,command_id}` 表示仅已受理；设备确认、user 完成落库后，幂等重放返回 stopped=true。同一订单重试保持同一指令 UUID。
+
+主动 STOP 下发 payload 多一个 `meter_required:true`。设备成功 ACK 必须携带以下 meter；省略读数不会被当作零电量或完成：
+```json
+{"command":"STOP","command_id":"<同一 UUID>","success":true,"meter":{"charged_wh":125,"charged_seconds":60,"ended_at":"2026-09-26T07:40:00Z"}}
+```
+
+charged_wh 是本订单实际累计整数 Wh，charged_seconds 为实际持续秒数，ended_at 为实际停止时间。不能传设备终身累计电量。确认再次校验连接会话、设备、端口与命令；读数不可在重放时改变。未确认时后台持续重发同一 STOP UUID，断线重连可继续，不提前释放端口。
+
+确认后调用 user 的 end-result，持久化成功才同事务释放 gateway 端口、记录结果和 charge_ended outbox。gateway 自有发布器可靠发送结束事件。事件包含订单/用户/设备身份、实测 Wh/时长/结束时间；正式计费仍需接入规则快照，不表示已完成收费或退款。

@@ -129,17 +129,7 @@ pub struct ChargeStopRequest {
 
 // ===== 内部 DTO:charge_stop → gateway 的请求体 =====
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChargeStopCommand {
-    pub order_no: String,
-    pub user_id: u64,
-    pub source: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChargeStopResponse {
-    pub stopped: bool,
-}
+pub use api_contracts::{ChargeStopCommand,ChargeStopResponse};
 
 // ===== DTO:订单详情 / 历史 / 反馈 =====
 
@@ -218,13 +208,7 @@ pub struct ProfileResponse {
 
 // ===== 内部 DTO:start-result / 跨服务 =====
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StartResultRequest {
-    pub order_no: String,
-    pub success: bool,
-    #[serde(default)]
-    pub error: Option<String>,
-}
+pub use api_contracts::StartResultRequest;
 
 // ===== 内部 DTO:scan_start 调 billing 用的 Quote 请求 =====
 

@@ -159,7 +159,7 @@ impl RedisStream {
             .arg("CREATE")
             .arg(stream)
             .arg(group)
-            .arg("$")
+            .arg("0") // New groups must not skip events published before startup.
             .arg("MKSTREAM")
             .query_async(&mut c)
             .await;
@@ -218,20 +218,27 @@ impl RedisStream {
         Ok(())
     }
 
-    /// DLQ: 把失败的 entry 写入 {stream}.dlq
-    pub async fn xadd_dlq(&self, stream: &str, entry_id: &str, reason: &str) -> AppResult<String> {
-        let mut c = self.conn.clone();
-        let dlq = format!("{stream}.dlq");
-        let id: String = redis::cmd("XADD")
-            .arg(&dlq)
-            .arg("*")
-            .arg("orig_stream").arg(stream)
-            .arg("orig_id").arg(entry_id)
-            .arg("reason").arg(reason)
-            .arg("ts").arg(chrono::Utc::now().to_rfc3339())
-            .query_async(&mut c).await?;
-        Ok(id)
+    /// Atomically retain the full failed message and acknowledge only this consumer's PEL entry.
+    pub async fn dead_letter(&self, entry: &StreamEntry, group: &str, consumer: &str, reason: &str) -> AppResult<Option<String>> {
+        let script = r#"
+            local pending = redis.call('XPENDING', KEYS[1], ARGV[1], ARGV[2], ARGV[2], 1)
+            if #pending == 0 then return nil end
+            if pending[1][2] ~= ARGV[3] then return redis.error_reply('pending entry owner changed') end
+            local id = redis.call('XADD', KEYS[2], '*',
+                'orig_stream', KEYS[1], 'orig_id', ARGV[2], 'orig_group', ARGV[1],
+                'orig_consumer', ARGV[3], 'reason', ARGV[4], 'ts', ARGV[5],
+                'envelope_json', ARGV[6], 'raw_json', ARGV[7])
+            redis.call('XACK', KEYS[1], ARGV[1], ARGV[2])
+            return id
+        "#;
+        let mut c=self.conn.clone();
+        let reason:String=reason.chars().take(512).collect();
+        Ok(redis::Script::new(script).key(&entry.stream).key(format!("{}.dlq",entry.stream))
+            .arg(group).arg(&entry.id).arg(consumer).arg(reason).arg(chrono::Utc::now().to_rfc3339())
+            .arg(serde_json::to_string(&entry.envelope)?).arg(serde_json::to_string(&entry.raw)?)
+            .invoke_async(&mut c).await?)
     }
+
 }
 
 fn parse_xread(v: redis::Value) -> Vec<StreamEntry> {
@@ -247,7 +254,7 @@ fn parse_xread(v: redis::Value) -> Vec<StreamEntry> {
             if es.len() < 2 { continue; }
             let id = match &es[0] { redis::Value::BulkString(b) => String::from_utf8_lossy(b).into_owned(), _ => continue };
             // field-value 数组
-            let fields = match &es[1] { redis::Value::Array(f) => f, _ => continue };
+            let fields: &[redis::Value] = match &es[1] { redis::Value::Array(f) => f, redis::Value::Nil => &[], _ => continue };
             let mut raw = std::collections::HashMap::new();
             let mut i = 0;
             while i + 1 < fields.len() {

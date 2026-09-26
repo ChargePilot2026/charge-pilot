@@ -6,7 +6,7 @@ use axum::{
     Json,
 };
 use common_error::{AppError, AppResult};
-use common_redis::{PortLock, StreamEnvelope};
+use common_redis::StreamEnvelope;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -166,27 +166,6 @@ pub async fn device_firmware_push(
 }
 
 // ===== charge control =====
-
-#[derive(Debug, Deserialize)]
-pub struct ChargeStopReq {
-    pub order_no: String,
-    pub user_id: u64,
-}
-
-pub async fn charge_stop(
-    State(st): State<AppState>,
-    Json(req): Json<ChargeStopReq>,
-) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
-    // 通过 MQTT / TCP 下发 STOP;简化:写 device_event_stream 让业务方感知
-    let env = StreamEnvelope::new("charge_stop_cmd", "gateway", json!({
-        "order_no": req.order_no,
-        "user_id": req.user_id,
-    }));
-    let _ = st.redis_stream.xadd_envelope(common_redis::streams::DEVICE_EVENT, &env).await;
-    // 释放物理锁
-    let _ = PortLock::new(st.redis_cache.clone()).release_lock_if_match(&req.order_no, &req.user_id.to_string()).await;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"stopped": true}), common_error::current_request_id())))
-}
 
 // ===== device register =====
 

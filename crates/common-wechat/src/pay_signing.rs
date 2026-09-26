@@ -42,6 +42,9 @@ fn public_key(cfg: &WechatConfig) -> AppResult<RsaPublicKey> {
     Ok(key)
 }
 pub fn validate(cfg: &WechatConfig) -> AppResult<()> {
+    if cfg.pay_key.as_bytes().len() != 32 {
+        return Err(AppError::Config("微信 APIv3 密钥必须为 32 字节".into()));
+    }
     let serial = required(&cfg.merchant_serial_no, "WECHAT_MERCHANT_SERIAL_NO")?;
     if serial.len() > 64
         || !serial.bytes().all(|c| c.is_ascii_hexdigit())
@@ -165,7 +168,7 @@ mod tests {
                     appid: "wx_test_app".into(),
                     secret: "test".into(),
                     mch_id: "1900000109".into(),
-                    pay_key: "test".into(),
+                    pay_key: "12345678901234567890123456789012".into(),
                     notify_url: "https://example.test/notify".into(),
                     pay_base_url: "https://api.mch.weixin.qq.com".into(),
                     refund_url: "https://api.mch.weixin.qq.com/v3/refund/domestic/refunds".into(),
@@ -185,6 +188,71 @@ mod tests {
             let _ = std::fs::remove_file(&self.private);
             let _ = std::fs::remove_file(&self.public);
         }
+    }
+    #[test]
+    fn payment_callback_verifies_raw_body_then_decrypts_and_validates_identity() {
+        use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
+        let mut f = Fixture::new();
+        f.cfg.pay_key = "12345678901234567890123456789012".into();
+        let notification = serde_json::json!({"appid":f.cfg.appid,"mchid":f.cfg.mch_id,"out_trade_no":"PAY_TEST","transaction_id":"WX_TEST","trade_type":"JSAPI","trade_state":"SUCCESS","success_time":chrono::Utc::now().to_rfc3339(),"payer":{"openid":"user_test"},"amount":{"total":100,"payer_total":90,"currency":"CNY","payer_currency":"CNY"}});
+        let encode = |value: &serde_json::Value| {
+            let mut plain = serde_json::to_vec(value).unwrap();
+            LessSafeKey::new(UnboundKey::new(&AES_256_GCM, f.cfg.pay_key.as_bytes()).unwrap())
+                .seal_in_place_append_tag(
+                    Nonce::try_assume_unique_for_key(b"123456789012").unwrap(),
+                    Aad::from(b"transaction"),
+                    &mut plain,
+                )
+                .unwrap();
+            serde_json::to_string_pretty(&serde_json::json!({"event_type":"TRANSACTION.SUCCESS","resource_type":"encrypt-resource","resource":{"original_type":"transaction","algorithm":"AEAD_AES_256_GCM","nonce":"123456789012","associated_data":"transaction","ciphertext":STANDARD.encode(plain)}})).unwrap()
+        };
+        let signed = |body: &str| {
+            let timestamp = chrono::Utc::now().timestamp().to_string();
+            let mut h = reqwest::header::HeaderMap::new();
+            h.insert("wechatpay-timestamp", timestamp.parse().unwrap());
+            h.insert("wechatpay-nonce", "callback_nonce".parse().unwrap());
+            h.insert("wechatpay-serial", "PUB_KEY_ID_TEST".parse().unwrap());
+            h.insert(
+                "wechatpay-signature",
+                sign(&f.cfg, &format!("{timestamp}\ncallback_nonce\n{body}\n"))
+                    .unwrap()
+                    .parse()
+                    .unwrap(),
+            );
+            h
+        };
+        let body = encode(&notification);
+        let headers = signed(&body);
+        assert_eq!(
+            crate::decode_payment_notification(&f.cfg, &headers, body.as_bytes())
+                .unwrap()
+                .amount
+                .total,
+            100
+        );
+        assert!(matches!(
+            crate::decode_payment_notification(&f.cfg, &headers, format!("{body} ").as_bytes()),
+            Err(AppError::Unauthorized(_))
+        ));
+        let mut wrong = notification.clone();
+        wrong["mchid"] = "another_merchant".into();
+        let body = encode(&wrong);
+        assert!(matches!(
+            crate::decode_payment_notification(&f.cfg, &signed(&body), body.as_bytes()),
+            Err(AppError::BadRequest(_))
+        ));
+        let mut wrong = notification.clone();
+        wrong["amount"]["payer_total"] = 101.into();
+        let body = encode(&wrong);
+        assert!(
+            crate::decode_payment_notification(&f.cfg, &signed(&body), body.as_bytes()).is_err()
+        );
+        let mut wrong = notification.clone();
+        wrong["trade_state"] = "CLOSED".into();
+        let body = encode(&wrong);
+        assert!(
+            crate::decode_payment_notification(&f.cfg, &signed(&body), body.as_bytes()).is_err()
+        );
     }
     #[test]
     fn request_signs_exact_method_target_and_json_bytes() {

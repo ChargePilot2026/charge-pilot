@@ -53,6 +53,7 @@ pub mod paths {
     pub const USER_INTERNAL_REFUND_CLAIM: &str = "/api/v1/internal/refund-records/claim";
     pub const USER_INTERNAL_REFUND_RESULT: &str = "/api/v1/internal/refund-records/:refund_id/result";
     pub const USER_INTERNAL_START_RESULT: &str = "/api/v1/internal/charge-orders/:order_id/start-result";
+    pub const USER_INTERNAL_END_RESULT: &str = "/api/v1/internal/charge-orders/:order_id/end-result";
 
     // -------- billing 内部 --------
     pub const BILLING_QUOTE: &str = "/api/v1/internal/quote";
@@ -120,7 +121,27 @@ pub struct ChargeStopCommand {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChargeStopResponse {
+    pub accepted: bool,
     pub stopped: bool,
+    pub command_id: String,
+}
+
+#[derive(Debug,Clone,Serialize,Deserialize,PartialEq,Eq)]
+pub struct ChargeEndMeter {
+    pub charged_wh: u64,
+    pub charged_seconds: u32,
+    pub ended_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug,Clone,Serialize,Deserialize)]
+pub struct ChargeEndRequest {
+    pub order_no:String,
+    pub start_command_id:String,
+    pub stop_command_id:String,
+    pub device_id:String,
+    pub port_no:u8,
+    pub port_id:u64,
+    pub meter:ChargeEndMeter,
 }
 
 // ---- user <-> billing ----
@@ -184,11 +205,16 @@ pub struct StationPublicDetail {
     pub contact_phone: Option<String>,
 }
 
-// ---- user → gateway 回写 ----
+// ---- gateway → user 启动结果回写 ----
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StartResultRequest {
     pub order_no: String,
+    pub command_id: String,
+    pub device_id: String,
+    pub port_no: u8,
+    /// Numeric gateway device_port.id. Required for successful device ACKs.
+    pub port_id: Option<u64>,
     pub success: bool,
     #[serde(default)]
     pub error: Option<String>,

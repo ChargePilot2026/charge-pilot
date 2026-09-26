@@ -4,6 +4,8 @@
 mod api;
 mod quote_confirmation;
 mod checkout;
+mod charge_start;
+mod charge_end;
 mod login;
 mod session;
 mod profile;
@@ -11,6 +13,8 @@ mod api_envelope;
 mod api_types;
 mod clients;
 mod payment;
+mod payment_receipt;
+mod outbox;
 mod refund;
 mod wallet;
 mod wallet_reads;
@@ -79,6 +83,7 @@ async fn main() -> AppResult<()> {
     };
 
     stream_consumer::spawn_all(state.clone()).await?;
+    outbox::spawn(state.clone());
 
     let app = build_router(state);
     let addr: SocketAddr = cfg.http_bind.parse().expect("bind addr");
@@ -98,6 +103,7 @@ pub fn build_router(state: AppState) -> Router {
         .route(api_types::paths::PAYMENT_WECHAT_CALLBACK, post(payment::wechat_callback));
 
     let internal_routes = Router::new()
+        .route(api_contracts::paths::USER_INTERNAL_END_RESULT,post(charge_end::receive))
         .route(api_types::paths::INTERNAL_START_RESULT, post(payment::start_result))
         .route(api_types::paths::INTERNAL_REFUND_CLAIM, post(refund::claim))
         .route(api_types::paths::INTERNAL_REFUND_RESULT, post(refund::result))

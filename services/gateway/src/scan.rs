@@ -15,7 +15,7 @@ fn validate(code: &str) -> AppResult<()> {
 async fn ports(tx: &mut Transaction<'_, MySql>, code: &str, by_device: bool) -> AppResult<Vec<ScanPortDetail>> {
     let filter = if by_device { "p.device_id" } else { "p.port_code" };
     let rows = sqlx::query(&format!(
-        "SELECT p.device_id,p.port_no,p.port_code,p.status FROM device_port p \
+        "SELECT p.device_id,p.port_no,p.port_code,IF(p.status='idle' AND p.current_order_id IS NOT NULL,'reserved',p.status) AS status FROM device_port p \
          WHERE {filter}=? AND p.deleted_at IS NULL AND EXISTS \
          (SELECT 1 FROM device d JOIN vendor v ON v.id=d.vendor_id \
           WHERE d.device_id=p.device_id AND d.deleted_at IS NULL AND d.status='enabled' \

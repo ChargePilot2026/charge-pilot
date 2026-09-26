@@ -5,7 +5,7 @@
 //! - refund: 调微信退款 V3 API + 重试(1s/5s/30s/2min,见技术规格 § 7.6)
 
 use base64::Engine;
-use common_auth::{constant_time_eq, verify_wechat_v3_signature};
+use common_auth::constant_time_eq;
 use common_config::WechatConfig;
 use common_error::{AppError, AppResult};
 use serde::{Deserialize, Serialize};
@@ -231,32 +231,8 @@ pub async fn refund_with_retry(
     Err(last_err.unwrap_or_else(|| AppError::WechatRefundFailed("refund exhausted retries".into())))
 }
 
-/// 验签微信回调(技术规格 § 9.4)
-pub fn verify_callback_signature(
-    cfg: &WechatConfig,
-    payload: &str,
-    timestamp: &str,
-    nonce: &str,
-    signature_b64: &str,
-) -> bool {
-    verify_wechat_v3_signature(payload, timestamp, nonce, signature_b64, &cfg.pay_key)
-}
-
-/// 解密微信回调中的 resource.ciphertext(AES-256-GCM)
-pub fn decrypt_callback_resource(ciphertext_b64: &str, key_b64: &str, _nonce_b64: &str, _aad: &str) -> AppResult<String> {
-    // 实际使用 AES-256-GCM 解密;这里给占位 + 文档提示。
-    // 项目部署后请参考微信 V3 文档实现:key 用 APIv3 key 的 32 字节。
-    let _engine = base64::engine::general_purpose::STANDARD;
-    let _bytes = base64::engine::general_purpose::STANDARD
-        .decode(ciphertext_b64)
-        .map_err(|e| AppError::Internal(format!("base64 decode: {e}")))?;
-    let _key = base64::engine::general_purpose::STANDARD
-        .decode(key_b64)
-        .map_err(|e| AppError::Internal(format!("key base64: {e}")))?;
-    Err(AppError::Internal(
-        "AES-256-GCM decrypt not yet implemented (production deploy-time task)".into(),
-    ))
-}
+mod callback;
+pub use callback::{decode_payment_notification, PaymentNotification};
 
 /// 小程序客服入口签名(技术规格 § 9.6)
 pub fn customer_service_entry(_cfg: &WechatConfig, _order_id: &str, _openid: &str) -> String {

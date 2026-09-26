@@ -1,6 +1,7 @@
 //! 协议层(TCP / MQTT 适配)
 
 pub mod tcp;
+pub mod connections;
 pub mod mqtt;
 
 /// 设备帧通用结构(由 adapter 标准化)

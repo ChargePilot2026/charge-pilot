@@ -5,6 +5,8 @@
 
 pub mod api;
 pub mod checkout;
+mod charge_start;
+mod charge_end;
 pub mod quote_confirmation;
 pub mod login;
 pub mod session;
@@ -13,6 +15,8 @@ pub mod api_envelope;
 pub mod api_types;
 pub mod clients;
 pub mod payment;
+mod payment_receipt;
+mod outbox;
 pub mod refund;
 pub mod wallet;
 pub mod wallet_reads;

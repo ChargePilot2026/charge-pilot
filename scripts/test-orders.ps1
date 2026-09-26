@@ -185,18 +185,23 @@ SELECT @east,@west,@closed;
     Assert-Status "/api/v1/admin/orders/$orderId" $readerLogin.data.token 403
     Assert-Status "/api/v1/admin/orders/$orderId/timeline" $readerLogin.data.token 403
     $failedId = Invoke-TestSql @"
-INSERT INTO user_db.charge_order (order_no,user_id,device_id,port_no,status,created_month)
-VALUES ('${taskTag}_ack',123,'$taskTag',4,'paid',DATE_FORMAT(UTC_DATE(),'%Y-%m-01'));
-SELECT LAST_INSERT_ID();
+INSERT INTO user_db.charge_order (order_no,user_id,device_id,port_no,port_code,status,created_month)
+VALUES ('${taskTag}_ack',123,'$taskTag',4,'${taskTag}:4','paid',DATE_FORMAT(UTC_DATE(),'%Y-%m-01'));
+SET @ack_order=LAST_INSERT_ID();
+INSERT INTO user_db.payment_order (order_no,biz_type,biz_id,user_id,pay_method,total_cents,paid_cents,status,created_month)
+VALUES ('${taskTag}_ackpay','charge',@ack_order,123,'wechat',100,100,'paid',DATE_FORMAT(UTC_DATE(),'%Y-%m-01'));
+UPDATE user_db.charge_order SET payment_order_id=LAST_INSERT_ID() WHERE id=@ack_order;
+SELECT @ack_order;
 "@
     $failedId = $failedId | Select-Object -Last 1
     $serviceToken = docker compose -f $taskCompose exec -T user printenv SERVICE_TOKEN
-    $ackBody = @{order_no="${taskTag}_ack";success=$false;error='测试启动失败'} | ConvertTo-Json
+    $ackCommand = [guid]::NewGuid().ToString()
+    $ackBody = @{command_id=$ackCommand;device_id=$taskTag;port_no=4;order_no="${taskTag}_ack";success=$false;error='测试启动失败'} | ConvertTo-Json
     $ackUrl = "http://127.0.0.1:8081/api/v1/internal/charge-orders/${taskTag}_ack/start-result"
     1..2 | ForEach-Object { Invoke-RestMethod -Method Post -Uri $ackUrl -Headers @{'X-Service-Token'=$serviceToken.Trim()} -ContentType application/json -Body $ackBody | Out-Null }
     $events = (Get-Api "/api/v1/admin/orders/$failedId/timeline" $token).data
     Assert-That ($events.timeline.Count -eq 1 -and $events.timeline[0].event -eq 'start_failed') 'Repeated start result must produce one persisted event'
-    $conflictingAck = @{order_no="${taskTag}_ack";success=$true} | ConvertTo-Json
+    $conflictingAck = @{command_id=$ackCommand;device_id=$taskTag;port_no=4;port_id=999999;order_no="${taskTag}_ack";success=$true} | ConvertTo-Json
     $ackStatus = 200
     try { Invoke-RestMethod -Method Post -Uri $ackUrl -Headers @{'X-Service-Token'=$serviceToken.Trim()} -ContentType application/json -Body $conflictingAck | Out-Null }
     catch { if ($null -eq $_.Exception.Response) { throw }; $ackStatus = [int]$_.Exception.Response.StatusCode }
@@ -236,7 +241,10 @@ UPDATE user_db.charge_order SET payment_order_id=LAST_INSERT_ID() WHERE id=@canc
     Invoke-TestSql @"
 USE billing_db;
 DELETE e FROM user_db.charge_event_log e JOIN user_db.charge_order o ON o.id=e.charge_order_id WHERE o.device_id='$taskTag';
-DELETE FROM user_db.payment_order WHERE order_no IN ('${taskTag}_pay','${taskTag}_cancelpay');
+DELETE e FROM user_db.event_outbox e JOIN user_db.refund_record r ON JSON_UNQUOTE(JSON_EXTRACT(e.envelope_json,'$.payload.refund_no'))=r.refund_no JOIN user_db.charge_order o ON o.id=r.biz_id WHERE r.biz_type='charge' AND o.device_id='$taskTag';
+DELETE r FROM user_db.refund_record r JOIN user_db.charge_order o ON o.id=r.biz_id WHERE r.biz_type='charge' AND o.device_id='$taskTag';
+DELETE r FROM user_db.charge_start_receipt r JOIN user_db.charge_order o ON o.id=r.charge_order_id WHERE o.device_id='$taskTag';
+DELETE FROM user_db.payment_order WHERE order_no IN ('${taskTag}_pay','${taskTag}_cancelpay','${taskTag}_ackpay');
 DELETE p FROM billing_db.settlement_party_amount p JOIN billing_db.settlement s ON s.id=p.settlement_id WHERE s.settlement_no='$taskTag';
 DELETE FROM billing_db.settlement WHERE settlement_no='$taskTag';
 DELETE FROM billing_db.fee_calculation WHERE calculation_no='$taskTag';

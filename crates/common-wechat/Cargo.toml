@@ -22,3 +22,4 @@ uuid.workspace = true
 base64 = "0.22"
 rsa = { version = "0.9", features = ["sha2"] }
 rand.workspace = true
+ring = "0.17"

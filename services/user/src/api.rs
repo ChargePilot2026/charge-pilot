@@ -214,14 +214,14 @@ pub async fn charge_stop(
         "SELECT status FROM charge_order WHERE order_no=? AND user_id=? AND deleted_at IS NULL"
     ).bind(&req.order_no).bind(claims.user_id).fetch_optional(st.db.pool()).await?;
     let status=status.ok_or_else(||AppError::NotFound("order".into()))?;
-    if status != "charging" {return Err(AppError::Conflict("订单不在充电中，不能停止".into()));}
+    if status != "charging" && status != "completed" {return Err(AppError::Conflict("订单不在充电中，不能停止".into()));}
     let body = ChargeStopCommand {
         order_no: req.order_no.clone(),
         user_id: claims.user_id,
         source: "user_app".into(),
     };
     let cli = common_http::internal::ApiClient::new(st.http.clone(), st.service_token.clone());
-    let _resp: serde_json::Value = cli
+    let response: api_contracts::ChargeStopResponse = cli
         .post(
             st.cfg.service_urls.gateway.as_deref(),
             p::GW_CHARGE_ORDERS_STOP,
@@ -229,7 +229,7 @@ pub async fn charge_stop(
         )
         .await?;
     Ok(Json(crate::api_envelope::Envelope::ok(
-        crate::api_types::ChargeStopResponse { stopped: true },
+        response,
         common_error::current_request_id(),
     )))
 }

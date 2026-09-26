@@ -504,10 +504,12 @@ dependencies = [
  "common-error",
  "common-redis",
  "futures",
+ "redis",
  "serde",
  "serde_json",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -544,6 +546,7 @@ dependencies = [
  "hmac",
  "rand 0.8.8",
  "reqwest",
+ "ring",
  "rsa",
  "serde",
  "serde_json",
@@ -3327,6 +3330,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "sqlx",
  "thiserror 1.0.69",
  "tokio",

@@ -16,6 +16,9 @@ mod telemetry_obs;
 mod alert;
 mod ota;
 mod stream_consumer;
+mod charge_command;
+mod charge_stop;
+mod outbox;
 
 use axum::{
     middleware as ax_middleware,
@@ -36,6 +39,7 @@ use tracing::info;
 
 #[derive(Clone)]
 pub struct AppState {
+    pub connections: protocol::connections::Connections,
     pub cfg: Arc<AppConfig>,
     pub db: Db,
     pub redis_cache: RedisCache,
@@ -62,6 +66,7 @@ async fn main() -> AppResult<()> {
         .expect("reqwest");
 
     let state = AppState {
+        connections: protocol::connections::Connections::default(),
         cfg: cfg.clone(),
         db: db.clone(),
         redis_cache: redis_cache.clone(),
@@ -72,6 +77,9 @@ async fn main() -> AppResult<()> {
     };
 
     stream_consumer::spawn_all(state.clone()).await?;
+    charge_command::spawn_recovery(state.clone());
+    charge_stop::spawn(state.clone());
+    outbox::spawn(state.clone());
 
     // ===== 启动 TCP 监听(9100)=====
     let tcp_state = state.clone();
@@ -118,7 +126,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/internal/devices/:id/reboot", post(api::device_reboot))
         .route("/api/v1/internal/devices/:id/firmware-push", post(api::device_firmware_push))
         // 充电控制
-        .route("/api/v1/internal/charge-orders/stop", post(api::charge_stop))
+        .route("/api/v1/internal/charge-orders/stop", post(charge_stop::request))
         // 设备注册 / 查询
         .route(api_contracts::paths::GW_DEVICE_REGISTER, post(registration::register))
         .route("/api/v1/internal/devices/:id/backfill", post(api::device_backfill))

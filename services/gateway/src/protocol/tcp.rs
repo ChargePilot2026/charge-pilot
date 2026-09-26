@@ -8,7 +8,7 @@ use common_error::AppResult;
 use common_redis::StreamEnvelope;
 use serde_json::json;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
@@ -19,7 +19,10 @@ pub async fn run_tcp_listener(bind: &str, state: AppState) -> AppResult<()> {
     loop {
         let (socket, addr) = match listener.accept().await {
             Ok(v) => v,
-            Err(e) => { error!(error=%e, "accept failed"); continue; }
+            Err(e) => {
+                error!(error=%e, "accept failed");
+                continue;
+            }
         };
         let state = state.clone();
         tokio::spawn(async move {
@@ -30,107 +33,118 @@ pub async fn run_tcp_listener(bind: &str, state: AppState) -> AppResult<()> {
     }
 }
 
-async fn handle_conn(socket: tokio::net::TcpStream, peer: String, state: AppState) -> AppResult<()> {
-    let (read, mut write) = socket.into_split();
+async fn handle_conn(
+    socket: tokio::net::TcpStream,
+    peer: String,
+    state: AppState,
+) -> AppResult<()> {
+    let (read, write) = socket.into_split();
+    let writer = Arc::new(Mutex::new(write));
     let mut reader = BufReader::new(read);
-    let mut line = String::new();
-    let device_id_holder: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-
-    loop {
-        line.clear();
-        let n = reader.read_line(&mut line).await?;
-        if n == 0 { break; }
-        let trimmed = line.trim();
-        if trimmed.is_empty() { continue; }
-        // 简化:每行一个 JSON frame
-        let parsed: Result<Frame, _> = serde_json::from_str(trimmed);
-        let frame = match parsed {
-            Ok(f) => f,
-            Err(e) => {
-                warn!(peer=%peer, error=%e, body=%trimmed, "bad frame");
-                let _ = write.write_all(b"{\"error\":\"bad_frame\"}\n").await;
-                continue;
-            }
-        };
-        // 首帧必须是 device_id 校验
-        {
-            let mut g = device_id_holder.lock().await;
-            if g.as_ref().is_some_and(|id| id != &frame.device_id) {
-                write.write_all(b"{\"error\":\"device_identity_mismatch\"}\n").await?;
-                return Ok(());
-            }
-            if g.is_none() {
-                // 校验 device 是否在册
-                let enabled: bool = sqlx::query_scalar("SELECT status = 'enabled' FROM device WHERE device_id = ? AND deleted_at IS NULL")
-                    .bind(&frame.device_id)
-                    .fetch_optional(state.db.pool())
-                    .await
-                    .ok()
-                    .flatten()
-                    .unwrap_or(false);
-                if !enabled {
-                    let _ = write.write_all(b"{\"error\":\"unknown_device\"}\n").await;
-                    return Ok(());
+    let mut identity: Option<(String, String)> = None;
+    let result:AppResult<()>=async {
+        loop {
+            let mut line=String::new();
+            let mut limited=(&mut reader).take(65_537);
+            let n=tokio::time::timeout(std::time::Duration::from_secs(120),limited.read_line(&mut line)).await
+                .map_err(|_|common_error::AppError::ServiceUnavailable("设备心跳超时".into()))??;
+            if n==0 {break;} if n>65_536 {return Err(common_error::AppError::BadRequest("设备帧过大".into()));}
+            if line.trim().is_empty(){continue;}
+            let frame:Frame=match serde_json::from_str(line.trim()) {
+                Ok(frame)=>frame,
+                Err(_)=>{writer.lock().await.write_all(b"{\"error\":\"bad_frame\"}\n").await?;continue;}
+            };
+            if let Some((device,_))=&identity {
+                if device!=&frame.device_id {writer.lock().await.write_all(b"{\"error\":\"device_identity_mismatch\"}\n").await?;return Ok(());}
+            } else {
+                let enabled:Vec<bool>=sqlx::query_scalar("SELECT d.status='enabled' AND v.status='enabled' FROM device d JOIN vendor v ON v.id=d.vendor_id AND v.deleted_at IS NULL WHERE d.device_id=? AND d.deleted_at IS NULL")
+                    .bind(&frame.device_id).fetch_all(state.db.pool()).await?;
+                if enabled!=vec![true] || frame.msg_type!="heartbeat" {
+                    writer.lock().await.write_all(b"{\"error\":\"unknown_device_or_missing_heartbeat\"}\n").await?;return Ok(());
                 }
-                *g = Some(frame.device_id.clone());
-                sqlx::query("UPDATE device SET last_seen_at = NOW(3), last_ip = ? WHERE device_id = ?")
-                    .bind(&peer).bind(&frame.device_id).execute(state.db.pool()).await?;
+                let id=state.connections.register(&frame.device_id,writer.clone()).await;
+                identity=Some((frame.device_id.clone(),id));
             }
+            let session=&identity.as_ref().unwrap().1;
+            // A replacement connection invalidates the old reader as well as its writer.
+            if state.connections.get(&frame.device_id).await.map_or(true, |current| current.id != *session) {break;}
+            sqlx::query("UPDATE device SET last_seen_at=UTC_TIMESTAMP(3),last_ip=? WHERE device_id=? AND deleted_at IS NULL")
+                .bind(peer.parse::<std::net::SocketAddr>().map(|addr|addr.ip().to_string()).unwrap_or_else(|_|peer.clone())).bind(&frame.device_id).execute(state.db.pool()).await?;
+            if let Err(e)=handle_frame(&frame,&state,session).await {
+                error!(peer=%peer,error=%e,"frame handling failed");
+                writer.lock().await.write_all(b"{\"error\":\"frame_processing_failed\"}\n").await?;continue;
+            }
+            writer.lock().await.write_all(b"{\"ack\":true}\n").await?;
         }
-        // 处理
-        if let Err(e) = handle_frame(&frame, &state).await {
-            error!(peer=%peer, error=%e, "frame handling failed");
-            write.write_all(b"{\"error\":\"frame_processing_failed\"}\n").await?;
-            continue;
-        }
-        let _ = write.write_all(b"{\"ack\":true}\n").await;
+        Ok(())
+    }.await;
+    if let Some((device, session)) = identity {
+        state.connections.remove(&device, &session).await;
     }
-    Ok(())
+    result
 }
 
-async fn handle_frame(frame: &Frame, state: &AppState) -> AppResult<()> {
+async fn handle_frame(frame: &Frame, state: &AppState, session: &str) -> AppResult<()> {
     match frame.msg_type.as_str() {
         "heartbeat" => { /* 设备心跳 */ }
         "telemetry" => {
             // 持久化到 telemetry 表
             sqlx::query(
                 "INSERT INTO telemetry (device_id, port_no, metric, value_num, ts)
-                 VALUES (?, ?, 'power_w', ?, ?)"
+                 VALUES (?, ?, 'power_w', ?, ?)",
             )
             .bind(&frame.device_id)
             .bind(frame.port_no.unwrap_or(0))
-            .bind(frame.payload.get("power_w").and_then(|v| v.as_f64()).unwrap_or(0.0))
+            .bind(
+                frame
+                    .payload
+                    .get("power_w")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0),
+            )
             .bind(frame.ts)
-            .execute(state.db.pool()).await?;
+            .execute(state.db.pool())
+            .await?;
         }
         "status" => {
             // 发布 device_event_stream
-            let env = StreamEnvelope::new("device_status", "gateway", json!({
-                "device_id": frame.device_id,
-                "port_no": frame.port_no,
-                "status": frame.payload.get("status").cloned().unwrap_or(serde_json::Value::Null),
-            }));
-            let _ = state.redis_stream.xadd_envelope(common_redis::streams::DEVICE_EVENT, &env).await;
+            let env = StreamEnvelope::new(
+                "device_status",
+                "gateway",
+                json!({
+                    "device_id": frame.device_id,
+                    "port_no": frame.port_no,
+                    "status": frame.payload.get("status").cloned().unwrap_or(serde_json::Value::Null),
+                }),
+            );
+            let _ = state
+                .redis_stream
+                .xadd_envelope(common_redis::streams::DEVICE_EVENT, &env)
+                .await;
         }
         "ack" => {
-            // 设备 ACK(OTA/启动指令)
-            let cmd_id = frame.payload.get("command_id").and_then(|v| v.as_str()).unwrap_or("");
-            if !cmd_id.is_empty() {
-                sqlx::query("UPDATE ota_command SET status='acked', acked_at=NOW(3) WHERE command_id = ?")
-                    .bind(cmd_id).execute(state.db.pool()).await?;
-            }
+            crate::charge_command::acknowledge(state, session, frame).await?;
         }
         "alert" => {
             // 越界告警 → alert_stream
-            let env = StreamEnvelope::new("device_alert", "gateway", json!({
-                "device_id": frame.device_id,
-                "metric": frame.payload.get("metric").cloned().unwrap_or(serde_json::Value::Null),
-                "severity": frame.payload.get("severity").cloned().unwrap_or(json!("warning")),
-                "value": frame.payload.get("value").cloned().unwrap_or(serde_json::Value::Null),
-            }));
-            let _ = state.redis_stream.xadd_envelope(common_redis::streams::ALERT, &env).await;
+            let env = StreamEnvelope::new(
+                "device_alert",
+                "gateway",
+                json!({
+                    "device_id": frame.device_id,
+                    "metric": frame.payload.get("metric").cloned().unwrap_or(serde_json::Value::Null),
+                    "severity": frame.payload.get("severity").cloned().unwrap_or(json!("warning")),
+                    "value": frame.payload.get("value").cloned().unwrap_or(serde_json::Value::Null),
+                }),
+            );
+            let _ = state
+                .redis_stream
+                .xadd_envelope(common_redis::streams::ALERT, &env)
+                .await;
         }
-        _ => { warn!(msg_type = %frame.msg_type, "unknown frame type"); }
+        _ => {
+            warn!(msg_type = %frame.msg_type, "unknown frame type");
+        }
     }
     Ok(())
 }

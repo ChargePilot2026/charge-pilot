@@ -52,18 +52,12 @@ pub struct ChargeEndedHandler { pub state: AppState }
 #[async_trait]
 impl StreamHandler for ChargeEndedHandler {
     async fn handle(&self, entry: &StreamEntry) -> AppResult<()> {
-        let order_id = entry.envelope.payload.get("order_id").and_then(|v| v.as_str()).unwrap_or("");
-        if order_id.is_empty() { return Ok(()); }
-        // 失效 Redis snapshot
-        let key = format!("snapshot:{order_id}");
-        let _ = self.state.redis_cache.del(&key).await;
-        // 关轮询:写入 poll_continue=false 的快照
-        let snap = json!({
-            "poll_continue": false,
-            "next_poll_after_ms": 0,
-        });
-        let _ = self.state.redis_cache.set_ex(&format!("snapshot:{order_id}"), &snap, 60).await;
-        info!(order_id, "charge_ended handled: snapshot invalidated");
+        let order_no=entry.envelope.payload.get("order_no").and_then(|v|v.as_str()).ok_or_else(||common_error::AppError::BadRequest("结束事件缺少订单号".into()))?;
+        let completed:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM charge_order WHERE order_no=? AND status='completed' AND deleted_at IS NULL)")
+            .bind(order_no).fetch_one(self.state.db.pool()).await?;
+        if !completed {return Err(common_error::AppError::Conflict("充电结束尚未持久化确认".into()));}
+        self.state.redis_cache.del(&format!("snapshot:{order_no}")).await?;
+        info!(order_no,"confirmed charge end invalidated telemetry cache");
         Ok(())
     }
 }

@@ -25,6 +25,11 @@ test('port scan selects canonical port and errors clear earlier results',async()
  let fail=false;const p=page('scan-result',{globalData:{token:'t'},request:async()=>{if(fail)throw new Error('设备已停用');return {kind:'port',...port(7)};}});
  await p.onShow();assert.equal(p.data.selected.port_no,7);fail=true;await p.load();assert.equal(p.data.selected,null);assert.equal(p.data.ports.length,0);assert.equal(p.data.error,'设备已停用');
 });
+test('reserved port stays visible but cannot be selected or quoted',async()=>{
+ const calls=[];const p=page('scan-result',{globalData:{token:'t'},request:async(_,url)=>{calls.push(url);return {kind:'device',device_id:'DEV00001',ports:[port(1,'reserved'),port(2)]};}});
+ await p.onShow();assert.equal(p.data.error,'');assert.equal(p.data.ports[0].statusLabel,'启动处理中');assert.equal(p.data.ports[0].selectable,false);
+ await p.selectPort({currentTarget:{dataset:{id:'DEV00001:1'}}});assert.equal(calls.length,1);assert.equal(p.data.selected,null);
+});
 test('hidden scan page ignores late responses and anonymous page offers login',async()=>{
  let resolve;const app={globalData:{token:'t'},request:()=>new Promise(r=>resolve=r)};const p=page('scan-result',app);const pending=p.onShow();p.onHide();resolve({kind:'port',...port(1)});await pending;assert.equal(p.data.selected,null);
  app.globalData.token='';await p.onShow();assert.equal(p.data.needsLogin,true);assert.equal(p.data.loading,false);
