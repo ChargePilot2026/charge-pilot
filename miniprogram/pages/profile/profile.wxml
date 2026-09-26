@@ -1,15 +1,26 @@
 <view class="container">
+  <view class="card" wx:if="{{needsLogin}}"><view>登录后查看余额、优惠券和充电记录</view><button type="primary" bindtap="login" loading="{{loggingIn}}" disabled="{{loggingIn}}">微信登录</button></view>
+  <view class="card" wx:if="{{loading}}">正在读取个人资料…</view>
+  <view class="card" wx:if="{{error}}"><text>{{error}}</text><button wx:if="{{!needsLogin}}" bindtap="refresh">重试</button></view>
   <view class="card" wx:if="{{profile}}">
     <view style="display: flex; align-items: center;">
-      <image src="{{profile.avatar_url || '/images/default-avatar.png'}}" style="width: 96rpx; height: 96rpx; border-radius: 50%;"></image>
+      <image wx:if="{{profile.avatar_url}}" src="{{profile.avatar_url}}" style="width: 96rpx; height: 96rpx; border-radius: 50%;"></image>
+      <view wx:else style="font-size: 40px;">👤</view>
       <view style="margin-left: 24rpx;">
         <view style="font-size: 18px; font-weight: 500;">{{profile.nickname || '用户'}}</view>
-        <view class="text-secondary">余额 ¥{{profile.balance_cents / 100}}</view>
+        <view class="text-secondary">可用余额 ¥{{profile.balanceText}}</view>
       </view>
     </view>
+    <view wx:if="{{profile.wallet.status === 'frozen'}}">钱包已冻结，请联系客服</view>
+    <view>冻结金额 ¥{{profile.frozenText}}</view>
+    <view>手机号：{{profile.phone_bound ? '已绑定' : '未绑定'}}</view>
+    <view>可用优惠券：{{profile.coupon_unused_count}} 张</view>
+    <view>{{profile.membershipText}}</view>
+    <view class="text-secondary">注册日期 {{profile.registeredText}}</view>
   </view>
 
   <view class="card">
+    <view style="display: flex; justify-content: space-between; padding: 16rpx 0;" bindtap="goOrders"><text>我的订单</text><text class="text-secondary">›</text></view>
     <view style="display: flex; justify-content: space-between; padding: 16rpx 0;" bindtap="goCoupons">
       <text>🎫 我的优惠券</text><text class="text-secondary">›</text>
     </view>
@@ -27,5 +38,5 @@
     </view>
   </view>
 
-  <view class="card" bindtap="onLogout" style="text-align: center; color: #999;">退出登录</view>
+  <view wx:if="{{!needsLogin}}" class="card" bindtap="onLogout" style="text-align: center; color: #999;">退出登录</view>
 </view>

@@ -1,29 +1,12 @@
 ﻿//! 钱包:余额查询 / 充值 / 流水 / 退款申请
 
 use crate::AppState;
-use axum::{extract::{Query, State}, Json};
+use axum::{extract::State, Json};
 use common_db::IdGen;
 use common_error::{AppError, AppResult};
 use common_redis::StreamEnvelope;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-
-pub async fn balance(
-    State(st): State<AppState>,
-    claims: common_auth::UserClaims,
-) -> AppResult<Json<common_error::ApiEnvelope<BalanceResp>>> {
-    let balance: i64 = sqlx::query_scalar("SELECT balance_cents FROM wallet_account WHERE user_id = ?")
-        .bind(claims.user_id)
-        .fetch_optional(st.db.pool())
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or(0);
-    Ok(Json(common_error::ApiEnvelope::ok(BalanceResp { balance_cents: balance }, common_error::current_request_id())))
-}
-
-#[derive(Debug, Serialize)]
-pub struct BalanceResp { pub balance_cents: i64 }
 
 #[derive(Debug, Deserialize)]
 pub struct RechargeReq {
@@ -76,38 +59,6 @@ pub async fn recharge(
         "pay_order_no": pay_order_no,
         "payment_params": pay_sign,
     }), common_error::current_request_id())))
-}
-
-#[derive(Debug, Deserialize)]
-pub struct TxnQuery { pub page: Option<u32>, pub page_size: Option<u32> }
-
-pub async fn txns(
-    State(st): State<AppState>,
-    claims: common_auth::UserClaims,
-    Query(q): Query<TxnQuery>,
-) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
-    let page = q.page.unwrap_or(1).max(1);
-    let page_size = q.page_size.unwrap_or(20).min(100);
-    let offset = (page - 1) * page_size;
-    let rows = sqlx::query(
-        "SELECT txn_no, direction, amount_cents, balance_after_cents, biz_type, note, created_at
-         FROM wallet_txn WHERE user_id = ? ORDER BY id DESC LIMIT ? OFFSET ?"
-    )
-    .bind(claims.user_id)
-    .bind(page_size as i64)
-    .bind(offset as i64)
-    .fetch_all(st.db.pool())
-    .await?;
-    let items: Vec<Value> = rows.iter().map(|r| json!({
-        "txn_no": sqlx::Row::try_get::<String, _>(r, "txn_no").unwrap_or_default(),
-        "direction": sqlx::Row::try_get::<String, _>(r, "direction").unwrap_or_default(),
-        "amount_cents": sqlx::Row::try_get::<i64, _>(r, "amount_cents").unwrap_or(0),
-        "balance_after_cents": sqlx::Row::try_get::<i64, _>(r, "balance_after_cents").unwrap_or(0),
-        "biz_type": sqlx::Row::try_get::<String, _>(r, "biz_type").unwrap_or_default(),
-        "note": sqlx::Row::try_get::<Option<String>, _>(r, "note").ok().flatten(),
-        "created_at": sqlx::Row::try_get::<chrono::DateTime<chrono::Utc>, _>(r, "created_at").ok().map(|t| t.to_rfc3339()),
-    })).collect();
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"page": page, "page_size": page_size, "items": items}), common_error::current_request_id())))
 }
 
 #[derive(Debug, Deserialize)]

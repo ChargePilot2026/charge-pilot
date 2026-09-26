@@ -2,12 +2,17 @@
 
 // 主模块文件(与 lib.rs 共用,各自 mod 声明各自一份,这样 bin 与 lib 都能独立编译)
 mod api;
+mod checkout;
+mod login;
+mod session;
+mod profile;
 mod api_envelope;
 mod api_types;
 mod clients;
 mod payment;
 mod refund;
 mod wallet;
+mod wallet_reads;
 mod coupon;
 mod invoice;
 mod station;
@@ -15,6 +20,7 @@ mod stream_consumer;
 mod wechat;
 mod repo;
 mod orders;
+mod order_events;
 
 use axum::{
     middleware,
@@ -83,11 +89,11 @@ async fn main() -> AppResult<()> {
 
 pub fn build_router(state: AppState) -> Router {
     let svc_token = state.service_token.clone();
-    let jwt_codec = state.jwt.clone();
 
     let public_routes = Router::new()
         .route(api_types::paths::AUTH_LOGIN, post(api::login))
-        .route(api_types::paths::AUTH_REFRESH, post(api::refresh))
+        .route(api_types::paths::AUTH_REFRESH, post(session::refresh))
+        .route(api_types::paths::AUTH_LOGOUT, post(session::logout))
         .route(api_types::paths::PAYMENT_WECHAT_CALLBACK, post(payment::wechat_callback));
 
     let internal_routes = Router::new()
@@ -97,6 +103,7 @@ pub fn build_router(state: AppState) -> Router {
         .route(api_types::paths::INTERNAL_REFUND_DETAIL, get(refund::detail))
         .route(api_types::paths::INTERNAL_PAYMENT_DETAIL, get(payment::detail))
         .route(api_contracts::paths::USER_INTERNAL_ORDERS, get(orders::list))
+        .route(api_contracts::paths::USER_INTERNAL_ORDER_TIMELINE, get(order_events::timeline))
         .route(api_types::paths::INTERNAL_ORDER_DETAIL, get(orders::detail))
         .route(api_types::paths::INTERNAL_INVOICE_DETAIL, get(invoice::internal_detail))
         .route(api_types::paths::INTERNAL_COUPON_STATS, get(coupon::stats))
@@ -111,16 +118,16 @@ pub fn build_router(state: AppState) -> Router {
         .route(api_types::paths::USER_CHARGE_ONGOING, get(api::charge_ongoing))
         .route(api_types::paths::USER_CHARGE_SNAPSHOT, get(api::charge_snapshot))
         .route(api_types::paths::USER_CHARGE_CURVE, get(api::charge_curve))
-        .route(api_types::paths::USER_CHARGE_HISTORY, get(api::charge_history))
-        .route(api_types::paths::USER_CHARGE_DETAIL, get(api::charge_detail))
+        .route(api_types::paths::USER_CHARGE_HISTORY, get(orders::user_history))
+        .route(api_types::paths::USER_CHARGE_DETAIL, get(orders::user_detail))
         .route(api_types::paths::USER_CHARGE_HISTORICAL_CURVE, get(api::charge_historical_curve))
         .route(api_types::paths::USER_CHARGE_FEEDBACK, post(api::charge_feedback))
-        .route(api_types::paths::USER_PROFILE, get(api::profile_get))
+        .route(api_types::paths::USER_PROFILE, get(profile::get))
         .route(api_types::paths::USER_PHONE_BIND, post(api::phone_bind))
         .route(api_types::paths::USER_PHONE_UNBIND, post(api::phone_unbind))
-        .route(api_types::paths::USER_WALLET_BALANCE, get(wallet::balance))
+        .route(api_types::paths::USER_WALLET_BALANCE, get(wallet_reads::balance))
         .route(api_types::paths::USER_WALLET_RECHARGE, post(wallet::recharge))
-        .route(api_types::paths::USER_WALLET_TXNS, get(wallet::txns))
+        .route(api_types::paths::USER_WALLET_TXNS, get(wallet_reads::txns))
         .route(api_types::paths::USER_WALLET_REFUND, post(wallet::refund))
         .route(api_types::paths::USER_STATION_NEARBY, get(station::nearby))
         .route(api_types::paths::USER_STATION_DETAIL, get(station::detail))
@@ -131,7 +138,7 @@ pub fn build_router(state: AppState) -> Router {
         .route(api_types::paths::USER_INVOICE_MY, get(invoice::my))
         .route(api_types::paths::USER_ANNOUNCEMENT_LIST, get(api::announcement_list))
         .route(api_types::paths::USER_CUSTOMER_SERVICE_ENTRY, post(api::customer_service_entry))
-        .layer(middleware::from_fn_with_state(jwt_codec.clone(), common_auth::refs::require_user_jwt));
+        .layer(middleware::from_fn_with_state(state.clone(), session::require_session));
 
     Router::new()
         .merge(public_routes)

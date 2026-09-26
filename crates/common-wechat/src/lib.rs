@@ -15,10 +15,13 @@ use std::time::Duration;
 /// 微信登录(code2Session)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Code2SessionResp {
+    #[serde(default)]
     pub openid: String,
     pub session_key: Option<String>,
     pub unionid: Option<String>,
+    #[serde(default)]
     pub errcode: i32,
+    #[serde(default)]
     pub errmsg: String,
 }
 
@@ -27,21 +30,28 @@ pub async fn code2session(
     cfg: &WechatConfig,
     code: &str,
 ) -> AppResult<Code2SessionResp> {
-    let url = format!(
-        "https://api.weixin.qq.com/sns/jscode2session?appid={}&secret={}&js_code={}&grant_type=authorization_code",
-        cfg.appid, cfg.secret, code
-    );
-    let resp = http
-        .get(&url)
-        .timeout(Duration::from_secs(5))
-        .send()
-        .await?;
-    let body: Code2SessionResp = resp.json().await?;
+    if code.is_empty() || code.len() > 256 || code.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err(AppError::BadRequest("微信登录凭证无效".into()));
+    }
+    // Do not include request errors/URLs: the query contains the app secret.
+    let response = http.get("https://api.weixin.qq.com/sns/jscode2session")
+        .query(&[("appid",cfg.appid.as_str()),("secret",cfg.secret.as_str()),("js_code",code),("grant_type","authorization_code")])
+        .timeout(Duration::from_secs(5)).send().await
+        .map_err(|_| AppError::ServiceUnavailable("微信登录服务连接失败".into()))?;
+    if !response.status().is_success() {
+        return Err(AppError::ServiceUnavailable("微信登录服务暂时不可用".into()));
+    }
+    let body: Code2SessionResp = response.json().await
+        .map_err(|_| AppError::ServiceUnavailable("微信登录响应格式错误".into()))?;
+    validate_session(body)
+}
+
+fn validate_session(body: Code2SessionResp) -> AppResult<Code2SessionResp> {
     if body.errcode != 0 {
-        return Err(AppError::WechatPayFailed(format!(
-            "code2session errcode={} errmsg={}",
-            body.errcode, body.errmsg
-        )));
+        return Err(AppError::WechatPayFailed(format!("微信登录失败（错误码 {}），请重新登录",body.errcode)));
+    }
+    if body.openid.is_empty() || body.openid.len() > 64 || body.session_key.as_deref().map_or(true, str::is_empty) {
+        return Err(AppError::ServiceUnavailable("微信登录响应缺少身份信息".into()));
     }
     Ok(body)
 }
@@ -270,5 +280,17 @@ mod tests {
         let a = hmac_sha256_b64(b"k", b"m");
         let b = hmac_sha256_b64(b"k", b"m");
         assert_eq!(a, b);
+    }
+}
+#[cfg(test)]
+mod login_response_tests {
+    use super::*;
+    #[test]
+    fn accepts_success_without_error_fields_and_rejects_error_without_openid() {
+        let success=serde_json::from_str(r#"{"openid":"test-openid","session_key":"test-session"}"#).unwrap();
+        assert_eq!(validate_session(success).unwrap().openid,"test-openid");
+        let failure=serde_json::from_str(r#"{"errcode":40029,"errmsg":"invalid code"}"#).unwrap();
+        assert_eq!(validate_session(failure).unwrap_err().code(),3001);
+        assert!(validate_session(serde_json::from_str("{}").unwrap()).is_err());
     }
 }

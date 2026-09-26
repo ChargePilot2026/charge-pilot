@@ -1,5 +1,20 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct OrderTimeline {
+    pub order_id: u64,
+    pub timeline: Vec<OrderEvent>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct OrderEvent {
+    pub event_id: String,
+    pub at: String,
+    pub event: String,
+    pub actor: String,
+    pub detail: String,
+}
+
 fn first_page() -> u32 {
     1
 }
@@ -62,4 +77,36 @@ pub struct OrderDetail {
     pub paid_cents: Option<i64>,
     pub refunded_cents: Option<i64>,
     pub failure_reason: Option<String>,
+    #[serde(default)]
+    pub billing: Option<OrderBilling>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct OrderBilling {
+    pub calculation_no: Option<String>,
+    pub electric_cents: Option<i64>,
+    pub service_cents: Option<i64>,
+    pub total_cents: Option<i64>,
+    pub settlements: Vec<OrderSettlement>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct OrderSettlement {
+    pub settlement_id: u64,
+    pub settlement_no: String,
+    pub mode: String,
+    pub status: String,
+    pub total_cents: i64,
+    pub split_pool_cents: i64,
+    pub parties: Vec<OrderSettlementParty>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct OrderSettlementParty {
+    pub party_id: u64,
+    pub party_code: String,
+    pub party_name: String,
+    pub ratio_bp: u32,
+    pub amount_cents: i64,
+    pub status: String,
 }

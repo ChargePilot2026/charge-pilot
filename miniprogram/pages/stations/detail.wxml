@@ -1,0 +1,6 @@
+<view class="container">
+  <button wx:if="{{needsLogin}}" bindtap="login">登录查看站点</button>
+  <view wx:if="{{loading}}" class="card">正在加载…</view>
+  <view wx:if="{{error}}" class="card">{{error}}<button bindtap="load" disabled="{{loading}}">重试</button></view>
+  <view wx:if="{{station}}" class="card"><view>{{station.name}}</view><view>{{station.address || '地址未填写'}}</view><view>营业时间：{{station.open_hours || '暂未提供'}}</view><button bindtap="navigate">地图导航</button><button wx:if="{{station.contact_phone}}" bindtap="call">联系站点</button></view>
+</view>

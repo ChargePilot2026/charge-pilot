@@ -29,6 +29,26 @@ fn client() -> ApiClient {
 }
 
 #[tokio::test]
+async fn post_preserves_conflicts_and_does_not_retry() {
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let counter = attempts.clone();
+    let app = Router::new().route("/provision", axum::routing::post(move |headers: HeaderMap, Json(body): Json<Value>| {
+        let counter = counter.clone();
+        async move {
+            assert_eq!(headers["x-service-token"], "test-token");
+            assert_eq!(body["device_id"], "device_01");
+            counter.fetch_add(1, Ordering::SeqCst);
+            (StatusCode::CONFLICT, Json(json!({"code":1006,"message":"configuration conflict","request_id":"test"})))
+        }
+    }));
+    let (base, task) = server(app).await;
+    let result = client().post::<Value,_>(Some(&base),"/provision",&json!({"device_id":"device_01"})).await;
+    assert!(matches!(result, Err(AppError::Conflict(_))));
+    assert_eq!(attempts.load(Ordering::SeqCst),1);
+    task.abort();
+}
+
+#[tokio::test]
 async fn unwraps_data_and_encodes_query_and_authentication() {
     let app = Router::new().route("/orders", get(|headers: HeaderMap, Query(query): Query<HashMap<String, String>>| async move {
         assert_eq!(headers["x-service-token"], "test-token");

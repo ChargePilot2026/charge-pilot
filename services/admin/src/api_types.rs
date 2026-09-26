@@ -37,7 +37,10 @@ pub mod paths {
     pub const ADMIN_DEVICE_ORDERS: &str = "/api/v1/admin/devices/:id/orders";
 
     pub const ADMIN_ORDERS: &str = "/api/v1/admin/orders";
+    pub const ADMIN_DEVICE_IMPORTS: &str = "/api/v1/admin/device-imports";
+    pub const ADMIN_DEVICE_IMPORT_RETRY: &str = "/api/v1/admin/device-imports/:id/retry";
     pub const ADMIN_ORDER_DETAIL: &str = "/api/v1/admin/orders/:id";
+    pub const ADMIN_ORDER_TIMELINE: &str = "/api/v1/admin/orders/:id/timeline";
 
     pub const ADMIN_BILLING_SETTLEMENTS: &str = "/api/v1/admin/billing/settlements";
     pub const ADMIN_BILLING_WITHDRAW: &str = "/api/v1/admin/billing/withdraw";

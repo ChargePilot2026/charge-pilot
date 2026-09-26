@@ -11,10 +11,12 @@
 use serde::{Deserialize, Serialize};
 
 pub mod orders;
+pub mod devices;
 
 // ===================== 路径常量 =====================
 
 pub mod paths {
+    pub const GATEWAY_DEVICE_PROVISION: &str = "/api/v1/internal/devices/provision";
     // -------- public --------
     pub const AUTH_LOGIN_USER: &str = "/api/v1/public/auth/login";
     pub const AUTH_REFRESH_USER: &str = "/api/v1/public/auth/refresh";
@@ -41,6 +43,7 @@ pub mod paths {
 
     // -------- user 内部 --------
     pub const USER_INTERNAL_ORDERS: &str = "/api/v1/internal/orders";
+    pub const USER_INTERNAL_ORDER_TIMELINE: &str = "/api/v1/internal/orders/:order_id/timeline";
     pub const USER_INTERNAL_ORDER_DETAIL: &str = "/api/v1/internal/orders/:order_id";
     pub const USER_INTERNAL_REFUND_DETAIL: &str = "/api/v1/internal/refunds/:refund_id";
     pub const USER_INTERNAL_PAYMENT_DETAIL: &str = "/api/v1/internal/payment-orders/:payment_order_id";
@@ -52,6 +55,7 @@ pub mod paths {
 
     // -------- billing 内部 --------
     pub const BILLING_QUOTE: &str = "/api/v1/internal/quote";
+    pub const BILLING_ORDER_SUMMARY: &str = "/api/v1/internal/orders/:order_id/billing-summary";
     pub const BILLING_CALCULATE: &str = "/api/v1/internal/calculate";
     pub const BILLING_FEE_BREAKDOWN: &str = "/api/v1/internal/orders/:order_id/fee-breakdown";
     pub const BILLING_SPLIT: &str = "/api/v1/internal/split";
@@ -86,6 +90,23 @@ pub struct ScanResolveRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanPortRequest {
     pub port_id: String,
+}
+
+/// Public port identity is the printed port code, never a database row id.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanPortDetail {
+    pub port_id: String,
+    pub device_id: String,
+    pub port_no: u8,
+    pub port_code: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ScanResolveResponse {
+    Port { #[serde(flatten)] port: ScanPortDetail },
+    Device { device_id: String, status: String, ports: Vec<ScanPortDetail> },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -146,6 +167,18 @@ pub struct NearbyStationItem {
     pub longitude: f64,
     pub latitude: f64,
     pub distance_km: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StationPublicDetail {
+    pub id: u64,
+    pub code: String,
+    pub name: String,
+    pub address: Option<String>,
+    pub longitude: f64,
+    pub latitude: f64,
+    pub open_hours: Option<String>,
+    pub contact_phone: Option<String>,
 }
 
 // ---- user → gateway 回写 ----

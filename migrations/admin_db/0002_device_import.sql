@@ -1,0 +1,13 @@
+CREATE TABLE IF NOT EXISTS device_import (
+  import_id VARCHAR(36) NOT NULL PRIMARY KEY,
+  actor_id BIGINT UNSIGNED NOT NULL,
+  request_json JSON NOT NULL,
+  status ENUM('pending','completed','failed') NOT NULL DEFAULT 'pending',
+  last_error VARCHAR(1024) DEFAULT NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+CREATE TABLE IF NOT EXISTS device_import_identity (
+  device_id VARCHAR(64) NOT NULL PRIMARY KEY,
+  request_json JSON NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

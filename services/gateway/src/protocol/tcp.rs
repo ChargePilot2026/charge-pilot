@@ -55,6 +55,10 @@ async fn handle_conn(socket: tokio::net::TcpStream, peer: String, state: AppStat
         // 首帧必须是 device_id 校验
         {
             let mut g = device_id_holder.lock().await;
+            if g.as_ref().is_some_and(|id| id != &frame.device_id) {
+                write.write_all(b"{\"error\":\"device_identity_mismatch\"}\n").await?;
+                return Ok(());
+            }
             if g.is_none() {
                 // 校验 device 是否在册
                 let enabled: bool = sqlx::query_scalar("SELECT status = 'enabled' FROM device WHERE device_id = ? AND deleted_at IS NULL")
@@ -76,6 +80,8 @@ async fn handle_conn(socket: tokio::net::TcpStream, peer: String, state: AppStat
         // 处理
         if let Err(e) = handle_frame(&frame, &state).await {
             error!(peer=%peer, error=%e, "frame handling failed");
+            write.write_all(b"{\"error\":\"frame_processing_failed\"}\n").await?;
+            continue;
         }
         let _ = write.write_all(b"{\"ack\":true}\n").await;
     }

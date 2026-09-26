@@ -10,6 +10,51 @@ pub struct ApiClient {
 }
 
 impl ApiClient {
+    /// POST is not retried implicitly; callers retain a durable request for recovery.
+    pub async fn post<T: DeserializeOwned, B: Serialize + ?Sized>(
+        &self,
+        base: Option<&str>,
+        path: &str,
+        body: &B,
+    ) -> AppResult<T> {
+        let base = base.ok_or_else(|| AppError::ServiceUnavailable("下游服务未配置".into()))?;
+        let response = self
+            .http
+            .post(format!("{}{}", base.trim_end_matches('/'), path))
+            .header("x-service-token", self.token.as_str())
+            .header("x-request-id", uuid::Uuid::new_v4().to_string())
+            .json(body)
+            .timeout(Duration::from_secs(15))
+            .send()
+            .await
+            .map_err(|_| AppError::ServiceUnavailable("下游服务连接失败，可重试同步".into()))?;
+        let status = response.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Err(AppError::NotFound("资源不存在".into()));
+        }
+        if !status.is_success()
+            && status != reqwest::StatusCode::BAD_REQUEST
+            && status != reqwest::StatusCode::CONFLICT
+        {
+            return Err(AppError::ServiceUnavailable("下游服务暂时不可用".into()));
+        }
+        let envelope: ApiEnvelope<T> = response
+            .json()
+            .await
+            .map_err(|_| AppError::ServiceUnavailable("下游响应格式错误".into()))?;
+        if status == reqwest::StatusCode::CONFLICT {
+            return Err(AppError::Conflict(envelope.message));
+        }
+        if status == reqwest::StatusCode::BAD_REQUEST {
+            return Err(AppError::BadRequest(envelope.message));
+        }
+        if envelope.code != 0 {
+            return Err(AppError::ServiceUnavailable("下游操作未成功".into()));
+        }
+        envelope
+            .data
+            .ok_or_else(|| AppError::ServiceUnavailable("下游响应缺少数据".into()))
+    }
     pub fn new(http: reqwest::Client, token: Arc<String>) -> Self {
         Self { http, token }
     }

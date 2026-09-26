@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 pub mod paths {
     // --- 公开路由(无需 JWT)---
     pub const AUTH_LOGIN: &str = "/api/v1/public/auth/login";
+    pub const AUTH_LOGOUT: &str = "/api/v1/public/auth/logout";
     pub const AUTH_REFRESH: &str = "/api/v1/public/auth/refresh";
     pub const PAYMENT_WECHAT_CALLBACK: &str = "/api/v1/public/payment/wechat/callback";
 

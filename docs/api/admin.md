@@ -129,6 +129,16 @@
 
 ### C. 站点与设备(11 个)— `station` + `device_meta`
 
+设备导入增量接口（要求 `device.import`）：
+
+- `POST /api/v1/admin/device-imports`：请求 `{import_id: UUID, devices: [...]}`，devices 字段契约见 gateway 建档接口。保存请求后同步 gateway；响应 data 为 `{import_id,status,last_error}`。只有 status=completed 代表完成，failed 必须展示 last_error。
+- `GET /api/v1/admin/device-imports`：当前操作员最近 50 条导入记录。
+- `POST /api/v1/admin/device-imports/{id}/retry`：仅允许原操作员重试其记录，重新校验功能权限；完成记录直接返回完成状态，不重复写审计。
+
+相同 import_id 不得用于不同请求。站点须存在且未删除；已有不同设备配置报错。请求持久化与同步分开，gateway 成功但 admin 未提交时，可按原始请求幂等重试。已有环境需依次应用 `admin_db/0002_device_import.sql` 与 `0003_device_import_retry.sql`。
+
+admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故障按 10 秒起始、最长 300 秒的退避重试，总尝试数达到 8 后停止自动重试；人工可继续重试。参数、状态冲突和权限错误不自动重试。每次自动尝试重新检查原操作员权限，账号停用或权限撤销后不执行设备写入。失败写入回滚到事务保存点，保留任务行锁后记录失败，避免并发失败覆盖完成状态。数据范围权限仍待完成，当前不可宣称完整角色流程已验收。
+
 | 方法 | 路径 | 鉴权 | 说明 |
 | --- | --- | --- | --- |
 | GET | `/api/v1/admin/stations` | 角色 | 站点列表(分页 + 区域筛选) |
@@ -784,12 +794,12 @@
 
 **业务逻辑**:
 1. 校验 JWT + 角色权限
-2. **HTTP 调 gateway 服务**的订单查询内部接口(具体路径见 `docs/api/gateway.md`),admin 透传查询参数
-3. gateway 内部查 `charge_order`(沿用需求 § 8 订单模型)
-4. admin 仅做参数透传 + 响应包装
+2. **HTTP 调 user 服务**的 `GET /api/v1/internal/orders`；订单生命周期归属 user_db，与 user API 的 P1-7 修正一致
+3. user 内部查 `charge_order`；admin 将站点筛选转换为设备范围，并补充站点名称
+4. 校验失败、下游失败必须返回错误，不得返回虚假的空列表
 
 **错误码**:
-- `5003`: gateway 无响应
+- `5003`: 下游服务不可用
 - `5001`: 内部错误
 
 ### `GET /api/v1/admin/orders/{order_id}`
@@ -797,8 +807,10 @@
 **鉴权**:[角色] `order.read`
 
 **业务逻辑**:
-1. HTTP 调 gateway 服务的订单详情内部接口(具体路径见 `docs/api/gateway.md`)
-2. 返回订单完整详情(含价费分离 + 分账明细 + 时间线)
+1. HTTP 调 user 的 `GET /api/v1/internal/orders/{order_id}`，读取生命周期、支付与退款摘要
+2. HTTP 调 billing 的 `GET /api/v1/internal/orders/{order_id}/billing-summary`，读取费用与分账快照；存在计费结果时，以 billing 金额覆盖生命周期中的费用快照
+3. `billing.settlements[]` 包含分账单号、模式、状态、分账池及各参与方比例、金额、支付状态。尚未计费时 calculation_no 为 null，settlements 为空；下游失败返回 5003，不能伪装为未计费
+4. 目标还包括持久化事件时间线，当前实现状态见 `../implementation-status.md`
 
 ### `GET /api/v1/admin/orders/{order_id}/timeline`
 
@@ -821,7 +833,7 @@
 }
 ```
 
-**业务逻辑**:HTTP 调 gateway 服务拿状态机时间线(从 `charge_order` + `charge_event_log` 拼)。
+**业务逻辑**:HTTP 调 user 的 `GET /api/v1/internal/orders/{order_id}/timeline`，确认订单存在且未软删除，然后读取 user_db 的 `charge_event_log`。按事件发生时间、记录 ID 稳定升序返回；每条另含唯一 `event_id`。当前写入点为创建、取消、支付确认、设备启动结果，并与订单状态变更同事务提交。旧订单没有事件时返回空数组，不根据当前状态伪造历史。充电结束、分账及退款事件接入仍待完成。
 
 ---
 
@@ -1449,3 +1461,9 @@
 - **跨服务一致性**:admin 通过 HTTP 调 user / gateway / billing / worker 的内部接口命名,必须与对应服务 API 文档一致;新增 admin 端点若依赖其他服务接口,必须先在对方服务的 API 文档中落地路径
 - **审计一致性**:任何 admin 写端点必须在 `services/admin/src/audit_log.rs` 的 `audit_action!()` 宏中注册,否则 CI 拒绝合并
 - **导出任务**:统一由 worker 服务承接,详见 `docs/api/worker.md` § 零(本期新增 3 个内部 HTTP 端点)
+
+### 当前站点操作权限（2026-09-26）
+
+站点 GET 列表/详情需 station.read，POST 需 station.create，PUT 需 station.update，DELETE 需 station.delete。接口查询当前数据库授权，返回 403 不触发登录失效。列表 data.permissions 包含当前角色的站点权限码，供按钮启用使用；客户端该列表不构成授权依据。
+
+站点列表 GET /api/v1/admin/stations 现支持 page（默认 1）、page_size（默认 20，1..100）、keyword（最长 128 字符，匹配编码/名称/地址）、status（active/disabled/construction）。响应 data 包含 items、total、page、page_size、permissions。关键词中的 % 和 _ 按字面匹配。

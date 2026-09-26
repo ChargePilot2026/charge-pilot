@@ -1,0 +1,14 @@
+<view class="container">
+  <button wx:if="{{needsLogin}}" bindtap="login">登录查看订单</button>
+  <picker wx:else range="{{statusNames}}" value="{{statusIndex}}" bindchange="onStatus"><view class="card">订单状态：{{statusNames[statusIndex]}} ▾</view></picker>
+  <view wx:for="{{items}}" wx:key="order_id" class="card" data-id="{{item.order_id}}" bindtap="openDetail">
+    <view>{{item.order_no}}</view><view class="tag tag-blue">{{item.statusLabel}}</view>
+    <view>{{item.station_name || item.device_id}} · 端口 {{item.port_no}}</view>
+    <view>总费用 {{item.totalText}}</view><view class="text-secondary">{{item.startedText}}</view>
+  </view>
+  <view wx:if="{{error}}" class="card"><text>{{error}}</text><button bindtap="retry" disabled="{{loading}}">重试</button></view>
+  <view wx:elif="{{!loading &amp;&amp; !needsLogin &amp;&amp; !items.length}}" class="card">暂无符合条件的订单</view>
+  <view wx:if="{{loading}}" class="card">正在加载…</view>
+  <button wx:elif="{{items.length &lt; total}}" bindtap="onReachBottom">加载更多</button>
+  <view wx:elif="{{items.length}}" class="text-secondary">共 {{total}} 笔，已全部加载</view>
+</view>

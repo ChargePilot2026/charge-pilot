@@ -98,11 +98,14 @@ pub async fn wechat_callback(
     .bind(pay_id)
     .execute(&mut *tx).await?;
 
-    sqlx::query(
+    let changed = sqlx::query(
         "UPDATE charge_order SET status='paid' WHERE id=? AND status='pending_payment'"
     )
     .bind(charge_id)
     .execute(&mut *tx).await?;
+    if changed.rows_affected() > 0 {
+        crate::order_events::record(&mut tx, charge_id, "paid", "payment", "支付确认").await?;
+    }
 
     // 3) 写 event_outbox:charge_started_stream
     let event_id = IdGen::new("EVT").next();
@@ -153,7 +156,16 @@ pub async fn start_result(
     .bind(&order_id)
     .fetch_optional(&mut *tx)
     .await?;
-    let (cid, user_id, _status, device_id, port_no) = order.ok_or_else(|| AppError::NotFound("order".into()))?;
+    let (cid, user_id, status, device_id, port_no) = order.ok_or_else(|| AppError::NotFound("order".into()))?;
+    if req.order_no != order_id {
+        return Err(AppError::BadRequest("订单号不一致".into()));
+    }
+    if (req.success && status == "charging") || (!req.success && status == "failed") {
+        return Ok(Json(common_error::ApiEnvelope::ok(json!({"ok": true}), common_error::current_request_id())));
+    }
+    if status != "paid" {
+        return Err(AppError::Conflict(format!("order in status {status}, cannot apply start result")));
+    }
 
     if req.success {
         sqlx::query(
@@ -193,6 +205,9 @@ pub async fn start_result(
         .execute(&mut *tx).await?;
     }
 
+    crate::order_events::record(&mut tx, cid,
+        if req.success { "device_ack" } else { "start_failed" }, "gateway",
+        if req.success { "设备确认启动" } else { "设备启动失败" }).await?;
     tx.commit().await?;
     Ok(Json(common_error::ApiEnvelope::ok(json!({"ok": true}), common_error::current_request_id())))
 }

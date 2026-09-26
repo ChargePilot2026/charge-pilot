@@ -11,6 +11,14 @@
 
 ## 通用约定
 
+### 后台订单费用与分账快照
+
+`GET /api/v1/internal/orders/{order_id}/billing-summary`：order_id 为 user 充电订单的数值 ID。当前运行环境使用 `X-Service-Token` 内部鉴权。
+
+在同一数据库事务中读取该订单最新计费记录，以及关联的分账单和参与方金额。响应遵循统一包装，data 包含 `calculation_no`、`electric_cents`、`service_cents`、`total_cents` 和 `settlements[]`。每个分账单包含 `settlement_id`、`settlement_no`、`mode`、`status`、`total_cents`、`split_pool_cents`、`parties[]`；参与方包含 ID、编码、名称、基点比例、分金额及状态。
+
+未计费返回四个 null 字段及空 settlements。订单存在性由调用方先查询 user 确认。数据库/解码错误不得转为空数据。该接口读取持久化结果，不触发计费或分账。
+
 ### 请求 / 响应格式
 
 - 内部 HTTP 全部 JSON

@@ -1,4 +1,4 @@
-import { Alert, Button, DatePicker, Descriptions, Drawer, Form, Input, InputNumber, Select, Space, Spin, Table, Tag, Typography } from 'antd';
+import { Alert, Button, DatePicker, Descriptions, Drawer, Form, Input, InputNumber, Select, Space, Spin, Table, Tag, Timeline, Typography } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
 import { useEffect, useState } from 'react';
 import dayjs, { Dayjs } from 'dayjs';
@@ -25,13 +25,19 @@ interface Order {
   refund_status: string;
 }
 interface OrderPage { items: Order[]; total: number; page: number; page_size: number }
+interface OrderTimeline { order_id: number; timeline: { event_id: string; at: string; event: string; actor: string; detail: string }[] }
 interface OrderDetail extends Order {
+  billing: { calculation_no: string | null; settlements: Settlement[] } | null;
   payment_order_id: number | null;
   payment_order_no: string | null;
   payment_status: string | null;
   paid_cents: number | null;
   refunded_cents: number | null;
   failure_reason: string | null;
+}
+interface Settlement {
+  settlement_id: number; settlement_no: string; mode: string; status: string; split_pool_cents: number;
+  parties: { party_id: number; party_code: string; party_name: string; ratio_bp: number; amount_cents: number; status: string }[];
 }
 interface Filters {
   order_no?: string;
@@ -71,6 +77,7 @@ export default function OrdersPage() {
   const [detailError, setDetailError] = useState<string | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailReload, setDetailReload] = useState(0);
+  const [timeline, setTimeline] = useState<OrderTimeline | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -93,9 +100,11 @@ export default function OrdersPage() {
   useEffect(() => {
     if (selected == null) return;
     const controller = new AbortController();
-    setDetail(null); setDetailError(null); setDetailLoading(true);
-    http.get<ApiEnvelope<OrderDetail>>(`/api/v1/admin/orders/${selected}`, { signal: controller.signal })
-      .then(response => { if (!controller.signal.aborted) setDetail(response.data.data); })
+    setDetail(null); setTimeline(null); setDetailError(null); setDetailLoading(true);
+    Promise.all([
+      http.get<ApiEnvelope<OrderDetail>>(`/api/v1/admin/orders/${selected}`, { signal: controller.signal }),
+      http.get<ApiEnvelope<OrderTimeline>>(`/api/v1/admin/orders/${selected}/timeline`, { signal: controller.signal }),
+    ]).then(([response, events]) => { if (!controller.signal.aborted) { setDetail(response.data.data); setTimeline(events.data.data); } })
       .catch(error => { if (!controller.signal.aborted) setDetailError(errorMessage(error)); })
       .finally(() => { if (!controller.signal.aborted) setDetailLoading(false); });
     return () => controller.abort();
@@ -165,6 +174,23 @@ export default function OrdersPage() {
           { key: 'refunded', label: '已退金额', children: detail.refunded_cents == null ? '—' : money(detail.refunded_cents) },
         ]} />
         {detail.failure_reason && <Alert type="warning" message="异常原因" description={detail.failure_reason} showIcon />}
+        <Typography.Title level={5}>分账明细</Typography.Title>
+        {!detail.billing?.settlements.length && <Typography.Text type="secondary">暂无分账记录</Typography.Text>}
+        {detail.billing?.settlements.map(settlement => <div key={settlement.settlement_id}>
+          <Typography.Paragraph>{settlement.settlement_no} · {settlement.mode === 'mode_a' ? '全额分账' : '服务费分账'} · 分账池 {money(settlement.split_pool_cents)} · {settlement.status}</Typography.Paragraph>
+          <Table rowKey="party_code" size="small" pagination={false} dataSource={settlement.parties} columns={[
+            { title: '参与方', key: 'party', render: (_, party) => party.party_name || party.party_code },
+            { title: '比例', dataIndex: 'ratio_bp', render: value => `${(value / 100).toFixed(2)}%` },
+            { title: '金额', dataIndex: 'amount_cents', render: money },
+            { title: '状态', dataIndex: 'status', render: value => ({ pending: '待支付', paid: '已支付', failed: '失败' }[value as string] || value) },
+          ]} />
+        </div>)}
+        <Typography.Title level={5}>事件时间线</Typography.Title>
+        {!timeline?.timeline.length && <Typography.Text type="secondary">暂无已记录的事件</Typography.Text>}
+        <Timeline items={timeline?.timeline.map(event => ({
+          key: event.event_id,
+          children: <><div>{time(event.at)} · {event.detail}</div><Typography.Text type="secondary">{event.actor} · {event.event}</Typography.Text></>,
+        }))} />
       </Space>}
     </Drawer>
   </div>;

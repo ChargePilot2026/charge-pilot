@@ -667,6 +667,8 @@ Wechatpay-Nonce: ...
 
 ### `GET /api/v1/user/charge/history`
 
+> 实现进度：当前已返回 total/page/page_size/items，并支持 status（finished 映射 completed）；page 必须大于 0，page_size 为 1–100。JWT 用户归属及软删除在 SQL 中过滤。当前返回状态使用数据库 completed；站点名称关联仍待实现，客户端暂展示设备编号。
+
 **鉴权**:[JWT]
 **触发场景**:小程序"我的订单"页加载
 **业务目标**:分页返回当前用户的充电历史(默认按时间倒序)
@@ -717,6 +719,8 @@ Wechatpay-Nonce: ...
 ---
 
 ### `GET /api/v1/user/charge/{order_id}`
+
+> 实现进度：已按 JWT 用户归属过滤并支持数值 ID/历史订单号；不存在、其他用户和软删除订单均返回 404。详情包含价费分离、支付、退款摘要，费用优先取 billing 结果。终端用户不会收到分账参与方明细。下方完整目标中站点关联、平均功率及估算标记尚未全部实现。
 
 **鉴权**:[JWT]
 **触发场景**:订单详情页
@@ -1592,3 +1596,15 @@ Wechatpay-Nonce: ...
 - 修改本文件需在 PR 标题写 `api(user): <简短描述>`,并在 PR 描述中说明影响哪些端点
 - 任何新增 / 删除 / 修改端点必须同步更新 `services/user/src/openapi.rs` 与本文件
 - CI 检查:OpenAPI 规范与本文件端点清单必须一致(脚本 `tools/check-api-consistency.ts`)
+
+### 当前扫码读取实现（2026-09-26）
+
+`/user/scan/resolve` 当前返回 `data.kind=port|device`；port 分支在 data 中直接包含 `port_id/device_id/port_no/port_code/status`，device 分支包含 `device_id/status/ports`。每个端口的 `port_id` 为印刷端口码字符串（不是数据库数字 ID），可原样传入 `/user/scan/port`，其 data 为上述端口对象。请求均只读，未创建订单或预占端口。无效码返回 400，不存在或已停用设备返回 404。设计中的站点信息、价格、在线状态和锁状态尚未合入这两个响应。
+
+### 当前用户会话契约（2026-09-26）
+
+登录 data 在 token/user_id/openid/is_new_user 基础上新增 refresh_token 与 jwt_expires_in。刷新请求使用 POST /api/v1/public/auth/refresh，Authorization: Bearer <refresh_token>，无请求体；返回 data.token、data.refresh_token、data.jwt_expires_in，旧刷新令牌立刻失效。POST /api/v1/public/auth/logout 使用同样的刷新令牌头撤销当前刷新令牌，返回 data.logged_out=true。访问 JWT 不可用于刷新。当前退出撤销该登录会话的全部访问 JWT；即使使用已轮换的旧刷新令牌退出，也会撤销该会话。用户访问 JWT 固定 900 秒并带 sid，所有用户路由实时检查会话和账户状态。无 sid 的旧访问令牌需要重新登录。
+
+### 当前钱包读取契约（2026-09-26）
+
+GET /user/wallet/balance 的 data 包含 available_cents、frozen_cents、status，并保留 balance_cents=available_cents。GET /user/wallet/txns 支持 page/page_size/type，返回 page/page_size/total/items；每条包含 txn_no、txn_type、direction、带正负号的 amount_cents、balance_after_cents、remark、created_at。page 从 1 起，page_size 为 1..100。类型可选 recharge/consume/refund/freeze/unfreeze/admin_adjust/gift；不接受客户端指定 user_id。当前数据库 wallet_txn 无软删除字段，流水查询保留全部本人资金历史。

@@ -2,6 +2,7 @@ import { Table, Typography, Tag, Space, Button } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
 import { useEffect, useState } from 'react';
 import { apiGet } from '../api/client';
+import DeviceImport from './DeviceImport';
 
 const { Title } = Typography;
 
@@ -39,6 +40,7 @@ export default function DevicesPage() {
       <Space style={{ marginBottom: 12 }}>
         <Title level={3} style={{ margin: 0 }}>设备</Title>
         <Button icon={<ReloadOutlined />} onClick={load}>刷新</Button>
+        <DeviceImport onComplete={load} />
       </Space>
       <Table
         rowKey="id"

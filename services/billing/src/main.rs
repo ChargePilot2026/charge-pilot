@@ -4,6 +4,7 @@
 //! 端点: 9 个内部 API + Stream 消费 charge_ended_stream.billing-cg
 
 mod api;
+mod order_reads;
 mod api_types;
 mod engine;
 mod split;
@@ -72,6 +73,7 @@ pub fn build_router(state: AppState) -> Router {
     let svc_token = state.service_token.clone();
 
     let internal = Router::new()
+        .route(api_contracts::paths::BILLING_ORDER_SUMMARY, get(order_reads::summary))
         .route(crate::api_types::paths::QUOTE, post(api::quote))
         .route(crate::api_types::paths::CALCULATE, post(api::calculate))
         .route(crate::api_types::paths::FEE_BREAKDOWN, get(api::fee_breakdown))

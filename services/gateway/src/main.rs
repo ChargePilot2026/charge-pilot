@@ -6,6 +6,9 @@
 //!   - 8083: 内部 HTTP(经 device-net/docker network)
 
 mod api;
+mod scan;
+mod provision;
+mod registration;
 mod clients;
 mod protocol;
 mod device;
@@ -101,6 +104,7 @@ pub fn build_router(state: AppState) -> Router {
     let svc_token = state.service_token.clone();
 
     let internal_routes = Router::new()
+        .route(api_contracts::paths::GATEWAY_DEVICE_PROVISION, post(provision::provision))
         // 扫码解析
         .route("/api/v1/internal/scan/resolve", post(api::scan_resolve))
         .route("/api/v1/internal/scan/port", post(api::scan_port))
@@ -116,7 +120,7 @@ pub fn build_router(state: AppState) -> Router {
         // 充电控制
         .route("/api/v1/internal/charge-orders/stop", post(api::charge_stop))
         // 设备注册 / 查询
-        .route("/api/v1/internal/device/register", post(api::device_register))
+        .route(api_contracts::paths::GW_DEVICE_REGISTER, post(registration::register))
         .route("/api/v1/internal/devices/:id/backfill", post(api::device_backfill))
         .route("/api/v1/internal/devices/:id/command", post(api::device_command))
         .layer(ax_middleware::from_fn_with_state(svc_token.clone(), common_auth::refs::internal_token_mw));

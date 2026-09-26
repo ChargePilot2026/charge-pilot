@@ -4,12 +4,17 @@
 //! 主入口在 `bin/user.rs`。
 
 pub mod api;
+pub mod checkout;
+pub mod login;
+pub mod session;
+pub mod profile;
 pub mod api_envelope;
 pub mod api_types;
 pub mod clients;
 pub mod payment;
 pub mod refund;
 pub mod wallet;
+pub mod wallet_reads;
 pub mod coupon;
 pub mod invoice;
 pub mod station;
@@ -17,6 +22,7 @@ pub mod stream_consumer;
 pub mod wechat;
 pub mod repo;
 pub mod orders;
+pub mod order_events;
 
 use common_auth::JwtCodec;
 use common_config::AppConfig;

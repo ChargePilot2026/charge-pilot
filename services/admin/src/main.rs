@@ -68,6 +68,7 @@ async fn main() -> AppResult<()> {
     };
 
     stream_consumer::spawn_all(state.clone()).await?;
+    api::device_import::spawn_recovery(state.clone());
 
     let app = build_router(state);
     let addr: SocketAddr = cfg.http_bind.parse().expect("bind addr");
@@ -89,8 +90,8 @@ pub fn build_router(state: AppState) -> Router {
     // ===== 内部路由(其他服务调用)=====
     let internal_routes = Router::new()
         .route(api_types::paths::INTERNAL_ANNOUNCEMENTS_ACTIVE, get(api::internal::announcements_active))
-        .route(api_types::paths::INTERNAL_STATIONS_NEARBY, get(api::internal::stations_nearby))
-        .route(api_types::paths::INTERNAL_STATIONS_DETAIL, get(api::internal::stations_detail))
+        .route(api_types::paths::INTERNAL_STATIONS_NEARBY, get(api::station_reads::nearby))
+        .route(api_types::paths::INTERNAL_STATIONS_DETAIL, get(api::station_reads::detail))
         .route(api_types::paths::INTERNAL_PRICING_RULES_GET, get(api::internal::pricing_rule_get))
         .route(api_types::paths::INTERNAL_SPLIT_TEMPLATES_GET, get(api::internal::split_template_get))
         .route(api_types::paths::INTERNAL_EXPORT_TASK_GET, get(api::internal::export_task_get))
@@ -113,7 +114,10 @@ pub fn build_router(state: AppState) -> Router {
         .route(api_types::paths::ADMIN_DEVICE_DETAIL, get(api::devices::get))
         .route(api_types::paths::ADMIN_DEVICE_ORDERS, get(api::devices::orders))
         .route(api_types::paths::ADMIN_ORDERS, get(api::orders::list))
+        .route(api_types::paths::ADMIN_DEVICE_IMPORTS, get(api::device_import::list).post(api::device_import::create))
+        .route(api_types::paths::ADMIN_DEVICE_IMPORT_RETRY, post(api::device_import::retry))
         .route(api_types::paths::ADMIN_ORDER_DETAIL, get(api::orders::get))
+        .route(api_types::paths::ADMIN_ORDER_TIMELINE, get(api::orders::timeline))
         .route(api_types::paths::ADMIN_BILLING_SETTLEMENTS, get(billing::settlements))
         .route(api_types::paths::ADMIN_BILLING_WITHDRAW, get(billing::withdraw_list).post(billing::withdraw_create))
         .route(api_types::paths::ADMIN_BILLING_WITHDRAW_REVIEW, post(billing::withdraw_review))

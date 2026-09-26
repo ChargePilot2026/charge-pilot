@@ -15,6 +15,16 @@
 
 ## 通用约定
 
+### 运营导入的设备建档接口
+
+`POST /api/v1/internal/devices/provision` 用于 admin 导入设备时建立 gateway 设备和端口记录，区别于物理设备连接时的 `/device/register`。当前使用 `X-Service-Token`；请求为 `{ "devices": [...] }`，每批 1–100 台。
+
+每台包含 `device_id`（8–32 位 ASCII 字母、数字、横线或下划线）、`vendor_id`、`station_id`（正整数）、`port_count`（1–255）、可选 `model`（1–128 字符）。同批 ID 不区分大小写去重，厂商必须启用。站点存在性由 admin 在其自有数据库校验，gateway 不跨 schema 查询。
+
+设备、端口及幂等记录在一个事务中提交；任一行失败全批回滚。相同设备与参数重试返回同一组端口 ID；配置不同、已停用、软删除或已有端口不完整返回 409。端口码格式为 `device_id:port_no`。响应 data.items[] 含 `device_id`、`created`、`ports[]`（port_id、port_no、port_code）。不能通过重新导入覆盖运行中的设备配置。
+
+已有环境先应用 `gateway_db/0002_device_provision.sql`。该接口是后台导入的基础能力；文件上传、预览、错误行报告、admin 元数据同步与审计的实现状态见 `../implementation-status.md`。
+
 ### 设备 ID 格式(§ 6.2)
 
 - 长度 8-32 字符
@@ -195,6 +205,8 @@
 ## 三、设备接入类(关键端点展开)
 
 ### `POST /api/v1/internal/device/register`
+
+> 当前实现进度：已修复仅允许已建档设备注册、事务关闭旧会话与新建会话，禁止注册改写运营配置。当前请求仍是 `device_id/vendor_id/port_count`，可选 `station_id/model/firmware_version/mac_addr/connect_type/client_ip`，connect_type 默认 tcp；响应为 registered、session_id、session_uuid、heartbeat_interval_sec、server_time_ms。下方 vendor_code/protocol_version、session_token 与配置协商为目标契约，尚未实现，不可按完整生产协议宣称可用。
 
 **鉴权**:服务间共享密钥
 **触发场景**:设备 TCP 首次建立连接 / 设备因故障重启后重新注册

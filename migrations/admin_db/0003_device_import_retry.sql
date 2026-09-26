@@ -1,0 +1,5 @@
+ALTER TABLE device_import
+  ADD COLUMN attempts INT UNSIGNED NOT NULL DEFAULT 0,
+  ADD COLUMN retryable BOOLEAN NOT NULL DEFAULT TRUE,
+  ADD COLUMN next_attempt_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  ADD KEY idx_retry (retryable, next_attempt_at);

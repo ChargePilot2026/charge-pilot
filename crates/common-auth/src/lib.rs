@@ -23,6 +23,8 @@ use std::sync::Arc;
 pub struct UserClaims {
     pub sub: String,         // openid
     pub user_id: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sid: Option<String>,
     #[serde(default)]
     pub role: Option<String>,
     pub exp: i64,
@@ -61,13 +63,18 @@ impl JwtCodec {
     }
 
     pub fn issue_user(&self, openid: &str, user_id: u64) -> AppResult<String> {
+        self.issue_user_with_session(openid, user_id, None, self.ttl_secs)
+    }
+
+    pub fn issue_user_with_session(&self, openid: &str, user_id: u64, sid: Option<String>, ttl_secs: u64) -> AppResult<String> {
         let now = chrono::Utc::now().timestamp();
         let claims = UserClaims {
             sub: openid.to_string(),
             user_id,
+            sid,
             role: None,
             iat: now,
-            exp: now + self.ttl_secs as i64,
+            exp: now + ttl_secs as i64,
             iss: self.iss.clone(),
         };
         let token = encode(&Header::new(Algorithm::HS256), &claims, &self.enc_key)

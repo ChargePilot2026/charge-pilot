@@ -6,7 +6,9 @@ use axum::{
     Json,
 };
 use chrono::{DateTime, Duration, NaiveDateTime, SecondsFormat, Utc};
+use common_auth::UserClaims;
 use common_error::{ApiEnvelope, AppError, AppResult};
+use serde::{Deserialize, Serialize};
 use sqlx::{mysql::MySqlRow, MySql, QueryBuilder, Row};
 
 const SELECT_ORDER: &str = "SELECT c.id, c.order_no, c.user_id, c.device_id, c.port_no, c.status,
@@ -179,13 +181,27 @@ pub async fn list(
     State(state): State<AppState>,
     Query(query): Query<OrderQuery>,
 ) -> AppResult<Json<ApiEnvelope<OrderPage>>> {
+    list_owned(state, query, None).await
+}
+
+async fn list_owned(
+    state: AppState,
+    query: OrderQuery,
+    owner: Option<u64>,
+) -> AppResult<Json<ApiEnvelope<OrderPage>>> {
     let filters = validate(&query)?;
     let mut tx = state.db.pool().begin().await?;
     let mut count = QueryBuilder::new("SELECT COUNT(*) FROM charge_order c");
     conditions(&mut count, &query, &filters);
+    if let Some(owner) = owner {
+        count.push(" AND c.user_id = ").push_bind(owner);
+    }
     let total: i64 = count.build_query_scalar().fetch_one(&mut *tx).await?;
     let mut select = QueryBuilder::new(SELECT_ORDER);
     conditions(&mut select, &query, &filters);
+    if let Some(owner) = owner {
+        select.push(" AND c.user_id = ").push_bind(owner);
+    }
     select
         .push(" ORDER BY c.created_at DESC, c.id DESC LIMIT ")
         .push_bind(query.page_size)
@@ -209,6 +225,14 @@ pub async fn detail(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> AppResult<Json<ApiEnvelope<OrderDetail>>> {
+    read_detail(state, id, None).await
+}
+
+async fn read_detail(
+    state: AppState,
+    id: String,
+    owner: Option<u64>,
+) -> AppResult<Json<ApiEnvelope<OrderDetail>>> {
     if id.is_empty() || id.len() > 64 {
         return Err(AppError::BadRequest("无效的订单标识".into()));
     }
@@ -218,6 +242,9 @@ pub async fn detail(
         select.push("c.id = ").push_bind(id);
     } else {
         select.push("c.order_no = ").push_bind(id);
+    }
+    if let Some(owner) = owner {
+        select.push(" AND c.user_id = ").push_bind(owner);
     }
     let row = select
         .build()
@@ -232,9 +259,85 @@ pub async fn detail(
         paid_cents: row.try_get("paid_cents")?,
         refunded_cents: row.try_get("refunded_cents")?,
         failure_reason: row.try_get("failure_reason")?,
+        billing: None,
     };
     Ok(Json(ApiEnvelope::ok(
         detail,
+        common_error::current_request_id(),
+    )))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UserHistoryQuery {
+    pub page: Option<u32>,
+    pub page_size: Option<u32>,
+    pub status: Option<String>,
+}
+
+pub async fn user_history(
+    State(state): State<AppState>,
+    claims: UserClaims,
+    Query(query): Query<UserHistoryQuery>,
+) -> AppResult<Json<ApiEnvelope<OrderPage>>> {
+    let query = OrderQuery {
+        page: query.page.unwrap_or(1),
+        page_size: query.page_size.unwrap_or(20),
+        status: query.status,
+        station_id: None,
+        started_from: Some("1970-01-01T00:00:00Z".into()),
+        started_to: None,
+        order_no: None,
+        device_id: None,
+        device_ids: None,
+    };
+    list_owned(state, query, Some(claims.user_id)).await
+}
+
+#[derive(Serialize)]
+pub struct UserOrderDetail {
+    #[serde(flatten)]
+    pub order: OrderSummary,
+    pub paid_fee_cents: Option<i64>,
+    pub refunded_cents: Option<i64>,
+    pub payment_order_no: Option<String>,
+    pub failure_reason: Option<String>,
+}
+
+pub async fn user_detail(
+    State(state): State<AppState>,
+    claims: UserClaims,
+    Path(id): Path<String>,
+) -> AppResult<Json<ApiEnvelope<UserOrderDetail>>> {
+    // Ownership is enforced in SQL before any downstream financial lookup.
+    let Json(envelope) = read_detail(state.clone(), id, Some(claims.user_id)).await?;
+    let detail = envelope
+        .data
+        .ok_or_else(|| AppError::Internal("missing order detail".into()))?;
+    let mut order = detail.order;
+    let billing: api_contracts::orders::OrderBilling =
+        common_http::internal::ApiClient::new(state.http.clone(), state.service_token.clone())
+            .get(
+                state.cfg.service_urls.billing.as_deref(),
+                &api_contracts::paths::BILLING_ORDER_SUMMARY
+                    .replace(":order_id", &order.order_id.to_string()),
+                &(),
+            )
+            .await?;
+    if billing.calculation_no.is_some() {
+        order.electric_fee_cents = billing.electric_cents;
+        order.service_fee_cents = billing.service_cents;
+        order.total_fee_cents = billing.total_cents;
+    }
+    // Settlement participants belong to operators, not the end user's response.
+    Ok(Json(ApiEnvelope::ok(
+        UserOrderDetail {
+            order,
+            paid_fee_cents: detail.paid_cents,
+            refunded_cents: detail.refunded_cents,
+            payment_order_no: detail.payment_order_no,
+            failure_reason: detail.failure_reason,
+        },
         common_error::current_request_id(),
     )))
 }

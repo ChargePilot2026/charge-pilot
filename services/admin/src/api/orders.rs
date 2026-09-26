@@ -31,6 +31,26 @@ async fn authorize(state: &AppState, claims: &AdminClaims) -> AppResult<()> {
     Ok(())
 }
 
+pub async fn timeline(
+    State(state): State<AppState>,
+    claims: AdminClaims,
+    Path(id): Path<u64>,
+) -> AppResult<Json<ApiEnvelope<api_contracts::orders::OrderTimeline>>> {
+    authorize(&state, &claims).await?;
+    let client = ApiClient::new(state.http.clone(), state.service_token.clone());
+    let result = client
+        .get(
+            state.cfg.service_urls.user.as_deref(),
+            &paths::USER_INTERNAL_ORDER_TIMELINE.replace(":order_id", &id.to_string()),
+            &(),
+        )
+        .await?;
+    Ok(Json(ApiEnvelope::ok(
+        result,
+        common_error::current_request_id(),
+    )))
+}
+
 async fn stations(state: &AppState, items: &mut [OrderSummary]) -> AppResult<()> {
     if items.is_empty() {
         return Ok(());
@@ -104,6 +124,19 @@ pub async fn get(
         .get(state.cfg.service_urls.user.as_deref(), &path, &())
         .await?;
     stations(&state, std::slice::from_mut(&mut detail.order)).await?;
+    let billing = client
+        .get::<api_contracts::orders::OrderBilling, _>(
+            state.cfg.service_urls.billing.as_deref(),
+            &paths::BILLING_ORDER_SUMMARY.replace(":order_id", &id.to_string()),
+            &(),
+        )
+        .await?;
+    if billing.calculation_no.is_some() {
+        detail.order.electric_fee_cents = billing.electric_cents;
+        detail.order.service_fee_cents = billing.service_cents;
+        detail.order.total_fee_cents = billing.total_cents;
+    }
+    detail.billing = Some(billing);
     Ok(Json(ApiEnvelope::ok(
         detail,
         common_error::current_request_id(),

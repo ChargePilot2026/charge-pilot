@@ -1,4 +1,4 @@
-import { Outlet, useNavigate } from 'react-router-dom';
+import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { Layout, Menu, Avatar, Dropdown, Space, Typography } from 'antd';
 import {
   DashboardOutlined, ShoppingOutlined, DesktopOutlined, EnvironmentOutlined,
@@ -29,6 +29,7 @@ const items = [
 export default function MainLayout() {
   const [collapsed, setCollapsed] = useState(false);
   const navigate = useNavigate();
+  const { pathname } = useLocation();
 
   const onLogout = () => {
     localStorage.removeItem('cp_token');
@@ -53,7 +54,7 @@ export default function MainLayout() {
         <Menu
           theme="dark"
           mode="inline"
-          defaultSelectedKeys={['/']}
+          selectedKeys={[items.find(item => item.key !== '/' && (pathname === item.key || pathname.startsWith(item.key + '/')))?.key || '/']}
           items={items}
           onClick={({ key }) => navigate(key)}
         />

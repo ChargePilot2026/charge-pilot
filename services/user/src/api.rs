@@ -38,6 +38,8 @@ pub struct LoginResp {
     pub user_id: u64,
     pub openid: String,
     pub is_new_user: bool,
+    pub refresh_token: String,
+    pub jwt_expires_in: u64,
 }
 
 pub async fn login(
@@ -49,47 +51,16 @@ pub async fn login(
     let sess = common_wechat::code2session(&st.http, wechat, &req.code).await?;
     let openid = sess.openid.clone();
 
-    let user_id: u64 = sqlx::query_scalar(
-        r#"
-        INSERT INTO `user` (openid, last_login_at)
-        VALUES (?, NOW(3))
-        ON DUPLICATE KEY UPDATE last_login_at = NOW(3), deleted_at = NULL,
-          id = LAST_INSERT_ID(id)
-        "#,
-    )
-    .bind(&openid)
-    .fetch_one(st.db.pool())
-    .await?;
-
-    let token = st.jwt.issue_user(&openid, user_id)?;
-    let is_new: bool = sqlx::query_scalar(
-        "SELECT (first_seen_at >= NOW() - INTERVAL 10 SECOND) FROM `user` WHERE id = ?"
-    )
-    .bind(user_id)
-    .fetch_one(st.db.pool())
-    .await
-    .unwrap_or(false);
+    let mut tx = st.db.pool().begin().await?;
+    let (user_id, is_new) = crate::login::resolve_user(&mut tx, &openid, sess.unionid.as_deref()).await?;
+    tx.commit().await?;
+    let sid=uuid::Uuid::new_v4().to_string();
+    let token = st.jwt.issue_user_with_session(&openid, user_id, Some(sid.clone()),900)?;
+    let refresh_token = crate::session::issue(&st.redis_cache, &crate::session::Identity {user_id,openid:openid.clone(),sid}).await?;
 
     Ok(Json(crate::api_envelope::Envelope::ok(LoginResp {
-        token, user_id, openid, is_new_user: is_new,
+        token, user_id, openid, is_new_user: is_new, refresh_token, jwt_expires_in: 900,
     }, common_error::current_request_id())))
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct RefreshReq {
-    pub token: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct RefreshResp { pub token: String }
-
-pub async fn refresh(
-    State(st): State<AppState>,
-    Json(req): Json<RefreshReq>,
-) -> AppResult<Json<crate::api_envelope::Envelope<RefreshResp>>> {
-    let claims = st.jwt.verify_user(&req.token).map_err(|_| AppError::Unauthorized("bad token".into()))?;
-    let new_token = st.jwt.issue_user(&claims.sub, claims.user_id)?;
-    Ok(Json(crate::api_envelope::Envelope::ok(RefreshResp { token: new_token }, common_error::current_request_id())))
 }
 
 // ===================== 扫码 3 端点 (P0-1:扫码 ≠ 启动) =====================
@@ -98,10 +69,10 @@ pub async fn scan_resolve(
     State(st): State<AppState>,
     _claims: UserClaims,
     Json(req): Json<ScanResolveRequest>,
-) -> AppResult<Json<crate::api_envelope::Envelope<serde_json::Value>>> {
-    let cli = crate::clients::ServiceClient::new(st.http.clone(), st.service_token.clone());
-    let resp: serde_json::Value = cli
-        .post_typed(st.cfg.service_urls.gateway.as_deref(), p::GW_SCAN_RESOLVE, &req)
+) -> AppResult<Json<crate::api_envelope::Envelope<api_contracts::ScanResolveResponse>>> {
+    let cli = common_http::internal::ApiClient::new(st.http.clone(), st.service_token.clone());
+    let resp = cli
+        .post(st.cfg.service_urls.gateway.as_deref(), p::GW_SCAN_RESOLVE, &req)
         .await?;
     Ok(Json(crate::api_envelope::Envelope::ok(resp, common_error::current_request_id())))
 }
@@ -110,10 +81,10 @@ pub async fn scan_port(
     State(st): State<AppState>,
     _claims: UserClaims,
     Json(req): Json<ScanPortRequest>,
-) -> AppResult<Json<crate::api_envelope::Envelope<serde_json::Value>>> {
-    let cli = crate::clients::ServiceClient::new(st.http.clone(), st.service_token.clone());
-    let resp: serde_json::Value = cli
-        .post_typed(st.cfg.service_urls.gateway.as_deref(), p::GW_SCAN_PORT, &req)
+) -> AppResult<Json<crate::api_envelope::Envelope<api_contracts::ScanPortDetail>>> {
+    let cli = common_http::internal::ApiClient::new(st.http.clone(), st.service_token.clone());
+    let resp = cli
+        .post(st.cfg.service_urls.gateway.as_deref(), p::GW_SCAN_PORT, &req)
         .await?;
     Ok(Json(crate::api_envelope::Envelope::ok(resp, common_error::current_request_id())))
 }
@@ -128,84 +99,58 @@ pub async fn scan_start(
     let user_id = claims.user_id;
     let openid = claims.sub;
 
-    let id_gen = IdGen::new("ORD");
-    let pay_id_gen = IdGen::new("PAY");
-    let order_no = id_gen.next();
-    let pay_order_no = pay_id_gen.next();
-
-    let lock = PortLock::new(st.redis_cache.clone());
-    let holder = format!("{user_id}:{order_no}");
-    let got = lock.try_hold(&req.port_id, &holder, 300).await?;
-    if !got { return Err(AppError::PortOccupied); }
-
-    let mut tx = st.db.pool().begin().await?;
-    let now_month = chrono::Utc::now().format("%Y-%m-01").to_string();
-
-    let charge_order_id: u64 = sqlx::query_scalar(
-        r#"
-        INSERT INTO charge_order
-          (order_no, user_id, device_id, port_no, port_code, status, created_month, created_at)
-        VALUES (?, ?, ?, ?, ?, 'pending_payment', ?, NOW(3))
-        "#,
-    )
-    .bind(&order_no)
-    .bind(user_id)
-    .bind(&req.port_id)
-    .bind(1u8)
-    .bind(&req.port_id)
-    .bind(&now_month)
-    .fetch_one(&mut *tx)
-    .await?;
-
-    let pay_order_id: u64 = sqlx::query_scalar(
-        r#"
-        INSERT INTO payment_order
-          (order_no, biz_type, biz_id, user_id, pay_method, total_cents, status, created_month, created_at, expired_at)
-        VALUES (?, 'charge', ?, ?, 'wechat', 0, 'initiated', ?, NOW(3), DATE_ADD(NOW(3), INTERVAL 5 MINUTE))
-        "#,
-    )
-    .bind(&pay_order_no)
-    .bind(charge_order_id)
-    .bind(user_id)
-    .bind(&now_month)
-    .fetch_one(&mut *tx)
-    .await?;
-
-    sqlx::query("UPDATE charge_order SET payment_order_id = ? WHERE id = ?")
-        .bind(pay_order_id)
-        .bind(charge_order_id)
-        .execute(&mut *tx)
-        .await?;
-
-    tx.commit().await?;
-
-    // 调 billing 拿报价 — 类型化 DTO,禁止 json!{} 拼请求
-    let cli = crate::clients::ServiceClient::new(st.http.clone(), st.service_token.clone());
-    let quote_req = BillingQuoteRequest {
-        port_id: req.port_id.clone(),
-        user_id,
-        estimated_minutes: 240,
-    };
-    let quote_resp: QuoteResponse = cli
-        .post_typed(
-            st.cfg.service_urls.billing.as_deref(),
-            p::BILLING_QUOTE,
-            &quote_req,
-        )
-        .await?;
-    let total_cents = quote_resp.total_cents;
-
+    let cli = common_http::internal::ApiClient::new(st.http.clone(), st.service_token.clone());
+    let port: api_contracts::ScanPortDetail = cli.post(
+        st.cfg.service_urls.gateway.as_deref(), p::GW_SCAN_PORT,
+        &ScanPortRequest { port_id: req.port_id.clone() },
+    ).await?;
+    if port.status != "idle" { return Err(AppError::PortOccupied); }
+    if req.coupon_grant_id.is_some() {
+        return Err(AppError::BadRequest("优惠券抵扣尚未接入，请暂时不选择优惠券".into()));
+    }
     let wechat = st.cfg.wechat.as_ref()
         .ok_or_else(|| AppError::Config("wechat missing".into()))?;
+    let quote: QuoteResponse = cli.post(
+        st.cfg.service_urls.billing.as_deref(), p::BILLING_QUOTE,
+        &BillingQuoteRequest { port_id: port.port_id.clone(), user_id, estimated_minutes: 240 },
+    ).await?;
+    let total_cents = crate::checkout::validate_quote(&quote)?;
+    let order_no = IdGen::new("ORD").next();
+    let pay_order_no = IdGen::new("PAY").next();
+    let expires_at = chrono::Utc::now() + chrono::Duration::seconds(300);
+    let lock = PortLock::new(st.redis_cache.clone());
+    let holder = format!("{user_id}:{order_no}");
+    if !lock.try_hold(&port.port_id, &holder, 300).await? {
+        return Err(AppError::PortOccupied);
+    }
+    // Before commit, a failed write can safely release this reservation. After
+    // commit (including an uncertain commit result), retain it until recovery/expiry.
+    let prepared = async {
+        let mut tx = st.db.pool().begin().await?;
+        let id = crate::checkout::persist_pending(&mut tx, user_id, &order_no,
+            &pay_order_no, &port, &quote, expires_at).await?;
+        Ok::<_, AppError>((tx, id))
+    }.await;
+    let (tx, charge_order_id) = match prepared {
+        Ok(value) => value,
+        Err(error) => {
+            if let Err(release_error) = lock.release_if_match(&port.port_id, &holder).await {
+                tracing::error!(%release_error, "failed to release unsuccessful checkout reservation");
+            }
+            return Err(error);
+        }
+    };
+    tx.commit().await?;
+
     let jsapi_req = common_wechat::JsapiOrderReq {
         appid: wechat.appid.clone(),
         mchid: wechat.mch_id.clone(),
         description: format!("充电订单 {order_no}"),
         out_trade_no: pay_order_no.clone(),
-        time_expire: (chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339(),
+        time_expire: expires_at.to_rfc3339(),
         attach: Some(serde_json::to_string(&serde_json::json!({"order_id": charge_order_id})).unwrap_or_default()),
         notify_url: wechat.notify_url.clone(),
-        amount: common_wechat::JsapiAmount { total: total_cents as i32, currency: "CNY".into() },
+        amount: common_wechat::JsapiAmount { total: total_cents, currency: "CNY".into() },
         payer: common_wechat::JsapiPayer { openid: openid.clone() },
     };
     let jsapi_resp = common_wechat::jsapi_create_order(&st.http, wechat, &jsapi_req).await?;
@@ -214,7 +159,7 @@ pub async fn scan_start(
     Ok(Json(crate::api_envelope::Envelope::ok(ScanStartResponse {
         order_no,
         payment_order_no: pay_order_no,
-        hold_expires_at: (chrono::Utc::now() + chrono::Duration::seconds(300)).to_rfc3339(),
+        hold_expires_at: expires_at.to_rfc3339(),
         payment_params: serde_json::to_value(&pay_sign).unwrap_or(serde_json::Value::Null),
     }, common_error::current_request_id())))
 }
@@ -227,30 +172,10 @@ pub async fn scan_cancel(
     Json(req): Json<ScanCancelRequest>,
 ) -> AppResult<Json<crate::api_envelope::Envelope<serde_json::Value>>> {
     let mut tx = st.db.pool().begin().await?;
-    let row: Option<(u64, String, Option<u64>, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
-        r#"SELECT id, status, payment_order_id, created_at FROM charge_order
-           WHERE order_no = ? AND user_id = ? AND created_month >= DATE_FORMAT(NOW(), '%Y-%m-01')
-           LIMIT 1 FOR UPDATE"#,
-    )
-    .bind(&req.order_no)
-    .bind(claims.user_id)
-    .fetch_optional(&mut *tx)
-    .await?;
-    let (order_id, status, pay_id, created_at) = row.ok_or_else(|| AppError::NotFound("order".into()))?;
-    if status != "pending_payment" {
-        return Err(AppError::Conflict(format!("order in status {status}, cannot cancel")));
-    }
-    let now = chrono::Utc::now().timestamp();
-    if (now - created_at.timestamp()) > 60 {
-        return Err(AppError::Conflict("outside 60s cancel window".into()));
-    }
-    sqlx::query("UPDATE charge_order SET status='cancelled', ended_at=NOW(3) WHERE id=?")
-        .bind(order_id).execute(&mut *tx).await?;
-    if let Some(p) = pay_id {
-        sqlx::query("UPDATE payment_order SET status='closed', closed_at=NOW(3) WHERE id=?")
-            .bind(p).execute(&mut *tx).await?;
-    }
+    let port_code = crate::checkout::cancel_pending(&mut tx, claims.user_id, &req.order_no).await?;
     tx.commit().await?;
+    let lock = PortLock::new(st.redis_cache.clone());
+    lock.release_if_match(&port_code, &format!("{}:{}", claims.user_id, req.order_no)).await?;
     Ok(Json(crate::api_envelope::Envelope::ok(serde_json::json!({"order_no": req.order_no, "cancelled": true}), common_error::current_request_id())))
 }
 
@@ -482,31 +407,6 @@ pub async fn internal_order_detail(
 }
 
 // ===================== 个人中心 =====================
-
-pub async fn profile_get(
-    State(st): State<AppState>,
-    claims: UserClaims,
-) -> AppResult<Json<crate::api_envelope::Envelope<serde_json::Value>>> {
-    let r = sqlx::query("SELECT id, openid, nickname, avatar_url, gender, status FROM `user` WHERE id = ?")
-        .bind(claims.user_id)
-        .fetch_optional(st.db.pool())
-        .await?;
-    let r = r.ok_or_else(|| AppError::NotFound("user".into()))?;
-    let balance: Option<i64> = sqlx::query_scalar("SELECT balance_cents FROM wallet_account WHERE user_id = ?")
-        .bind(claims.user_id)
-        .fetch_optional(st.db.pool())
-        .await
-        .ok()
-        .flatten();
-    Ok(Json(crate::api_envelope::Envelope::ok(json!({
-        "user_id": r.try_get::<u64, _>("id")?,
-        "openid": r.try_get::<String, _>("openid")?,
-        "nickname": r.try_get::<Option<String>, _>("nickname")?,
-        "avatar_url": r.try_get::<Option<String>, _>("avatar_url")?,
-        "gender": r.try_get::<String, _>("gender")?,
-        "balance_cents": balance.unwrap_or(0),
-    }), common_error::current_request_id())))
-}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PhoneBindReq {

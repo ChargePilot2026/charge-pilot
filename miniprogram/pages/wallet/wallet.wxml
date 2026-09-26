@@ -1,0 +1,6 @@
+<view class="container">
+  <view class="card" wx:if="{{needsLogin}}"><text>登录后查看钱包</text><button bindtap="login" type="primary">微信登录</button></view>
+  <view class="card" wx:if="{{loading}}">正在读取钱包…</view>
+  <view class="card" wx:if="{{error}}"><text>{{error}}</text><button bindtap="load">重试</button></view>
+  <view class="card" wx:if="{{wallet}}"><view>可用余额</view><view style="font-size:32px">¥{{wallet.availableText}}</view><view>冻结金额 ¥{{wallet.frozenText}}</view><view wx:if="{{wallet.status === 'frozen'}}">钱包已冻结，请联系客服</view><button bindtap="goTxns">查看资金流水</button></view>
+</view>

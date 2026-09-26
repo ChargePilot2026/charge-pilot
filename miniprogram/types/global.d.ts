@@ -7,7 +7,9 @@ interface WxApp {
     apiBase: string;
     userInfo: any;
     token: string;
+    refreshToken: string;
   };
+  logout(): Promise<void>;
   login(): Promise<{ token: string; user_id: number; openid: string }>;
   request<T>(method: string, path: string, data?: unknown, auth?: boolean): Promise<T>;
 }

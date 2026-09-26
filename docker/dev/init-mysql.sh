@@ -9,7 +9,8 @@
 CREATE DATABASE IF NOT EXISTS ${service}_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 GRANT ALL PRIVILEGES ON ${service}_db.* TO 'chargepilot'@'%';
 SQL
-        mysql --user=root --default-character-set=utf8mb4 "${service}_db" \
-            < "/migrations/${service}_db/0001_init.sql"
+        for migration in /migrations/${service}_db/*.sql; do
+            mysql --user=root --default-character-set=utf8mb4 "${service}_db" < "$migration"
+        done
     done
 )

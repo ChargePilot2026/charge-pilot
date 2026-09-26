@@ -1,0 +1,10 @@
+<view class="container">
+  <button wx:if="{{needsLogin}}" bindtap="login">登录后找桩</button>
+  <button wx:else bindtap="locate" disabled="{{loading}}">获取当前位置</button>
+  <picker range="{{radii}}" value="{{radiusIndex}}" bindchange="onRadius"><view class="card">搜索半径：{{radii[radiusIndex]}} 公里 ▾</view></picker>
+  <map wx:if="{{latitude != null}}" latitude="{{latitude}}" longitude="{{longitude}}" markers="{{markers}}" show-location="{{true}}" bindmarkertap="open" style="width:100%;height:400rpx;" />
+  <view wx:if="{{error}}" class="card">{{error}}<button bindtap="load" disabled="{{loading}}">重试</button></view>
+  <view wx:if="{{loading}}" class="card">正在查询…</view>
+  <view wx:for="{{items}}" wx:key="id" class="card" data-id="{{item.id}}" bindtap="open"><view>{{item.name}} · {{item.distanceText}}</view><view class="text-secondary">{{item.address || '地址未填写'}}</view></view>
+  <view wx:if="{{latitude != null &amp;&amp; !loading &amp;&amp; !error &amp;&amp; !items.length}}" class="card">该范围内暂无开放站点，可扩大搜索范围。</view>
+</view>

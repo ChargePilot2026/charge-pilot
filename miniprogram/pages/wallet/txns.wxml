@@ -1,0 +1,8 @@
+<view class="container">
+<view class="card" wx:if="{{needsLogin}}"><button type="primary" bindtap="login">登录查看流水</button></view>
+<picker range="{{statusNames}}" value="{{statusIndex}}" bindchange="onStatus"><view class="card">类型：{{statusNames[statusIndex]}} ▾</view></picker>
+<view class="card" wx:for="{{items}}" wx:key="txn_no"><view>{{item.typeText}}　{{item.amountText}} 元</view><view>变动后余额 ¥{{item.balanceText}}</view><view>{{item.remark}}</view><view class="text-secondary">{{item.timeText}}</view><view class="text-secondary">流水号 {{item.txn_no}}</view></view>
+<view wx:if="{{loading}}" class="card">正在读取流水…</view><view wx:if="{{error}}" class="card"><text>{{error}}</text><button bindtap="retry">重试</button></view>
+<view wx:if="{{!loading && !error && !needsLogin && total === 0}}" class="card">暂无资金流水</view>
+<button wx:if="{{items.length < total && !loading}}" bindtap="onReachBottom">加载更多</button>
+</view>

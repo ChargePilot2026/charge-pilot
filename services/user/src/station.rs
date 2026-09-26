@@ -1,4 +1,4 @@
-﻿//! 找桩(站点查询)+ 报修
+//! 找桩(站点查询)+ 报修
 //!
 //! 跨服务调用走 [`crate::clients::ServiceClient`];路径与 DTO 来自 `api_contracts::*`。
 //! 禁止在 handler 里拼 URL 或 `json!{}` 构造响应。
@@ -42,34 +42,22 @@ pub struct ReportFaultResponse {
 
 pub async fn nearby(
     State(st): State<AppState>,
-    Query(q): Query<NearbyUserQuery>,
+    Query(q): Query<api_contracts::NearbyStationsQuery>,
 ) -> AppResult<Json<common_error::ApiEnvelope<NearbyStationsResponse>>> {
-    let cli = crate::clients::ServiceClient::new(st.http.clone(), st.service_token.clone());
-    let resp = cli
-        .get_typed::<NearbyStationsResponse>(
-            st.cfg.service_urls.admin.as_deref(),
-            p::ADMIN_INTERNAL_STATIONS_NEARBY,
-        )
-        .await
-        .unwrap_or_else(|_| NearbyStationsResponse::empty());
+    let cli = common_http::internal::ApiClient::new(st.http.clone(), st.service_token.clone());
+    let resp = cli.get(st.cfg.service_urls.admin.as_deref(), p::ADMIN_INTERNAL_STATIONS_NEARBY, &q).await?;
     Ok(Json(common_error::ApiEnvelope::ok(resp, common_error::current_request_id())))
 }
 
 pub async fn detail(
     State(st): State<AppState>,
     Path(station_id): Path<u64>,
-) -> AppResult<Json<common_error::ApiEnvelope<serde_json::Value>>> {
-    let cli = crate::clients::ServiceClient::new(st.http.clone(), st.service_token.clone());
-    let v = cli
-        .get_typed::<serde_json::Value>(
-            st.cfg.service_urls.admin.as_deref(),
-            p::ADMIN_INTERNAL_STATIONS_DETAIL,
-        )
-        .await
-        .unwrap_or(serde_json::Value::Null);
-    Ok(Json(common_error::ApiEnvelope::ok(v, common_error::current_request_id())))
+) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::StationPublicDetail>>> {
+    let cli = common_http::internal::ApiClient::new(st.http.clone(), st.service_token.clone());
+    let path = p::ADMIN_INTERNAL_STATIONS_DETAIL.replace(":station_id", &station_id.to_string());
+    let resp = cli.get(st.cfg.service_urls.admin.as_deref(), &path, &()).await?;
+    Ok(Json(common_error::ApiEnvelope::ok(resp, common_error::current_request_id())))
 }
-
 pub async fn report_fault(
     State(st): State<AppState>,
     claims: UserClaims,

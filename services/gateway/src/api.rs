@@ -12,78 +12,7 @@ use serde_json::{json, Value};
 
 pub async fn health() -> &'static str { "ok" }
 
-// ===== scan =====
-
-#[derive(Debug, Deserialize)]
-pub struct ScanResolveReq {
-    pub code: String, // 端口码 或 设备码
-}
-
-pub async fn scan_resolve(
-    State(st): State<AppState>,
-    Json(req): Json<ScanResolveReq>,
-) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
-    // 先尝试 device_port 表(port_code)
-    let port_row: Option<(u64, String, String, String, String)> = sqlx::query_as(
-        "SELECT id, device_id, port_no, port_code, status FROM device_port WHERE port_code = ? AND deleted_at IS NULL"
-    ).bind(&req.code).fetch_optional(st.db.pool()).await?;
-    if let Some((id, device_id, port_no, port_code, status)) = port_row {
-        return Ok(Json(common_error::ApiEnvelope::ok(json!({
-            "kind": "port",
-            "port_id": id,
-            "device_id": device_id,
-            "port_no": port_no,
-            "port_code": port_code,
-            "status": status,
-        }), common_error::current_request_id())));
-    }
-    // 尝试 device_id
-    let dev_row: Option<(u64, String, String)> = sqlx::query_as(
-        "SELECT id, device_id, status FROM device WHERE device_id = ? AND deleted_at IS NULL"
-    ).bind(&req.code).fetch_optional(st.db.pool()).await?;
-    if let Some((id, device_id, status)) = dev_row {
-        let ports: Vec<Value> = sqlx::query("SELECT id, port_no, port_code, status FROM device_port WHERE device_id = ? AND deleted_at IS NULL")
-            .bind(&device_id).fetch_all(st.db.pool()).await
-            .ok()
-            .map(|rows| rows.iter().map(|r| json!({
-                "id": sqlx::Row::try_get::<u64, _>(r, "id").unwrap_or(0),
-                "port_no": sqlx::Row::try_get::<u8, _>(r, "port_no").unwrap_or(0),
-                "port_code": sqlx::Row::try_get::<String, _>(r, "port_code").unwrap_or_default(),
-                "status": sqlx::Row::try_get::<String, _>(r, "status").unwrap_or_default(),
-            })).collect()).unwrap_or_default();
-        return Ok(Json(common_error::ApiEnvelope::ok(json!({
-            "kind": "device",
-            "device_id": device_id,
-            "device_meta_id": id,
-            "status": status,
-            "ports": ports,
-        }), common_error::current_request_id())));
-    }
-    Err(AppError::NotFound("code".into()))
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ScanPortReq {
-    pub port_id: String,
-}
-
-pub async fn scan_port(
-    State(st): State<AppState>,
-    Json(req): Json<ScanPortReq>,
-) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
-    let r: Option<(u64, String, u8, String, String, Option<String>)> = sqlx::query_as(
-        "SELECT id, device_id, port_no, port_code, status, current_order_id FROM device_port WHERE id = ? AND deleted_at IS NULL"
-    ).bind(&req.port_id).fetch_optional(st.db.pool()).await?;
-    let (id, device_id, port_no, port_code, status, current_order_id) = r.ok_or_else(|| AppError::NotFound("port".into()))?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({
-        "port_id": id,
-        "device_id": device_id,
-        "port_no": port_no,
-        "port_code": port_code,
-        "status": status,
-        "current_order_id": current_order_id,
-    }), common_error::current_request_id())))
-}
+pub use crate::scan::{scan_resolve, scan_port};
 
 // ===== device =====
 
@@ -91,7 +20,7 @@ pub async fn device_get(
     State(st): State<AppState>,
     Path(id): Path<String>,
 ) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
-    let r: Option<(String, String, u8, String, Option<String>)> = sqlx::query_as(
+    let r: Option<(String, u64, u8, String, Option<String>)> = sqlx::query_as(
         "SELECT device_id, vendor_id, port_count, status, firmware_version FROM device WHERE device_id = ? AND deleted_at IS NULL"
     ).bind(&id).fetch_optional(st.db.pool()).await?;
     let r = r.ok_or_else(|| AppError::NotFound("device".into()))?;
@@ -260,32 +189,6 @@ pub async fn charge_stop(
 }
 
 // ===== device register =====
-
-#[derive(Debug, Deserialize)]
-pub struct DeviceRegisterReq {
-    pub device_id: String,
-    pub vendor_id: u64,
-    pub station_id: Option<u64>,
-    pub port_count: u8,
-    pub model: Option<String>,
-    pub firmware_version: Option<String>,
-    pub mac_addr: Option<String>,
-}
-
-pub async fn device_register(
-    State(st): State<AppState>,
-    Json(req): Json<DeviceRegisterReq>,
-) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
-    sqlx::query(
-        "INSERT INTO device (device_id, vendor_id, station_id, port_count, model, firmware_version, mac_addr, status, registered_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'enabled', NOW(3))
-         ON DUPLICATE KEY UPDATE vendor_id=VALUES(vendor_id), station_id=VALUES(station_id), port_count=VALUES(port_count), model=VALUES(model), firmware_version=VALUES(firmware_version), mac_addr=VALUES(mac_addr)"
-    )
-    .bind(&req.device_id).bind(req.vendor_id).bind(req.station_id).bind(req.port_count)
-    .bind(req.model.as_deref()).bind(req.firmware_version.as_deref()).bind(req.mac_addr.as_deref())
-    .execute(st.db.pool()).await?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"registered": true}), common_error::current_request_id())))
-}
 
 #[derive(Debug, Deserialize)]
 pub struct DeviceBackfillReq {
