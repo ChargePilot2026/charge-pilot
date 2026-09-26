@@ -15,6 +15,7 @@ Page({
     catch(e){if(!this._gone && generation===this._generation)this.setData({error:e.message || '钱包查询失败',needsLogin:!walletApp.globalData.token});}
     finally{if(!this._gone && generation===this._generation)this.setData({loading:false});}
   },
+  goRecharge(){wx.navigateTo({url:'/pages/wallet/recharge'});},
   goTxns(){wx.navigateTo({url:'/pages/wallet/txns'});},
   goRefund(){wx.navigateTo({url:'/pages/wallet/refund'});},
 });

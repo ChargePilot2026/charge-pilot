@@ -1,4 +1,4 @@
-﻿//! admin 服务: PC 后台 API(管理 / 角色 / 财务 / 告警 / OTA / Webhook / 公告)
+//! admin 服务: PC 后台 API(管理 / 角色 / 财务 / 告警 / OTA / Webhook / 公告)
 //!
 //! 端口: 8082(由 Caddy 反代 + 服务 PC 后台静态资源)
 
@@ -124,6 +124,9 @@ pub fn build_router(state: AppState) -> Router {
         .route(api_types::paths::ADMIN_BILLING_SETTLEMENTS, get(billing::settlements))
         .route(api_types::paths::ADMIN_BILLING_WITHDRAW, get(billing::withdraw_list).post(billing::withdraw_create))
         .route(api_types::paths::ADMIN_BILLING_WITHDRAW_REVIEW, post(billing::withdraw_review))
+        .route("/api/v1/admin/billing/wallet-risks/:request_id/release",post(billing::wallet_risk_release))
+        .route("/api/v1/admin/billing/wallet-risks",get(billing::wallet_risks))
+        .route("/api/v1/admin/billing/wallet-risks/:request_id/review",post(billing::wallet_risk_review))
         .route(api_types::paths::ADMIN_BILLING_REFUNDS, get(billing::refunds))
         .route(api_types::paths::ADMIN_BILLING_REFUND_RETRY, post(billing::refund_retry))
         .route("/api/v1/admin/billing/refunds/:id/approve",post(billing::refund_approve))

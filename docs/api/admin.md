@@ -1481,3 +1481,11 @@ admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故�
 `GET /api/v1/admin/devices` 要求 `device.read`。参数：`page`（默认 1）、`page_size`（默认 20，1–100）、`keyword`（最多 128 字符，按设备编号、型号、有效站点名称/编码做字面子串匹配）、`status`（enabled/disabled/retired/fault）、正整数 `station_id` / `vendor_id`。返回 `items,total,page,page_size,permissions`；每行包含 `station_name,station_code`。状态为管理状态，不表示在线遥测。
 
 详情同样实时校验 `device.read`。设备订单入口要求 `device.read` 和 `order.read`，沿用订单分页/日期筛选，路径设备编号覆盖查询参数中的设备编号；已删除/不存在设备返回 404，上游故障按真实错误返回。
+
+### 钱包退款风控审核队列
+
+`GET /api/v1/admin/billing/wallet-risks?page=1&page_size=20` 返回待人工审核的钱包退款申请。响应 data 包含 items、total、page、page_size；条目包含 request_id、user_id、amount_cents、reason、created_at。每页最大 50 条。
+
+`POST /api/v1/admin/billing/wallet-risks/{request_id}/review` 请求 `{ "approved": true, "comment": "核实依据" }`。两接口均实时校验有效 customer_finance/customer_cs 角色及 `finance.wallet_risk.review` 权限。意见必填，最多 255 字符；操作人来自 JWT，禁止请求体自选身份。
+
+通过审核重新核实可用余额、充值有效期和已占用退款额度，原路拆单、预留余额、执行事件与审核回执同事务提交；拒绝保存 rejected 状态及意见，不预留资金或发起支付。相同操作人、决定及意见重放返回原回执，改变已完成审核返回 409。admin 保存审计，跨服务失败可使用相同请求重试。审核不解除钱包其他冻结状态，独立解冻工作流和推送通知仍待完成。

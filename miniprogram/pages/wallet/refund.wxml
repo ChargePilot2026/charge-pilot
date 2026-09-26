@@ -11,7 +11,7 @@
  <view wx:if="{{loading}}">正在读取退款进度…</view>
  <view wx:for="{{items}}" wx:key="request_id" class="card">
   <view>{{item.amountText}} · {{item.statusText}}</view><view>已退款 {{item.refundedText}}</view><view class="text-secondary">{{item.created_at}}</view>
-  <view wx:for="{{item.refund_orders}}" wx:for-item="part" wx:key="refund_no"><view>{{part.amountText}} · {{part.statusText}}</view><view class="text-secondary">{{part.refund_no}}</view><view wx:if="{{part.failure_reason}}">{{part.failure_reason}}</view></view>
+  <view wx:if="{{item.review}}">审核意见：{{item.review.comment}}</view><view wx:for="{{item.refund_orders}}" wx:for-item="part" wx:key="refund_no"><view>{{part.amountText}} · {{part.statusText}}</view><view class="text-secondary">{{part.refund_no}}</view><view wx:if="{{part.failure_reason}}">{{part.failure_reason}}</view></view>
  </view>
  <view wx:if="{{!loading &amp;&amp; !items.length &amp;&amp; !needsLogin}}">暂无退款申请</view>
 </view>

@@ -1,0 +1,12 @@
+<view class="container">
+ <view class="card" wx:if="{{needsLogin}}"><button bindtap="login">微信登录</button></view>
+ <view class="card" wx:else>
+  <view>钱包充值（元）</view><input type="digit" value="{{amount}}" disabled="{{pending || paying}}" bindinput="inputAmount" placeholder="请输入充值金额" />
+  <button bindtap="submit" loading="{{paying}}" disabled="{{paying || loading}}">{{pending ? '继续原充值单 / 核实结果' : '微信支付充值'}}</button>
+  <view>到账以服务端支付结果为准，取消或网络中断后可继续同一笔充值。</view>
+ </view>
+ <view class="card" wx:if="{{error}}">{{error}}</view><view class="card" wx:if="{{notice}}">{{notice}}</view>
+ <button bindtap="refresh" disabled="{{paying || loading}}">刷新充值记录</button>
+ <view class="card" wx:for="{{items}}" wx:key="request_id"><view>{{item.pay_order_no}}</view><view>¥{{item.amountText}} · {{item.statusText}}</view><button wx:if="{{item.can_pay}}" bindtap="resume" data-id="{{item.request_id}}" disabled="{{paying || pending}}">继续支付</button></view>
+ <button wx:if="{{hasMore}}" bindtap="more" disabled="{{loading || paying}}">加载更多</button>
+</view>

@@ -1,5 +1,5 @@
 const refundApp=getApp();
-const labels={pending:'待处理',processing:'退款处理中',success:'已退款',manual_review:'等待人工审核',needs_review:'退款异常，待核实',failed:'退款异常，待核实'};
+const labels={rejected:'审核已拒绝',pending:'待处理',processing:'退款处理中',success:'已退款',manual_review:'等待人工审核',needs_review:'退款异常，待核实',failed:'退款异常，待核实'};
 const money=n=>'¥'+(n/100).toFixed(2);
 function cents(value){const match=/^(\d{1,7})(?:\.(\d{1,2}))?$/.exec(value.trim());if(!match)return null;const result=Number(match[1])*100+Number((match[2] || '').padEnd(2,'0'));return result>0 && result<=100000000 ? result:null;}
 function requestId(){return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,c=>{const r=Math.floor(Math.random()*16);return(c==='x'?r:(r&3)|8).toString(16);});}

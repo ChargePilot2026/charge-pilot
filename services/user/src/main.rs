@@ -1,4 +1,4 @@
-﻿//! user 服务:小程序侧 API + 微信支付 + 退款编排 + Stream 消费者
+//! user 服务:小程序侧 API + 微信支付 + 退款编排 + Stream 消费者
 
 // 主模块文件(与 lib.rs 共用,各自 mod 声明各自一份,这样 bin 与 lib 都能独立编译)
 mod api;
@@ -117,6 +117,9 @@ pub fn build_router(state: AppState) -> Router {
         .route(api_types::paths::INTERNAL_START_RESULT, post(payment::start_result))
         .route(api_types::paths::INTERNAL_REFUND_CLAIM, post(refund::claim))
         .route(api_contracts::paths::USER_INTERNAL_REFUND_EXECUTION, post(refund_execution::prepare))
+        .route(api_contracts::paths::USER_INTERNAL_WALLET_RISK_RELEASE,post(wallet_risk_release::receive))
+        .route(api_contracts::paths::USER_INTERNAL_WALLET_RISKS,get(wallet_refund::risk_list))
+        .route(api_contracts::paths::USER_INTERNAL_WALLET_RISK_REVIEW,post(wallet_refund::review_handler))
         .route(api_contracts::paths::USER_INTERNAL_REFUND_LIST, get(refund::list))
         .route(api_contracts::paths::USER_INTERNAL_REFUND_APPROVE, post(refund_review::receive))
         .route(api_contracts::paths::USER_INTERNAL_REFUND_REJECT, post(refund_review::reject_receive))
@@ -151,6 +154,7 @@ pub fn build_router(state: AppState) -> Router {
         .route(api_types::paths::USER_PHONE_UNBIND, post(api::phone_unbind))
         .route(api_types::paths::USER_WALLET_BALANCE, get(wallet_reads::balance))
         .route(api_types::paths::USER_WALLET_RECHARGE, post(wallet::recharge))
+        .route(api_types::paths::USER_WALLET_RECHARGES, get(wallet_recharge::list))
         .route(api_types::paths::USER_WALLET_TXNS, get(wallet_reads::txns))
         .route(api_types::paths::USER_WALLET_REFUND, post(wallet::refund))
         .route(api_contracts::paths::USER_WALLET_REFUNDS,get(wallet_refund::list))
@@ -174,3 +178,7 @@ pub fn build_router(state: AppState) -> Router {
         .layer(middleware::from_fn(common_http::request_id_layer))
         .with_state(state)
 }
+
+mod wallet_recharge;
+
+mod wallet_risk_release;

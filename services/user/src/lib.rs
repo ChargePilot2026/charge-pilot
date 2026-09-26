@@ -52,3 +52,7 @@ pub struct AppState {
     pub http: reqwest::Client,
     pub service_token: Arc<String>,
 }
+
+mod wallet_recharge;
+
+mod wallet_risk_release;

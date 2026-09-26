@@ -1043,58 +1043,23 @@ Wechatpay-Nonce: ...
 
 ### `POST /api/v1/user/wallet/recharge`
 
-**鉴权**:[JWT]
-**限流**:每 user 10 req/min
-**触发场景**:小程序"钱包"页 → 用户点击"充值"→ 选档位 → 跳微信支付
-**业务目标**:创建充值支付订单(走微信直连或汇付天下,§ 9.3)
+**鉴权**：[JWT]。当前实现微信直连，汇付渠道及客户自定义额度仍待实现。
 
-**请求体**:
-```json
-{
-  "amount_cents": 10000,           // 充值金额(分)
-  "pay_channel": "wechat"          // "wechat" 微信直连 / "huifu" 汇付天下(由客户配置)
-}
-```
+请求 `{ "request_id": "UUID", "amount_cents": 10000 }`，可选 `client_ip`。金额为整数分，范围 100–100000000。请求编号须是规范小写 UUID，同一编号绑定账号和金额；重试不能换编号或修改金额。
 
-**响应(200)**:
-```json
-{
-  "code": 0,
-  "data": {
-    "payment_order_no": "PY20260925...",
-    "amount_cents": 10000,
-    "wechat_pay_params": {          // 前端用此唤起 wx.requestPayment
-      "appId": "wx...",
-      "timeStamp": "...",
-      "nonceStr": "...",
-      "package": "...",
-      "signType": "RSA",
-      "paySign": "..."
-    },
-    "expires_at": "2026-09-25T14:15:00Z"   // 支付单过期时间(默认 15 min)
-  }
-}
-```
+成功响应 data：`request_id`、字符串 `pay_order_id`、`pay_order_no`、`amount_cents`、`status`、`expires_at`、`can_pay`；仅可支付时含 `payment_params`（RSA 微信支付参数）。支付窗口固定为首次创建后 5 分钟，重试不延长。
 
-**业务逻辑**:
-1. 校验 `amount_cents > 0`(下限由客户配置,默认 100 分 = 1 元)
-2. 校验 `pay_channel` 在客户配置中启用(读 `customer.whitelabel_config.pay_channels`)
-3. 创建 `payment_order(biz_type='recharge', biz_id=NULL, parent_order_id=NULL, pay_method=$channel, total_fee_cents=$amount, status='pending')`
-4. 调微信支付 V3 API(根据 `pay_channel` 路由):
-   - 微信直连 → `POST /v3/pay/transactions/jsapi`
-   - 汇付天下 → 调汇付 SDK(占位)
-5. 拿到 `wechat_pay_params` 返回给前端
-6. 等待微信回调(异步,走 `payment/wechat/callback` 端点):
-   - 回调成功 → UPDATE `payment_order.status='success'` + 钱包入账 + 写 `wallet_txn`
-   - 超时(15 min)→ 定时任务标 `status='failed'`
+先在同一事务持久化请求编号、`payment_order(biz_type=wallet_recharge,status=initiated)` 和完整微信请求，再调用渠道。渠道网络失败后仍保留原支付单，重试使用相同商户单号和参数；已缓存 prepay_id 时直接重新签名。已支付或过期返回 `can_pay=false`，不会重新下单。请求归属或金额冲突返回 409。
 
-**错误码**:
-- `1001` / `2020`(金额低于客户配置下限)
-- `3001`: 微信支付下单失败
-- `5001`: 数据库错误
+仅服务端验证过的支付通知/回执可把订单更新为 paid 并入账钱包、生成充值流水；小程序支付弹窗成功不代表到账。取消支付与网络异常保留本地请求，并可从服务端充值记录继续支付。
+
+### `GET /api/v1/user/wallet/recharges`
+
+**鉴权**：[JWT]。当前账号通过新充值入口创建的记录，按创建时间及请求编号倒序。请求 `page` 默认为 1，范围 1–100000，每页 20 条。
+
+响应 data：`user_id`（字符串）、`page`、`items`。条目包含 `request_id`、`pay_order_no`、`amount_cents`、`status`、`expires_at`、`can_pay`。不返回支付签名。未确认支付且窗口已结束的订单显示等待核实，不把客户端到期推断为支付失败。旧版未绑定请求编号的充值仍通过钱包流水查询，不出现在此恢复列表。
 
 ---
-
 ### `POST /api/v1/user/wallet/refund`
 
 **鉴权**:[JWT]
@@ -1656,3 +1621,7 @@ GET /user/wallet/balance 的 data 包含 available_cents、frozen_cents、status
 
 - `GET /api/v1/internal/charge-orders/:order_id/metered`：`order_id` 为数字订单 ID，要求服务密钥；仅返回已完成且具备计量和下单规则快照的订单。返回 `charge_order_id/order_no/user_id/started_at/meter/quote`，供 billing 正式核算。
 - `POST /api/v1/internal/charge-orders/:order_id/fee-result`：要求服务密钥。请求为 `calculation_no/source/electric_cents/service_cents/total_cents`，source 为上述完整快照；成功 `data.ok=true`。校验所属用户、支付关联、计量和规则快照及分项合计，原子写入费用、幂等凭据、差额退款和退款 outbox。完全一致的重放成功，冲突重放拒绝。只登记待退款，不伪造退款到账。
+
+### 钱包退款风控内部接口
+
+`GET /api/v1/internal/wallet-risks` 和 `POST /api/v1/internal/wallet-risks/{request_id}/review` 仅接受服务令牌。查询参数 page/page_size；审核请求 actor_id、approved、comment，由 admin 完成实时角色及权限校验。审核回执保存在 wallet_risk_review，成功审核复用原退款请求，不创建新的用户申请。用户 `GET /api/v1/user/wallet/refunds` 条目增加 review（approved、comment、actor_id）；拒绝申请 status 为 rejected。

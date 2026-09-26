@@ -71,3 +71,8 @@ test('refund submission is single flight while confirmation is pending',async()=
   const p=f.open();await p.load();p.data.amount='1';const submitting=p.submit();await p.submit();
   confirm({confirm:true});await submitting;assert.equal(f.posts.length,1);
 });
+
+test('wallet refund list exposes risk rejection and its review reason',async()=>{
+ const p=page('refund',{_generation:1,globalData:{token:'access'},request:async()=>({user_id:'7',total:1,items:[{request_id:'r',amount_cents:100,refunded_cents:0,status:'rejected',review:{comment:'核实后拒绝'},refund_orders:[]}]})},{getStorageSync(){}});
+ await p.onShow();assert.equal(p.data.items[0].statusText,'审核已拒绝');assert.equal(p.data.items[0].review.comment,'核实后拒绝');
+});

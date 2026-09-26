@@ -18,6 +18,9 @@ pub mod pricing;
 // ===================== 路径常量 =====================
 
 pub mod paths {
+    pub const USER_INTERNAL_WALLET_RISK_RELEASE: &str = "/api/v1/internal/wallet-risks/:request_id/release";
+    pub const USER_INTERNAL_WALLET_RISKS: &str = "/api/v1/internal/wallet-risks";
+    pub const USER_INTERNAL_WALLET_RISK_REVIEW: &str = "/api/v1/internal/wallet-risks/:request_id/review";
     pub const GATEWAY_DEVICE_PROVISION: &str = "/api/v1/internal/devices/provision";
     // -------- public --------
     pub const AUTH_LOGIN_USER: &str = "/api/v1/public/auth/login";

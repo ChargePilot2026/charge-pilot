@@ -44,6 +44,7 @@ pub mod paths {
     pub const USER_PHONE_BIND: &str = "/api/v1/user/phone/bind";
     pub const USER_PHONE_UNBIND: &str = "/api/v1/user/phone/unbind";
     pub const USER_WALLET_BALANCE: &str = "/api/v1/user/wallet/balance";
+    pub const USER_WALLET_RECHARGES: &str = "/api/v1/user/wallet/recharges";
     pub const USER_WALLET_RECHARGE: &str = "/api/v1/user/wallet/recharge";
     pub const USER_WALLET_TXNS: &str = "/api/v1/user/wallet/txns";
     pub const USER_WALLET_REFUND: &str = "/api/v1/user/wallet/refund";

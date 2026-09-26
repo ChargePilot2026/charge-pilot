@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Tabs, Table, Tag, Typography } from 'antd';
 import { apiGet } from '../api/client';
 import Refunds from './Refunds';
+import WalletRisks from './WalletRisks';
 
 const { Title } = Typography;
 
@@ -19,6 +20,7 @@ export default function BillingPage() {
       <Title level={3}>财务</Title>
       <Tabs
         items={[
+          {key:'wallet-risks',label:'钱包风控审核',children:<WalletRisks />},
           {
             key: 'settlements',
             label: '分账出账',

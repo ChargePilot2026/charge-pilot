@@ -1,4 +1,4 @@
-﻿//! admin 视角 — 财务(分账 / 提现 / 退款审核 / 发票审核 / 对账日志)
+//! admin 视角 — 财务(分账 / 提现 / 退款审核 / 发票审核 / 对账日志)
 
 use crate::AppState;
 use crate::api_types;
@@ -240,4 +240,39 @@ pub async fn reconcile_logs(State(st): State<AppState>, _c: AdminClaims) -> AppR
         "resolved": sqlx::Row::try_get::<i8, _>(r, "resolved").unwrap_or(0) != 0,
     })).collect();
     Ok(Json(common_error::ApiEnvelope::ok(json!({"items": items}), common_error::current_request_id())))
+}
+
+#[derive(Deserialize,serde::Serialize)]
+pub struct WalletRiskQuery {pub page:Option<u32>,pub page_size:Option<u32>,pub status:Option<String>}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WalletRiskDecision {pub approved:bool,pub comment:String}
+async fn wallet_risk_authorize(tx:&mut sqlx::Transaction<'_,sqlx::MySql>,actor:u64,release:bool)->AppResult<()> {
+ let permission=if release{"finance.wallet_risk.release"}else{"finance.wallet_risk.review"};
+ let rows:Vec<u64>=sqlx::query_scalar("SELECT a.id FROM admin_user_role a JOIN role r ON r.id=a.role_id JOIN role_permission rp ON rp.role_id=r.id JOIN permission p ON p.id=rp.permission_id WHERE a.id=? AND a.status='active' AND a.deleted_at IS NULL AND r.deleted_at IS NULL AND r.code IN ('customer_finance','customer_cs') AND p.code=? AND (?=FALSE OR r.code='customer_finance') FOR SHARE").bind(actor).bind(permission).bind(release).fetch_all(&mut **tx).await?;
+ if rows.is_empty(){return Err(AppError::Forbidden(format!("角色或权限不足，需要 {permission}")));}Ok(())
+}pub async fn wallet_risks(State(st):State<AppState>,c:AdminClaims,axum::extract::Query(q):axum::extract::Query<WalletRiskQuery>)->AppResult<Json<common_error::ApiEnvelope<Value>>>{
+ let mut tx=st.db.pool().begin().await?;wallet_risk_authorize(&mut tx,c.admin_user_id,false).await?;
+ let mut result:Value=common_http::internal::ApiClient::new(st.http.clone(),st.service_token.clone()).get(st.cfg.service_urls.user.as_deref(),p::USER_INTERNAL_WALLET_RISKS,&q).await?;
+ let can_release=match wallet_risk_authorize(&mut tx,c.admin_user_id,true).await {Ok(())=>true,Err(AppError::Forbidden(_))=>false,Err(e)=>return Err(e)};
+ if let Some(items)=result["items"].as_array_mut(){for item in items{item["can_release"]=json!(can_release && item["can_release"]==true);}}
+ tx.commit().await?;Ok(Json(common_error::ApiEnvelope::ok(result,common_error::current_request_id())))
+}
+pub async fn wallet_risk_review(State(st):State<AppState>,c:AdminClaims,Path(id):Path<String>,Json(req):Json<WalletRiskDecision>)->AppResult<Json<common_error::ApiEnvelope<Value>>>{
+ let id=uuid::Uuid::parse_str(&id).map_err(|_|AppError::BadRequest("申请编号无效".into()))?.to_string();
+ let mut tx=st.db.pool().begin().await?;wallet_risk_authorize(&mut tx,c.admin_user_id,false).await?;
+ let result:Value=common_http::internal::ApiClient::new(st.http.clone(),st.service_token.clone()).post(st.cfg.service_urls.user.as_deref(),&p::USER_INTERNAL_WALLET_RISK_REVIEW.replace(":request_id",&id),&json!({"actor_id":c.admin_user_id,"approved":req.approved,"comment":req.comment})).await?;
+ sqlx::query("INSERT INTO audit_log(actor_id,module,action,target_type,target_id,after_json,created_month) VALUES (?,'finance','wallet_risk.review','wallet_refund_request',?,?,DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))").bind(c.admin_user_id).bind(&id).bind(&result).execute(&mut *tx).await?;
+ tx.commit().await?;Ok(Json(common_error::ApiEnvelope::ok(result,common_error::current_request_id())))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WalletRiskRelease {pub comment:String}
+pub async fn wallet_risk_release(State(st):State<AppState>,c:AdminClaims,Path(id):Path<String>,Json(req):Json<WalletRiskRelease>)->AppResult<Json<common_error::ApiEnvelope<Value>>>{
+ let id=uuid::Uuid::parse_str(&id).map_err(|_|AppError::BadRequest("申请编号无效".into()))?.to_string();
+ let mut tx=st.db.pool().begin().await?;wallet_risk_authorize(&mut tx,c.admin_user_id,true).await?;
+ let result:Value=common_http::internal::ApiClient::new(st.http.clone(),st.service_token.clone()).post(st.cfg.service_urls.user.as_deref(),&p::USER_INTERNAL_WALLET_RISK_RELEASE.replace(":request_id",&id),&json!({"actor_id":c.admin_user_id,"comment":req.comment})).await?;
+ sqlx::query("INSERT INTO audit_log(actor_id,module,action,target_type,target_id,after_json,created_month) VALUES (?,'finance','wallet_risk.release','wallet_refund_request',?,?,DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))").bind(c.admin_user_id).bind(&id).bind(&result).execute(&mut *tx).await?;
+ tx.commit().await?;Ok(Json(common_error::ApiEnvelope::ok(result,common_error::current_request_id())))
 }
