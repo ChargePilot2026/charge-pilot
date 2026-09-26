@@ -1,0 +1,5 @@
+CREATE TABLE IF NOT EXISTS refund_success_receipt (
+  refund_record_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+  wechat_refund_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL UNIQUE,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

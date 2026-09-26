@@ -5,16 +5,22 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { createRequire } = require('node:module');
 
-function page(name, app) {
+function page(name, app, wxOverride={}) {
   let definition;
   const filename = path.resolve(__dirname, '../pages/charge', name + '.js');
-  const context = { getApp: () => app, Page: value => { definition = value; }, require: createRequire(filename), wx: { stopPullDownRefresh() {}, navigateTo() {} } };
+  const context = { getApp: () => app, Page: value => { definition = value; }, require: createRequire(filename), wx: { stopPullDownRefresh() {}, navigateTo() {},...wxOverride } };
   vm.runInNewContext(fs.readFileSync(filename,'utf8'), context, { filename });
   const instance = { ...definition, data: JSON.parse(JSON.stringify(definition.data)), _generation: 0, _gone: false };
   instance.setData = data => Object.assign(instance.data, data);
   return instance;
 }
 const item = id => ({ order_id: id, order_no: 'ORDER_'+id, status: 'completed', total_fee_cents: 55, refund_status: 'none' });
+test('detail resumes original checkout and displays server amount before payment',async()=>{
+ const calls=[],urls=[];let confirmation='',paid=0;
+ const app={globalData:{token:'test'},request:async(method,url)=>{calls.push({method,url});return {order_no:'ORDER_1',amount_cents:123,hold_expires_at:new Date(Date.now()+60000).toISOString(),payment_params:{timeStamp:'123',nonceStr:'nonce',package:'prepay_id=saved',signType:'RSA',paySign:'signature'}};}};
+ const p=page('detail',app,{showModal:o=>{confirmation=o.content;o.success({confirm:true});},requestPayment:o=>{paid++;o.success({});},navigateTo:o=>urls.push(o.url)});
+ p.data.order={...item(1),status:'pending_payment'};await p.pay();assert.match(confirmation,/1.23/);assert.equal(calls[0].url,'/user/charge/ORDER_1/prepay');assert.equal(paid,1);assert.equal(urls[0],'/pages/charge/charging?order_no=ORDER_1');
+});
 
 test('history paginates and retains previous page on a recoverable load error', async () => {
   let fail = false;

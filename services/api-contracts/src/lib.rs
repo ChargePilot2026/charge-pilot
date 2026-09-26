@@ -11,6 +11,7 @@
 use serde::{Deserialize, Serialize};
 
 pub mod orders;
+pub mod refunds;
 pub mod devices;
 pub mod pricing;
 
@@ -22,6 +23,9 @@ pub mod paths {
     pub const AUTH_LOGIN_USER: &str = "/api/v1/public/auth/login";
     pub const AUTH_REFRESH_USER: &str = "/api/v1/public/auth/refresh";
     pub const PAYMENT_WECHAT_CALLBACK: &str = "/api/v1/public/payment/wechat/callback";
+    pub const REFUND_WECHAT_CALLBACK: &str = "/api/v1/public/refund/wechat/callback";
+    pub const USER_CHARGE_PREPAY: &str = "/api/v1/user/charge/:order_id/prepay";
+    pub const USER_WALLET_REFUNDS: &str = "/api/v1/user/wallet/refunds";
 
     pub const AUTH_LOGIN_ADMIN: &str = "/api/v1/admin/auth/login";
     pub const AUTH_REFRESH_ADMIN: &str = "/api/v1/admin/auth/refresh";
@@ -52,8 +56,11 @@ pub mod paths {
     pub const USER_INTERNAL_COUPON_STATS: &str = "/api/v1/internal/coupons/stats";
     pub const USER_INTERNAL_REFUND_CLAIM: &str = "/api/v1/internal/refund-records/claim";
     pub const USER_INTERNAL_REFUND_RESULT: &str = "/api/v1/internal/refund-records/:refund_id/result";
+    pub const USER_INTERNAL_REFUND_EXECUTION: &str = "/api/v1/internal/refund-records/execution";
     pub const USER_INTERNAL_START_RESULT: &str = "/api/v1/internal/charge-orders/:order_id/start-result";
     pub const USER_INTERNAL_END_RESULT: &str = "/api/v1/internal/charge-orders/:order_id/end-result";
+    pub const USER_INTERNAL_METERED_ORDER: &str = "/api/v1/internal/charge-orders/:order_id/metered";
+    pub const USER_INTERNAL_FEE_RESULT: &str = "/api/v1/internal/charge-orders/:order_id/fee-result";
 
     // -------- billing 内部 --------
     pub const BILLING_QUOTE: &str = "/api/v1/internal/quote";

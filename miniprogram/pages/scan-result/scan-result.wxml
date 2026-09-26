@@ -1,13 +1,13 @@
 <view class="container">
  <button wx:if="{{needsLogin}}" bindtap="login">登录查看设备</button>
  <view wx:if="{{loading}}" class="card">正在读取端口信息…</view>
- <view wx:if="{{error}}" class="card"><view>{{error}}</view><button bindtap="load" disabled="{{loading}}">重试</button></view>
+ <view wx:if="{{error}}" class="card"><view>{{error}}</view><button bindtap="load" disabled="{{loading || paying || startAttempted}}">重试</button></view>
  <view wx:if="{{deviceId}}" class="card"><view>设备 {{deviceId}}</view><view class="text-secondary">请核对插座编号后选择端口</view><view wx:if="{{!ports.length}}">该设备暂无可用端口信息</view></view>
- <view wx:for="{{ports}}" wx:key="port_id" class="card"><view>端口 {{item.port_no}} · {{item.statusLabel}}</view><view class="text-secondary">{{item.port_code}}</view><button data-id="{{item.port_id}}" bindtap="selectPort" disabled="{{loading || !item.selectable}}">{{item.selectable ? '选择此端口' : '当前不可选择'}}</button></view>
+ <view wx:for="{{ports}}" wx:key="port_id" class="card"><view>端口 {{item.port_no}} · {{item.statusLabel}}</view><view class="text-secondary">{{item.port_code}}</view><button data-id="{{item.port_id}}" bindtap="selectPort" disabled="{{loading || paying || startAttempted || !item.selectable}}">{{item.selectable ? '选择此端口' : '当前不可选择'}}</button></view>
  <view wx:if="{{selected}}" class="card"><view>已选端口 {{selected.port_no}} · {{selected.statusLabel}}</view>
-  <block wx:if="{{selected.selectable}}"><view>预计电量（度）</view><input aria-label="预计电量" type="digit" value="{{estimatedKwh}}" disabled="{{loading}}" bindinput="inputKwh"/><view>预计时长（分钟）</view><input aria-label="预计时长" type="number" value="{{estimatedMinutes}}" disabled="{{loading}}" bindinput="inputMinutes"/><button bindtap="estimate" loading="{{loading}}" disabled="{{loading}}">预估费用</button></block>
+  <block wx:if="{{selected.selectable}}"><view>预计电量（度）</view><input aria-label="预计电量" type="digit" value="{{estimatedKwh}}" disabled="{{loading || paying || startAttempted}}" bindinput="inputKwh"/><view>预计时长（分钟）</view><input aria-label="预计时长" type="number" value="{{estimatedMinutes}}" disabled="{{loading || paying || startAttempted}}" bindinput="inputMinutes"/><button bindtap="estimate" loading="{{loading}}" disabled="{{loading || paying || startAttempted}}">预估费用</button></block>
   <view wx:else>此端口当前不可充电，请选择其他空闲端口。</view>
  </view>
- <view wx:if="{{quote}}" class="card"><view>{{quote.pricing.station_name}} · {{quote.pricing.name}}</view><view>预计电费：{{quote.electricText}}</view><view>预计服务费（含起步价补足）：{{quote.serviceText}}</view><view>预计合计：{{quote.totalText}}</view><view class="text-secondary">{{quote.estimation_basis}}</view><view class="text-secondary">此报价不扣款，也不会启动设备。</view></view>
- <button bindtap="rescan">重新扫码</button>
+ <view wx:if="{{quote}}" class="card"><view>{{quote.pricing.station_name}} · {{quote.pricing.name}}</view><view>预计电费：{{quote.electricText}}</view><view>预计服务费（含起步价补足）：{{quote.serviceText}}</view><view>预计合计：{{quote.totalText}}</view><view class="text-secondary">{{quote.estimation_basis}}</view><view class="text-secondary">这是预付金额，最终按实际充电结算。</view><button wx:if="{{!startAttempted || canRetryPayment}}" bindtap="pay" loading="{{paying}}" disabled="{{loading || paying}}">确认并付款充电</button></view>
+ <view wx:if="{{paymentNotice}}" class="card">{{paymentNotice}}</view><view wx:if="{{startAttempted}}" class="card"><button bindtap="viewOrder">查看订单状态</button><button bindtap="history">打开订单列表</button></view><button bindtap="rescan" disabled="{{paying || startAttempted}}">重新扫码</button>
 </view>

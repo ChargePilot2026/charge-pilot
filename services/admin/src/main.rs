@@ -11,6 +11,7 @@ mod webhook;
 mod alert;
 mod clients;
 mod stream_consumer;
+mod refund_task;
 mod static_serve;
 
 use axum::{
@@ -68,6 +69,7 @@ async fn main() -> AppResult<()> {
     };
 
     stream_consumer::spawn_all(state.clone()).await?;
+    refund_task::spawn(state.clone());
     api::device_import::spawn_recovery(state.clone());
 
     let app = build_router(state);

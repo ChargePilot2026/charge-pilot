@@ -24,9 +24,8 @@ pub fn watt_hours(kwh:&str)->AppResult<i64>{
  let fract:i64=if fraction.is_empty(){0}else{fraction.parse::<i64>().map_err(|_|bad())?*10i64.pow(3-fraction.len() as u32)};
  let wh=whole*1000+fract;if !(1..=100_000).contains(&wh){return Err(bad());}Ok(wh)
 }
-pub fn estimate(rule:&DevicePricing,kwh:&str,minutes:i64,start_minute:usize)->AppResult<api_contracts::QuoteResponse>{
- let wh=watt_hours(kwh)?;
- if !(1..=1440).contains(&minutes) || start_minute>=1440 || !["kwh","minute","mixed"].contains(&rule.mode.as_str()) {return Err(bad());}
+pub(crate) fn daily_rates(rule:&DevicePricing)->AppResult<Vec<Option<(i64,i64)>>>{
+ if !["kwh","minute","mixed"].contains(&rule.mode.as_str()) {return Err(bad());}
  let valid_rate=|n:i64| (0..=1_000_000).contains(&n);
  if ![rule.service_fee_cents_per_kwh,rule.service_fee_cents_per_min,rule.min_charge_cents].into_iter().all(valid_rate){return Err(bad());}
  let periods:Vec<Period>=serde_json::from_value(rule.time_of_use.clone()).map_err(|_|bad())?;
@@ -43,6 +42,12 @@ pub fn estimate(rule:&DevicePricing,kwh:&str,minutes:i64,start_minute:usize)->Ap
    rates[index]=Some((p.electric_price_cents,p.service_price_cents.unwrap_or(rule.service_fee_cents_per_kwh)));
   }
  }
+ Ok(rates)
+}
+pub fn estimate(rule:&DevicePricing,kwh:&str,minutes:i64,start_minute:usize)->AppResult<api_contracts::QuoteResponse>{
+ let wh=watt_hours(kwh)?;
+ if !(1..=1440).contains(&minutes) || start_minute>=1440 {return Err(bad());}
+ let rates=daily_rates(rule)?;
  let mut electric_rate=0i128;let mut service_rate=0i128;
  for offset in 0..minutes as usize {
   let (e,s)=rates[(start_minute+offset)%1440].ok_or_else(||AppError::BadRequest("预计充电时段缺少电价配置".into()))?;

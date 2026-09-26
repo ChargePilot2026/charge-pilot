@@ -1,6 +1,25 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug,Clone,Serialize,Deserialize)]
+pub struct FeeResult {
+    pub calculation_no:String,
+    pub source:MeteredOrder,
+    pub electric_cents:i64,
+    pub service_cents:i64,
+    pub total_cents:i64,
+}
+
+#[derive(Debug,Clone,Serialize,Deserialize)]
+pub struct MeteredOrder {
+    pub charge_order_id:u64,
+    pub order_no:String,
+    pub user_id:u64,
+    pub started_at:chrono::DateTime<chrono::Utc>,
+    pub meter:crate::ChargeEndMeter,
+    pub quote:PriceQuote,
+}
+
+#[derive(Debug,Clone,Serialize,Deserialize)]
 pub struct DevicePricing {
     pub station_id:u64,
     pub station_name:String,

@@ -9,6 +9,7 @@
     "pages/stations/nearby",
     "pages/stations/detail",
     "pages/wallet/wallet",
+    "pages/wallet/refund",
     "pages/wallet/recharge",
     "pages/wallet/txns",
     "pages/coupons/my",

@@ -158,11 +158,16 @@ pub fn sign_jsapi_pay(cfg: &WechatConfig, prepay_id: &str) -> AppResult<JsapiPay
 /// 退款请求(V3)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RefundReq {
+    #[serde(skip_serializing_if="Option::is_none")]
     pub transaction_id: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
     pub out_trade_no: Option<String>,
     pub out_refund_no: String,
+    #[serde(skip_serializing_if="Option::is_none")]
     pub reason: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
     pub notify_url: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
     pub funds_account: Option<String>,
     pub amount: RefundAmount,
 }
@@ -180,59 +185,17 @@ pub struct RefundResp {
     pub out_refund_no: String,
     pub status: String,   // PROCESSING / SUCCESS / ABNORMAL
     pub channel: Option<String>,
+    pub transaction_id:String,
+    pub out_trade_no:String,
+    pub amount:RefundAmount,
 }
 
-/// 退款调用 + 指数退避(技术规格 § 7.6: 1s/5s/30s/2min)
-pub async fn refund_with_retry(
-    http: &reqwest::Client,
-    cfg: &WechatConfig,
-    req: &RefundReq,
-) -> AppResult<RefundResp> {
-    let backoff = [Duration::from_secs(1), Duration::from_secs(5), Duration::from_secs(30), Duration::from_secs(120)];
-    let url = cfg.refund_url.clone();
-    let auth = format!(
-        "WECHATPAY2-SHA256-RSA2048 mchid=\"{}\",nonce_str=\"{}\",timestamp=\"{}\",serial_no=\"pending-real-cert\",signature=\"pending-real-sign\"",
-        cfg.mch_id,
-        uuid::Uuid::new_v4(),
-        chrono::Utc::now().timestamp()
-    );
-    let mut last_err: Option<AppError> = None;
-    for (i, delay) in backoff.iter().enumerate() {
-        if i > 0 {
-            tokio::time::sleep(*delay).await;
-        }
-        match http
-            .post(&url)
-            .header("Authorization", &auth)
-            .header("Content-Type", "application/json")
-            .json(req)
-            .send()
-            .await
-        {
-            Ok(resp) => {
-                let status = resp.status();
-                if status.is_success() {
-                    let body: RefundResp = resp.json().await?;
-                    if body.status == "SUCCESS" || body.status == "PROCESSING" {
-                        return Ok(body);
-                    }
-                    last_err = Some(AppError::WechatRefundFailed(format!(
-                        "refund status={}",
-                        body.status
-                    )));
-                } else {
-                    let txt = resp.text().await.unwrap_or_default();
-                    last_err = Some(AppError::WechatRefundFailed(format!("status={} body={}", status, txt)));
-                }
-            }
-            Err(e) => last_err = Some(AppError::HttpClient(format!("refund http: {e}"))),
-        }
-    }
-    Err(last_err.unwrap_or_else(|| AppError::WechatRefundFailed("refund exhausted retries".into())))
-}
+mod refund;
+ pub use refund::{refund_with_retry,refund_once,query_refund};
 
 mod callback;
 pub use callback::{decode_payment_notification, PaymentNotification};
+pub use callback::{decode_refund_notification,RefundNotification};
 
 /// 小程序客服入口签名(技术规格 § 9.6)
 pub fn customer_service_entry(_cfg: &WechatConfig, _order_id: &str, _openid: &str) -> String {

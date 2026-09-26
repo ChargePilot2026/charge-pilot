@@ -3,6 +3,8 @@
   <view wx:if="{{loading}}" class="card">正在加载…</view>
   <view wx:if="{{error}}" class="card"><text>{{error}}</text><button bindtap="load" disabled="{{loading}}">重试</button></view>
   <block wx:if="{{order}}">
+    <button wx:if="{{order.status === 'pending_payment'}}" bindtap="pay" loading="{{paying}}" disabled="{{paying || loading}}">继续付款</button>
+    <view wx:if="{{paymentNotice}}" class="card">{{paymentNotice}}</view>
     <view class="card"><view>{{order.order_no}}</view><view class="tag tag-blue">{{order.statusLabel}}</view><view>{{order.station_name || order.device_id}} · 端口 {{order.port_no}}</view><view>开始：{{order.startedText}}</view><view>结束：{{order.endedText}}</view><view>电量：{{order.meter_kwh || '—'}} kWh</view></view>
     <view class="card"><view>电费：{{order.electricText}}</view><view>服务费：{{order.serviceText}}</view><view>总费用：{{order.totalText}}</view><view>实付：{{order.paidText}}</view></view>
     <view class="card"><view>退款状态：{{order.refundLabel}}</view><view>已退：{{order.refundedText}}</view><view>支付单号：{{order.payment_order_no || '—'}}</view></view>

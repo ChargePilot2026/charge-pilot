@@ -111,6 +111,7 @@ pub struct ScanStartRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanStartResponse {
+    pub amount_cents:i64,
     pub order_no: String,
     pub payment_order_no: String,
     pub hold_expires_at: String,

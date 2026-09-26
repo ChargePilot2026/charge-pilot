@@ -66,12 +66,7 @@ pub struct RefundRequiredHandler { pub state: AppState }
 #[async_trait]
 impl StreamHandler for RefundRequiredHandler {
     async fn handle(&self, entry: &StreamEntry) -> AppResult<()> {
-        let p = &entry.envelope.payload;
-        let refund_no = p.get("refund_no").and_then(|v| v.as_str()).unwrap_or_default().to_string();
-        if refund_no.is_empty() { return Ok(()); }
-        // 占位:实际 admin 自动 claim + 调微信退款,本期人工 review 优先
-        info!(refund_no, "refund_required received, awaiting human claim");
-        Ok(())
+        crate::refund_task::enqueue(&self.state,entry).await
     }
 }
 

@@ -11,6 +11,20 @@ use sqlx::Row;
 fn conflict() -> AppError {
     AppError::Conflict("充电结束确认与订单不一致".into())
 }
+pub async fn metered_order(
+    State(st): State<AppState>, Path(cid): Path<u64>,
+) -> AppResult<Json<ApiEnvelope<api_contracts::pricing::MeteredOrder>>> {
+    let rows=sqlx::query("SELECT c.order_no,c.user_id,c.started_at,r.meter_json,p.quote_snapshot FROM charge_order c JOIN charge_end_receipt r ON r.charge_order_id=c.id JOIN charge_order_pricing p ON p.charge_order_id=c.id AND p.user_id=c.user_id WHERE c.id=? AND c.status='completed' AND c.deleted_at IS NULL")
+        .bind(cid).fetch_all(st.db.pool()).await?;
+    if rows.len()!=1 {return Err(AppError::Conflict("订单尚未完成或缺少计量/计价快照".into()));}
+    let row=&rows[0];
+    Ok(Json(ApiEnvelope::ok(api_contracts::pricing::MeteredOrder {
+        charge_order_id:cid,order_no:row.try_get("order_no")?,user_id:row.try_get("user_id")?,
+        started_at:row.try_get::<chrono::NaiveDateTime,_>("started_at")?.and_utc(),
+        meter:serde_json::from_value(row.try_get("meter_json")?)?,
+        quote:serde_json::from_value(row.try_get("quote_snapshot")?)?,
+    },common_error::current_request_id())))
+}
 pub async fn receive(
     State(st): State<AppState>,
     Path(order): Path<String>,

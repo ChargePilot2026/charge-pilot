@@ -12,6 +12,7 @@ pub mod ota;
 pub mod webhook;
 pub mod alert;
 pub mod stream_consumer;
+mod refund_task;
 pub mod static_serve;
 
 use common_auth::JwtCodec;

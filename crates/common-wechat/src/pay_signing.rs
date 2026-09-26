@@ -172,6 +172,7 @@ mod tests {
                     notify_url: "https://example.test/notify".into(),
                     pay_base_url: "https://api.mch.weixin.qq.com".into(),
                     refund_url: "https://api.mch.weixin.qq.com/v3/refund/domestic/refunds".into(),
+                    refund_notify_url:None,
                     cert_path: None,
                     private_key_path: Some(private.to_string_lossy().into()),
                     merchant_serial_no: Some("AB12".into()),
@@ -283,6 +284,59 @@ mod tests {
                 &signature,
             )
             .unwrap();
+    }
+    #[test]
+    fn refund_callback_binds_encrypted_status_merchant_and_amounts(){
+        use ring::aead::{Aad,LessSafeKey,Nonce,UnboundKey,AES_256_GCM};
+        let f=Fixture::new();
+        let notice=serde_json::json!({"mchid":f.cfg.mch_id,"out_trade_no":"PAY_test","transaction_id":"420001","out_refund_no":"REF_test","refund_id":"500001","refund_status":"SUCCESS","success_time":chrono::Utc::now().to_rfc3339(),"amount":{"total":100,"refund":82,"payer_total":90,"payer_refund":74}});
+        let encoded=|n:&serde_json::Value,event:&str|{
+            let mut plain=serde_json::to_vec(n).unwrap();
+            LessSafeKey::new(UnboundKey::new(&AES_256_GCM,f.cfg.pay_key.as_bytes()).unwrap()).seal_in_place_append_tag(Nonce::try_assume_unique_for_key(b"123456789012").unwrap(),Aad::from(b"refund"),&mut plain).unwrap();
+            let raw=serde_json::json!({"event_type":event,"resource_type":"encrypt-resource","resource":{"original_type":"refund","algorithm":"AEAD_AES_256_GCM","nonce":"123456789012","associated_data":"refund","ciphertext":STANDARD.encode(plain)}}).to_string();
+            let timestamp=chrono::Utc::now().timestamp().to_string();let mut headers=reqwest::header::HeaderMap::new();
+            headers.insert("wechatpay-timestamp",timestamp.parse().unwrap());headers.insert("wechatpay-nonce","nonce".parse().unwrap());headers.insert("wechatpay-serial","PUB_KEY_ID_TEST".parse().unwrap());headers.insert("wechatpay-signature",sign(&f.cfg,&format!("{timestamp}\nnonce\n{raw}\n")).unwrap().parse().unwrap());(headers,raw)
+        };
+        let (h,raw)=encoded(&notice,"REFUND.SUCCESS");
+        assert_eq!(crate::decode_refund_notification(&f.cfg,&h,raw.as_bytes()).unwrap().amount.refund,82);
+        assert!(crate::decode_refund_notification(&f.cfg,&h,format!("{raw} ").as_bytes()).is_err());
+        for change in ["merchant","amount","time","status"] {
+            let mut bad=notice.clone();match change {"merchant"=>bad["mchid"]="other".into(),"amount"=>bad["amount"]["refund"]=101.into(),"time"=>bad["success_time"]=serde_json::Value::Null,_=>bad["refund_status"]="CLOSED".into()};
+            let (h,raw)=encoded(&bad,"REFUND.SUCCESS");assert!(crate::decode_refund_notification(&f.cfg,&h,raw.as_bytes()).is_err());
+        }
+    }
+    #[tokio::test]
+    async fn refund_http_signs_and_verifies_response_before_acceptance() {
+        use std::io::{Read,Write};
+        let mut f=Fixture::new();
+        let request=crate::RefundReq{transaction_id:Some("42000001".into()),out_trade_no:None,out_refund_no:"REF_test".into(),reason:None,notify_url:None,funds_account:None,amount:crate::RefundAmount{refund:82,total:100,currency:"CNY".into()}};
+        for tamper in [false,true] {
+            let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            f.cfg.refund_url=format!("http://{}/v3/refund/domestic/refunds",listener.local_addr().unwrap());
+            let raw=serde_json::json!({"refund_id":"5000001","out_refund_no":"REF_test","transaction_id":"42000001","out_trade_no":"PAY_test","status":"PROCESSING","amount":{"refund":82,"total":100,"currency":"CNY"}}).to_string();
+            let timestamp=chrono::Utc::now().timestamp().to_string();
+            let sig=sign(&f.cfg,&format!("{timestamp}\nnonce\n{raw}\n")).unwrap();
+            let sent=if tamper{format!("{raw} ")}else{raw};
+            let server=std::thread::spawn(move || {
+                let (mut socket,_)=listener.accept().unwrap();socket.set_read_timeout(Some(std::time::Duration::from_secs(10))).unwrap();
+                let mut bytes=Vec::new();let mut b=[0u8;1];
+                while !bytes.ends_with(b"\r\n\r\n"){socket.read_exact(&mut b).unwrap();bytes.push(b[0]);assert!(bytes.len()<16384);}
+                let headers=String::from_utf8(bytes).unwrap();
+                let size:usize=headers.lines().find_map(|line|line.to_ascii_lowercase().strip_prefix("content-length: ").map(str::to_owned)).unwrap().parse().unwrap();
+                let mut body=vec![0;size];socket.read_exact(&mut body).unwrap();
+                write!(socket,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\nWechatpay-Timestamp: {timestamp}\r\nWechatpay-Nonce: nonce\r\nWechatpay-Serial: PUB_KEY_ID_TEST\r\nWechatpay-Signature: {sig}\r\nConnection: close\r\n\r\n{sent}",sent.len()).unwrap();
+                (headers,String::from_utf8(body).unwrap())
+            });
+            let result=crate::refund_once(&reqwest::Client::new(),&f.cfg,&request).await;
+            assert_eq!(result.is_err(),tamper);
+            let (headers,body)=server.join().unwrap();
+            assert!(headers.starts_with("POST /v3/refund/domestic/refunds HTTP/1.1"));
+            assert_eq!(body,serde_json::to_string(&request).unwrap());
+            let auth=headers.lines().find(|v|v.to_ascii_lowercase().starts_with("authorization:")).unwrap();
+            let field=|name:&str|auth.split(&format!("{name}=\"")).nth(1).unwrap().split('"').next().unwrap().to_string();
+            let message=format!("POST\n/v3/refund/domestic/refunds\n{}\n{}\n{body}\n",field("timestamp"),field("nonce_str"));
+            public_key(&f.cfg).unwrap().verify(Pkcs1v15Sign::new::<Sha256>(),&Sha256::digest(message),&STANDARD.decode(field("signature")).unwrap()).unwrap();
+        }
     }
     #[test]
     fn frontend_signature_uses_appid_timestamp_nonce_and_package() {

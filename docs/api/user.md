@@ -1638,3 +1638,15 @@ GET /user/wallet/balance 的 data 包含 available_cents、frozen_cents、status
 内部 `POST /api/v1/internal/charge-orders/{order_no}/end-result`（X-Service-Token）请求 `{order_no,start_command_id,stop_command_id,device_id,port_no,port_id,meter:{charged_wh,charged_seconds,ended_at}}`。校验已持久化的成功启动指令、真实端口、充电状态和时间范围；最终读数、completed 状态、活动端口结束时间、回执及时间线同事务保存。相同结果幂等，读数变化或身份冲突 HTTP 409。晚到重放不能释放已经被下一订单占用的端口。
 
 结束时收费字段保持原值/未知，不以预计金额或零代替正式结算。poll_continue=false 表示设备结束确认已完成，不代表计费/退款完成。gateway 在收到 `{ok:true}` 后发布 charge_ended；user 消费后只失效遥测缓存，不从通知伪造最终状态。
+# 实测计费内部接口（2026-09-26 实现）
+
+- `POST /api/v1/user/wallet/refund` 当前请求要求 `request_id`（客户端每次新申请生成 UUID，网络重试沿用）、`amount_cents`、可选 `reason`。返回 request_id/status/refund_cents/refund_orders，已受理时另含 txn_no；status 为 accepted 或 manual_review。同请求标识变更金额/原因会拒绝。原支付单拆分、余额预留及事件写入同事务提交，异步确认实际到账，不返回“实时到账”。五分钟内第三个有效申请进入风控审核。
+
+- `POST /api/v1/user/charge/:order_id/prepay`：用户 JWT 鉴权，当前 `order_id` 为充电订单号。只恢复本人未付款且原端口预留仍有效的订单。返回 order_no/payment_order_no/amount_cents/hold_expires_at/payment_params；不创建新支付单、不延长付款期限。已保存 prepay_id 时只重新生成调起支付签名，尚未取得 prepay_id 时使用同一原始请求和支付单号重试微信预下单。
+
+- `POST /api/v1/public/refund/wechat/callback`：微信退款公开通知入口，原文 RSA 验签后使用 APIv3 密钥解密。绑定商户、支付单、微信交易号、退款单、微信退款 ID 与金额，成功提交后返回 HTTP 204。验签失败 401，非法通知/状态冲突非 2xx；回调和查询共享幂等入账，迟到异常通知不撤销已确认成功。`WECHAT_REFUND_NOTIFY_URL` 可作为退款申请参数传入；未设置时使用微信商户平台配置的退款通知地址。Caddy 已代理 `/api/v1/public/*`。
+
+- `POST /api/v1/internal/refund-records/execution`：需服务密钥，请求 `refund_no`。核对自动充电退款条件后幂等领取，返回 refund_no/status/transaction_id/refund_cents/total_cents/wechat_refund_id；不执行外部退款。admin 将请求快照持久化后调用微信，最终仍由退款结果接口入账。钱包及人工处理中的退款不会被此接口接管。
+
+- `GET /api/v1/internal/charge-orders/:order_id/metered`：`order_id` 为数字订单 ID，要求服务密钥；仅返回已完成且具备计量和下单规则快照的订单。返回 `charge_order_id/order_no/user_id/started_at/meter/quote`，供 billing 正式核算。
+- `POST /api/v1/internal/charge-orders/:order_id/fee-result`：要求服务密钥。请求为 `calculation_no/source/electric_cents/service_cents/total_cents`，source 为上述完整快照；成功 `data.ok=true`。校验所属用户、支付关联、计量和规则快照及分项合计，原子写入费用、幂等凭据、差额退款和退款 outbox。完全一致的重放成功，冲突重放拒绝。只登记待退款，不伪造退款到账。

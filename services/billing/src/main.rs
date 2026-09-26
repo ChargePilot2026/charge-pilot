@@ -4,10 +4,13 @@
 //! 端点: 9 个内部 API + Stream 消费 charge_ended_stream.billing-cg
 
 mod api;
+mod charge_fee;
+mod fee_delivery;
 mod order_reads;
 mod api_types;
 mod engine;
 mod quote_pricing;
+mod metered_pricing;
 mod split;
 mod stream_consumer;
 
@@ -61,6 +64,7 @@ async fn main() -> AppResult<()> {
     };
 
     stream_consumer::spawn_all(state.clone()).await?;
+    fee_delivery::spawn(state.clone());
 
     let app = build_router(state);
     let addr: SocketAddr = cfg.http_bind.parse().expect("bind addr");

@@ -6,6 +6,11 @@ mod quote_confirmation;
 mod checkout;
 mod charge_start;
 mod charge_end;
+mod charge_fee;
+mod refund_result;
+mod refund_execution;
+mod prepay;
+mod wallet_refund;
 mod login;
 mod session;
 mod profile;
@@ -100,12 +105,16 @@ pub fn build_router(state: AppState) -> Router {
         .route(api_types::paths::AUTH_LOGIN, post(api::login))
         .route(api_types::paths::AUTH_REFRESH, post(session::refresh))
         .route(api_types::paths::AUTH_LOGOUT, post(session::logout))
-        .route(api_types::paths::PAYMENT_WECHAT_CALLBACK, post(payment::wechat_callback));
+        .route(api_types::paths::PAYMENT_WECHAT_CALLBACK, post(payment::wechat_callback))
+        .route(api_contracts::paths::REFUND_WECHAT_CALLBACK,post(refund_result::callback));
 
     let internal_routes = Router::new()
         .route(api_contracts::paths::USER_INTERNAL_END_RESULT,post(charge_end::receive))
+        .route(api_contracts::paths::USER_INTERNAL_METERED_ORDER,get(charge_end::metered_order))
+        .route(api_contracts::paths::USER_INTERNAL_FEE_RESULT,post(charge_fee::receive))
         .route(api_types::paths::INTERNAL_START_RESULT, post(payment::start_result))
         .route(api_types::paths::INTERNAL_REFUND_CLAIM, post(refund::claim))
+        .route(api_contracts::paths::USER_INTERNAL_REFUND_EXECUTION, post(refund_execution::prepare))
         .route(api_types::paths::INTERNAL_REFUND_RESULT, post(refund::result))
         .route(api_types::paths::INTERNAL_REFUND_DETAIL, get(refund::detail))
         .route(api_types::paths::INTERNAL_PAYMENT_DETAIL, get(payment::detail))
@@ -121,6 +130,7 @@ pub fn build_router(state: AppState) -> Router {
         .route(api_types::paths::USER_SCAN_QUOTE, post(api::scan_quote))
         .route(api_types::paths::USER_SCAN_PORT, post(api::scan_port))
         .route(api_types::paths::USER_SCAN_START, post(api::scan_start))
+        .route(api_contracts::paths::USER_CHARGE_PREPAY,post(prepay::resume))
         .route(api_types::paths::USER_SCAN_CANCEL, post(api::scan_cancel))
         .route(api_types::paths::USER_CHARGE_STOP, post(api::charge_stop))
         .route(api_types::paths::USER_CHARGE_ONGOING, get(api::charge_ongoing))
@@ -137,6 +147,7 @@ pub fn build_router(state: AppState) -> Router {
         .route(api_types::paths::USER_WALLET_RECHARGE, post(wallet::recharge))
         .route(api_types::paths::USER_WALLET_TXNS, get(wallet_reads::txns))
         .route(api_types::paths::USER_WALLET_REFUND, post(wallet::refund))
+        .route(api_contracts::paths::USER_WALLET_REFUNDS,get(wallet_refund::list))
         .route(api_types::paths::USER_STATION_NEARBY, get(station::nearby))
         .route(api_types::paths::USER_STATION_DETAIL, get(station::detail))
         .route(api_types::paths::USER_DEVICE_REPORT_FAULT, post(station::report_fault))

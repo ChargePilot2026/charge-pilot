@@ -502,3 +502,8 @@ pub struct PartyAmount {
 `time_of_use_json` 使用数组：`[{"period":"all","start":"00:00","end":"24:00","electric_price_cents":100,"service_price_cents":40}]`。电价及可选服务价单位分/度；服务价缺省使用规则 service_fee_cents_per_kwh。跨午夜用 end 小于 start 表示；时段不可重叠，预计时间窗口必须被覆盖。按北京时间当前分钟开始，将预计电量均匀分布在预计时长中，用整数 Wh 计算并分别四舍五入到分；起步价补足列入服务费。
 
 响应保留 `total_cents,electric_cents,service_cents` 并增加 `pricing`（规则与站点）、`estimated_kwh,estimated_minutes,quote_expires_at,estimation_basis`。这是只读估算；在线判定、功率分档、折扣和正式结算仍未接通。
+# 实测计费当前实现（2026-09-26）
+
+`POST /api/v1/internal/calculate` 当前最小请求为 `{ "order_no":"CHG...", "charge_order_id":123 }`，需服务密钥。旧调用方的 pricing_rule_id/charged_kwh/charged_seconds/peak_kwh/off_kwh 仍可携带，但不参与正式核算。来源改为 user 的已确认计量与下单时计价快照。响应 data 为 calculation_id/calculation_no/electric_cents/service_cents/total_cents。
+
+账单与 fee_delivery 同事务写入；后台可靠投递给 user，失败 30 秒后重试。接口返回表示 billing 账单已保存，不表示 user 已回写或退款到账。订单唯一凭据防止月分区之外的重复计费。当前跨费率时段缺少分段读数会拒绝生成账单，待财务审核功能接入；不得以固定峰谷比例或均匀电量代替实测。

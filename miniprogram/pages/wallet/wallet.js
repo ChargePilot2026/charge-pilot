@@ -16,4 +16,5 @@ Page({
     finally{if(!this._gone && generation===this._generation)this.setData({loading:false});}
   },
   goTxns(){wx.navigateTo({url:'/pages/wallet/txns'});},
+  goRefund(){wx.navigateTo({url:'/pages/wallet/refund'});},
 });

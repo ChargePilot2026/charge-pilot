@@ -39,10 +39,16 @@ pub struct QuoteRequest {
 pub struct CalculateRequest {
     pub order_no: String,
     pub charge_order_id: u64,
+    // Legacy fields remain accepted but are never authoritative for settlement.
+    #[serde(default)]
     pub pricing_rule_id: u64,
+    #[serde(default)]
     pub charged_kwh: f64,
+    #[serde(default)]
     pub charged_seconds: i64,
+    #[serde(default)]
     pub peak_kwh: f64,
+    #[serde(default)]
     pub off_kwh: f64,
 }
 

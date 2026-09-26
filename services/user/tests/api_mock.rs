@@ -37,6 +37,7 @@ fn login_response_round_trip() {
 #[test]
 fn scan_start_response_skip_none() {
     let r = api_types::ScanStartResponse {
+        amount_cents:100,
         order_no: "O1".into(),
         payment_order_no: "P1".into(),
         hold_expires_at: "2030-01-01T00:00:00Z".into(),

@@ -5,6 +5,28 @@ function page(name,app,wx={}){
  const p={...definition,data:structuredClone(definition.data)};p.setData=v=>Object.assign(p.data,v);p.onLoad({code:'DEV00001%3A1'});return p;
 }
 const port=(n,status='idle')=>({port_id:'DEV00001:'+n,port_code:'DEV00001:'+n,device_id:'DEV00001',port_no:n,status});
+const payableQuote=()=>({quote_id:'00000000-0000-4000-8000-000000000001',quote_expires_at:new Date(Date.now()+60000).toISOString(),estimated_kwh:'0.500',estimated_minutes:120,total_cents:70,electric_cents:50,service_cents:20,pricing:{name:'tariff'}});
+const checkout=()=>({order_no:'ORDER_TEST',hold_expires_at:new Date(Date.now()+60000).toISOString(),payment_params:{timeStamp:'1234567890',nonceStr:'nonce',package:'prepay_id=test',signType:'RSA',paySign:'signed'}});
+test('payment cancellation retries same order and payment success only opens server status',async()=>{
+ let starts=0,pays=0;const urls=[];
+ const p=page('scan-result',{globalData:{token:'t'},request:async(_,url)=>{if(url.endsWith('resolve'))return {kind:'port',...port(1)};if(url.endsWith('quote'))return payableQuote();starts++;return checkout();}},
+ {showModal:o=>o.success({confirm:true}),requestPayment:o=>{pays++;assert.equal(o.package,'prepay_id=test');if(pays===1)o.fail({errMsg:'requestPayment:fail cancel'});else o.success({});},navigateTo:o=>urls.push(o.url)});
+ await p.onShow();await p.estimate();await p.pay();assert.equal(starts,1);assert.match(p.data.paymentNotice,/取消/);await p.onShow();assert.equal(p.data.orderNo,'ORDER_TEST');await p.pay();assert.equal(starts,1);assert.equal(pays,2);assert.equal(urls[0],'/pages/charge/charging?order_no=ORDER_TEST');assert.equal(p.data.canRetryPayment,false);
+});
+test('uncertain checkout cannot automatically create another order',async()=>{
+ let starts=0;const p=page('scan-result',{globalData:{token:'t'},request:async(_,url)=>{if(url.endsWith('resolve'))return {kind:'port',...port(1)};if(url.endsWith('quote'))return payableQuote();starts++;throw new Error('network timeout');}},{showModal:o=>o.success({confirm:true}),requestPayment:()=>assert.fail('unexpected payment')});
+ await p.onShow();await p.estimate();await p.pay();await p.pay();await p.load();assert.equal(starts,1);assert.equal(p.data.startAttempted,true);assert.match(p.data.paymentNotice,/timeout/);
+});
+test('expired quote and dismissed confirmation never create payment',async()=>{
+ let starts=0;const p=page('scan-result',{globalData:{token:'t'},request:async(_,url)=>{if(url.endsWith('resolve'))return {kind:'port',...port(1)};if(url.endsWith('quote'))return payableQuote();starts++;}},{showModal:o=>o.success({confirm:false})});
+ await p.onShow();await p.estimate();await p.pay();assert.equal(starts,0);p.data.quote.quote_expires_at='2020-01-01';await p.pay();assert.equal(starts,0);assert.equal(p.data.quote,null);
+});
+test('payment lifecycle resumes without recreating order or losing success',async()=>{
+ let complete;const urls=[];let starts=0;
+ const p=page('scan-result',{globalData:{token:'t'},request:async(_,url)=>{if(url.endsWith('resolve'))return {kind:'port',...port(1)};if(url.endsWith('quote'))return payableQuote();starts++;return checkout();}},
+ {showModal:o=>o.success({confirm:true}),requestPayment:o=>{complete=o.success;p.onHide();},navigateTo:o=>urls.push(o.url)});
+ await p.onShow();await p.estimate();const pending=p.pay();await new Promise(r=>setImmediate(r));await p.pay();complete({});await pending;assert.equal(urls.length,0);await p.onShow();assert.equal(starts,1);assert.equal(urls.length,1);
+});
 test('scanner login and navigation preserve canonical port code without creating orders',async()=>{
  const urls=[];let logins=0;const app={globalData:{token:''},login:async()=>{logins++;app.globalData.token='t';}};
  const p=page('scan',app,{scanCode:opts=>opts.success({result:'DEV00001:1'}),navigateTo:opts=>{urls.push(opts.url);opts.success();}});

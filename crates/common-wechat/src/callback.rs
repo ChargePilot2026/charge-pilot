@@ -51,7 +51,9 @@ fn decrypt(resource: &Resource, key: &str) -> AppResult<Vec<u8>> {
     if key.as_bytes().len() != 32 {
         return Err(AppError::Config("微信 APIv3 密钥必须为 32 字节".into()));
     }
-    if resource.algorithm != "AEAD_AES_256_GCM" || resource.original_type != "transaction" {
+    if resource.algorithm != "AEAD_AES_256_GCM"
+        || !["transaction", "refund"].contains(&resource.original_type.as_str())
+    {
         return Err(invalid());
     }
     let key =
@@ -83,7 +85,9 @@ pub fn decode_payment_notification(
         _ => AppError::Unauthorized("微信支付通知验签失败".into()),
     })?;
     let envelope: Envelope = serde_json::from_str(raw).map_err(|_| invalid())?;
-    if envelope.event_type != "TRANSACTION.SUCCESS" || envelope.resource_type != "encrypt-resource"
+    if envelope.event_type != "TRANSACTION.SUCCESS"
+        || envelope.resource_type != "encrypt-resource"
+        || envelope.resource.original_type != "transaction"
     {
         return Err(invalid());
     }
@@ -114,6 +118,76 @@ pub fn decode_payment_notification(
         return Err(invalid());
     }
     Ok(notification)
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RefundNotification {
+    pub mchid: String,
+    pub out_trade_no: String,
+    pub transaction_id: String,
+    pub out_refund_no: String,
+    pub refund_id: String,
+    pub refund_status: String,
+    pub success_time: Option<chrono::DateTime<chrono::FixedOffset>>,
+    pub amount: RefundNotificationAmount,
+}
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RefundNotificationAmount {
+    pub total: i64,
+    pub refund: i64,
+    pub payer_total: i64,
+    pub payer_refund: i64,
+    pub currency: Option<String>,
+}
+pub fn decode_refund_notification(
+    cfg: &WechatConfig,
+    headers: &reqwest::header::HeaderMap,
+    body: &[u8],
+) -> AppResult<RefundNotification> {
+    let raw = std::str::from_utf8(body).map_err(|_| invalid())?;
+    crate::pay_signing::verify_response(cfg, headers, raw).map_err(|err| match err {
+        AppError::Config(_) => err,
+        _ => AppError::Unauthorized("微信退款通知验签失败".into()),
+    })?;
+    let envelope: Envelope = serde_json::from_str(raw).map_err(|_| invalid())?;
+    if envelope.resource_type != "encrypt-resource"
+        || envelope.resource.original_type != "refund"
+        || !["REFUND.SUCCESS", "REFUND.CLOSED", "REFUND.ABNORMAL"]
+            .contains(&envelope.event_type.as_str())
+    {
+        return Err(invalid());
+    }
+    let n: RefundNotification = serde_json::from_slice(&decrypt(&envelope.resource, &cfg.pay_key)?)
+        .map_err(|_| invalid())?;
+    if n.mchid != cfg.mch_id
+        || envelope.event_type != format!("REFUND.{}", n.refund_status)
+        || n.amount.total <= 0
+        || n.amount.total > i64::from(i32::MAX)
+        || n.amount.refund <= 0
+        || n.amount.refund > n.amount.total
+        || n.amount.payer_total < 0
+        || n.amount.payer_total > n.amount.total
+        || n.amount.payer_refund < 0
+        || n.amount.payer_refund > n.amount.payer_total
+        || n.amount.payer_refund > n.amount.refund
+        || n.amount.currency.as_deref().is_some_and(|s| s != "CNY")
+        || (n.refund_status == "SUCCESS" && n.success_time.is_none())
+        || n.success_time
+            .is_some_and(|v| v.timestamp() > chrono::Utc::now().timestamp() + 300)
+        || [
+            &n.out_trade_no,
+            &n.transaction_id,
+            &n.out_refund_no,
+            &n.refund_id,
+        ]
+        .iter()
+        .any(|s| {
+            s.is_empty() || s.len() > 64 || s.chars().any(|c| c.is_whitespace() || c.is_control())
+        })
+    {
+        return Err(invalid());
+    }
+    Ok(n)
 }
 
 #[cfg(test)]

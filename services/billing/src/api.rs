@@ -4,7 +4,7 @@
 //!   - 直接拼字符串路径(必须引用 `paths::*`)
 //!   - 在 handler 内构造 `serde_json::json!{}` 响应(必须用 DTO + `Json<Envelope<T>>`)
 
-use crate::{api_types as t, engine, split};
+use crate::{api_types as t, split};
 use crate::AppState;
 use axum::{
     extract::{Path, State},
@@ -44,26 +44,8 @@ pub async fn calculate(
     State(st): State<AppState>,
     Json(req): Json<t::CalculateRequest>,
 ) -> AppResult<Json<ApiEnvelope<t::CalculateResponse>>> {
-    let rule = engine::PricingRule::default_default();
-    let minutes = req.charged_seconds / 60;
-    let result = engine::calculate_fee_compat(&rule, req.charged_kwh, minutes, req.peak_kwh, req.off_kwh);
-    let now_month = chrono::Utc::now().format("%Y-%m-01").to_string();
-    let calc_no = IdGen::new("FEE").next();
-    let calc_id: u64 = sqlx::query_scalar(
-        "INSERT INTO fee_calculation (calculation_no, order_no, charge_order_id, user_id, pricing_rule_id, charged_kwh, charged_seconds, peak_kwh, off_kwh, electric_cents, service_cents, total_cents, created_month)
-         VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-    )
-    .bind(&calc_no).bind(&req.order_no).bind(req.charge_order_id).bind(req.pricing_rule_id)
-    .bind(req.charged_kwh).bind(req.charged_seconds).bind(req.peak_kwh).bind(req.off_kwh)
-    .bind(result.electric_cents).bind(result.service_cents).bind(result.total_cents)
-    .bind(&now_month).fetch_one(st.db.pool()).await?;
-    Ok(Json(ok_envelope(t::CalculateResponse {
-        calculation_id: calc_id,
-        calculation_no: calc_no,
-        electric_cents: result.electric_cents,
-        service_cents: result.service_cents,
-        total_cents: result.total_cents,
-    })))
+    let result=crate::charge_fee::calculate(&st,req.charge_order_id,&req.order_no).await?;
+    Ok(Json(ok_envelope(result)))
 }
 
 pub async fn fee_breakdown(

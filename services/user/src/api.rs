@@ -138,7 +138,7 @@ pub async fn scan_start(
     let total_cents = crate::checkout::validate_quote(&quote.amount)?;
     let order_no = IdGen::new("ORD").next();
     let pay_order_no = IdGen::new("PAY").next();
-    let expires_at = chrono::Utc::now() + chrono::Duration::seconds(300);
+    let expires_at = chrono::DateTime::from_timestamp_millis(chrono::Utc::now().timestamp_millis()+300_000).expect("current timestamp");
     let lock = PortLock::new(st.redis_cache.clone());
     let holder = format!("{user_id}:{order_no}");
     if !lock.try_hold(&port.port_id, &holder, 300).await? {
@@ -151,9 +151,21 @@ pub async fn scan_start(
         let id = crate::checkout::persist_pending(&mut tx, user_id, &order_no,
             &pay_order_no, &port, &saved.quote.amount, expires_at).await?;
         crate::quote_confirmation::persist(&mut tx,id,&quote_id,&saved).await?;
+    let jsapi_req = common_wechat::JsapiOrderReq {
+        appid: wechat.appid.clone(),
+        mchid: wechat.mch_id.clone(),
+        description: format!("充电订单 {order_no}"),
+        out_trade_no: pay_order_no.clone(),
+        time_expire: expires_at.to_rfc3339(),
+        attach: Some(serde_json::to_string(&serde_json::json!({"order_id": id})).unwrap_or_default()),
+        notify_url: wechat.notify_url.clone(),
+        amount: common_wechat::JsapiAmount { total: total_cents, currency: "CNY".into() },
+        payer: common_wechat::JsapiPayer { openid: openid.clone() },
+    };
+        sqlx::query("INSERT INTO charge_prepay (charge_order_id,request_json) VALUES (?,?)").bind(id).bind(serde_json::to_value(&jsapi_req)?).execute(&mut *tx).await?;
         Ok::<_, AppError>((tx, id))
     }.await;
-    let (tx, charge_order_id) = match prepared {
+    let (tx, _charge_order_id) = match prepared {
         Ok(value) => value,
         Err(error) => {
             if let Err(release_error) = lock.release_if_match(&port.port_id, &holder).await {
@@ -164,26 +176,8 @@ pub async fn scan_start(
     };
     tx.commit().await?;
 
-    let jsapi_req = common_wechat::JsapiOrderReq {
-        appid: wechat.appid.clone(),
-        mchid: wechat.mch_id.clone(),
-        description: format!("充电订单 {order_no}"),
-        out_trade_no: pay_order_no.clone(),
-        time_expire: expires_at.to_rfc3339(),
-        attach: Some(serde_json::to_string(&serde_json::json!({"order_id": charge_order_id})).unwrap_or_default()),
-        notify_url: wechat.notify_url.clone(),
-        amount: common_wechat::JsapiAmount { total: total_cents, currency: "CNY".into() },
-        payer: common_wechat::JsapiPayer { openid: openid.clone() },
-    };
-    let jsapi_resp = common_wechat::jsapi_create_order(&st.http, wechat, &jsapi_req).await?;
-    let pay_sign = common_wechat::sign_jsapi_pay(wechat, &jsapi_resp.prepay_id)?;
-
-    Ok(Json(crate::api_envelope::Envelope::ok(ScanStartResponse {
-        order_no,
-        payment_order_no: pay_order_no,
-        hold_expires_at: expires_at.to_rfc3339(),
-        payment_params: serde_json::to_value(&pay_sign).unwrap_or(serde_json::Value::Null),
-    }, common_error::current_request_id())))
+    let response=crate::prepay::prepare(&st,user_id,&openid,&order_no).await?;
+    Ok(Json(crate::api_envelope::Envelope::ok(response,common_error::current_request_id())))
 }
 
 // ScanCancelRequest 已在 api_types.rs 定义
