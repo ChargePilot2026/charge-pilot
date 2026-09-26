@@ -1,0 +1,39 @@
+[package]
+name = "billing"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "billing"
+path = "src/lib.rs"
+
+[[bin]]
+name = "billing"
+path = "src/main.rs"
+
+[dependencies]
+common-error = { path = "../../crates/common-error" }
+common-config = { path = "../../crates/common-config" }
+common-db = { path = "../../crates/common-db" }
+common-redis = { path = "../../crates/common-redis" }
+common-auth = { path = "../../crates/common-auth" }
+common-stream = { path = "../../crates/common-stream" }
+common-http = { path = "../../crates/common-http" }
+common-telemetry = { path = "../../crates/common-telemetry" }
+
+tokio.workspace = true
+axum.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+sqlx.workspace = true
+redis.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+tracing.workspace = true
+reqwest.workspace = true
+async-trait.workspace = true
+dotenvy.workspace = true

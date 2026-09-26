@@ -1,0 +1,17 @@
+[package]
+name = "common-stream"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+common-redis = { path = "../common-redis" }
+common-error = { path = "../common-error" }
+common-config = { path = "../common-config" }
+tokio.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+futures.workspace = true

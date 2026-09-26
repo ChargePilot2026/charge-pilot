@@ -1,0 +1,22 @@
+[package]
+name = "common-wechat"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+common-error = { path = "../common-error" }
+common-config = { path = "../common-config" }
+common-auth = { path = "../common-auth" }
+tokio.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+sha2.workspace = true
+hmac.workspace = true
+hex.workspace = true
+uuid.workspace = true
+base64 = "0.22"

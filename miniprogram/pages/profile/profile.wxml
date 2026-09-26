@@ -1,0 +1,31 @@
+<view class="container">
+  <view class="card" wx:if="{{profile}}">
+    <view style="display: flex; align-items: center;">
+      <image src="{{profile.avatar_url || '/images/default-avatar.png'}}" style="width: 96rpx; height: 96rpx; border-radius: 50%;"></image>
+      <view style="margin-left: 24rpx;">
+        <view style="font-size: 18px; font-weight: 500;">{{profile.nickname || '用户'}}</view>
+        <view class="text-secondary">余额 ¥{{profile.balance_cents / 100}}</view>
+      </view>
+    </view>
+  </view>
+
+  <view class="card">
+    <view style="display: flex; justify-content: space-between; padding: 16rpx 0;" bindtap="goCoupons">
+      <text>🎫 我的优惠券</text><text class="text-secondary">›</text>
+    </view>
+    <view style="display: flex; justify-content: space-between; padding: 16rpx 0;" bindtap="goInvoices">
+      <text>📄 我的发票</text><text class="text-secondary">›</text>
+    </view>
+    <view style="display: flex; justify-content: space-between; padding: 16rpx 0;" bindtap="goPhoneBind">
+      <text>📱 绑定手机号</text><text class="text-secondary">›</text>
+    </view>
+    <view style="display: flex; justify-content: space-between; padding: 16rpx 0;" bindtap="goAnnouncements">
+      <text>📢 公告</text><text class="text-secondary">›</text>
+    </view>
+    <view style="display: flex; justify-content: space-between; padding: 16rpx 0;" bindtap="goCustomerService">
+      <text>💬 在线客服</text><text class="text-secondary">›</text>
+    </view>
+  </view>
+
+  <view class="card" bindtap="onLogout" style="text-align: center; color: #999;">退出登录</view>
+</view>

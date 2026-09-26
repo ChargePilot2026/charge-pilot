@@ -1,0 +1,6 @@
+.codewave/
+target/
+.env
+.env.dev
+node_modules/
+admin-web/dist/

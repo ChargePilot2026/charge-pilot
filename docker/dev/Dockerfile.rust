@@ -1,0 +1,10 @@
+FROM rust:1-bookworm
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl pkg-config libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+RUN cargo install watchexec-cli --version 2.7.3 --locked
+
+WORKDIR /workspace
+ENV CARGO_TERM_COLOR=always
+ENTRYPOINT ["sh", "/workspace/docker/dev/watch-rust.sh"]

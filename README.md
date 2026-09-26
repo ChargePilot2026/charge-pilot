@@ -1,134 +1,272 @@
 # ChargePilot · 二轮车充电运营管理系统
 
-> **仓库地址**:[github.com/ChargePilot2026/charge-pilot](https://github.com/ChargePilot2026/charge-pilot)
-> **当前文档版本**:v1.0(2026 Q3 freeze)
-> **面向读者**:后端 / 前端 / 测试 / 运维 / AI 辅助开发协作者 / 客户运营方
+> **状态**: v0.1.0(代码已落地,等待部署调优)
+> **架构**: 5 服务 Rust 后端 + React 19 + antd 6 PC 后台 + 微信小程序
+> **部署形态**: 单客户单部署,每客户独立一套
 
-ChargePilot 是一套**单客户单部署**的二轮车(电动自行车)充电运营管理系统:覆盖充电桩长连接接入、扫码启动 / 停止、按实走表计费、价费分离、多方分账、对账、退款、风控告警、OTA 远程升级、审计与合规。**不面向 C 端用户公网分发**,只服务一家客户的私有云部署(每客户独立一套)。
+---
+
+## 快速开始
+
+本地 Docker 开发（前端 HMR、Rust 自动编译重启）：
+
+```powershell
+docker compose -f compose.dev.yaml up --build
+```
+
+访问 `http://localhost:5173/admin/`，开发账号为 `admin` / `DevAdmin2026!`。
+首次启动会初始化开发数据库；完整配置、调试和数据保留说明见 [Docker 本地开发指南](docs/local-development.md)。
+以下原有一键启动配置用于部署，与 `compose.dev.yaml` 独立。
+
+### 前置依赖
+
+| 工具 | 版本 | 用途 |
+| --- | --- | --- |
+| Rust | 1.80+ | 后端服务 |
+| Node.js | 20+ | PC 后台 + CI |
+| Docker | 24+ | 一键启动 |
+| MySQL | 8.4 | 数据存储 |
+| Redis | 8+ | 业务缓存 + Stream 事件总线 |
+| Caddy | 2.11+ | 反代 + TLS 终止 |
+
+### 一键启动(开发机或客户服务器)
+
+```bash
+# 1. 克隆仓库
+git clone https://github.com/ChargePilot2026/charge-pilot.git
+cd charge-pilot
+
+# 2. 复制 .env 模板
+cp .env.example .env
+# 修改 JWT_SECRET / SERVICE_TOKEN / WECHAT_* / DB_PASSWORD 等
+
+# 3. 启动(自动构建 + 健康检查)
+bash scripts/start.sh          # Linux/macOS
+.\scripts\start.ps1            # Windows PowerShell
+```
+
+启动后:
+
+| 地址 | 内容 |
+| --- | --- |
+| `http://<host>/admin/` | PC 后台(React SPA) |
+| `http://<host>/api/v1/health` | 全栈健康检查 |
+| `9100/TCP` | 设备长连接(直连,不经过 Caddy) |
+| `1883/MQTT` | MQTT 设备长连接 |
 
 ---
 
 ## 仓库结构
 
-本仓库目前**只包含文档**(代码尚未实现,后续按文档落地)。文档分三层:
-
 ```
-docs/
-├── 需求分析.md                 ← 业务层:做什么、合规边界、业务规则
-├── 技术规格.md                 ← 技术实现层:怎么做的全局技术决策
-├── db/                         ← 数据层:5 个 schema,59 张表的字段级定义
-│   ├── user.md      (16 张表)
-│   ├── admin.md     (25 张表)
-│   ├── gateway.md   ( 8 张表)
-│   ├── billing.md   ( 5 张表)
-│   └── worker.md    ( 5 张表)
-├── api/                        ← 接口层:5 个服务的端点级 API 详细设计
-│   ├── user.md      (29 个端点,  对小程序)
-│   ├── admin.md     (112 个端点, 对 PC 后台)
-│   ├── gateway.md   (17 个端点 + TCP/MQTT, 对内部)
-│   ├── billing.md   ( 9 个端点 + Stream 消费约定, 对内部)
-│   └── worker.md    (0 个 HTTP + 12 个定时任务 + 4 个 Stream 消费, 对内部)
-└── cross-reference.md          ← 一致性对账:API 端点 ↔ DB 表 ↔ Stream 三方对照
-```
-
-辅助资料:
-
-```
-examples/                        ← 可直接复制的部署配置
-├── Caddyfile                    ← 反向代理 + TLS 终止 + 静态资源服务
-└── docker-compose.yml           ← 完整 Docker Compose 编排(技术规格 § 10 引用)
-
-tools/                           ← 开发 / 维护工具
-└── check-api-consistency.ts     ← API ↔ DB ↔ Stream 三方一致性检查脚本
+charge-pilot/
+├── Cargo.toml                     # Rust workspace(5 服务 + 9 公共库)
+├── rust-toolchain.toml            # 锁定 Rust 版本
+├── docker-compose.yml             # 一键部署编排
+├── Caddyfile                      # 反代 + TLS
+├── .env.example                   # 环境变量模板
+├── docs/                          # 设计文档(15 章需求 + 15 章技术规格 + 5 个 API + 5 个 DB + 对账)
+│
+├── crates/                        # 公共库
+│   ├── common-error/              # 统一错误码 + 响应包装
+│   ├── common-config/             # 环境配置加载
+│   ├── common-db/                 # sqlx 连接池 + 迁移 + IdGen
+│   ├── common-redis/              # 业务缓存 + Stream + 端口锁
+│   ├── common-auth/               # JWT + Argon2 + ServiceToken + Axum middleware
+│   ├── common-stream/             # Stream Consumer 抽象 + DLQ
+│   ├── common-http/               # 跨服务 HTTP 客户端 + RequestId
+│   ├── common-wechat/             # 微信登录 + 支付 + 退款
+│   └── common-telemetry/          # tracing + OpenTelemetry 初始化
+│
+├── services/                      # 5 个独立 Rust 服务(每个都是独立 cargo package)
+│   ├── gateway/                   # 设备长连接(TCP 9100 / MQTT 1883)+ 17 个内部 HTTP API
+│   ├── user/                      # 小程序 API(8081)+ 30 个端点 + 微信支付回调
+│   ├── admin/                     # PC 后台 API(8082)+ 112 个端点 + SPA 静态托管
+│   ├── billing/                   # 计费引擎 + 多方分账(8084)
+│   └── worker/                    # 12 个定时任务 + Stream 消费
+│
+├── migrations/                    # 5 个 schema 的 61 张表 DDL
+│   ├── gateway_db/0001_init.sql
+│   ├── user_db/0001_init.sql
+│   ├── admin_db/0001_init.sql
+│   ├── billing_db/0001_init.sql
+│   └── worker_db/0001_init.sql
+│
+├── admin-web/                     # React 19 + antd 6 + Vite 6(PC 后台)
+│   ├── src/pages/                 # Dashboard / Orders / Devices / Stations / Users /
+│   │                              # Alerts / Coupons / Billing / Webhooks / OTA /
+│   │                              # Announcements / Settings / Login
+│   ├── src/layouts/MainLayout.tsx # 侧边栏 + 顶栏 + Outlet
+│   └── src/api/client.ts          # axios + envelope 解析
+│
+├── miniprogram/                   # 微信小程序(原生 TS)
+│   ├── app.ts                     # request 封装 + login
+│   ├── pages/                     # 18 个页面
+│   └── README.md                  # 小程序部署指南
+│
+├── tools/
+│   └── check-api-consistency.ts   # API ↔ DB ↔ Stream 三方一致性 CI 检查
+│
+├── scripts/                       # 运维脚本
+│   ├── start.sh / start.ps1       # 一键启动(校验 + 构建 + 部署 + 等就绪)
+│   ├── dev.sh                     # 本地 cargo run
+│   └── check-deploy-config.sh     # Caddy + docker-compose + Redis 配置校验
+│
+├── examples/
+│   ├── docker-compose.yml         # 完整 P0-4 部署范例
+│   └── Caddyfile                  # 完整 P0-4 反代配置
+│
+└── .github/workflows/ci.yml       # GitHub Actions:fmt + clippy + test + build + docker
 ```
 
 ---
 
-## 推荐阅读顺序
+## 核心架构
 
-| 读者 | 阅读顺序 | 时间预算(粗读 / 精读) |
+### 5 个服务 + 5 个 schema
+
+| 服务 | 端口 | 数据库 | 关键职责 |
+| --- | --- | --- | --- |
+| **gateway** | 9100/1883/8083 | gateway_db(8 表) | 设备长连接(TCP/MQTT)+ 遥测落库 + 告警发布 + 启动指令下发 |
+| **user** | 8081 | user_db(18 表) | 小程序 API + 微信支付 + 退款编排 + 个人中心 + 钱包 |
+| **admin** | 8082 | admin_db(25 表) | PC 后台 API(设备/订单/告警/角色/财务/Webhook/OTA/白标)+ SPA 托管 |
+| **billing** | 8084 | billing_db(5 表) | 计费引擎 + 价费分离 + 多方分账 + 提现 |
+| **worker** | 8085 | worker_db(5 表) | 12 个定时任务 + Stream 消费(告警/计费/对账/OTA/退款等) |
+
+### 11 个 Redis Stream 事件总线
+
+```
+device_event_stream        gateway → admin / worker       设备状态 + 快照缓存
+alert_stream               gateway → admin / worker       告警 → Webhook
+charge_started_stream      user → gateway                 微信回调成功后下发启动
+charge_ended_stream        gateway → billing / user       计费 + 关轮询
+refund_required_stream     billing → admin                自动退款触发
+invoice_required_stream    billing → admin                发票审核触发
+webhook_retry_stream       admin → worker                 Webhook 重试
+ota_schedule_stream        admin → worker / gateway       OTA 推送调度
+comp_tx_stream             各服务                          跨服务补偿事务
+coupon_grant_required_stream admin → user                  运营发券
+pricing_rule_changed_stream admin → billing                计费规则变更
+```
+
+### 关键约束(不可逆决策)
+
+1. **拆分充电订单 vs 支付订单**:`charge_order`(纯生命周期)+ `payment_order`(纯支付),**不允许合并**
+2. **单客户部署**:不引入分布式锁 / 不带 `customer_id` / 客户级隔离由部署边界保证
+3. **跨服务数据访问**:完全禁止直连其他 schema,所有跨服务数据通过 HTTP API + Redis Stream
+4. **最终一致性**:用 Saga 模式补偿 + 幂等保证,不用分布式事务
+5. **扫码 ≠ 启动**(P0-1):扫码 / 选端口只展示;启动 = 微信支付回调成功 + `charge_started_stream` → gateway
+6. **端口级三层防护**:逻辑锁(5 min)+ 物理锁(30 s)+ DB 兜底(`active_port_charge` 跨月唯一性)
+7. **Redis 拆 cache / stream**:cache 用 allkeys-lru;stream 必须 noeviction(防止事件丢失)
+8. **退款 SOP**:微信 API 指数退避(1s/5s/30s/2min),`refund_record.status='failed'` → 客户财务后台人工补退
+
+---
+
+## 开发流程
+
+### 本地开发
+
+```bash
+# 启动 5 服务(需先起 MySQL + Redis + 跑迁移)
+bash scripts/dev.sh all
+
+# 单服务调试
+bash scripts/dev.sh user
+
+# PC 后台
+cd admin-web && npm install && npm run dev
+# 访问 http://localhost:5173,proxy 到 admin:8082
+```
+
+### 代码规范
+
+- **Commit**: Conventional Commits(`feat:` / `fix:` / `refactor:` / `test:` / `docs:` / `chore:`),scope 强制如 `feat(api):` / `fix(db):`
+- **Rust**: clippy `-D warnings` + rustfmt 强制
+- **PR**: ≥ 1 人 review,AI 生成代码仍需人工 review
+- **CI**: 5 服务并行 build/test + 部署配置检查 + docker 镜像构建
+
+### 添加新 API 的流程
+
+1. 在 `docs/api/<service>.md` 新增端点定义
+2. 同步更新 `docs/cross-reference.md § 4.x`(端点 ↔ 表)
+3. 在 `services/<service>/src/<module>.rs` 实现 handler + 路由
+4. 同步更新 `docs/db/<schema>.md`(若有新表)
+5. CI 自动跑 `tools/check-api-consistency.ts` 校验一致性
+
+### 添加新 Stream
+
+**禁止**!11 个 Stream 名严格沿用技术规格 § 5.1。新增必须先在 `docs/技术规格.md` + `docs/cross-reference.md § 1` 登记。
+
+---
+
+## 部署清单(客户首次交付)
+
+### 硬件最低
+
+| 资源 | 最低 | 推荐 |
 | --- | --- | --- |
-| **业务 / 产品** | `需求分析.md`(全文) | 2 h / 4 h |
-| **后端开发** | `技术规格.md` → `db/`(各服务对应文件) → `api/`(各服务对应文件) → `cross-reference.md` | 8 h / 20 h |
-| **前端开发**(小程序) | `需求分析.md § 5/6/11` → `技术规格.md § 6/7/12` → `api/user.md` | 4 h / 8 h |
-| **前端开发**(PC 后台) | `需求分析.md § 7-10` → `技术规格.md § 3.3/7` → `api/admin.md` | 5 h / 12 h |
-| **测试 / QA** | `需求分析.md` → `api/`(按场景端点对) → `技术规格.md § 13` | 4 h / 10 h |
-| **运维** | `技术规格.md § 9-12` → `examples/` | 3 h / 6 h |
-| **AI 协作者**(自动开发) | `技术规格.md § 1/2/3/7` → `api/对应服务.md` → `db/对应服务.md` → `cross-reference.md` | 1 h / 3 h(上下文压缩后) |
+| CPU | 4 核 | 8 核 |
+| 内存 | 8 GB | 16 GB |
+| SSD | 100 GB | 500 GB |
+| 公网带宽 | 10 Mbps | 100 Mbps |
 
-> **说明**:全套文档约 472 KB(技术规格 92 KB + DB 设计 226 KB + API 设计 154 KB)。粗读 = 通读理解整体;精读 = 交叉对账 + 标注落地细节,工作量为粗读的 2-3 倍。
+### 软件部署步骤
 
----
+```bash
+# 1. 安装 Docker
+curl -fsSL https://get.docker.com | sh
 
-## 核心约束(必读)
+# 2. 准备域名 A 记录(charge.example.com → 服务器公网 IP)
+# 3. 开放 80/443 + 9100/1883 端口
+# 4. 配置 .env(尤其 JWT_SECRET / SERVICE_TOKEN / WECHAT_* / DB_PASSWORD)
+# 5. 启动
+bash scripts/start.sh
 
-> 这些是经过多轮 grilling 收敛的**不可逆决策**,AI 协作者遇到冲突时**以这些为准**,不要自行扩展或反向提议。
+# 6. 验证
+curl https://charge.example.com/api/v1/health
+```
 
-1. **拆分充电订单 vs 支付订单**:`charge_order` 纯生命周期(开始/结束/电量/状态),`payment_order` 纯支付(微信支付回调),通过 `biz_type + biz_id` 关联,**不允许合并**。
-2. **单客户部署**:每客户独立一套系统,数据库 / 服务 / 域名全部独立。**不引入分布式锁**(单实例)、**不做跨客户数据迁移工具**(需求 § 13.2)、**不带 `customer_id` 列**(由部署边界保证隔离)。
-3. **跨服务数据访问**:完全禁止直连其他 schema。所有跨服务数据通过 HTTP 内部 API + Redis Stream 异步事件获取。
-4. **一致性模型**:分布式事务不实现,用 **Saga 模式补偿**(`comp_tx_stream`)+ **幂等保证**(`event_id` 唯一)。
-5. **退款 SOP**(需求文档 § 8.6 + 技术规格 § 7 + db/user.md § 资金缺口 SOP):微信退款 API 指数退避 4 次(1s / 5s / 30s / 2min),**2 分钟重试用尽 ≠ 退款失败**(→ `refund_record.status='failed'` + 客户财务 PC 后台"售后管理 → 退款失败"人工补退 + 微信商户平台手动发起),settled 后仅 `customer_finance` 角色可退,风控单重(同用户 5 min 内 ≥ 3 次退款触发;**二轮车 1-2 元/单场景下金额阈值无意义,本期不设**),每日 03:00 自动对账。
-6. **风控单重(频次) + 对账日频**:仅订单时间窗内频次触发;**二轮车 1-2 元/单场景下金额阈值形同虚设,本期不设**。差异自动入人工。
-7. **telemetry 保留策略**:原始 1 月 + 15 分钟聚合 3 年 + 小时聚合 3 年(单表 + 双粒度设计,§ 技术规格 § 4.6)。
-8. **扫码 3 端点**:拆为 `/scan/resolve`(路由分发)+ `/scan/port`(单端口详情)+ `/scan/start`(启动,基于 `port_id`),各自限流。
-9. **i18n 预留**:`announcement` / `pricing_template` / `split_template` / `coupon` 加 `_i18n JSON` 字段,本期只填 `zh-CN`。
-10. **Stream 名严格沿用 § 5.1 真实列表**(9 个):`device_event_stream` / `alert_stream` / `charge_started_stream` / `charge_ended_stream` / `refund_required_stream` / `invoice_required_stream` / `webhook_retry_stream` / `ota_schedule_stream` / `comp_tx_stream`。**新增 Stream 必须先在技术规格登记,不允许在文档里随意取名**。
+### 配置微信支付(关键)
 
----
+1. 微信商户平台 → API 安全 → API v3 密钥
+2. 设置回调地址:`https://<domain>/api/v1/public/payment/wechat/callback`
+3. 退款需要 API 证书 + 私钥:放入 `services/user/certs/`(本期占位,部署时配)
 
-## 仓库状态
+### 备份策略(技术规格 § 4.6)
 
-- ✅ 需求分析 v1.0(15 章 + 附录 A)
-- ✅ 技术规格 v1.0(15 章 + 术语表)
-- ✅ 5 个 schema 的 59 张数据库表字段级设计
-- ✅ 5 个服务的 API 详细设计(共 167 个 HTTP 端点 + 任务/Stream 消费约定)
-- ✅ 一致性对账文档(API ↔ DB ↔ Stream)
-- ✅ 部署范例(Docker Compose / Caddyfile)
-- ⏳ 代码实现(尚未开始,等 AI 协作者按文档落地)
+- 每日 `mysqldump` 全量
+- binlog 增量,异地存储
+- RPO ≤ 1 小时,RTO ≤ 4 小时
 
 ---
 
-## 开发流程(技术规格 § 12)
+## 文档导航
 
-- **分支策略**:GitHub Flow(`main` + 短期 feature 分支,不长期保留)
-- **Commit 规范**:Conventional Commits(`feat:` / `fix:` / `refactor:` / `test:` / `docs:` / `chore:`),**强制** `feat(api):` / `feat(db):` / `fix(api):` 等 scope 命名
-- **PR Review**:≥ 1 人 review,AI 生成代码仍需人工 review
-- **CI**:GitHub Actions,跑 `cargo test` + `cargo clippy -D warnings` + `tools/check-api-consistency.ts`
-- **禁止** `--force` push 到 `main`
+| 文档 | 内容 |
+| --- | --- |
+| `docs/需求分析.md` | 业务层:做什么、合规边界 |
+| `docs/技术规格.md` | 技术实现层:怎么做 |
+| `docs/db/*.md` | 数据层:5 schema 61 张表字段级定义 |
+| `docs/api/*.md` | 接口层:5 服务 167 个端点详细设计 |
+| `docs/diagrams/*.md` | 时序图 + 状态机 + 数据血缘 |
+| `docs/runbook/*.md` | 故障排查手册 |
+| `docs/checklists/*.md` | 客户上线 / 等保三级清单 |
+| `docs/cross-reference.md` | API ↔ DB ↔ Stream 一致性对账 |
+| `docs/glossary.md` | 术语表 |
+
+---
+
+## 商业授权
+
+| 许可证 | 文件 | 适用 |
+| --- | --- | --- |
+| **AGPL-3.0**(开源) | [`LICENSE`](./LICENSE) | 学习 / 自评 / 内部部署;衍生作品必须同样开源 |
+| **商业授权** | [`COMMERCIAL_LICENSE.md`](./COMMERCIAL_LICENSE.md) | 付费买断客户;闭源二开 + 集成自有系统 |
 
 ---
 
 ## 反馈
 
-- **文档错误 / 漏写**:开 Issue 标 `docs:` scope
-- **架构决策质疑**:开 Issue 标 `arch:` scope(注意:§ 核心约束 10 条不可逆,质疑前请确认不冲突)
-- **代码实现开工**:开 Issue 标 `feat:` scope,标注依赖哪些文档章节
-
----
-
-## 许可证
-
-本项目采用 **AGPL-3.0 + 商业授权双许可证** 模式:
-
-| 许可证 | 文件 | 适用 |
-| --- | --- | --- |
-| **AGPL-3.0**(开源) | [`LICENSE`](./LICENSE) | 学习 / 自评 / 内部部署;**衍生作品同样需开源** |
-| **商业授权** | [`COMMERCIAL_LICENSE.md`](./COMMERCIAL_LICENSE.md) | 付费买断客户;允许**闭源二开 + 集成自有系统** |
-
-### FAQ
-
-**Q1. 我能直接拿源码部署给客户用吗?**
-可以,只要遵守 AGPL-3.0:**任何衍生版本对外部署时必须提供源码 + 同样开源**。
-
-**Q2. 我能基于 ChargePilot 二开后集成到自己的商业产品吗?**
-可以,但需**先签商业授权**(见 `COMMERCIAL_LICENSE.md`)。未授权情况下,二开作品同样受 AGPL-3.0 约束。
-
-**Q3. 我能用 ChargePilot 做 SaaS 平台化运营(给很多物业客户代运营)吗?**
-**不可以**(双许可证均禁止)。本系统定位**单客户单部署**,SaaS 形态不在授权范围。
-
-**Q4. 国内客户法务担心 AGPL 太严,怎么办?**
-商业授权条款中已说明:签商业授权后二开作品**不**触发 AGPL § 5 / § 13 的"衍生开源"义务。客户法务审核时直接出示 `COMMERCIAL_LICENSE.md` 第 2 条"二开豁免"即可。
-
-**Q5. 商业授权多少钱?**
-不公开标价,需结合客户规模 / 设备数 / 是否集成 / 是否 OEM 单独报价。**报价单 / 联系人于商务洽谈阶段提供**,本仓库不固化联系方式。
+- 文档错误 / 漏写:开 Issue 标 `docs:` scope
+- 架构决策质疑:开 Issue 标 `arch:` scope(注意 § 核心约束 8 条不可逆)
+- 代码实现开工:开 Issue 标 `feat:` scope,标注依赖哪些文档章节

@@ -1,0 +1,156 @@
+# Standalone local development stack; do not merge with docker-compose.yml.
+# All credentials below are for disposable local development data only.
+name: chargepilot-dev
+
+x-rust-env: &rust-env
+  RUNTIME_ENV: dev
+  RUST_LOG: info,sqlx=warn
+  RUST_BACKTRACE: "1"
+  CARGO_BUILD_JOBS: "2"
+  REDIS_CACHE_URL: redis://redis-cache:6379/0
+  REDIS_STREAM_URL: redis://redis-stream:6379/0
+  JWT_SECRET: local-dev-jwt-secret-do-not-use-in-production
+  SERVICE_TOKEN: local-dev-service-token-do-not-use-in-production
+  WECHAT_APPID: wx_local_dev
+  WECHAT_SECRET: local-dev-placeholder
+  WECHAT_MCH_ID: local-dev-placeholder
+  WECHAT_PAY_KEY: "0123456789abcdef0123456789abcdef"
+  WECHAT_NOTIFY_URL: http://localhost:8081/api/v1/public/payment/wechat/callback
+  GATEWAY_INTERNAL_URL: http://gateway:8083
+  USER_INTERNAL_URL: http://user:8081
+  ADMIN_INTERNAL_URL: http://admin:8082
+  BILLING_INTERNAL_URL: http://billing:8084
+
+x-rust: &rust
+  build:
+    context: ./docker/dev
+    dockerfile: Dockerfile.rust
+  init: true
+  working_dir: /workspace
+  stop_grace_period: 15s
+  volumes:
+    - ./Cargo.toml:/workspace/Cargo.toml:ro
+    - ./Cargo.lock:/workspace/Cargo.lock:ro
+    - ./rust-toolchain.toml:/workspace/rust-toolchain.toml:ro
+    - ./crates:/workspace/crates:ro
+    - ./services:/workspace/services:ro
+    - ./docker/dev:/workspace/docker/dev:ro
+    - cargo-registry:/usr/local/cargo/registry
+    - cargo-git:/usr/local/cargo/git
+    - cargo-target:/cargo-target
+  depends_on:
+    mysql: { condition: service_healthy }
+    redis-cache: { condition: service_healthy }
+    redis-stream: { condition: service_healthy }
+
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: chargepilot_root_dev
+      MYSQL_DATABASE: chargepilot
+      MYSQL_USER: chargepilot
+      MYSQL_PASSWORD: chargepilot_dev
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+    ports: ["127.0.0.1:3306:3306"]
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./docker/dev/init-mysql.sh:/docker-entrypoint-initdb.d/10-chargepilot.sh:ro
+      - ./migrations:/migrations:ro
+    healthcheck:
+      # TCP is unavailable during the entrypoint's temporary initialization server.
+      test: ["CMD-SHELL", "MYSQL_PWD=$$MYSQL_PASSWORD mysql --protocol=TCP -h 127.0.0.1 -u chargepilot -D admin_db -e 'SELECT 1 FROM admin_user_role LIMIT 0'"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  redis-cache:
+    image: redis:8-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"]
+    ports: ["127.0.0.1:6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis-stream:
+    image: redis:8-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "128mb", "--maxmemory-policy", "noeviction"]
+    ports: ["127.0.0.1:6380:6379"]
+    volumes: ["redis-stream-data:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  gateway:
+    <<: *rust
+    environment:
+      <<: *rust-env
+      SERVICE_NAME: gateway
+      DATABASE_URL: mysql://chargepilot:chargepilot_dev@mysql:3306/gateway_db
+    ports: ["127.0.0.1:8083:8083", "127.0.0.1:9100:9100", "127.0.0.1:1883:1883"]
+
+  user:
+    <<: *rust
+    environment:
+      <<: *rust-env
+      SERVICE_NAME: user
+      DATABASE_URL: mysql://chargepilot:chargepilot_dev@mysql:3306/user_db
+    ports: ["127.0.0.1:8081:8081"]
+
+  admin:
+    <<: *rust
+    environment:
+      <<: *rust-env
+      SERVICE_NAME: admin
+      DATABASE_URL: mysql://chargepilot:chargepilot_dev@mysql:3306/admin_db
+      ADMIN_BOOTSTRAP_USER: ${DEV_ADMIN_USER:-admin}
+      ADMIN_BOOTSTRAP_PASSWORD: ${DEV_ADMIN_PASSWORD:-DevAdmin2026!}
+    ports: ["127.0.0.1:8082:8082"]
+
+  billing:
+    <<: *rust
+    environment:
+      <<: *rust-env
+      SERVICE_NAME: billing
+      DATABASE_URL: mysql://chargepilot:chargepilot_dev@mysql:3306/billing_db
+    ports: ["127.0.0.1:8084:8084"]
+
+  worker:
+    <<: *rust
+    environment:
+      <<: *rust-env
+      SERVICE_NAME: worker
+      DATABASE_URL: mysql://chargepilot:chargepilot_dev@mysql:3306/worker_db
+    ports: ["127.0.0.1:8085:8085"]
+
+  admin-web:
+    image: node:24-bookworm-slim
+    init: true
+    working_dir: /workspace/admin-web
+    command: ["sh", "-c", "npm ci --no-audit --no-fund && exec npm run dev -- --host 0.0.0.0"]
+    environment:
+      DEV_API_PROXY_TARGET: http://admin:8082
+      DEV_USE_POLLING: "true"
+      # Browser requests stay same-origin; Docker DNS names are proxy-only.
+      VITE_API_BASE: ""
+    ports: ["127.0.0.1:5173:5173"]
+    volumes:
+      - ./admin-web:/workspace/admin-web
+      - node-modules:/workspace/admin-web/node_modules
+      - npm-cache:/root/.npm
+    depends_on:
+      admin: { condition: service_started }
+
+volumes:
+  mysql-data:
+  redis-stream-data:
+  cargo-registry:
+  cargo-git:
+  cargo-target:
+  node-modules:
+  npm-cache:

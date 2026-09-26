@@ -1,0 +1,297 @@
+# ChargePilot · 一键启动(P0-4 重构)
+# 配套文档:docs/技术规格.md § 10.1
+#
+# P0-4 关键修正:
+#   - 容器名统一 chargepilot-* 前缀
+#   - 内部 HTTP 端口(8081 user / 8082 admin / 8083 gateway / 8084 billing)仅 expose
+#   - 仅 gateway 9100/1883(设备长连接)与 caddy 80/443(对外)走 ports
+#   - Redis 拆 redis-cache + redis-stream(P0-3)
+#   - device-net 单独接入,避免设备 → MySQL/Redis 直连
+#
+# 用法:
+#   1. cp .env.example .env
+#   2. bash scripts/start.sh
+#   3. docker compose logs -f
+
+version: '3.8'
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  # ============ MySQL 8.4 LTS(5 schema 共享) ============
+  chargepilot-mysql:
+    image: mysql:8.4
+    container_name: chargepilot-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?required}
+      MYSQL_DATABASE: chargepilot
+      MYSQL_INNODB_BUFFER_POOL_SIZE: 2G
+      MYSQL_MAX_CONNECTIONS: 500
+      MYSQL_CHARACTER_SET_SERVER: utf8mb4
+      MYSQL_COLLATION_SERVER: utf8mb4_unicode_ci
+      TZ: Asia/Shanghai
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./mysql/binlog:/var/lib/mysql/binlog
+      - ./mysql/conf.d:/etc/mysql/conf.d:ro
+    command:
+      - --default-authentication-plugin=caching_sha2_password
+      - --innodb-buffer-pool-size=2G
+      - --max-connections=500
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone=+08:00
+      - --log-bin=/var/lib/mysql/binlog/mysql-bin
+      - --server-id=1
+      - --binlog-format=ROW
+      - --binlog-row-image=FULL
+      - --sync-binlog=1
+      - --expire-logs-days=7
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    logging: *default-logging
+    networks:
+      - internal
+    expose:
+      - "3306"
+
+  # ============ Redis Cache(业务缓存) ============
+  chargepilot-redis-cache:
+    image: redis:8-alpine
+    container_name: chargepilot-redis-cache
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --appendonly=no
+      - --save=
+      - --maxmemory=384mb
+      - --maxmemory-policy=allkeys-lru
+      - --requirepass=${REDIS_PASSWORD:?required}
+    volumes:
+      - redis_cache_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    logging: *default-logging
+    networks:
+      - internal
+    expose:
+      - "6379"
+
+  # ============ Redis Stream(事件总线) ============
+  chargepilot-redis-stream:
+    image: redis:8-alpine
+    container_name: chargepilot-redis-stream
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --appendonly=yes
+      - --appendfsync=everysec
+      - --maxmemory=256mb
+      - --maxmemory-policy=noeviction
+      - --requirepass=${REDIS_STREAM_PASSWORD:?required}
+    volumes:
+      - redis_stream_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_STREAM_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    logging: *default-logging
+    networks:
+      - internal
+    expose:
+      - "6379"
+
+  # ============ gateway 服务 ============
+  chargepilot-gateway:
+    image: chargepilot/gateway:${TAG:-latest}
+    container_name: chargepilot-gateway
+    restart: unless-stopped
+    depends_on:
+      chargepilot-mysql: { condition: service_healthy }
+      chargepilot-redis-cache: { condition: service_healthy }
+      chargepilot-redis-stream: { condition: service_healthy }
+    environment:
+      DATABASE_URL: mysql://chargepilot:${DB_PASSWORD}@chargepilot-mysql:3306/gateway_db
+      REDIS_CACHE_URL: redis://:${REDIS_PASSWORD}@chargepilot-redis-cache:6379/0
+      REDIS_STREAM_URL: redis://:${REDIS_STREAM_PASSWORD}@chargepilot-redis-stream:6379/0
+      RUST_LOG: ${RUST_LOG:-info,sqlx=warn}
+      JWT_SECRET: ${JWT_SECRET:?required}
+      SERVICE_TOKEN: ${SERVICE_TOKEN:?required}
+      TOKIO_WORKER_THREADS: "2"
+    ports:
+      - "9100:9100"
+      - "1883:1883"
+    expose:
+      - "8083"
+    volumes:
+      - ./logs/gateway:/var/log/chargepilot
+    logging: *default-logging
+    networks:
+      - internal
+      - device-net
+
+  # ============ user 服务 ============
+  chargepilot-user:
+    image: chargepilot/user:${TAG:-latest}
+    container_name: chargepilot-user
+    restart: unless-stopped
+    depends_on:
+      chargepilot-mysql: { condition: service_healthy }
+      chargepilot-redis-cache: { condition: service_healthy }
+      chargepilot-redis-stream: { condition: service_healthy }
+      chargepilot-gateway: { condition: service_started }
+    environment:
+      DATABASE_URL: mysql://chargepilot:${DB_PASSWORD}@chargepilot-mysql:3306/user_db
+      REDIS_CACHE_URL: redis://:${REDIS_PASSWORD}@chargepilot-redis-cache:6379/0
+      REDIS_STREAM_URL: redis://:${REDIS_STREAM_PASSWORD}@chargepilot-redis-stream:6379/0
+      RUST_LOG: ${RUST_LOG:-info,sqlx=warn}
+      JWT_SECRET: ${JWT_SECRET}
+      SERVICE_TOKEN: ${SERVICE_TOKEN}
+      WECHAT_APPID: ${WECHAT_APPID}
+      WECHAT_SECRET: ${WECHAT_SECRET}
+      WECHAT_MCH_ID: ${WECHAT_MCH_ID}
+      WECHAT_PAY_KEY: ${WECHAT_PAY_KEY:?required}
+      WECHAT_NOTIFY_URL: ${WECHAT_NOTIFY_URL:-https://${PUBLIC_DOMAIN}/api/v1/public/payment/wechat/callback}
+      GATEWAY_INTERNAL_URL: http://chargepilot-gateway:8083
+      BILLING_INTERNAL_URL: http://chargepilot-billing:8084
+      ADMIN_INTERNAL_URL: http://chargepilot-admin:8082
+    expose:
+      - "8081"
+    volumes:
+      - ./logs/user:/var/log/chargepilot
+    logging: *default-logging
+    networks:
+      - internal
+
+  # ============ admin 服务 ============
+  chargepilot-admin:
+    image: chargepilot/admin:${TAG:-latest}
+    container_name: chargepilot-admin
+    restart: unless-stopped
+    depends_on:
+      chargepilot-mysql: { condition: service_healthy }
+      chargepilot-redis-cache: { condition: service_healthy }
+      chargepilot-redis-stream: { condition: service_healthy }
+      chargepilot-user: { condition: service_started }
+    environment:
+      DATABASE_URL: mysql://chargepilot:${DB_PASSWORD}@chargepilot-mysql:3306/admin_db
+      REDIS_CACHE_URL: redis://:${REDIS_PASSWORD}@chargepilot-redis-cache:6379/0
+      REDIS_STREAM_URL: redis://:${REDIS_STREAM_PASSWORD}@chargepilot-redis-stream:6379/0
+      RUST_LOG: ${RUST_LOG:-info,sqlx=warn}
+      JWT_SECRET: ${JWT_SECRET}
+      SERVICE_TOKEN: ${SERVICE_TOKEN}
+      ADMIN_BOOTSTRAP_USER: ${ADMIN_BOOTSTRAP_USER:-admin}
+      ADMIN_BOOTSTRAP_PASSWORD: ${ADMIN_BOOTSTRAP_PASSWORD:?required}
+      ADMIN_BOOTSTRAP_PHONE: ${ADMIN_BOOTSTRAP_PHONE:-}
+      USER_INTERNAL_URL: http://chargepilot-user:8081
+      GATEWAY_INTERNAL_URL: http://chargepilot-gateway:8083
+      BILLING_INTERNAL_URL: http://chargepilot-billing:8084
+    expose:
+      - "8082"
+    volumes:
+      - ./logs/admin:/var/log/chargepilot
+      - ./admin-web/dist:/app/static:ro
+    logging: *default-logging
+    networks:
+      - internal
+
+  # ============ billing 服务 ============
+  chargepilot-billing:
+    image: chargepilot/billing:${TAG:-latest}
+    container_name: chargepilot-billing
+    restart: unless-stopped
+    depends_on:
+      chargepilot-mysql: { condition: service_healthy }
+      chargepilot-redis-cache: { condition: service_healthy }
+      chargepilot-redis-stream: { condition: service_healthy }
+      chargepilot-admin: { condition: service_started }
+    environment:
+      DATABASE_URL: mysql://chargepilot:${DB_PASSWORD}@chargepilot-mysql:3306/billing_db
+      REDIS_CACHE_URL: redis://:${REDIS_PASSWORD}@chargepilot-redis-cache:6379/0
+      REDIS_STREAM_URL: redis://:${REDIS_STREAM_PASSWORD}@chargepilot-redis-stream:6379/0
+      RUST_LOG: ${RUST_LOG:-info,sqlx=warn}
+      JWT_SECRET: ${JWT_SECRET}
+      SERVICE_TOKEN: ${SERVICE_TOKEN}
+      ADMIN_INTERNAL_URL: http://chargepilot-admin:8082
+    expose:
+      - "8084"
+    volumes:
+      - ./logs/billing:/var/log/chargepilot
+    logging: *default-logging
+    networks:
+      - internal
+
+  # ============ worker 服务 ============
+  chargepilot-worker:
+    image: chargepilot/worker:${TAG:-latest}
+    container_name: chargepilot-worker
+    restart: unless-stopped
+    depends_on:
+      chargepilot-mysql: { condition: service_healthy }
+      chargepilot-redis-cache: { condition: service_healthy }
+      chargepilot-redis-stream: { condition: service_healthy }
+      chargepilot-user: { condition: service_started }
+      chargepilot-admin: { condition: service_started }
+      chargepilot-billing: { condition: service_started }
+    environment:
+      DATABASE_URL: mysql://chargepilot:${DB_PASSWORD}@chargepilot-mysql:3306/worker_db
+      REDIS_CACHE_URL: redis://:${REDIS_PASSWORD}@chargepilot-redis-cache:6379/0
+      REDIS_STREAM_URL: redis://:${REDIS_STREAM_PASSWORD}@chargepilot-redis-stream:6379/0
+      RUST_LOG: ${RUST_LOG:-info,sqlx=warn}
+      JWT_SECRET: ${JWT_SECRET}
+      SERVICE_TOKEN: ${SERVICE_TOKEN}
+      ADMIN_INTERNAL_URL: http://chargepilot-admin:8082
+      USER_INTERNAL_URL: http://chargepilot-user:8081
+      GATEWAY_INTERNAL_URL: http://chargepilot-gateway:8083
+    expose:
+      - "8085"
+    volumes:
+      - ./logs/worker:/var/log/chargepilot
+    logging: *default-logging
+    networks:
+      - internal
+
+  # ============ Caddy 反代 + TLS 终止 ============
+  chargepilot-caddy:
+    image: caddy:2.11-alpine
+    container_name: chargepilot-caddy
+    restart: unless-stopped
+    depends_on:
+      chargepilot-user: { condition: service_started }
+      chargepilot-admin: { condition: service_started }
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    logging: *default-logging
+    networks:
+      - internal
+
+networks:
+  internal:
+    driver: bridge
+  device-net:
+    driver: bridge
+
+volumes:
+  mysql_data:
+  redis_cache_data:
+  redis_stream_data:
+  caddy_data:
+  caddy_config:

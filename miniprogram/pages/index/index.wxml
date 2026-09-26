@@ -1,0 +1,47 @@
+<view class="container">
+  <!-- 公告轮播 -->
+  <view class="card" wx:if="{{announcements.length > 0}}">
+    <view class="tag tag-orange">公告</view>
+    <text class="text-secondary" style="margin-left: 8rpx;">{{announcements[0].title}}</text>
+  </view>
+
+  <!-- 钱包余额 -->
+  <view class="card" bindtap="goWallet" wx:if="{{balance_cents > 0}}">
+    <view style="display: flex; justify-content: space-between; align-items: center;">
+      <view>
+        <view class="text-secondary">钱包余额</view>
+        <view style="font-size: 32px; font-weight: 600; color: #1677ff;">¥{{balance_cents / 100}}</view>
+      </view>
+      <view class="tag tag-blue">充值</view>
+    </view>
+  </view>
+
+  <!-- 充电中卡片 -->
+  <view class="card" bindtap="goOngoing" wx:if="{{ongoing}}">
+    <view style="display: flex; justify-content: space-between;">
+      <view>
+        <view class="text-secondary">充电中</view>
+        <view style="font-size: 18px; font-weight: 500;">订单 {{ongoing.order_no}}</view>
+      </view>
+      <view class="tag tag-green">查看</view>
+    </view>
+  </view>
+
+  <!-- 主操作:扫码 -->
+  <view class="card" style="text-align: center; padding: 80rpx 0;">
+    <view style="font-size: 64rpx;">⚡</view>
+    <view style="margin: 16rpx 0;">扫码充电</view>
+    <view class="btn-primary" style="margin: 32rpx 80rpx 0;" bindtap="onScanTap">扫一扫</view>
+    <view class="text-secondary" style="margin-top: 16rpx;">对准充电桩上的二维码</view>
+  </view>
+
+  <!-- 快捷入口 -->
+  <view class="card">
+    <view style="display: flex; justify-content: space-around;">
+      <view bindtap="goWallet"><view style="font-size: 40rpx;">💰</view><view class="text-secondary">钱包</view></view>
+      <view bindtap="goOngoing" wx:if="{{ongoing}}"><view style="font-size: 40rpx;">🔋</view><view class="text-secondary">充电中</view></view>
+      <view><view style="font-size: 40rpx;">🎫</view><view class="text-secondary">优惠券</view></view>
+      <view><view style="font-size: 40rpx;">📞</view><view class="text-secondary">客服</view></view>
+    </view>
+  </view>
+</view>

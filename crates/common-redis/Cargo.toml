@@ -1,0 +1,20 @@
+[package]
+name = "common-redis"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+redis.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+common-error = { path = "../common-error" }
+common-config = { path = "../common-config" }
+tokio.workspace = true
+tracing.workspace = true
+async-trait.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+once_cell.workspace = true
+rand = "0.8"
