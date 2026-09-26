@@ -1,4 +1,5 @@
 import axios, { AxiosError, AxiosInstance } from 'axios';
+import { apiErrorMessage } from './errorMessage';
 
 const BASE = import.meta.env.VITE_API_BASE || '';
 
@@ -32,6 +33,7 @@ http.interceptors.response.use(
     return resp;
   },
   (err: AxiosError) => {
+    err.message = apiErrorMessage(err.response?.status, err.response?.data, err.code);
     if (err.response?.status === 401) {
       localStorage.removeItem('cp_token');
       window.location.href = '/admin/login';

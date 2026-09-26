@@ -9,6 +9,8 @@ mod charge_end;
 mod charge_fee;
 mod refund_result;
 mod refund_execution;
+mod refund_review;
+mod manual_refund;
 mod prepay;
 mod wallet_refund;
 mod login;
@@ -115,6 +117,10 @@ pub fn build_router(state: AppState) -> Router {
         .route(api_types::paths::INTERNAL_START_RESULT, post(payment::start_result))
         .route(api_types::paths::INTERNAL_REFUND_CLAIM, post(refund::claim))
         .route(api_contracts::paths::USER_INTERNAL_REFUND_EXECUTION, post(refund_execution::prepare))
+        .route(api_contracts::paths::USER_INTERNAL_REFUND_LIST, get(refund::list))
+        .route(api_contracts::paths::USER_INTERNAL_REFUND_APPROVE, post(refund_review::receive))
+        .route(api_contracts::paths::USER_INTERNAL_REFUND_REJECT, post(refund_review::reject_receive))
+        .route(api_contracts::paths::USER_INTERNAL_ORDER_REFUND_CREATE,post(manual_refund::create))
         .route(api_types::paths::INTERNAL_REFUND_RESULT, post(refund::result))
         .route(api_types::paths::INTERNAL_REFUND_DETAIL, get(refund::detail))
         .route(api_types::paths::INTERNAL_PAYMENT_DETAIL, get(payment::detail))

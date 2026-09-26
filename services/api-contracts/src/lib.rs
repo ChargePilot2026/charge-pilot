@@ -57,6 +57,10 @@ pub mod paths {
     pub const USER_INTERNAL_REFUND_CLAIM: &str = "/api/v1/internal/refund-records/claim";
     pub const USER_INTERNAL_REFUND_RESULT: &str = "/api/v1/internal/refund-records/:refund_id/result";
     pub const USER_INTERNAL_REFUND_EXECUTION: &str = "/api/v1/internal/refund-records/execution";
+    pub const USER_INTERNAL_REFUND_LIST: &str = "/api/v1/internal/refund-records";
+    pub const USER_INTERNAL_REFUND_APPROVE: &str = "/api/v1/internal/refund-records/:refund_id/approve";
+    pub const USER_INTERNAL_REFUND_REJECT: &str = "/api/v1/internal/refund-records/:refund_id/reject";
+    pub const USER_INTERNAL_ORDER_REFUND_CREATE: &str = "/api/v1/internal/orders/:order_id/refunds";
     pub const USER_INTERNAL_START_RESULT: &str = "/api/v1/internal/charge-orders/:order_id/start-result";
     pub const USER_INTERNAL_END_RESULT: &str = "/api/v1/internal/charge-orders/:order_id/end-result";
     pub const USER_INTERNAL_METERED_ORDER: &str = "/api/v1/internal/charge-orders/:order_id/metered";

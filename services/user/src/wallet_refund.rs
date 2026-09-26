@@ -15,13 +15,17 @@ pub async fn list(axum::extract::State(st):axum::extract::State<crate::AppState>
 }
 async fn list_for_user(pool:&sqlx::MySqlPool,uid:u64,page:u32,size:u32)->AppResult<Value>{
     let mut tx=pool.begin().await?;
-    let total:i64=sqlx::query_scalar("SELECT COUNT(*) FROM wallet_refund_request WHERE user_id=?").bind(uid).fetch_one(&mut *tx).await?;
-    let rows=sqlx::query("SELECT CAST(request_id AS CHAR CHARACTER SET utf8mb4) AS request_id,amount_cents,reason,response_json,created_at FROM wallet_refund_request WHERE user_id=? ORDER BY created_at DESC,request_id DESC LIMIT ? OFFSET ?").bind(uid).bind(size).bind(u64::from(page-1)*u64::from(size)).fetch_all(&mut *tx).await?;
+    let data=list_in_transaction(&mut tx,uid,page,size).await?;
+    tx.commit().await?;Ok(data)
+}
+async fn list_in_transaction(tx:&mut sqlx::Transaction<'_,sqlx::MySql>,uid:u64,page:u32,size:u32)->AppResult<Value>{
+    let total:i64=sqlx::query_scalar("SELECT COUNT(*) FROM wallet_refund_request WHERE user_id=?").bind(uid).fetch_one(&mut **tx).await?;
+    let rows=sqlx::query("SELECT CAST(request_id AS CHAR CHARACTER SET utf8mb4) AS request_id,amount_cents,reason,response_json,created_at FROM wallet_refund_request WHERE user_id=? ORDER BY created_at DESC,request_id DESC LIMIT ? OFFSET ?").bind(uid).bind(size).bind(u64::from(page-1)*u64::from(size)).fetch_all(&mut **tx).await?;
     let mut items=Vec::new();
     for row in rows {
         let id:String=row.try_get("request_id")?;
         let saved:Option<Value>=row.try_get("response_json")?;
-        let parts=sqlx::query("SELECT r.refund_no,r.refund_cents,r.status,r.failure_reason,r.completed_at FROM wallet_refund_part p JOIN refund_record r ON r.id=p.refund_record_id WHERE p.request_id=? AND r.user_id=? AND r.deleted_at IS NULL ORDER BY r.id").bind(&id).bind(uid).fetch_all(&mut *tx).await?;
+        let parts=sqlx::query("SELECT r.refund_no,r.refund_cents,r.status,r.failure_reason,r.completed_at FROM wallet_refund_part p JOIN refund_record r ON r.id=p.refund_record_id WHERE p.request_id=? AND r.user_id=? AND r.deleted_at IS NULL ORDER BY r.id").bind(&id).bind(uid).fetch_all(&mut **tx).await?;
         let mut orders=Vec::new();let mut refunded=0i64;let mut statuses=Vec::new();
         for part in parts {
             let status:String=part.try_get("status")?;let amount:i64=part.try_get("refund_cents")?;
@@ -33,7 +37,7 @@ async fn list_for_user(pool:&sqlx::MySqlPool,uid:u64,page:u32,size:u32)->AppResu
         let status=if saved.as_ref().and_then(|v|v.get("status")).and_then(Value::as_str)==Some("manual_review"){"manual_review"}else if statuses.is_empty() || statuses.iter().any(|s|s=="failed"){"needs_review"}else if refunded==amount && statuses.iter().all(|s|s=="success"){"success"}else if statuses.iter().any(|s|s=="processing" || s=="success"){"processing"}else{"pending"};
         items.push(json!({"request_id":id,"amount_cents":amount,"refunded_cents":refunded,"status":status,"reason":row.try_get::<Option<String>,_>("reason")?,"created_at":row.try_get::<chrono::NaiveDateTime,_>("created_at")?.and_utc().to_rfc3339(),"refund_orders":orders}));
     }
-    tx.commit().await?;Ok(json!({"user_id":uid.to_string(),"items":items,"total":total,"page":page,"page_size":size}))
+    Ok(json!({"user_id":uid.to_string(),"items":items,"total":total,"page":page,"page_size":size}))
 }
 pub async fn apply(
     tx: &mut sqlx::Transaction<'_, sqlx::MySql>,
@@ -99,6 +103,7 @@ pub async fn apply(
             let mut reserved = refunded;
             let mut successful = 0i64;
             for (amount, status) in &refunds {
+                if status=="rejected"{continue;}
                 if *amount <= 0 {
                     return Err(conflict());
                 }
@@ -216,6 +221,12 @@ mod tests {
         assert_eq!(parts.len(), 2);
         assert_eq!(parts[0]["refund_cents"], 200);
         assert_eq!(parts[1]["refund_cents"], 50);
+        let listing=list_in_transaction(&mut tx,uid,1,20).await.unwrap();
+        assert_eq!(listing["total"],1);
+        assert_eq!(listing["items"][0]["status"],"pending");
+        assert_eq!(listing["items"][0]["refunded_cents"],0);
+        assert_eq!(listing["items"][0]["refund_orders"].as_array().unwrap().len(),2);
+        assert_eq!(list_in_transaction(&mut tx,uid+1,1,20).await.unwrap()["total"],0);
         let reserved: (i64, i64) =
             sqlx::query_as("SELECT balance_cents,frozen_cents FROM wallet_account WHERE id=?")
                 .bind(wid)
@@ -251,6 +262,9 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(settled, (250, 0));
+        let listing=list_in_transaction(&mut tx,uid,1,20).await.unwrap();
+        assert_eq!(listing["items"][0]["status"],"success");
+        assert_eq!(listing["items"][0]["refunded_cents"],250);
         let second = crate::wallet::WalletRefundReq {
             request_id: uuid::Uuid::new_v4().to_string(),
             amount_cents: 100,
@@ -265,6 +279,10 @@ mod tests {
         };
         let review = apply(&mut tx, uid, &third).await.unwrap();
         assert_eq!(review["status"], "manual_review");
+        let listing=list_in_transaction(&mut tx,uid,1,20).await.unwrap();
+        assert_eq!(listing["total"],3);
+        assert_eq!(listing["items"].as_array().unwrap().iter().filter(|item|item["status"]=="manual_review").count(),1);
+        assert_eq!(list_in_transaction(&mut tx,uid,2,2).await.unwrap()["items"].as_array().unwrap().len(),1);
         let frozen: (i64, i64, String) = sqlx::query_as(
             "SELECT balance_cents,frozen_cents,status FROM wallet_account WHERE id=?",
         )

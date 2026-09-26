@@ -69,6 +69,8 @@ pub struct OrderPage {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct OrderDetail {
+    #[serde(default)]
+    pub refund_applicant_id: Option<String>,
     #[serde(flatten)]
     pub order: OrderSummary,
     pub payment_order_id: Option<u64>,

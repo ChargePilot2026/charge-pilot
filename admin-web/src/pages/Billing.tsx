@@ -1,17 +1,16 @@
 import { useEffect, useState } from 'react';
 import { Tabs, Table, Tag, Typography } from 'antd';
 import { apiGet } from '../api/client';
+import Refunds from './Refunds';
 
 const { Title } = Typography;
 
 export default function BillingPage() {
   const [settlements, setSettlements] = useState<any[]>([]);
-  const [refunds, setRefunds] = useState<any[]>([]);
   const [invoices, setInvoices] = useState<any[]>([]);
 
   useEffect(() => {
     apiGet<{ items: any[] }>('/api/v1/admin/billing/settlements').then(d => setSettlements(d.items || [])).catch(() => {});
-    apiGet<{ items: any[] }>('/api/v1/admin/billing/refunds').then(d => setRefunds(d.items || [])).catch(() => {});
     apiGet<{ items: any[] }>('/api/v1/admin/billing/invoices').then(d => setInvoices(d.items || [])).catch(() => {});
   }, []);
 
@@ -37,16 +36,7 @@ export default function BillingPage() {
           {
             key: 'refunds',
             label: '退款审核',
-            children: (
-              <Table rowKey="id" dataSource={refunds}
-                columns={[
-                  { title: '退款单号', dataIndex: 'refund_no', width: 220 },
-                  { title: '金额(分)', dataIndex: 'refund_cents' },
-                  { title: '状态', dataIndex: 'status' },
-                  { title: '原因', dataIndex: 'reason' },
-                ]}
-              />
-            ),
+            children: <Refunds />,
           },
           {
             key: 'invoices',

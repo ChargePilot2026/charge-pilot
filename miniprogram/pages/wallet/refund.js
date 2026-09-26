@@ -15,7 +15,8 @@ Page({
  async load(reset=true){
   if(this._refunding)return;
   const generation=++this._generation,session=refundApp._generation;
-  if(!refundApp.globalData.token){this._pending=null;this._storageKey=null;this.setData({needsLogin:true,items:[],total:0,loading:false,pendingRetry:false,amount:'',reason:''});return;}
+  if(this._ownerSession!==session){this._pending=null;this._storageKey=null;this.setData({items:[],total:0,page:0,pendingRetry:false,amount:'',reason:'',notice:'',error:''});}
+  if(!refundApp.globalData.token){this._pending=null;this._storageKey=null;this.setData({needsLogin:true,items:[],total:0,loading:false,pendingRetry:false,amount:'',reason:'',notice:'',error:''});return;}
   const page=reset?1:this.data.page+1;
   this.setData({loading:true,error:'',needsLogin:false,...(reset?{items:[],total:0,page:0}:{})});
   try{
@@ -26,8 +27,8 @@ Page({
    const saved=wx.getStorageSync(this._storageKey);
    this._pending=saved && typeof saved.request_id==='string' && Number.isSafeInteger(saved.amount_cents) ? saved:null;
    this.setData({items:(reset?[]:this.data.items).concat(result.items.map(view)),total:result.total,page,pendingRetry:!!this._pending,...(this._pending?{amount:(this._pending.amount_cents/100).toFixed(2),reason:this._pending.reason || ''}:{})});
-  }catch(e){if(!this._gone && generation===this._generation)this.setData({error:e.message || '退款记录读取失败'});}
-  finally{if(!this._gone && generation===this._generation)this.setData({loading:false});}
+  }catch(e){if(!this._gone && generation===this._generation && session===refundApp._generation)this.setData({error:e.message || '退款记录读取失败'});}
+  finally{if(!this._gone && generation===this._generation && session===refundApp._generation)this.setData({loading:false});}
  },
  inputAmount(e){if(!this._pending && !this._refunding)this.setData({amount:e.detail.value});},
  inputReason(e){if(!this._pending && !this._refunding)this.setData({reason:e.detail.value});},
@@ -37,18 +38,18 @@ Page({
   const amount=this._pending?.amount_cents || cents(this.data.amount);
   if(!amount){this.setData({error:'请输入有效退款金额，最多两位小数'});return;}
   this._refunding=true;this.setData({refunding:true,error:'',notice:''});
-  const session=refundApp._generation,key=this._storageKey;
+  const session=refundApp._generation,key=this._storageKey;let accepted=false;
   try{
    const confirmed=await new Promise(resolve=>wx.showModal({title:'确认钱包退款',content:'申请原路退回 '+money(amount)+'，对应余额将预留，到账状态以退款进度为准。',success:r=>resolve(r.confirm),fail:()=>resolve(false)}));
    if(!confirmed || this._gone || session!==refundApp._generation)return;
-   if(!this._pending){this._pending={request_id:requestId(),amount_cents:amount,reason:this.data.reason.trim() || null};wx.setStorageSync(key,this._pending);this.setData({pendingRetry:true});}
+   if(!this._pending){const pending={request_id:requestId(),amount_cents:amount,reason:this.data.reason.trim() || null};wx.setStorageSync(key,pending);this._pending=pending;this.setData({pendingRetry:true});}
    const result=await refundApp.request('POST','/user/wallet/refund',this._pending);
    if(!result || result.request_id!==this._pending.request_id || !['accepted','manual_review'].includes(result.status))throw new Error('申请结果暂不确定，请重试核实同一申请');
-   wx.removeStorageSync(key);this._pending=null;
+   wx.removeStorageSync(key);this._pending=null;accepted=true;
    if(!this._gone && session===refundApp._generation)this.setData({pendingRetry:false,amount:'',reason:'',notice:result.status==='manual_review'?'申请已进入人工审核，请查看退款进度。':'申请已受理，退款将按原充值支付单处理。'});
   }catch(e){
    if(e.status>=200 && e.status<500 && ![401,403].includes(e.status)){wx.removeStorageSync(key);this._pending=null;}
    if(!this._gone && session===refundApp._generation)this.setData({pendingRetry:!!this._pending,error:e.message || '结果暂不确定，请重试同一申请'});
-  }finally{this._refunding=false;if(!this._unloaded)this.setData({refunding:false});if(!this._gone && session===refundApp._generation && !this._pending)await this.load(true);}
+  }finally{this._refunding=false;if(!this._unloaded)this.setData({refunding:false});if(!this._gone && session===refundApp._generation && accepted)await this.load(true);}
  },
 });

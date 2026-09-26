@@ -190,6 +190,8 @@ admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故�
 | GET | `/api/v1/admin/billing/refunds` | 角色 | 退款审核列表(从 user_db 通过 HTTP 拉,需双签到 `refund_record`) |
 | POST | `/api/v1/admin/billing/refunds/{refund_id}/approve` | 角色 | 退款审核通过(双签) |
 | POST | `/api/v1/admin/billing/refunds/{refund_id}/reject` | 角色 | 退款审核拒绝(填理由) |
+| POST | `/api/v1/admin/billing/refunds/{refund_no}/retry` | finance.refund.retry | 唤醒异常自动退款任务，保留原退款单号、阶段及请求/结果快照 |
+| POST | `/api/v1/admin/orders/{order_id}/refunds` | 客户财务 | 从终态订单创建人工退款申请并记录申请人的第一签 |
 | GET | `/api/v1/admin/billing/invoices` | 角色 | 发票审核列表(从 `invoice_review` 查) |
 | POST | `/api/v1/admin/billing/invoices/{invoice_id}/approve` | 角色 | 发票审核通过(同步通知 user 服务开票) |
 | POST | `/api/v1/admin/billing/invoices/{invoice_id}/reject` | 角色 | 发票审核拒绝(填理由 + 通知用户) |
@@ -938,27 +940,33 @@ admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故�
 
 ### `POST /api/v1/admin/billing/refunds/{refund_id}/approve`
 
-**鉴权**:[角色] `refund.review`(客户财务)
+人工申请入口：`POST /api/v1/admin/orders/{order_id}/refunds` 要求有效 customer_finance 角色及 order.read、order.refund.create、order.refund.review 三项权限。请求 request_id（UUID，重试沿用）、amount_cents（正整数）、reason（1–255 字符，无控制字符）。只允许终态且有有效微信支付的充电订单；总退款上限包含成功退款和已占用额度，审核拒绝不占用。创建退款记录与申请人的第一签同事务提交，不生成执行事件，等待第二人审核。返回 request_id/refund_no/created；同 UUID 跨账号、订单或修改金额/原因会拒绝。订单详情中的 refund_applicant_id 仅在具备权限且符合基本状态时返回，用于显示入口；后端创建时再校验资金和当前订单状态。
+
+> 当前退款查询：`GET /api/v1/admin/billing/refunds` 校验数据库中的 `finance.refund.read` 权限；支持 page（默认 1）、page_size（默认 20，最多 100）、status（pending/processing/success/failed）、refund_no（完整单号）。通过 user 内部退款列表读取实际记录，返回 items/total/page/page_size；ID 字段以字符串返回。下游失败显式报错，不转换为空列表。该查询不代表下述双签审核已完成实现。
+
+> 异常任务恢复：列表另含 task（stage、attempts、last_error、scheduled_at）和 can_retry。`POST /api/v1/admin/billing/refunds/{refund_no}/retry` 请求 `{ "reason": "已核实的异常及重试原因" }`，原因必填、最多 255 字符且不含控制字符；数据库实时校验 `finance.refund.retry`。仅允许有 last_error 的 queued/querying/reporting 任务，任务行锁内调整 scheduled_at 并写 audit_log；已到执行时间则返回 already_queued=true。不创建新退款、不更换快照、不修改阶段；done/manual_review 返回 409，无任务返回 404。返回 queued/refund_no/stage/already_queued。该操作不替代双签审核或失败退款重新申请。
+
+**鉴权**:[角色] `order.refund.review`，且当前数据库角色代码必须为 `customer_finance`；路径参数当前使用完整退款单号。
 **双签**:**必须** 2 个不同 `customer_finance` 账号先后审核(防单人舞弊)
 
 **请求体**:
 ```json
 {
-  "approve_comment": "同意,设备故障经核实全额退",
-  "second_signature": "sig_customer_finance_2"  // 第二签账号的签名标识(由前端传 second admin's JWT)
+  "approve_comment": "同意,设备故障经核实全额退"
 }
 ```
 
 **业务逻辑**:
-1. 校验 `refund_id` 通过 HTTP 调 user 服务的退款详情查询接口(具体路径见 `docs/api/user.md`)拿到详情
-2. 校验 `refund.status='pending_review'`,否则返回 `2012`(已审核)
-3. **双签校验**:
-   - `first_signer` = 当前账号(从 JWT 拿 `user_id`)
-   - `second_signer` = 从请求体签名解析(本期简化为另一账号的 JWT,前端带 `X-Second-Signer-JWT` header)
-   - 两个签名必须**不同账号**(`first_signer != second_signer`)
-4. HTTP 调 user 服务的退款审核通过接口(具体路径见 `docs/api/user.md`)→ user 服务走微信退款 API + 更新 `refund_record.status='approved'`
-5. UPDATE `admin_db.invoice_review` 同 ID 关联记录(若有)→ 写 `audit_log` + `finance_reconcile_log`
-6. 推小程序消息"退款已审核通过"
+1. 两名财务人员各自登录、先后提交审核。身份只取当前 JWT，不接受客户端指定第二人身份或交换第二人的 JWT；提交前实时校验账号、角色及权限，第二签同时复核第一签账号仍有效。
+2. 当前支持尚未执行、未被领取的 pending 充电退款，订单须为 completed/failed/cancelled，支付身份、支付金额、已有退款总额必须一致且不超付。钱包风控审核及失败退款重新申请不在此接口范围内。
+3. user_db.refund_review 保存第一签、意见及不可变退款快照；返回 review_status=awaiting_second。同一账号原意见重放只返回原审核状态，不算第二签；变更意见或退款快照返回冲突。
+4. 第二个不同财务账号签署后，第二签与 refund_required 出站事件同事务提交，返回 review_status=approved。退款执行状态仍保持 pending，后续由持久化任务查询/提交微信、核实实际结果。
+5. 已有第一签但尚无第二签时，执行入口拒绝领取。完整双签可放行经审核的终态充电订单退款，执行时再次核对审核快照及资金上限。
+6. user 记录两次审核的订单时间线；admin 留存审核审计。消息通知仍待实现。
+
+### `POST /api/v1/admin/billing/refunds/{refund_no}/reject`
+
+使用 `order.refund.review` 权限且必须为有效 customer_finance 账号。请求 `{ "reason": "拒绝依据" }`，原因必填、最多 255 字符、禁止控制字符。当前只允许已有第一签、尚无第二签且未被执行或领取的 pending 充电退款；拒绝后退款执行状态为 rejected，保存操作人、原因及时间线，停止已有自动任务。相同操作人和原因重放返回原结果，不能重新审批或执行该退款；拒绝金额不再占用后续申请的可退额度。钱包风控退款拒绝尚未接入。
 
 **错误码**:
 - `2012`: 退款已审核

@@ -124,6 +124,7 @@ pub async fn apply(
         return Err(conflict());
     }
     for (amount, status) in refunds {
+        if status=="rejected"{continue;}
         if amount <= 0 {
             return Err(conflict());
         }

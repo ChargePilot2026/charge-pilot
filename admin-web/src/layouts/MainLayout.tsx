@@ -1,5 +1,5 @@
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { Layout, Menu, Avatar, Dropdown, Space, Typography } from 'antd';
+import { Layout, Menu, Avatar, Button, Dropdown, Typography } from 'antd';
 import {
   DashboardOutlined, ShoppingOutlined, DesktopOutlined, EnvironmentOutlined,
   TeamOutlined, AlertOutlined, GiftOutlined, AccountBookOutlined,
@@ -63,17 +63,18 @@ export default function MainLayout() {
         <Header className="layout-header">
           <Text strong style={{ fontSize: 16 }}>ChargePilot · 二轮车充电运营管理</Text>
           <Dropdown
+            trigger={['click']}
             menu={{
               items: [
                 { key: 'logout', icon: <LogoutOutlined />, label: '退出', onClick: onLogout },
               ],
             }}
           >
-            <Space style={{ cursor: 'pointer' }}>
+            <Button type="text" aria-label="账号菜单" style={{ height: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
               <Avatar icon={<UserOutlined />} />
               <span>{adminInfo?.username || 'admin'}</span>
               <Text type="secondary" style={{ fontSize: 12 }}>{adminInfo?.role || ''}</Text>
-            </Space>
+            </Button>
           </Dropdown>
         </Header>
         <Content>

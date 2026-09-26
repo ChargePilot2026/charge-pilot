@@ -91,6 +91,7 @@
 | POST | `/api/v1/user/wallet/recharge` | 钱包充值(微信支付下单) |
 | GET | `/api/v1/user/wallet/txns` | 余额流水(分页) |
 | POST | `/api/v1/user/wallet/refund` | 余额退款申请 |
+| GET | `/api/v1/user/wallet/refunds` | 当前用户的退款申请、拆单进度与已退金额 |
 
 ### 站点与找桩
 
@@ -1641,6 +1642,11 @@ GET /user/wallet/balance 的 data 包含 available_cents、frozen_cents、status
 # 实测计费内部接口（2026-09-26 实现）
 
 - `POST /api/v1/user/wallet/refund` 当前请求要求 `request_id`（客户端每次新申请生成 UUID，网络重试沿用）、`amount_cents`、可选 `reason`。返回 request_id/status/refund_cents/refund_orders，已受理时另含 txn_no；status 为 accepted 或 manual_review。同请求标识变更金额/原因会拒绝。原支付单拆分、余额预留及事件写入同事务提交，异步确认实际到账，不返回“实时到账”。五分钟内第三个有效申请进入风控审核。
+- `GET /api/v1/user/wallet/refunds` 使用用户 JWT，支持 page（默认 1，上限 100000）及 page_size（默认 20，上限 50）；仅返回本人记录。响应包含 user_id、items、total、page、page_size。每项包含 request_id、amount_cents、refunded_cents、status、reason、created_at 和 refund_orders；拆单包含 refund_no、refund_cents、status、failure_reason、completed_at。申请状态为 pending、processing、success、manual_review 或 needs_review；refunded_cents 只累计成功拆单，不把已受理视为已到账。
+- `GET /api/v1/internal/refund-records` 使用服务间认证，为 admin 财务查询提供退款记录。支持 page/page_size（最多 100）、status、refund_no 精确筛选，过滤软删除，按创建时间与 ID 倒序分页；返回 items/total/page/page_size。记录包含退款单号、用户和支付 ID、业务类型、金额、状态、原因、失败原因及创建/完成时间。授权管理员范围由 admin 数据库实时权限校验执行。
+- `POST /api/v1/internal/refund-records/{refund_id}/approve` 使用服务间认证；refund_id 当前为完整退款单号，请求 actor_id/comment，由 admin 校验财务身份后发送。user 将两次不同账号的意见绑定到同一退款快照；第一签返回 awaiting_second，第二签返回 approved 并与退款执行出站事件同事务保存。重复签署不重复产生事件，金额/原支付单/原因等变更会拒绝后续审核及执行。仅支持尚未被执行的终态充电订单 pending 退款；钱包风控申请另行处理。
+- `POST /api/v1/internal/refund-records/{refund_id}/reject` 使用服务间认证，请求 actor_id/comment。只允许已有第一签且尚未执行的待第二签充电退款，拒绝回执、退款 rejected 状态与订单时间线同事务保存。退款查询支持 rejected 筛选，审核拒绝与微信执行失败 failed 分开表达；资金预留统计不包含 rejected，仍包含结果尚未核实的 failed。
+- `POST /api/v1/internal/orders/{order_id}/refunds` 使用服务间认证；请求 actor_id 与 request（request_id、amount_cents、reason），admin 负责实时校验财务身份。manual_refund_request 的 UUID 全局唯一，将申请身份与内容绑定；支付单锁内创建退款并复用双签模块记录第一签，验证失败回滚全部写入。重复请求返回同一退款单，不产生重复审核或支付事件。
 
 - `POST /api/v1/user/charge/:order_id/prepay`：用户 JWT 鉴权，当前 `order_id` 为充电订单号。只恢复本人未付款且原端口预留仍有效的订单。返回 order_no/payment_order_no/amount_cents/hold_expires_at/payment_params；不创建新支付单、不延长付款期限。已保存 prepay_id 时只重新生成调起支付签名，尚未取得 prepay_id 时使用同一原始请求和支付单号重试微信预下单。
 

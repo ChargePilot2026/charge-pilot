@@ -1,0 +1,6 @@
+CREATE TABLE IF NOT EXISTS manual_refund_request (
+ request_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,
+ payload_json JSON NOT NULL,
+ refund_no VARCHAR(64) NULL,
+ created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

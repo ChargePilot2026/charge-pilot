@@ -252,6 +252,7 @@ async fn read_detail(
         .await?
         .ok_or_else(|| AppError::NotFound("订单不存在".into()))?;
     let detail = OrderDetail {
+        refund_applicant_id: None,
         order: summary(&row)?,
         payment_order_id: row.try_get("payment_order_id")?,
         payment_order_no: row.try_get("payment_order_no")?,

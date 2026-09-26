@@ -112,6 +112,7 @@ pub async fn apply(
     let mut reserved = refunded;
     let mut successful = 0i64;
     for (amount, status) in refunds {
+        if status=="rejected"{continue;}
         if amount <= 0 {
             return Err(conflict());
         }

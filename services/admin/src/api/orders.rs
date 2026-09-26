@@ -137,6 +137,8 @@ pub async fn get(
         detail.order.total_fee_cents = billing.total_cents;
     }
     detail.billing = Some(billing);
+    let grants:i64=sqlx::query_scalar("SELECT COUNT(*) FROM admin_user_role a JOIN role r ON r.id=a.role_id JOIN role_permission rp ON rp.role_id=r.id JOIN permission p ON p.id=rp.permission_id WHERE a.id=? AND a.status='active' AND a.deleted_at IS NULL AND r.deleted_at IS NULL AND r.code='customer_finance' AND p.code IN ('order.refund.create','order.refund.review')").bind(claims.admin_user_id).fetch_one(state.db.pool()).await?;
+    detail.refund_applicant_id=if grants==2 && ["completed","failed","cancelled"].contains(&detail.order.status.as_str()) && detail.paid_cents.unwrap_or(0)>0 {Some(claims.admin_user_id.to_string())}else{None};
     Ok(Json(ApiEnvelope::ok(
         detail,
         common_error::current_request_id(),

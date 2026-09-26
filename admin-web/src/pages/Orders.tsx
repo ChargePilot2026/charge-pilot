@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import dayjs, { Dayjs } from 'dayjs';
 import axios from 'axios';
 import { ApiEnvelope, http } from '../api/client';
+import ManualRefund from './ManualRefund';
 
 interface Order {
   order_id: number;
@@ -27,6 +28,7 @@ interface Order {
 interface OrderPage { items: Order[]; total: number; page: number; page_size: number }
 interface OrderTimeline { order_id: number; timeline: { event_id: string; at: string; event: string; actor: string; detail: string }[] }
 interface OrderDetail extends Order {
+  refund_applicant_id: string | null;
   billing: { calculation_no: string | null; settlements: Settlement[] } | null;
   payment_order_id: number | null;
   payment_order_no: string | null;
@@ -153,6 +155,7 @@ export default function OrdersPage() {
       {detailError && <Alert type="error" showIcon message="详情加载失败" description={detailError}
         action={<Button onClick={() => setDetailReload(value => value + 1)}>重试</Button>} />}
       {detail && <Space direction="vertical" size="large" style={{ width: '100%' }}>
+        {detail.refund_applicant_id && <ManualRefund key={detail.order_id} orderId={detail.order_id} orderNo={detail.order_no} actorId={detail.refund_applicant_id} onCreated={() => setReload(value => value + 1)} />}
         <Descriptions title={detail.order_no} bordered column={2} items={[
           { key: 'status', label: '状态', children: statusTag(detail.status) },
           { key: 'user', label: '用户 ID', children: detail.user_id },

@@ -55,6 +55,15 @@ pub async fn prepare(
         if status != "pending" {
             return Err(conflict());
         }
+        let review=sqlx::query("SELECT first_signer,second_signer,snapshot_json FROM refund_review WHERE refund_record_id=? FOR UPDATE").bind(rid).fetch_optional(&mut *tx).await?;
+        let mut reviewed=false;
+        if let Some(review)=review {
+            let second:Option<u64>=review.try_get("second_signer")?;
+            if second.is_none() || second==Some(review.try_get::<u64,_>("first_signer")?){return Err(conflict());}
+            let expected=serde_json::json!({"refund_no":req.refund_no,"payment_order_id":pid,"user_id":uid,"charge_order_id":cid,"refund_cents":row.try_get::<i64,_>("refund_cents")?,"reason":row.try_get::<Option<String>,_>("reason")?,"total_cents":pay.try_get::<i64,_>("total_cents")?,"paid_cents":pay.try_get::<i64,_>("paid_cents")?});
+            if review.try_get::<serde_json::Value,_>("snapshot_json")?!=expected{return Err(conflict());}
+            reviewed=true;
+        }
         if biz_type == "wallet_recharge" {
             let permitted:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM wallet_refund_part p JOIN wallet_refund_request r ON r.request_id=p.request_id JOIN wallet_account w ON w.id=p.wallet_account_id WHERE p.refund_record_id=? AND p.amount_cents=? AND p.settled=0 AND r.user_id=? AND w.user_id=? AND w.status='active' AND w.deleted_at IS NULL)").bind(rid).bind(row.try_get::<i64,_>("refund_cents")?).bind(uid).bind(uid).fetch_one(&mut *tx).await?;
             if !permitted {
@@ -81,7 +90,7 @@ pub async fn prepare(
                     .is_some(),
                 _ => false,
             };
-            if !allowed {
+            if !allowed && !(reviewed && ["completed","failed","cancelled"].contains(&orders[0].0.as_str())) {
                 return Err(conflict());
             }
         }
@@ -104,6 +113,7 @@ pub async fn prepare(
     let mut reserved = refunded;
     let mut successful = 0i64;
     for refund in &refunds {
+        if refund.try_get::<String,_>("status")?=="rejected"{continue;}
         let amount: i64 = refund.try_get("refund_cents")?;
         if amount <= 0 {
             return Err(conflict());
