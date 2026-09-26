@@ -89,6 +89,7 @@ pub fn build_router(state: AppState) -> Router {
 
     // ===== 内部路由(其他服务调用)=====
     let internal_routes = Router::new()
+        .route(api_contracts::paths::ADMIN_DEVICE_PRICING, get(api::pricing_reads::device))
         .route(api_types::paths::INTERNAL_ANNOUNCEMENTS_ACTIVE, get(api::internal::announcements_active))
         .route(api_types::paths::INTERNAL_STATIONS_NEARBY, get(api::station_reads::nearby))
         .route(api_types::paths::INTERNAL_STATIONS_DETAIL, get(api::station_reads::detail))

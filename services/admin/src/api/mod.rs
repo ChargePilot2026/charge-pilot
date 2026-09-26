@@ -8,6 +8,7 @@ pub mod users;
 pub mod roles;
 pub mod stations;
 pub mod station_reads;
+pub mod pricing_reads;
 pub mod devices;
 pub mod orders;
 pub mod device_import;

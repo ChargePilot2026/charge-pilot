@@ -21,18 +21,22 @@ pub async fn health() -> &'static str { "ok" }
 // ===================== handlers =====================
 
 pub async fn quote(
-    State(_st): State<AppState>,
+    State(st): State<AppState>,
     Json(req): Json<t::QuoteRequest>,
-) -> AppResult<Json<ApiEnvelope<t::QuoteResponse>>> {
-    let rule = engine::PricingRule::default_default();
-    let charged_kwh = (req.estimated_minutes as f64 * 0.2).max(0.4);
-    let peak_kwh = charged_kwh * 0.6;
-    let off_kwh = charged_kwh - peak_kwh;
-    let r = engine::calculate_fee_compat(&rule, charged_kwh, req.estimated_minutes, peak_kwh, off_kwh);
-    Ok(Json(ok_envelope(t::QuoteResponse {
-        total_cents: r.total_cents,
-        electric_cents: r.electric_cents,
-        service_cents: r.service_cents,
+) -> AppResult<Json<ApiEnvelope<api_contracts::pricing::PriceQuote>>> {
+    use chrono::Timelike;
+    crate::quote_pricing::watt_hours(&req.estimated_kwh)?;
+    if !(1..=1440).contains(&req.estimated_minutes) {return Err(AppError::BadRequest("预计时长必须为 1–1440 分钟".into()));}
+    let client=common_http::internal::ApiClient::new(st.http.clone(),st.service_token.clone());
+    let port:api_contracts::ScanPortDetail=client.post(st.cfg.service_urls.gateway.as_deref(),api_contracts::paths::GW_SCAN_PORT,&api_contracts::ScanPortRequest{port_id:req.port_id}).await?;
+    if port.status!="idle" {return Err(AppError::PortOccupied);}
+    let rule:api_contracts::pricing::DevicePricing=client.get(st.cfg.service_urls.admin.as_deref(),&api_contracts::paths::ADMIN_DEVICE_PRICING.replace(":id",&port.device_id),&()).await?;
+    let local=chrono::Utc::now().with_timezone(&chrono::FixedOffset::east_opt(8*3600).expect("UTC+8"));
+    let r=crate::quote_pricing::estimate(&rule,&req.estimated_kwh,req.estimated_minutes,(local.hour()*60+local.minute()) as usize)?;
+    Ok(Json(ok_envelope(api_contracts::pricing::PriceQuote {
+        amount:r,pricing:rule,estimated_kwh:req.estimated_kwh,estimated_minutes:req.estimated_minutes,
+        quote_expires_at:(chrono::Utc::now()+chrono::Duration::minutes(5)).to_rfc3339(),
+        estimation_basis:"按预计电量在充电时段内均匀分布估算，时区 Asia/Shanghai；实际费用按最终计量结算".into(),
     })))
 }
 

@@ -1,20 +1,20 @@
 <view class="container">
-  <view class="card" wx:if="{{snapshot}}">
-    <view style="text-align: center;">
-      <view class="text-secondary">实时功率</view>
-      <view style="font-size: 56px; font-weight: 600; color: #1677ff;">{{snapshot.current_power_w}} <text style="font-size: 18px;">W</text></view>
-    </view>
-    <view style="display: flex; justify-content: space-between; margin-top: 32rpx;">
-      <view><view class="text-secondary">已充电量</view><view>{{snapshot.charged_kwh}} kWh</view></view>
-      <view><view class="text-secondary">当前费用</view><view>¥{{snapshot.current_cost}}</view></view>
-      <view><view class="text-secondary">剩余时间</view><view>{{snapshot.estimated_remaining_min}} 分钟</view></view>
-    </view>
-    <view style="margin-top: 24rpx;" class="text-secondary">
-      温度 {{snapshot.temperature_c}}°C · 电压 {{snapshot.voltage_v}}V · 已用 {{snapshot.elapsed_seconds}} 秒
-    </view>
+ <button wx:if="{{needsLogin}}" bindtap="login">登录查看充电状态</button>
+ <view wx:if="{{loading && !snapshot}}" class="card">正在读取订单状态…</view>
+ <view wx:if="{{error}}" class="card"><view>{{error}}</view><button bindtap="load" disabled="{{loading}}">重试</button></view>
+ <block wx:if="{{snapshot}}">
+  <view class="card"><view class="tag tag-blue">{{snapshot.statusLabel}}</view><view>{{snapshot.order_no}}</view>
+   <view wx:if="{{snapshot.status === 'paid'}}">支付已确认，正在等待设备启动。</view>
+   <view wx:if="{{snapshot.status === 'pending_payment'}}">订单等待支付确认，设备尚未开始充电。</view>
+   <view wx:if="{{!snapshot.poll_continue}}">订单已结束，状态刷新已停止。</view>
   </view>
-
-  <view class="card">
-    <view class="btn-primary" bindtap="stopCharge" style="background: #ff4d4f;">停止充电</view>
+  <view class="card" wx:if="{{snapshot.status === 'charging'}}">
+   <view wx:if="{{!snapshot.telemetry_available}}" class="text-secondary">暂未收到实时遥测数据。</view>
+   <view>功率：{{snapshot.powerText}} W</view><view>电压：{{snapshot.voltageText}} V</view><view>温度：{{snapshot.temperatureText}} °C</view>
   </view>
+  <view class="card"><view>累计电量：{{snapshot.energyText}} kWh</view><view>充电时长：{{snapshot.durationText}}</view><view>费用：{{snapshot.feeText}}</view></view>
+  <button bindtap="detail">查看订单详情</button>
+  <button wx:if="{{snapshot.status === 'charging'}}" bindtap="stopCharge" loading="{{stopping}}" disabled="{{stopping || loading}}">停止充电</button>
+  <view wx:if="{{stopNotice}}" class="card">{{stopNotice}}</view>
+ </block>
 </view>

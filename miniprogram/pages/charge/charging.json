@@ -1,4 +1,1 @@
-{
-  "navigationBarTitleText": "充电中",
-  "usingComponents": {}
-}
+{"navigationBarTitleText":"充电状态","enablePullDownRefresh":true}

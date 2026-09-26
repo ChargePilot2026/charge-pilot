@@ -61,18 +61,18 @@ try {
     $userScan = Invoke-RestMethod -Uri 'http://127.0.0.1:8081/api/v1/user/scan/resolve' -Method Post -Headers @{Authorization="Bearer $userToken"} -ContentType application/json -Body (@{code=$port.port_id}|ConvertTo-Json)
     Assert ($userScan.code -eq 0 -and $userScan.data.port_id -eq $port.port_id -and -not $userScan.data.PSObject.Properties['data']) 'User scan double-wrapped gateway envelope'
     $missingStatus = 200
-    try { Invoke-RestMethod -Uri 'http://127.0.0.1:8081/api/v1/user/scan/port' -Method Post -Headers @{Authorization="Bearer $userToken"} -ContentType application/json -Body (@{port_id="${tag}_missing"}|ConvertTo-Json) | Out-Null }
+    try { Invoke-RestMethod -Uri 'http://127.0.0.1:8081/api/v1/user/scan/port' -Method Post -Headers @{Authorization="Bearer $userToken"} -ContentType application/json -Body (@{port_id="${tag}_missing";estimated_kwh="0.500";estimated_minutes=120}|ConvertTo-Json) | Out-Null }
     catch { $missingStatus = [int]$_.Exception.Response.StatusCode }
     Assert ($missingStatus -eq 404) 'User scan did not preserve missing-port status'
     Sql "UPDATE device_port SET deleted_at=NOW() WHERE device_id='$tag' AND port_no=3;" | Out-Null
     Assert ((Post '/api/v1/internal/scan/resolve' @{code=$tag}).data.ports.Count -eq 2) 'Deleted port remained visible'
     Sql "UPDATE device_port SET deleted_at=NULL WHERE device_id='$tag' AND port_no=3;" | Out-Null
     $badStartStatus = 200
-    try { Invoke-RestMethod -Uri 'http://127.0.0.1:8081/api/v1/user/scan/start' -Method Post -Headers @{Authorization="Bearer $userToken"} -ContentType application/json -Body (@{port_id="${tag}_missing"}|ConvertTo-Json) | Out-Null }
+    try { Invoke-RestMethod -Uri 'http://127.0.0.1:8081/api/v1/user/scan/start' -Method Post -Headers @{Authorization="Bearer $userToken"} -ContentType application/json -Body (@{port_id="${tag}_missing";estimated_kwh="0.500";estimated_minutes=120}|ConvertTo-Json) | Out-Null }
     catch { $badStartStatus = [int]$_.Exception.Response.StatusCode }
     Assert ($badStartStatus -eq 404) 'Checkout accepted a nonexistent port'
     Sql "UPDATE device_port SET status='charging' WHERE device_id='$tag' AND port_no=2;" | Out-Null
-    $busy = Invoke-RestMethod -Uri 'http://127.0.0.1:8081/api/v1/user/scan/start' -Method Post -Headers @{Authorization="Bearer $userToken"} -ContentType application/json -Body (@{port_id=$port.port_id}|ConvertTo-Json)
+    $busy = Invoke-RestMethod -Uri 'http://127.0.0.1:8081/api/v1/user/scan/start' -Method Post -Headers @{Authorization="Bearer $userToken"} -ContentType application/json -Body (@{port_id=$port.port_id;estimated_kwh="0.500";estimated_minutes=120}|ConvertTo-Json)
     Assert ($busy.code -ne 0) 'Checkout accepted a charging port'
     $orderCount = Sql "SELECT COUNT(*) FROM user_db.charge_order WHERE device_id='$tag' OR port_code IN ('$($port.port_id)','${tag}_missing');"
     Assert ($orderCount -eq '0') 'Rejected checkout created an order'

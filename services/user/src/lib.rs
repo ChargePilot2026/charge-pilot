@@ -5,6 +5,7 @@
 
 pub mod api;
 pub mod checkout;
+pub mod quote_confirmation;
 pub mod login;
 pub mod session;
 pub mod profile;

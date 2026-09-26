@@ -1,0 +1,275 @@
+//! WeChat API v3 merchant RSA signing and pinned platform-public-key verification.
+use base64::{engine::general_purpose::STANDARD, Engine};
+use common_config::WechatConfig;
+use common_error::{AppError, AppResult};
+use rsa::{
+    pkcs1::DecodeRsaPrivateKey,
+    pkcs8::{DecodePrivateKey, DecodePublicKey},
+    traits::PublicKeyParts,
+    Pkcs1v15Sign, RsaPrivateKey, RsaPublicKey,
+};
+use sha2::{Digest, Sha256};
+
+fn required<'a>(v: &'a Option<String>, name: &str) -> AppResult<&'a str> {
+    v.as_deref()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| AppError::Config(format!("缺少微信支付配置 {name}")))
+}
+fn private_key(cfg: &WechatConfig) -> AppResult<RsaPrivateKey> {
+    let pem = std::fs::read_to_string(required(&cfg.private_key_path, "WECHAT_PRIVATE_KEY_PATH")?)
+        .map_err(|_| AppError::Config("无法读取微信商户私钥".into()))?;
+    let key = RsaPrivateKey::from_pkcs8_pem(&pem)
+        .or_else(|_| RsaPrivateKey::from_pkcs1_pem(&pem))
+        .map_err(|_| AppError::Config("微信商户私钥格式无效".into()))?;
+    if key.n().bits() != 2048 {
+        return Err(AppError::Config(
+            "微信支付需使用 RSA 2048 位商户私钥".into(),
+        ));
+    }
+    Ok(key)
+}
+fn public_key(cfg: &WechatConfig) -> AppResult<RsaPublicKey> {
+    let pem = std::fs::read_to_string(required(
+        &cfg.platform_public_key_path,
+        "WECHAT_PLATFORM_PUBLIC_KEY_PATH",
+    )?)
+    .map_err(|_| AppError::Config("无法读取微信支付平台公钥".into()))?;
+    let key = RsaPublicKey::from_public_key_pem(&pem)
+        .map_err(|_| AppError::Config("微信支付平台公钥需为 PEM PUBLIC KEY 格式".into()))?;
+    if key.n().bits() != 2048 {
+        return Err(AppError::Config("微信支付平台公钥长度无效".into()));
+    }
+    Ok(key)
+}
+pub fn validate(cfg: &WechatConfig) -> AppResult<()> {
+    let serial = required(&cfg.merchant_serial_no, "WECHAT_MERCHANT_SERIAL_NO")?;
+    if serial.len() > 64
+        || !serial.bytes().all(|c| c.is_ascii_hexdigit())
+        || cfg.mch_id.is_empty()
+        || cfg.mch_id.len() > 32
+        || !cfg.mch_id.bytes().all(|c| c.is_ascii_digit())
+    {
+        return Err(AppError::Config("微信商户号或证书序列号格式无效".into()));
+    }
+    let key_id = required(&cfg.platform_key_id, "WECHAT_PLATFORM_KEY_ID")?;
+    if key_id.len() > 128
+        || !key_id
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'_')
+    {
+        return Err(AppError::Config("微信支付公钥 ID 格式无效".into()));
+    }
+    private_key(cfg)?;
+    public_key(cfg)?;
+    Ok(())
+}
+pub fn sign(cfg: &WechatConfig, message: &str) -> AppResult<String> {
+    let key = private_key(cfg)?;
+    let signature = key
+        .sign_with_rng(
+            &mut rand::rngs::OsRng,
+            Pkcs1v15Sign::new::<Sha256>(),
+            &Sha256::digest(message.as_bytes()),
+        )
+        .map_err(|_| AppError::Config("微信支付 RSA 签名失败".into()))?;
+    Ok(STANDARD.encode(signature))
+}
+pub fn authorization(
+    cfg: &WechatConfig,
+    method: &str,
+    url: &reqwest::Url,
+    body: &str,
+    timestamp: &str,
+    nonce: &str,
+) -> AppResult<String> {
+    let target = match url.query() {
+        Some(q) => format!("{}?{q}", url.path()),
+        None => url.path().into(),
+    };
+    let signature = sign(
+        cfg,
+        &format!("{method}\n{target}\n{timestamp}\n{nonce}\n{body}\n"),
+    )?;
+    Ok(format!("WECHATPAY2-SHA256-RSA2048 mchid=\"{}\",nonce_str=\"{nonce}\",timestamp=\"{timestamp}\",serial_no=\"{}\",signature=\"{signature}\"",cfg.mch_id,required(&cfg.merchant_serial_no,"WECHAT_MERCHANT_SERIAL_NO")?))
+}
+pub fn verify_response(
+    cfg: &WechatConfig,
+    headers: &reqwest::header::HeaderMap,
+    body: &str,
+) -> AppResult<()> {
+    let field = |name: &str| -> AppResult<&str> {
+        headers
+            .get(name)
+            .and_then(|h| h.to_str().ok())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| AppError::WechatPayFailed("微信支付响应缺少验签信息".into()))
+    };
+    let serial = field("wechatpay-serial")?;
+    let timestamp = field("wechatpay-timestamp")?;
+    let nonce = field("wechatpay-nonce")?;
+    let signature = field("wechatpay-signature")?;
+    if serial != required(&cfg.platform_key_id, "WECHAT_PLATFORM_KEY_ID")? {
+        return Err(AppError::WechatPayFailed(
+            "微信支付响应公钥 ID 不匹配".into(),
+        ));
+    }
+    let ts = timestamp
+        .parse::<i64>()
+        .map_err(|_| AppError::WechatPayFailed("微信支付响应时间戳无效".into()))?;
+    if chrono::Utc::now().timestamp().abs_diff(ts) > 300 {
+        return Err(AppError::WechatPayFailed("微信支付响应时间戳已过期".into()));
+    }
+    let signature = STANDARD
+        .decode(signature)
+        .map_err(|_| AppError::WechatPayFailed("微信支付响应签名无效".into()))?;
+    public_key(cfg)?
+        .verify(
+            Pkcs1v15Sign::new::<Sha256>(),
+            &Sha256::digest(format!("{timestamp}\n{nonce}\n{body}\n").as_bytes()),
+            &signature,
+        )
+        .map_err(|_| AppError::WechatPayFailed("微信支付响应验签失败".into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey, LineEnding};
+    use std::sync::OnceLock;
+    static KEY: OnceLock<RsaPrivateKey> = OnceLock::new();
+    struct Fixture {
+        cfg: WechatConfig,
+        private: std::path::PathBuf,
+        public: std::path::PathBuf,
+    }
+    impl Fixture {
+        fn new() -> Self {
+            let key = KEY.get_or_init(|| RsaPrivateKey::new(&mut rand::rngs::OsRng, 2048).unwrap());
+            let tag = uuid::Uuid::new_v4();
+            let private = std::env::temp_dir().join(format!("wechat-test-{tag}-private.pem"));
+            let public = std::env::temp_dir().join(format!("wechat-test-{tag}-public.pem"));
+            std::fs::write(
+                &private,
+                key.to_pkcs8_pem(LineEnding::LF).unwrap().as_bytes(),
+            )
+            .unwrap();
+            std::fs::write(
+                &public,
+                key.to_public_key()
+                    .to_public_key_pem(LineEnding::LF)
+                    .unwrap(),
+            )
+            .unwrap();
+            Self {
+                cfg: WechatConfig {
+                    appid: "wx_test_app".into(),
+                    secret: "test".into(),
+                    mch_id: "1900000109".into(),
+                    pay_key: "test".into(),
+                    notify_url: "https://example.test/notify".into(),
+                    pay_base_url: "https://api.mch.weixin.qq.com".into(),
+                    refund_url: "https://api.mch.weixin.qq.com/v3/refund/domestic/refunds".into(),
+                    cert_path: None,
+                    private_key_path: Some(private.to_string_lossy().into()),
+                    merchant_serial_no: Some("AB12".into()),
+                    platform_public_key_path: Some(public.to_string_lossy().into()),
+                    platform_key_id: Some("PUB_KEY_ID_TEST".into()),
+                },
+                private,
+                public,
+            }
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.private);
+            let _ = std::fs::remove_file(&self.public);
+        }
+    }
+    #[test]
+    fn request_signs_exact_method_target_and_json_bytes() {
+        let f = Fixture::new();
+        validate(&f.cfg).unwrap();
+        let url = reqwest::Url::parse(
+            "https://api.mch.weixin.qq.com/v3/pay/transactions/jsapi?test=%E4%B8%AD",
+        )
+        .unwrap();
+        let body = "{\"description\":\"充电\",\"amount\":{\"total\":123}}";
+        let auth = authorization(&f.cfg, "POST", &url, body, "1700000000", "nonce").unwrap();
+        assert!(auth.contains("serial_no=\"AB12\""));
+        let signature = STANDARD
+            .decode(
+                auth.split("signature=\"")
+                    .nth(1)
+                    .unwrap()
+                    .trim_end_matches('"'),
+            )
+            .unwrap();
+        let message =
+            format!("POST\n/v3/pay/transactions/jsapi?test=%E4%B8%AD\n1700000000\nnonce\n{body}\n");
+        public_key(&f.cfg)
+            .unwrap()
+            .verify(
+                Pkcs1v15Sign::new::<Sha256>(),
+                &Sha256::digest(message),
+                &signature,
+            )
+            .unwrap();
+    }
+    #[test]
+    fn frontend_signature_uses_appid_timestamp_nonce_and_package() {
+        let f = Fixture::new();
+        let pay = crate::sign_jsapi_pay(&f.cfg, "wx_prepay_test").unwrap();
+        let message = format!(
+            "{}\n{}\n{}\n{}\n",
+            pay.appId, pay.timeStamp, pay.nonceStr, pay.package
+        );
+        public_key(&f.cfg)
+            .unwrap()
+            .verify(
+                Pkcs1v15Sign::new::<Sha256>(),
+                &Sha256::digest(message),
+                &STANDARD.decode(pay.paySign).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(pay.signType, "RSA");
+        assert_eq!(pay.package, "prepay_id=wx_prepay_test");
+        assert!(crate::sign_jsapi_pay(&f.cfg, "bad\nprepay").is_err());
+    }
+    #[test]
+    fn response_rejects_mutation_expiry_wrong_key_id_and_missing_headers() {
+        let f = Fixture::new();
+        let timestamp = chrono::Utc::now().timestamp().to_string();
+        let body = "{ \"prepay_id\": \"abc\" }";
+        let mut headers = reqwest::header::HeaderMap::new();
+        for (key, value) in [
+            ("wechatpay-serial", "PUB_KEY_ID_TEST".to_string()),
+            ("wechatpay-timestamp", timestamp.clone()),
+            ("wechatpay-nonce", "nonce".into()),
+            (
+                "wechatpay-signature",
+                sign(&f.cfg, &format!("{timestamp}\nnonce\n{body}\n")).unwrap(),
+            ),
+        ] {
+            headers.insert(
+                reqwest::header::HeaderName::from_bytes(key.as_bytes()).unwrap(),
+                value.parse().unwrap(),
+            );
+        }
+        verify_response(&f.cfg, &headers, body).unwrap();
+        assert!(verify_response(&f.cfg, &headers, "{\"prepay_id\":\"abc\"}").is_err());
+        headers.insert("wechatpay-serial", "OTHER".parse().unwrap());
+        assert!(verify_response(&f.cfg, &headers, body).is_err());
+        headers.insert("wechatpay-serial", "PUB_KEY_ID_TEST".parse().unwrap());
+        headers.insert("wechatpay-timestamp", "1".parse().unwrap());
+        assert!(verify_response(&f.cfg, &headers, body).is_err());
+        assert!(verify_response(&f.cfg, &reqwest::header::HeaderMap::new(), body).is_err());
+    }
+    #[test]
+    fn missing_or_invalid_private_key_is_not_a_placeholder_signature() {
+        let mut f = Fixture::new();
+        f.cfg.private_key_path = None;
+        assert!(validate(&f.cfg).is_err());
+        assert!(crate::sign_jsapi_pay(&f.cfg, "abc").is_err());
+    }
+}

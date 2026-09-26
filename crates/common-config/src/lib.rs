@@ -135,6 +135,9 @@ pub struct WechatConfig {
     pub refund_url: String,
     pub cert_path: Option<String>,       // 退款需要证书(本期预留)
     pub private_key_path: Option<String>,
+    pub merchant_serial_no: Option<String>,
+    pub platform_public_key_path: Option<String>,
+    pub platform_key_id: Option<String>,
 }
 
 impl WechatConfig {
@@ -156,6 +159,9 @@ impl WechatConfig {
                 .unwrap_or_else(|_| "https://api.mch.weixin.qq.com/v3/refund/domestic/refunds".into()),
             cert_path: env::var("WECHAT_CERT_PATH").ok(),
             private_key_path: env::var("WECHAT_PRIVATE_KEY_PATH").ok(),
+            merchant_serial_no: env::var("WECHAT_MERCHANT_SERIAL_NO").ok(),
+            platform_public_key_path: env::var("WECHAT_PLATFORM_PUBLIC_KEY_PATH").ok(),
+            platform_key_id: env::var("WECHAT_PLATFORM_KEY_ID").ok(),
         })
     }
 }

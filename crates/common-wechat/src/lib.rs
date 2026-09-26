@@ -9,8 +9,10 @@ use common_auth::{constant_time_eq, verify_wechat_v3_signature};
 use common_config::WechatConfig;
 use common_error::{AppError, AppResult};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use sha2::Sha256;
 use std::time::Duration;
+mod pay_signing;
+pub use pay_signing::validate as validate_pay_config;
 
 /// 微信登录(code2Session)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,36 +88,42 @@ pub struct JsapiOrderResp {
     pub prepay_id: String,
 }
 
-/// 调用 JSAPI 下单(简化:实际项目需在 Authorization header 注入 V3 签名)
+/// V3 JSAPI order: sign exactly the serialized bytes and verify the raw response.
 pub async fn jsapi_create_order(
     http: &reqwest::Client,
     cfg: &WechatConfig,
     req: &JsapiOrderReq,
 ) -> AppResult<JsapiOrderResp> {
-    let url = format!("{}/v3/pay/transactions/jsapi", cfg.pay_base_url);
-    // 简化:真实场景需要构造 Authorization 头(merchant id + nonce + timestamp + signature)
-    // 完整签名详见微信 V3 文档。本项目部署文档提供完整示例。
-    let auth = format!(
-        "WECHATPAY2-SHA256-RSA2048 mchid=\"{}\",nonce_str=\"{}\",timestamp=\"{}\",serial_no=\"pending-real-cert\",signature=\"pending-real-sign\"",
-        cfg.mch_id,
-        uuid::Uuid::new_v4(),
-        chrono::Utc::now().timestamp()
-    );
+    validate_pay_config(cfg)?;
+    if req.appid!=cfg.appid || req.mchid!=cfg.mch_id || req.amount.total<=0 || req.amount.currency!="CNY" {
+        return Err(AppError::BadRequest("微信预下单身份或金额无效".into()));
+    }
+    let url=reqwest::Url::parse(&format!("{}/v3/pay/transactions/jsapi",cfg.pay_base_url.trim_end_matches('/')))
+        .map_err(|_|AppError::Config("微信支付地址无效".into()))?;
+    let body=serde_json::to_string(req)?;
+    let auth=pay_signing::authorization(cfg,"POST",&url,&body,&chrono::Utc::now().timestamp().to_string(),&uuid::Uuid::new_v4().simple().to_string())?;
     let resp = http
-        .post(&url)
+        .post(url)
         .header("Authorization", auth)
         .header("Content-Type", "application/json")
         .header("Accept", "application/json")
-        .json(req)
+        .body(body)
+        .timeout(Duration::from_secs(10))
         .send()
-        .await?;
+        .await.map_err(|_|AppError::WechatPayFailed("微信预下单连接失败，请稍后查询订单状态".into()))?;
     if !resp.status().is_success() {
         return Err(AppError::WechatPayFailed(format!(
             "jsapi_create_order status={}",
             resp.status()
         )));
     }
-    let body: JsapiOrderResp = resp.json().await?;
+    let headers=resp.headers().clone();
+    let raw=resp.text().await.map_err(|_|AppError::WechatPayFailed("微信预下单响应读取失败".into()))?;
+    pay_signing::verify_response(cfg,&headers,&raw)?;
+    let body: JsapiOrderResp = serde_json::from_str(&raw).map_err(|_|AppError::WechatPayFailed("微信预下单响应格式无效".into()))?;
+    if body.prepay_id.is_empty() || body.prepay_id.len()>128 || body.prepay_id.chars().any(|c|c.is_whitespace() || c.is_control()) {
+        return Err(AppError::WechatPayFailed("微信预下单响应缺少有效 prepay_id".into()));
+    }
     Ok(body)
 }
 
@@ -130,22 +138,21 @@ pub struct JsapiPaySign {
     pub paySign: String,
 }
 
-/// 生成前端支付签名(简化:真实场景需要用私钥签名)
-pub fn sign_jsapi_pay(cfg: &WechatConfig, prepay_id: &str) -> JsapiPaySign {
+/// Generate the separate appId/timestamp/nonce/package signature for wx.requestPayment.
+pub fn sign_jsapi_pay(cfg: &WechatConfig, prepay_id: &str) -> AppResult<JsapiPaySign> {
+    if prepay_id.is_empty() || prepay_id.len()>128 || prepay_id.chars().any(|c|c.is_whitespace() || c.is_control()) {return Err(AppError::BadRequest("prepay_id 无效".into()));}
     let time_stamp = chrono::Utc::now().timestamp().to_string();
     let nonce_str = uuid::Uuid::new_v4().to_string();
     let package = format!("prepay_id={prepay_id}");
-    // 真实签法: appId\ntimeStamp\nnonceStr\npackage\n = 用商户私钥 SHA256withRSA
-    // 这里占位,提示项目需配置真实签名链路。
-    let pay_sign = "PENDING-RSA-SIGNATURE".to_string();
-    JsapiPaySign {
+    let pay_sign = pay_signing::sign(cfg,&format!("{}\n{time_stamp}\n{nonce_str}\n{package}\n",cfg.appid))?;
+    Ok(JsapiPaySign {
         appId: cfg.appid.clone(),
         timeStamp: time_stamp,
         nonceStr: nonce_str,
         package,
         signType: "RSA".into(),
         paySign: pay_sign,
-    }
+    })
 }
 
 /// 退款请求(V3)

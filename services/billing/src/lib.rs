@@ -5,4 +5,5 @@
 
 pub mod api_types;
 pub mod engine;
+pub mod quote_pricing;
 pub mod split;

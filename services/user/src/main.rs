@@ -2,6 +2,7 @@
 
 // 主模块文件(与 lib.rs 共用,各自 mod 声明各自一份,这样 bin 与 lib 都能独立编译)
 mod api;
+mod quote_confirmation;
 mod checkout;
 mod login;
 mod session;
@@ -111,6 +112,7 @@ pub fn build_router(state: AppState) -> Router {
 
     let user_routes = Router::new()
         .route(api_types::paths::USER_SCAN_RESOLVE, post(api::scan_resolve))
+        .route(api_types::paths::USER_SCAN_QUOTE, post(api::scan_quote))
         .route(api_types::paths::USER_SCAN_PORT, post(api::scan_port))
         .route(api_types::paths::USER_SCAN_START, post(api::scan_start))
         .route(api_types::paths::USER_SCAN_CANCEL, post(api::scan_cancel))

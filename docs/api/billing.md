@@ -494,3 +494,11 @@ pub struct PartyAmount {
 - **Stream 名必须从 § 5.1 8 个真实 Stream 中选**,新增 Stream 必须先在技术规格登记
 - **计费 / 分账引擎的输入输出结构变更**(影响 `fee_calculation.calculation_detail` JSON 格式)→ 必须同步更新本文档 § 七 + `docs/db/billing.md` 表结构 + 写数据库 migration 兼容老数据
 - CI 检查:OpenAPI 规范与本文件端点清单一致(脚本 `tools/check-api-consistency.ts`)
+
+### 当前报价实现（2026-09-26）
+
+`POST /api/v1/internal/quote` 当前请求为 `{port_id,user_id,estimated_kwh,estimated_minutes}`；电量必须是最多三位小数字符串（0.001–100），时长 1–1440 分钟。按 gateway 校验端口并通过 admin 的 `GET /api/v1/internal/devices/{device_id}/pricing` 取有效站点规则，未配置不会使用默认价格。
+
+`time_of_use_json` 使用数组：`[{"period":"all","start":"00:00","end":"24:00","electric_price_cents":100,"service_price_cents":40}]`。电价及可选服务价单位分/度；服务价缺省使用规则 service_fee_cents_per_kwh。跨午夜用 end 小于 start 表示；时段不可重叠，预计时间窗口必须被覆盖。按北京时间当前分钟开始，将预计电量均匀分布在预计时长中，用整数 Wh 计算并分别四舍五入到分；起步价补足列入服务费。
+
+响应保留 `total_cents,electric_cents,service_cents` 并增加 `pricing`（规则与站点）、`estimated_kwh,estimated_minutes,quote_expires_at,estimation_basis`。这是只读估算；在线判定、功率分档、折扣和正式结算仍未接通。

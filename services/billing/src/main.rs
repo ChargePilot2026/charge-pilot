@@ -7,6 +7,7 @@ mod api;
 mod order_reads;
 mod api_types;
 mod engine;
+mod quote_pricing;
 mod split;
 mod stream_consumer;
 

@@ -6,7 +6,7 @@
 use crate::api_types::{ChargeStopRequest, ScanStartResponse, ScanCancelRequest};
 use crate::AppState;
 use api_contracts::{
-    paths as p, BillingQuoteRequest, ChargeStopCommand, QuoteResponse, ScanPortRequest, ScanResolveRequest,
+    paths as p, BillingQuoteRequest, ChargeStopCommand, ScanPortRequest, ScanResolveRequest,
     StartResultRequest,
 };
 use axum::{
@@ -91,6 +91,18 @@ pub async fn scan_port(
 
 // ScanStartRequest 在 api_types.rs 已定义,handler 直接引用
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScanQuoteRequest {pub port_id:String,pub estimated_kwh:String,pub estimated_minutes:i64}
+pub async fn scan_quote(State(st):State<AppState>,claims:UserClaims,Json(req):Json<ScanQuoteRequest>)
+    ->AppResult<Json<crate::api_envelope::Envelope<crate::quote_confirmation::Preview>>> {
+    let client=common_http::internal::ApiClient::new(st.http.clone(),st.service_token.clone());
+    let quote=client.post(st.cfg.service_urls.billing.as_deref(),p::BILLING_QUOTE,
+        &BillingQuoteRequest{port_id:req.port_id.clone(),user_id:claims.user_id,estimated_kwh:req.estimated_kwh,estimated_minutes:req.estimated_minutes}).await?;
+    let preview=crate::quote_confirmation::save(&st.redis_cache,claims.user_id,req.port_id,quote).await?;
+    Ok(Json(crate::api_envelope::Envelope::ok(preview,common_error::current_request_id())))
+}
+
 pub async fn scan_start(
     State(st): State<AppState>,
     claims: UserClaims,
@@ -108,13 +120,22 @@ pub async fn scan_start(
     if req.coupon_grant_id.is_some() {
         return Err(AppError::BadRequest("优惠券抵扣尚未接入，请暂时不选择优惠券".into()));
     }
+    let quote_id=crate::quote_confirmation::canonical_id(req.quote_id.as_deref().ok_or_else(||AppError::BadRequest("请先预估并确认费用".into()))?)?;
+    let saved=crate::quote_confirmation::load(&st.redis_cache,&quote_id,user_id,&port.port_id).await?;
+    if saved.quote.estimated_kwh!=req.estimated_kwh || saved.quote.estimated_minutes!=req.estimated_minutes {
+        return Err(AppError::Conflict("预计电量或时长已变化，请重新预估费用".into()));
+    }
+    let used:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM charge_order_pricing WHERE quote_id=?)").bind(&quote_id).fetch_one(st.db.pool()).await?;
+    if used {return Err(AppError::Conflict("报价已用于订单，请在订单列表继续处理".into()));}
     let wechat = st.cfg.wechat.as_ref()
         .ok_or_else(|| AppError::Config("wechat missing".into()))?;
-    let quote: QuoteResponse = cli.post(
+    let quote: api_contracts::pricing::PriceQuote = cli.post(
         st.cfg.service_urls.billing.as_deref(), p::BILLING_QUOTE,
-        &BillingQuoteRequest { port_id: port.port_id.clone(), user_id, estimated_minutes: 240 },
+        &BillingQuoteRequest { port_id: port.port_id.clone(), user_id, estimated_minutes: req.estimated_minutes, estimated_kwh:req.estimated_kwh.clone() },
     ).await?;
-    let total_cents = crate::checkout::validate_quote(&quote)?;
+    crate::quote_confirmation::verify(&saved,&quote)?;
+    common_wechat::validate_pay_config(wechat)?;
+    let total_cents = crate::checkout::validate_quote(&quote.amount)?;
     let order_no = IdGen::new("ORD").next();
     let pay_order_no = IdGen::new("PAY").next();
     let expires_at = chrono::Utc::now() + chrono::Duration::seconds(300);
@@ -128,7 +149,8 @@ pub async fn scan_start(
     let prepared = async {
         let mut tx = st.db.pool().begin().await?;
         let id = crate::checkout::persist_pending(&mut tx, user_id, &order_no,
-            &pay_order_no, &port, &quote, expires_at).await?;
+            &pay_order_no, &port, &saved.quote.amount, expires_at).await?;
+        crate::quote_confirmation::persist(&mut tx,id,&quote_id,&saved).await?;
         Ok::<_, AppError>((tx, id))
     }.await;
     let (tx, charge_order_id) = match prepared {
@@ -154,7 +176,7 @@ pub async fn scan_start(
         payer: common_wechat::JsapiPayer { openid: openid.clone() },
     };
     let jsapi_resp = common_wechat::jsapi_create_order(&st.http, wechat, &jsapi_req).await?;
-    let pay_sign = common_wechat::sign_jsapi_pay(wechat, &jsapi_resp.prepay_id);
+    let pay_sign = common_wechat::sign_jsapi_pay(wechat, &jsapi_resp.prepay_id)?;
 
     Ok(Json(crate::api_envelope::Envelope::ok(ScanStartResponse {
         order_no,
@@ -187,14 +209,20 @@ pub async fn charge_stop(
     claims: UserClaims,
     Json(req): Json<ChargeStopRequest>,
 ) -> AppResult<Json<crate::api_envelope::Envelope<crate::api_types::ChargeStopResponse>>> {
+    // Authenticate the order before sending any command to the gateway.
+    let status: Option<String> = sqlx::query_scalar(
+        "SELECT status FROM charge_order WHERE order_no=? AND user_id=? AND deleted_at IS NULL"
+    ).bind(&req.order_no).bind(claims.user_id).fetch_optional(st.db.pool()).await?;
+    let status=status.ok_or_else(||AppError::NotFound("order".into()))?;
+    if status != "charging" {return Err(AppError::Conflict("订单不在充电中，不能停止".into()));}
     let body = ChargeStopCommand {
         order_no: req.order_no.clone(),
         user_id: claims.user_id,
         source: "user_app".into(),
     };
-    let cli = crate::clients::ServiceClient::new(st.http.clone(), st.service_token.clone());
+    let cli = common_http::internal::ApiClient::new(st.http.clone(), st.service_token.clone());
     let _resp: serde_json::Value = cli
-        .post_typed(
+        .post(
             st.cfg.service_urls.gateway.as_deref(),
             p::GW_CHARGE_ORDERS_STOP,
             &body,
@@ -212,7 +240,7 @@ pub async fn charge_ongoing(
 ) -> AppResult<Json<crate::api_envelope::Envelope<serde_json::Value>>> {
     let r = sqlx::query(
         "SELECT id, order_no, device_id, port_no, status, started_at, total_cents
-         FROM charge_order WHERE user_id = ? AND status IN ('paid','charging')
+         FROM charge_order WHERE user_id = ? AND deleted_at IS NULL AND status IN ('pending_payment','paid','charging')
          ORDER BY id DESC LIMIT 1"
     )
     .bind(claims.user_id)
@@ -221,13 +249,13 @@ pub async fn charge_ongoing(
     let v = match r {
         None => serde_json::Value::Null,
         Some(r) => json!({
-            "order_id": r.try_get::<u64, _>("id").ok(),
-            "order_no": r.try_get::<String, _>("order_no").ok(),
-            "device_id": r.try_get::<String, _>("device_id").ok(),
-            "port_no": r.try_get::<u8, _>("port_no").ok(),
-            "status": r.try_get::<String, _>("status").ok(),
-            "started_at": r.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("started_at").ok().flatten().map(|t| t.to_rfc3339()),
-            "total_cents": r.try_get::<Option<i64>, _>("total_cents").ok().flatten().unwrap_or(0),
+            "order_id": r.try_get::<u64, _>("id")?,
+            "order_no": r.try_get::<String, _>("order_no")?,
+            "device_id": r.try_get::<String, _>("device_id")?,
+            "port_no": r.try_get::<u8, _>("port_no")?,
+            "status": r.try_get::<String, _>("status")?,
+            "started_at": r.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("started_at")?.map(|t| t.to_rfc3339()),
+            "total_cents": r.try_get::<Option<i64>, _>("total_cents")?,
         }),
     };
     Ok(Json(crate::api_envelope::Envelope::ok(v, common_error::current_request_id())))
@@ -241,32 +269,43 @@ pub async fn charge_snapshot(
     claims: UserClaims,
     Query(q): Query<SnapshotQuery>,
 ) -> AppResult<Json<crate::api_envelope::Envelope<serde_json::Value>>> {
-    let key = format!("snapshot:{}", q.order_id);
-    if let Ok(Some(s)) = st.redis_cache.get::<serde_json::Value>(&key).await {
-        return Ok(Json(crate::api_envelope::Envelope::ok(s, common_error::current_request_id())));
-    }
-    let r = sqlx::query("SELECT status FROM charge_order WHERE order_no = ? AND user_id = ? LIMIT 1")
-        .bind(&q.order_id)
+    if q.order_id.is_empty() || q.order_id.len()>64 {return Err(AppError::BadRequest("订单标识无效".into()));}
+    // The database owns authorization and lifecycle, even when Redis has a snapshot.
+    let (filter, numeric_id) = match q.order_id.parse::<u64>() {Ok(id)=>("id",Some(id)),Err(_)=>("order_no",None)};
+    let sql=format!("SELECT id,order_no,status,CAST(charged_kwh AS CHAR) AS charged_kwh,charged_seconds,total_cents FROM charge_order WHERE {filter}=? AND user_id=? AND deleted_at IS NULL");
+    let mut query=sqlx::query(&sql);
+    query=if let Some(id)=numeric_id {query.bind(id)} else {query.bind(&q.order_id)};
+    let r = query
         .bind(claims.user_id)
         .fetch_optional(st.db.pool())
-        .await?;
-    let status: String = match r {
-        Some(r) => r.try_get("status")?,
-        None => return Err(AppError::NotFound("order".into())),
-    };
-    let poll_continue = matches!(status.as_str(), "paid" | "charging");
-    let resp = json!({
-        "order_id": q.order_id,
-        "charge_state": if status == "paid" { "charging" } else { &status },
-        "current_power_w": 0.0,
-        "charged_kwh": 0.0,
-        "current_cost": 0.0,
-        "temperature_c": 0.0,
-        "voltage_v": 0.0,
-        "elapsed_seconds": 0,
+        .await?.ok_or_else(||AppError::NotFound("order".into()))?;
+    let status:String=r.try_get("status")?;
+    let order_no:String=r.try_get("order_no")?;
+    let poll_continue = matches!(status.as_str(), "pending_payment" | "paid" | "charging");
+    let mut resp = json!({
+        "order_id": r.try_get::<u64,_>("id")?, "order_no":order_no,
+        "status":status, "charge_state":status,
+        "current_power_w": null, "power_w":null, "current_a":null,
+        "charged_kwh": r.try_get::<Option<String>,_>("charged_kwh")?,
+        "current_fee_cents":r.try_get::<Option<i64>,_>("total_cents")?,
+        "temperature_c": null, "voltage_v": null, "battery_soc":null,
+        "elapsed_seconds": r.try_get::<Option<u32>,_>("charged_seconds")?,
+        "telemetry_available":false,
         "poll_continue": poll_continue,
-        "next_poll_after_ms": 5000,
+        "next_poll_after_ms": if poll_continue {5000} else {0},
+        "server_ts":chrono::Utc::now().to_rfc3339(),
     });
+    if status=="charging" {
+        if let Ok(Some(cached))=st.redis_cache.get::<serde_json::Value>(&format!("snapshot:{order_no}")).await {
+            // Whitelist measurements; cached state/identity/polling flags cannot override DB truth.
+            for field in ["current_power_w","power_w","current_a","temperature_c","voltage_v","battery_soc"] {
+                if let Some(value)=cached.get(field) {
+                    let number=value.as_f64().or_else(||value.as_str().and_then(|s|s.parse::<f64>().ok()));
+                    if number.is_some_and(f64::is_finite) {resp[field]=value.clone();resp["telemetry_available"]=json!(true);}
+                }
+            }
+        }
+    }
     Ok(Json(crate::api_envelope::Envelope::ok(resp, common_error::current_request_id())))
 }
 

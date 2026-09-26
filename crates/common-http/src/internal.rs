@@ -49,6 +49,9 @@ impl ApiClient {
             return Err(AppError::BadRequest(envelope.message));
         }
         if envelope.code != 0 {
+            if (2000..3000).contains(&envelope.code) {
+                return Err(AppError::business(envelope.code, envelope.message));
+            }
             return Err(AppError::ServiceUnavailable("下游操作未成功".into()));
         }
         envelope
@@ -98,7 +101,7 @@ impl ApiClient {
                 return Err(AppError::NotFound("资源不存在".into()));
             }
             // An internal service-token failure must not log the operator out.
-            if !status.is_success() && status != reqwest::StatusCode::BAD_REQUEST {
+            if !status.is_success() && status != reqwest::StatusCode::BAD_REQUEST && status != reqwest::StatusCode::CONFLICT {
                 tracing::error!(%status, %path, "internal API rejected request");
                 return Err(AppError::ServiceUnavailable("下游服务暂时不可用".into()));
             }
@@ -111,6 +114,7 @@ impl ApiClient {
                     .data
                     .ok_or_else(|| AppError::ServiceUnavailable("下游响应缺少数据".into())),
                 1004 => Err(AppError::NotFound(envelope.message)),
+                1002 => Err(AppError::Conflict(envelope.message)),
                 1000 | 1005 => Err(AppError::BadRequest(envelope.message)),
                 1001 | 1003 | 5000..=5999 => {
                     Err(AppError::ServiceUnavailable("下游服务暂时不可用".into()))

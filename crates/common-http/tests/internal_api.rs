@@ -141,3 +141,14 @@ async fn missing_data_and_business_error_are_not_success() {
     ));
     task.abort();
 }
+
+#[tokio::test]
+async fn pricing_conflict_and_occupied_port_remain_actionable() {
+    let app=Router::new()
+        .route("/pricing",get(||async{(StatusCode::CONFLICT,Json(json!({"code":1002,"message":"multiple active rules","request_id":"test"})))}))
+        .route("/quote",axum::routing::post(||async{Json(json!({"code":2001,"message":"occupied","request_id":"test"}))}));
+    let (base,task)=server(app).await;
+    assert!(matches!(client().get::<Value,_>(Some(&base),"/pricing",&()).await,Err(AppError::Conflict(_))));
+    assert!(matches!(client().post::<Value,_>(Some(&base),"/quote",&json!({})).await,Err(AppError::Business{code:2001,..})));
+    task.abort();
+}

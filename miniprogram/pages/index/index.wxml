@@ -20,7 +20,7 @@
   <view class="card" bindtap="goOngoing" wx:if="{{ongoing}}">
     <view style="display: flex; justify-content: space-between;">
       <view>
-        <view class="text-secondary">充电中</view>
+        <view class="text-secondary">{{ongoing.status === 'pending_payment' ? '待支付' : ongoing.status === 'paid' ? '等待设备启动' : '充电中'}}</view>
         <view style="font-size: 18px; font-weight: 500;">订单 {{ongoing.order_no}}</view>
       </view>
       <view class="tag tag-green">查看</view>

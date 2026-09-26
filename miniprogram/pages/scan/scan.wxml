@@ -1,0 +1,5 @@
+<view class="container">
+ <view class="card"><view>请扫描充电设备或端口上的二维码</view><button bindtap="scan" loading="{{busy}}" disabled="{{busy}}">打开相机扫码</button></view>
+ <view class="card"><view>也可以输入设备编号或端口码</view><input aria-label="设备编号或端口码" placeholder="请输入设备编号或端口码" maxlength="64" value="{{manualCode}}" bindinput="inputCode" bindconfirm="manual"/><button bindtap="manual" disabled="{{busy || !manualCode}}">查询</button></view>
+ <view wx:if="{{error}}" class="card">{{error}}</view>
+</view>

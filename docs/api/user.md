@@ -1608,3 +1608,15 @@ Wechatpay-Nonce: ...
 ### 当前钱包读取契约（2026-09-26）
 
 GET /user/wallet/balance 的 data 包含 available_cents、frozen_cents、status，并保留 balance_cents=available_cents。GET /user/wallet/txns 支持 page/page_size/type，返回 page/page_size/total/items；每条包含 txn_no、txn_type、direction、带正负号的 amount_cents、balance_after_cents、remark、created_at。page 从 1 起，page_size 为 1..100。类型可选 recharge/consume/refund/freeze/unfreeze/admin_adjust/gift；不接受客户端指定 user_id。当前数据库 wallet_txn 无软删除字段，流水查询保留全部本人资金历史。
+
+### 充电状态读取当前实现补充
+
+`GET /api/v1/user/charge/ongoing/snapshot` 的 `order_id` 当前接受数字 ID 或订单号。无论是否命中缓存，先校验订单属于当前用户且未软删除；不可访问订单统一返回 404。响应包含数字 `order_id`、`order_no`、数据库原始 `status/charge_state`、`poll_continue`、`next_poll_after_ms`。pending_payment/paid/charging 继续轮询，终态停止；paid 不映射为 charging。缺失遥测返回 null，`telemetry_available` 表示是否有缓存测量，不代表已接通完整遥测和告警链路。缓存白名单之外的字段不返回。停止请求仅允许当前用户未删除且 charging 的订单；其他状态 409，未授权订单 404。
+
+### 扫码报价当前实现
+
+新增 `POST /api/v1/user/scan/quote`（用户会话鉴权）：请求 `{port_id,estimated_kwh,estimated_minutes}`，不接受客户端 user_id。明确预计电量/时长，返回 billing 的站点规则、分项金额与报价有效期，不创建订单或预占端口。`POST /scan/start` 当前也必须携带 `estimated_kwh`（字符串）和 `estimated_minutes`（整数），不再默认推算 240 分钟。用户确认金额、防漂移及规则快照持久化仍待完成，前端目前只提供报价预览。
+
+### 报价确认与下单保护
+
+`POST /user/scan/quote` 额外返回 UUID `quote_id`，服务端在 Redis 保存最多五分钟的报价上下文。`POST /user/scan/start` 当前需 `{quote_id,port_id,estimated_kwh,estimated_minutes}`（可选 coupon_grant_id 尚不支持抵扣）。报价必须属于当前用户和端口，预计参数一致，且规则、版本及所有费用分项经重新计算后未变。缺 quote_id 为 400；报价过期、参数/价格变化或已用于订单为 409；他人或不同端口的报价为 404。确认快照与订单、支付单在同一事务中持久化，同一 quote_id 只能创建一次订单；前端支付确认与已创建订单的预支付恢复仍待接通。

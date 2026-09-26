@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 // ===== 路径常量 =====
 
 pub mod paths {
+    pub const USER_SCAN_QUOTE: &str = "/api/v1/user/scan/quote";
     // --- 公开路由(无需 JWT)---
     pub const AUTH_LOGIN: &str = "/api/v1/public/auth/login";
     pub const AUTH_LOGOUT: &str = "/api/v1/public/auth/logout";
@@ -101,6 +102,9 @@ pub struct ScanPortRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanStartRequest {
     pub port_id: String,
+    pub quote_id: Option<String>,
+    pub estimated_kwh: String,
+    pub estimated_minutes: i64,
     #[serde(default)]
     pub coupon_grant_id: Option<u64>,
 }

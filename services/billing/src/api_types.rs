@@ -32,6 +32,7 @@ pub struct QuoteRequest {
     pub port_id: String,
     pub user_id: u64,
     pub estimated_minutes: i64,
+    pub estimated_kwh: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -172,6 +173,7 @@ mod tests {
             port_id: "P1".into(),
             user_id: 42,
             estimated_minutes: 240,
+            estimated_kwh: "0.500".into(),
         };
         let s = serde_json::to_string(&r).unwrap();
         let back: QuoteRequest = serde_json::from_str(&s).unwrap();

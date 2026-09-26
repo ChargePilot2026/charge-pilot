@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod orders;
 pub mod devices;
+pub mod pricing;
 
 // ===================== 路径常量 =====================
 
@@ -70,6 +71,7 @@ pub mod paths {
     pub const ADMIN_INTERNAL_STATIONS_NEARBY: &str = "/api/v1/internal/stations/nearby";
     pub const ADMIN_INTERNAL_STATIONS_DETAIL: &str = "/api/v1/internal/stations/:station_id";
     pub const ADMIN_INTERNAL_PRICING_RULES_GET: &str = "/api/v1/internal/pricing-rules/:id";
+    pub const ADMIN_DEVICE_PRICING: &str = "/api/v1/internal/devices/:id/pricing";
     pub const ADMIN_INTERNAL_SPLIT_TEMPLATES_GET: &str = "/api/v1/internal/split-templates/:id";
     pub const ADMIN_INTERNAL_EXPORT_TASK_GET: &str = "/api/v1/internal/export/tasks/:id";
     pub const ADMIN_INTERNAL_ALERTS_ACTIVE: &str = "/api/v1/internal/alerts";
@@ -128,6 +130,7 @@ pub struct BillingQuoteRequest {
     pub port_id: String,
     pub user_id: u64,
     pub estimated_minutes: i64,
+    pub estimated_kwh: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

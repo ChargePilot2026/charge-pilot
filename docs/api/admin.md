@@ -1467,3 +1467,9 @@ admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故�
 站点 GET 列表/详情需 station.read，POST 需 station.create，PUT 需 station.update，DELETE 需 station.delete。接口查询当前数据库授权，返回 403 不触发登录失效。列表 data.permissions 包含当前角色的站点权限码，供按钮启用使用；客户端该列表不构成授权依据。
 
 站点列表 GET /api/v1/admin/stations 现支持 page（默认 1）、page_size（默认 20，1..100）、keyword（最长 128 字符，匹配编码/名称/地址）、status（active/disabled/construction）。响应 data 包含 items、total、page、page_size、permissions。关键词中的 % 和 _ 按字面匹配。
+
+### 设备查询当前实现补充
+
+`GET /api/v1/admin/devices` 要求 `device.read`。参数：`page`（默认 1）、`page_size`（默认 20，1–100）、`keyword`（最多 128 字符，按设备编号、型号、有效站点名称/编码做字面子串匹配）、`status`（enabled/disabled/retired/fault）、正整数 `station_id` / `vendor_id`。返回 `items,total,page,page_size,permissions`；每行包含 `station_name,station_code`。状态为管理状态，不表示在线遥测。
+
+详情同样实时校验 `device.read`。设备订单入口要求 `device.read` 和 `order.read`，沿用订单分页/日期筛选，路径设备编号覆盖查询参数中的设备编号；已删除/不存在设备返回 404，上游故障按真实错误返回。

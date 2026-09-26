@@ -118,6 +118,33 @@ VALUES (@settlement,1,'platform','平台',6000,16,'paid'),(@settlement,2,'operat
     $userToken = New-TestUserToken 123
     $otherToken = New-TestUserToken 987654321
     $userHeaders = @{Authorization="Bearer $userToken"}
+    $snapshotBase='http://127.0.0.1:8081/api/v1/user/charge/ongoing/snapshot?order_id='
+    $snapshotKeys=@("snapshot:${taskTag}_active","snapshot:${taskTag}_done","snapshot:${taskTag}_deleted")
+    $fakeSnapshot='{"order_id":"wrong-order","charge_state":"charging","poll_continue":true,"current_power_w":123.5,"user_id":987654321,"private_field":"must-not-leak"}'
+    foreach($key in $snapshotKeys){$fakeSnapshot | docker compose -f $taskCompose exec -T redis-cache redis-cli -x SET $key | Out-Null}
+    $snap=(Invoke-RestMethod -Uri ($snapshotBase+"${taskTag}_active") -Headers $userHeaders).data
+    Assert-That ($snap.order_no -eq "${taskTag}_active" -and $snap.current_power_w -eq 123.5 -and $snap.telemetry_available -and $null -eq $snap.private_field -and $null -eq $snap.user_id) 'Snapshot identity or private cache fields leaked'
+    $numericSnap=(Invoke-RestMethod -Uri ($snapshotBase+$snap.order_id) -Headers $userHeaders).data
+    Assert-That ($numericSnap.order_no -eq $snap.order_no) 'Numeric snapshot ID did not resolve canonical cache key'
+    $snap=(Invoke-RestMethod -Uri ($snapshotBase+"${taskTag}_done") -Headers $userHeaders).data
+    Assert-That ($snap.status -eq 'completed' -and !$snap.poll_continue -and $snap.next_poll_after_ms -eq 0 -and $null -eq $snap.current_power_w -and $snap.elapsed_seconds -eq 3600) 'Stale cache overrode terminal database state'
+    foreach($case in @(@{order="${taskTag}_active";token=$otherToken},@{order="${taskTag}_deleted";token=$userToken})){
+        $status=200
+        try{Invoke-RestMethod -Uri ($snapshotBase+$case.order) -Headers @{Authorization="Bearer $($case.token)"}|Out-Null}catch{$status=[int]$_.Exception.Response.StatusCode}
+        Assert-That ($status -eq 404) 'Cached snapshot bypassed ownership or soft-delete check'
+    }
+    Invoke-TestSql "UPDATE user_db.charge_order SET status='paid' WHERE order_no='${taskTag}_active';"|Out-Null
+    $snap=(Invoke-RestMethod -Uri ($snapshotBase+"${taskTag}_active") -Headers $userHeaders).data
+    Assert-That ($snap.charge_state -eq 'paid' -and $snap.poll_continue -and !$snap.telemetry_available) 'Paid order falsely reported charging'
+    Invoke-TestSql "UPDATE user_db.charge_order SET status='charging' WHERE order_no='${taskTag}_active';"|Out-Null
+    docker compose -f $taskCompose exec -T redis-cache redis-cli DEL "snapshot:${taskTag}_active"|Out-Null
+    $snap=(Invoke-RestMethod -Uri ($snapshotBase+"${taskTag}_active") -Headers $userHeaders).data
+    Assert-That (!$snap.telemetry_available -and $null -eq $snap.current_power_w -and $snap.status -eq 'charging') 'Cache miss fabricated measurements'
+    foreach($case in @(@{order="${taskTag}_active";token=$otherToken;expected=404},@{order="${taskTag}_deleted";token=$userToken;expected=404},@{order="${taskTag}_done";token=$userToken;expected=409})){
+        $status=200
+        try{Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:8081/api/v1/user/charge/stop' -Headers @{Authorization="Bearer $($case.token)"} -ContentType application/json -Body (@{order_no=$case.order}|ConvertTo-Json)|Out-Null}catch{$status=[int]$_.Exception.Response.StatusCode}
+        Assert-That ($status -eq $case.expected) 'Invalid stop request reached gateway'
+    }
     $nearby = (Invoke-RestMethod -Uri 'http://127.0.0.1:8081/api/v1/user/station/nearby?lat=39.9&lng=116.4&radius_km=1' -Headers $userHeaders).data
     Assert-That (($nearby.items | Where-Object { $_.id -eq $stationId }).Count -eq 1) 'User coordinates were not forwarded or decimal coordinates lost'
     $stationDetail = (Invoke-RestMethod -Uri "http://127.0.0.1:8081/api/v1/user/station/$stationId" -Headers $userHeaders).data
@@ -200,6 +227,7 @@ UPDATE user_db.charge_order SET payment_order_id=LAST_INSERT_ID() WHERE id=@canc
     Assert-That ($cancelEvents -eq '1') 'Repeated cancellation duplicated lifecycle event'
     Write-Output 'PASS: pagination, filters, billing, splits, payment/refund, validation, permissions, timeline ordering and idempotent start failure.'
 } finally {
+    foreach($key in $snapshotKeys){docker compose -f $taskCompose exec -T redis-cache redis-cli DEL $key|Out-Null}
     foreach($authKey in $script:authTestKeys){docker compose -f $taskCompose exec -T redis-cache redis-cli DEL $authKey | Out-Null}
     foreach($authTag in $script:authTestRows){
         "DELETE FROM user_db.user WHERE openid='$authTag';" | docker compose -f $taskCompose exec -T mysql sh -c 'export MYSQL_PWD="$MYSQL_ROOT_PASSWORD"; exec mysql -uroot' | Out-Null

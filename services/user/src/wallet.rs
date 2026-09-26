@@ -24,11 +24,12 @@ pub async fn recharge(
     }
     let wechat = st.cfg.wechat.as_ref()
         .ok_or_else(|| AppError::Config("wechat missing".into()))?;
+    common_wechat::validate_pay_config(wechat)?;
     let id_gen = IdGen::new("PAY");
     let pay_order_no = id_gen.next();
     let now_month = chrono::Utc::now().format("%Y-%m-01").to_string();
 
-    let pay_order_id: u64 = sqlx::query_scalar(
+    let pay_order_id = sqlx::query(
         "INSERT INTO payment_order (order_no, biz_type, biz_id, user_id, pay_method, total_cents, status, created_month, expired_at, client_ip)
          VALUES (?, 'wallet_recharge', 0, ?, 'wechat', ?, 'initiated', ?, DATE_ADD(NOW(3), INTERVAL 5 MINUTE), ?)"
     )
@@ -37,8 +38,8 @@ pub async fn recharge(
     .bind(req.amount_cents)
     .bind(&now_month)
     .bind(req.client_ip.as_deref())
-    .fetch_one(st.db.pool())
-    .await?;
+    .execute(st.db.pool())
+    .await?.last_insert_id();
 
     let jsapi_req = common_wechat::JsapiOrderReq {
         appid: wechat.appid.clone(),
@@ -52,7 +53,7 @@ pub async fn recharge(
         payer: common_wechat::JsapiPayer { openid: claims.sub.clone() },
     };
     let resp = common_wechat::jsapi_create_order(&st.http, wechat, &jsapi_req).await?;
-    let pay_sign = common_wechat::sign_jsapi_pay(wechat, &resp.prepay_id);
+    let pay_sign = common_wechat::sign_jsapi_pay(wechat, &resp.prepay_id)?;
 
     Ok(Json(common_error::ApiEnvelope::ok(json!({
         "pay_order_id": pay_order_id,

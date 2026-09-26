@@ -25,34 +25,13 @@ Page({
   },
 
   onScanTap() {
-    if (!app.globalData.token) {
-      this.loginAndScan();
-      return;
-    }
-    wx.scanCode({
-      onlyFromCamera: true,
-      scanType: ['qrCode'],
-      success: (r: any) => {
-        const code = r.result;
-        wx.navigateTo({ url: `/pages/scan-result/scan-result?code=${encodeURIComponent(code)}` });
-      },
-    });
+    wx.navigateTo({ url: '/pages/scan/scan' });
   },
 
-  async loginAndScan() {
-    try {
-      await app.login();
-      this.refresh();
-      this.onScanTap();
-    } catch (e: any) {
-      wx.showToast({ title: e.message || '登录失败', icon: 'none' });
-    }
-  },
-
-  goWallet() { wx.navigateTo({ url: '/pages/wallet/wallet' }); },
+  goWallet() { wx.switchTab({ url: '/pages/wallet/wallet' }); },
   goOngoing() {
     if (this.data.ongoing) {
-      wx.navigateTo({ url: `/pages/charge/charging?order_no=${this.data.ongoing.order_no}` });
+      wx.navigateTo({ url: `/pages/charge/charging?order_no=${encodeURIComponent(this.data.ongoing.order_no)}` });
     }
   },
 });

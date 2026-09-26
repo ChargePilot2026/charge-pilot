@@ -53,9 +53,9 @@ async fn main() -> AppResult<()> {
         "INSERT IGNORE INTO role_permission (role_id, permission_id)
          SELECT ?, id FROM permission WHERE code = 'order.read'",
     ).bind(role_id).execute(&mut *tx).await?;
-    sqlx::query("INSERT IGNORE INTO permission (code,name,module) VALUES ('device.import','导入设备','device')")
+    sqlx::query("INSERT IGNORE INTO permission (code,name,module) VALUES ('device.import','导入设备','device'),('device.read','查看设备','device')")
         .execute(&mut *tx).await?;
-    sqlx::query("INSERT IGNORE INTO role_permission (role_id,permission_id) SELECT ?,id FROM permission WHERE code='device.import'")
+    sqlx::query("INSERT IGNORE INTO role_permission (role_id,permission_id) SELECT ?,id FROM permission WHERE code IN ('device.import','device.read')")
         .bind(role_id).execute(&mut *tx).await?;
     sqlx::query("INSERT IGNORE INTO permission (code,name,module) VALUES ('station.read','查看站点','station'),('station.create','新增站点','station'),('station.update','编辑站点','station'),('station.delete','删除站点','station')")
         .execute(&mut *tx).await?;
