@@ -16,6 +16,7 @@ pub mod station;
 pub mod stream_consumer;
 pub mod wechat;
 pub mod repo;
+pub mod orders;
 
 use common_auth::JwtCodec;
 use common_config::AppConfig;

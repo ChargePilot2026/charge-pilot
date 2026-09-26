@@ -10,6 +10,8 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod orders;
+
 // ===================== 路径常量 =====================
 
 pub mod paths {
@@ -38,6 +40,7 @@ pub mod paths {
     pub const GW_CHARGE_ORDERS_STOP: &str = "/api/v1/internal/charge-orders/stop";
 
     // -------- user 内部 --------
+    pub const USER_INTERNAL_ORDERS: &str = "/api/v1/internal/orders";
     pub const USER_INTERNAL_ORDER_DETAIL: &str = "/api/v1/internal/orders/:order_id";
     pub const USER_INTERNAL_REFUND_DETAIL: &str = "/api/v1/internal/refunds/:refund_id";
     pub const USER_INTERNAL_PAYMENT_DETAIL: &str = "/api/v1/internal/payment-orders/:payment_order_id";

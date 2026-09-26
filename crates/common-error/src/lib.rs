@@ -88,6 +88,8 @@ pub enum AppError {
     Io(#[from] std::io::Error),
     #[error("http client error: {0}")]
     HttpClient(String),
+    #[error("service unavailable: {0}")]
+    ServiceUnavailable(String),
     #[error("serde error: {0}")]
     Serde(#[from] serde_json::Error),
 }
@@ -111,6 +113,7 @@ impl AppError {
             AppError::WechatPayFailed(_) => 3001,
             AppError::WechatRefundFailed(_) => 3002,
             AppError::ThirdParty(_) => 3000,
+            AppError::ServiceUnavailable(_) => 5003,
             AppError::Business { code, .. } => *code,
             AppError::Internal(_) | AppError::Database(_) | AppError::Redis(_)
             | AppError::Config(_) | AppError::Io(_) | AppError::HttpClient(_)
@@ -126,6 +129,7 @@ impl AppError {
             AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
             AppError::Conflict(_) => StatusCode::CONFLICT,
             AppError::RateLimited(_) => StatusCode::TOO_MANY_REQUESTS,
+            AppError::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             AppError::PortOccupied | AppError::DeviceDisabled | AppError::InsufficientBalance
             | AppError::WechatPayFailed(_) | AppError::WechatRefundFailed(_)
             | AppError::ThirdParty(_) | AppError::Business { .. } => StatusCode::OK,

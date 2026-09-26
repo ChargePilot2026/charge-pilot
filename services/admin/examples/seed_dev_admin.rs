@@ -30,11 +30,6 @@ async fn main() -> AppResult<()> {
     .bind(&username)
     .fetch_optional(&mut *tx)
     .await?;
-    if existing.is_some() {
-        tx.commit().await?;
-        println!("Development administrator already exists; credentials preserved.");
-        return Ok(());
-    }
     let role: Option<u64> = sqlx::query_scalar(
         "SELECT id FROM role WHERE code = 'dev_admin' AND deleted_at IS NULL LIMIT 1",
     )
@@ -49,6 +44,20 @@ async fn main() -> AppResult<()> {
         .await?
         .last_insert_id(),
     };
+    sqlx::query(
+        "INSERT INTO permission (code, name, module)
+         SELECT 'order.read', '查看订单', 'order'
+         WHERE NOT EXISTS (SELECT 1 FROM permission WHERE code = 'order.read')",
+    ).execute(&mut *tx).await?;
+    sqlx::query(
+        "INSERT IGNORE INTO role_permission (role_id, permission_id)
+         SELECT ?, id FROM permission WHERE code = 'order.read'",
+    ).bind(role_id).execute(&mut *tx).await?;
+    if existing.is_some() {
+        tx.commit().await?;
+        println!("Development administrator already exists; credentials preserved.");
+        return Ok(());
+    }
     sqlx::query(
         "INSERT INTO admin_user_role (username, display_name, password_hash, role_id, status)
          VALUES (?, 'Development admin', ?, ?, 'active')",

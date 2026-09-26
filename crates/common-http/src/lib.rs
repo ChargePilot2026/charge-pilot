@@ -11,6 +11,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
 
+pub mod internal;
+
 /// 服务间 HTTP 客户端
 #[derive(Clone)]
 pub struct ServiceClient {

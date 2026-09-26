@@ -14,6 +14,7 @@ mod station;
 mod stream_consumer;
 mod wechat;
 mod repo;
+mod orders;
 
 use axum::{
     middleware,
@@ -95,7 +96,8 @@ pub fn build_router(state: AppState) -> Router {
         .route(api_types::paths::INTERNAL_REFUND_RESULT, post(refund::result))
         .route(api_types::paths::INTERNAL_REFUND_DETAIL, get(refund::detail))
         .route(api_types::paths::INTERNAL_PAYMENT_DETAIL, get(payment::detail))
-        .route(api_types::paths::INTERNAL_ORDER_DETAIL, get(api::internal_order_detail))
+        .route(api_contracts::paths::USER_INTERNAL_ORDERS, get(orders::list))
+        .route(api_types::paths::INTERNAL_ORDER_DETAIL, get(orders::detail))
         .route(api_types::paths::INTERNAL_INVOICE_DETAIL, get(invoice::internal_detail))
         .route(api_types::paths::INTERNAL_COUPON_STATS, get(coupon::stats))
         .layer(middleware::from_fn_with_state(svc_token.clone(), common_auth::refs::internal_token_mw));
