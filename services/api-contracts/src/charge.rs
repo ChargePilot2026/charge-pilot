@@ -619,6 +619,52 @@ mod snapshot_tests {
     }
 }
 
+// ===== 人工退款与风控放款(admin 调 user 内部端点)=====
+
+/// 人工退款申请结果。
+///
+/// `created` 区分**首次创建**与**幂等重放**:同一 `request_id` 重复提交会
+/// 返回已存在的 `refund_no` 且 `created` 仍为 true(实现未区分),
+/// 调用方需靠 `refund_no` 是否变化判断是否新建。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManualRefundCreated {
+    pub request_id: String,
+    pub refund_no: String,
+    pub created: bool,
+}
+
+/// 风控冻结放款结果。
+///
+/// 派生 `PartialEq`:同一 request_id 幂等重放必须返回**等值**结果
+/// (既有测试直接断言两次 apply 结果相等)。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WalletRiskReleased {
+    pub request_id: String,
+    pub freeze_id: String,
+    pub released: bool,
+    /// 放款后钱包是否恢复可用
+    pub wallet_active: bool,
+    pub actor_id: String,
+    pub comment: String,
+}
+
+#[cfg(test)]
+mod manual_refund_tests {
+    use super::*;
+
+    /// 回归护栏:freeze_id / actor_id 是**字符串**
+    #[test]
+    fn risk_release_ids_are_strings() {
+        let v = serde_json::to_value(WalletRiskReleased {
+            request_id: "R1".into(), freeze_id: "12".into(), released: true,
+            wallet_active: true, actor_id: "7".into(), comment: "已核实".into(),
+        })
+        .unwrap();
+        assert!(v["freeze_id"].is_string());
+        assert!(v["actor_id"].is_string());
+    }
+}
+
 /// 用户反馈。
 ///
 /// ⚠️ `id` / `user_id` / `order_id` / `replied_by` 是**字符串**——实现里

@@ -327,12 +327,12 @@ mod tests {
         let listing=list_in_transaction(&mut tx,uid,1,20).await.unwrap();assert!(listing["items"].as_array().unwrap().iter().any(|v|v["request_id"]==third.request_id&&v["status"]=="rejected"));
         sqlx::raw_sql("SAVEPOINT before_release").execute(&mut *tx).await.unwrap();
         sqlx::query("INSERT INTO risk_freeze_log(user_id,trigger_rule,frozen_action) VALUES (?,'other_risk','wallet')").bind(uid).execute(&mut *tx).await.unwrap();
-        let released=crate::wallet_risk_release::apply(&mut tx,&third.request_id,&release).await.unwrap();assert_eq!(released["wallet_active"],false);
+        let released=crate::wallet_risk_release::apply(&mut tx,&third.request_id,&release).await.unwrap();assert!(!released.wallet_active);
         sqlx::raw_sql("ROLLBACK TO SAVEPOINT before_release").execute(&mut *tx).await.unwrap();
         sqlx::query("UPDATE user SET status='frozen' WHERE id=?").bind(uid).execute(&mut *tx).await.unwrap();
-        let released=crate::wallet_risk_release::apply(&mut tx,&third.request_id,&release).await.unwrap();assert_eq!(released["wallet_active"],false);
+        let released=crate::wallet_risk_release::apply(&mut tx,&third.request_id,&release).await.unwrap();assert!(!released.wallet_active);
         sqlx::raw_sql("ROLLBACK TO SAVEPOINT before_release").execute(&mut *tx).await.unwrap();
-        let released=crate::wallet_risk_release::apply(&mut tx,&third.request_id,&release).await.unwrap();assert_eq!(released["wallet_active"],true);
+        let released=crate::wallet_risk_release::apply(&mut tx,&third.request_id,&release).await.unwrap();assert!(released.wallet_active);
         assert_eq!(crate::wallet_risk_release::apply(&mut tx,&third.request_id,&release).await.unwrap(),released);
         let funds:(i64,i64,String)=sqlx::query_as("SELECT balance_cents,frozen_cents,status FROM wallet_account WHERE id=?").bind(wid).fetch_one(&mut *tx).await.unwrap();assert_eq!(funds,(150,100,"active".into()));
         tx.rollback().await.unwrap();
