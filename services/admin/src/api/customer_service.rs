@@ -44,7 +44,7 @@ fn validate(req: &CSCreateReq) -> AppResult<()> {
     Ok(())
 }
 
-pub async fn create(State(st): State<AppState>, _c: ActiveAdmin, Json(req): Json<CSCreateReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn create(State(st): State<AppState>, _c: ActiveAdmin, Json(req): Json<CSCreateReq>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::CreatedResponse>>> {
     crate::auth::require_permission(&st,&_c,"customer_service.create").await?;
     validate(&req)?;
     let result = sqlx::query(
@@ -55,7 +55,7 @@ pub async fn create(State(st): State<AppState>, _c: ActiveAdmin, Json(req): Json
     .bind(req.priority).bind(req.enabled).bind(req.working_hours_json)
     .execute(st.db.pool()).await?;
     let id = result.last_insert_id();
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"id": id}), common_error::current_request_id())))
+    Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::CreatedResponse { id: id }, common_error::current_request_id())))
 }
 
 pub async fn get(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
@@ -73,7 +73,7 @@ pub async fn get(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64
     }), common_error::current_request_id())))
 }
 
-pub async fn update(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>, Json(req): Json<CSCreateReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn update(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>, Json(req): Json<CSCreateReq>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::UpdatedResponse>>> {
     crate::auth::require_permission(&st,&_c,"customer_service.update").await?;
     validate(&req)?;
     let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM customer_service_config WHERE id = ?)")
@@ -87,15 +87,15 @@ pub async fn update(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<
     .bind(&req.agent_wechat).bind(req.agent_name.as_deref()).bind(req.path.as_deref())
     .bind(req.priority.unwrap_or_default()).bind(req.enabled.unwrap_or(true)).bind(req.working_hours_json).bind(id)
     .execute(st.db.pool()).await?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"updated": true}), common_error::current_request_id())))
+    Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::UpdatedResponse::new(), common_error::current_request_id())))
 }
 
-pub async fn delete(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn delete(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::DeletedResponse>>> {
     crate::auth::require_permission(&st,&_c,"customer_service.delete").await?;
     let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM customer_service_config WHERE id = ?)")
         .bind(id).fetch_one(st.db.pool()).await?;
     if !exists { return Err(AppError::NotFound("cs".into())); }
     sqlx::query("UPDATE customer_service_config SET enabled = 0 WHERE id = ?")
         .bind(id).execute(st.db.pool()).await?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"deleted": true}), common_error::current_request_id())))
+    Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::DeletedResponse::new(), common_error::current_request_id())))
 }

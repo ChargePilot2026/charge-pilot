@@ -63,7 +63,7 @@ pub struct StationCreateReq {
     pub split_template_id: Option<u64>,
 }
 
-pub async fn create(State(st): State<AppState>, actor: ActiveAdmin, Json(req): Json<StationCreateReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn create(State(st): State<AppState>, actor: ActiveAdmin, Json(req): Json<StationCreateReq>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::CreatedResponse>>> {
     crate::auth::require_permission(&st,&actor, "station.create").await?;
     validate_text(Some(&req.code),64,true)?; validate_text(Some(&req.name),128,true)?;
     validate_fields(req.longitude.into(),req.latitude.into(),req.status.as_deref(),req.address.as_deref(),req.open_hours.as_deref(),req.contact_phone.as_deref())?;
@@ -83,7 +83,7 @@ pub async fn create(State(st): State<AppState>, actor: ActiveAdmin, Json(req): J
     .execute(&mut *tx).await?.last_insert_id();
     audit(&mut tx,actor.admin_user_id,id,"create",serde_json::to_value(&req)?).await?;
     tx.commit().await?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"id": id}), common_error::current_request_id())))
+    Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::CreatedResponse { id: id }, common_error::current_request_id())))
 }
 
 pub async fn get(State(st): State<AppState>, actor: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
@@ -112,7 +112,7 @@ pub struct StationUpdateReq {
     pub split_template_id: Option<u64>,
 }
 
-pub async fn update(State(st): State<AppState>, actor: ActiveAdmin, Path(id): Path<u64>, Json(req): Json<StationUpdateReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn update(State(st): State<AppState>, actor: ActiveAdmin, Path(id): Path<u64>, Json(req): Json<StationUpdateReq>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::UpdatedResponse>>> {
     crate::auth::require_permission(&st,&actor, "station.update").await?;
     validate_text(req.name.as_deref(),128,true)?;
     validate_fields(req.longitude,req.latitude,req.status.as_deref(),req.address.as_deref(),req.open_hours.as_deref(),req.contact_phone.as_deref())?;
@@ -139,15 +139,15 @@ pub async fn update(State(st): State<AppState>, actor: ActiveAdmin, Path(id): Pa
     .bind(id).execute(&mut *tx).await?;
     audit(&mut tx,actor.admin_user_id,id,"update",serde_json::to_value(&req)?).await?;
     tx.commit().await?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"updated": true}), common_error::current_request_id())))
+    Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::UpdatedResponse::new(), common_error::current_request_id())))
 }
 
-pub async fn delete(State(st): State<AppState>, actor: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn delete(State(st): State<AppState>, actor: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::DeletedResponse>>> {
     crate::auth::require_permission(&st,&actor, "station.delete").await?;
     let n = sqlx::query("UPDATE station SET deleted_at = NOW(3), deleted_by = ? WHERE id = ? AND deleted_at IS NULL")
         .bind(actor.admin_user_id).bind(id).execute(st.db.pool()).await?;
     if n.rows_affected() == 0 { return Err(AppError::NotFound("station".into())); }
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"deleted": true}), common_error::current_request_id())))
+    Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::DeletedResponse::new(), common_error::current_request_id())))
 }
 fn validate_text(value:Option<&str>,max:usize,nonempty:bool)->AppResult<()> {
     if let Some(value)=value {if value.chars().count()>max || value.chars().any(char::is_control) || (nonempty && value.trim().is_empty()) {return Err(AppError::BadRequest("站点文本为空、过长或包含控制字符".into()));}}

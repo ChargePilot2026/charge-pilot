@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod orders;
 pub mod refunds;
+pub mod admin;
 pub mod charge;
 pub mod common;
 pub mod devices;

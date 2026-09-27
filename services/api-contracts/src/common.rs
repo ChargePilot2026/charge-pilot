@@ -38,6 +38,39 @@ pub struct DispatchedResponse {
     pub already_processed: bool,
 }
 
+/// 创建成功:回传新记录 id。
+///
+/// PC 后台多处创建端点都是这个形状(公告 / 客服配置 / 角色 / 站点 / 优惠券 …),
+/// 逐个 `json!` 拼装。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreatedResponse {
+    pub id: u64,
+}
+
+/// 更新成功。注意是**软删除**语义下的"已更新",不返回行数。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdatedResponse {
+    pub updated: bool,
+}
+
+/// 删除成功(软删除,`deleted_at` 置位)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeletedResponse {
+    pub deleted: bool,
+}
+
+impl UpdatedResponse {
+    pub fn new() -> Self {
+        Self { updated: true }
+    }
+}
+
+impl DeletedResponse {
+    pub fn new() -> Self {
+        Self { deleted: true }
+    }
+}
+
 /// 通用列表响应。
 ///
 /// ⚠️ 技术规格 §7.5 期望的字段是 `total` / `page` / `page_size` / `data[]`,
@@ -81,6 +114,13 @@ mod tests {
     fn empty_list_still_has_items_array() {
         let v = serde_json::to_value(ListResponse::<u64>::new(vec![])).unwrap();
         assert!(v["items"].is_array());
+    }
+
+    #[test]
+    fn crud_acks_use_exact_field_names() {
+        assert_eq!(serde_json::to_value(CreatedResponse { id: 7 }).unwrap()["id"], 7);
+        assert_eq!(serde_json::to_value(UpdatedResponse::new()).unwrap()["updated"], true);
+        assert_eq!(serde_json::to_value(DeletedResponse::new()).unwrap()["deleted"], true);
     }
 
     #[test]

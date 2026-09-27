@@ -21,22 +21,29 @@ pub struct UserCreateReq {
     pub role_id: Option<u64>,
 }
 
-pub async fn list(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn list(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::admin::AdminUserList>>> {
     let rows = sqlx::query(
         "SELECT id, username, display_name, role_id, status, last_login_at, created_at
          FROM admin_user_role WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 200"
     )
     .fetch_all(st.db.pool()).await?;
-    let items: Vec<Value> = rows.iter().map(|r| -> AppResult<Value> { Ok(json!({
-        "id": sqlx::Row::try_get::<u64, _>(r, "id")?,
-        "username": sqlx::Row::try_get::<String, _>(r, "username")?,
-        "display_name": sqlx::Row::try_get::<Option<String>, _>(r, "display_name")?,
-        "role_id": sqlx::Row::try_get::<Option<u64>, _>(r, "role_id")?,
-        "status": sqlx::Row::try_get::<String, _>(r, "status")?,
-        "last_login_at": sqlx::Row::try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(r, "last_login_at")?.map(|t| t.to_rfc3339()),
-        "created_at": sqlx::Row::try_get::<chrono::DateTime<chrono::Utc>, _>(r, "created_at")?.to_rfc3339(),
-    })) }).collect::<AppResult<Vec<_>>>()?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"items": items}), common_error::current_request_id())))
+    let items = rows.iter().map(|r| -> AppResult<api_contracts::admin::AdminUser> {
+        Ok(api_contracts::admin::AdminUser {
+            id: sqlx::Row::try_get::<u64, _>(r, "id")?,
+            username: sqlx::Row::try_get::<String, _>(r, "username")?,
+            display_name: sqlx::Row::try_get::<Option<String>, _>(r, "display_name")?,
+            role_id: sqlx::Row::try_get::<Option<u64>, _>(r, "role_id")?,
+            status: sqlx::Row::try_get::<String, _>(r, "status")?,
+            last_login_at: sqlx::Row::try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(r, "last_login_at")?
+                .map(|t| t.to_rfc3339()),
+            created_at: sqlx::Row::try_get::<chrono::DateTime<chrono::Utc>, _>(r, "created_at")?
+                .to_rfc3339(),
+        })
+    }).collect::<AppResult<Vec<_>>>()?;
+    Ok(Json(common_error::ApiEnvelope::ok(
+        api_contracts::admin::AdminUserList::new(items),
+        common_error::current_request_id(),
+    )))
 }
 
 pub async fn create(State(st): State<AppState>, _c: ActiveAdmin, Json(req): Json<UserCreateReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
@@ -78,7 +85,7 @@ pub struct UserUpdateReq {
     pub email: Option<String>,
 }
 
-pub async fn update(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>, Json(req): Json<UserUpdateReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn update(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>, Json(req): Json<UserUpdateReq>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::UpdatedResponse>>> {
     crate::auth::require_permission(&st,&_c,"admin_user.update").await?;
     let n = sqlx::query(
         "UPDATE admin_user_role
@@ -99,17 +106,17 @@ pub async fn update(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<
     if n.rows_affected() == 0 {
         return Err(AppError::NotFound("user".into()));
     }
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"updated": true}), common_error::current_request_id())))
+    Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::UpdatedResponse::new(), common_error::current_request_id())))
 }
 
-pub async fn delete(State(st): State<AppState>, actor: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn delete(State(st): State<AppState>, actor: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::DeletedResponse>>> {
     crate::auth::require_permission(&st,&actor,"admin_user.delete").await?;
     let n = sqlx::query("UPDATE admin_user_role SET deleted_at = NOW(3), deleted_by = ? WHERE id = ? AND deleted_at IS NULL")
         .bind(actor.admin_user_id).bind(id).execute(st.db.pool()).await?;
     if n.rows_affected() == 0 {
         return Err(AppError::NotFound("user".into()));
     }
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"deleted": true}), common_error::current_request_id())))
+    Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::DeletedResponse::new(), common_error::current_request_id())))
 }
 
 #[derive(Debug, Deserialize)]
