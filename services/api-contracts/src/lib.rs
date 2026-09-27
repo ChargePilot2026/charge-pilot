@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 pub mod orders;
 pub mod refunds;
 pub mod devices;
+pub mod gateway_devices;
 pub mod pricing;
 
 // ===================== 路径常量 =====================

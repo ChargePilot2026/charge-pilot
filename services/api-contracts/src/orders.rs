@@ -112,3 +112,52 @@ pub struct OrderSettlementParty {
     pub amount_cents: i64,
     pub status: String,
 }
+
+// ===== 设备维度订单列表(gateway 透传 / user 生产)=====
+
+/// 设备维度订单摘要。
+///
+/// gateway 的 `GET /internal/devices/:id/orders` 直接透传本结构,
+/// 因此它必须定义在契约层而不是任一服务内部。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceOrderSummary {
+    pub order_id: u64,
+    pub order_no: String,
+    pub user_id: u64,
+    pub port_no: u8,
+    pub status: String,
+    pub started_at: Option<String>,
+    pub ended_at: Option<String>,
+    pub total_cents: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceOrdersResponse {
+    pub device_id: String,
+    pub items: Vec<DeviceOrderSummary>,
+}
+
+#[cfg(test)]
+mod device_order_tests {
+    use super::*;
+
+    #[test]
+    fn device_orders_round_trip() {
+        let r = DeviceOrdersResponse {
+            device_id: "D1".into(),
+            items: vec![DeviceOrderSummary {
+                order_id: 1, order_no: "ORD-1".into(), user_id: 2, port_no: 3,
+                status: "completed".into(),
+                started_at: Some("2026-09-28T00:00:00Z".into()),
+                ended_at: None,
+                total_cents: Some(1200),
+            }],
+        };
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(v["device_id"], "D1");
+        assert_eq!(v["items"][0]["order_no"], "ORD-1");
+        assert!(v["items"][0]["ended_at"].is_null());
+        let back: DeviceOrdersResponse = serde_json::from_value(v).unwrap();
+        assert_eq!(back.items.len(), 1);
+    }
+}

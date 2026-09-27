@@ -299,7 +299,7 @@ pub async fn user_history(
 pub async fn device_orders(
     State(st): State<AppState>,
     Path(device_id): Path<String>,
-) -> AppResult<Json<ApiEnvelope<serde_json::Value>>> {
+) -> AppResult<Json<ApiEnvelope<api_contracts::orders::DeviceOrdersResponse>>> {
     if device_id.is_empty() || device_id.len() > 64 {
         return Err(AppError::BadRequest("设备编号无效".into()));
     }
@@ -310,20 +310,27 @@ pub async fn device_orders(
     .bind(&device_id)
     .fetch_all(st.db.pool())
     .await?;
-    let items: Vec<serde_json::Value> = rows.iter().map(|row| -> AppResult<serde_json::Value> {
-        Ok(serde_json::json!({
-            "order_id": row.try_get::<u64, _>("id")?,
-            "order_no": row.try_get::<String, _>("order_no")?,
-            "user_id": row.try_get::<u64, _>("user_id")?,
-            "port_no": row.try_get::<u8, _>("port_no")?,
-            "status": row.try_get::<String, _>("status")?,
-            "started_at": row.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("started_at")?.map(|time| time.to_rfc3339()),
-            "ended_at": row.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("ended_at")?.map(|time| time.to_rfc3339()),
-            "total_cents": row.try_get::<Option<i64>, _>("total_cents")?,
-        }))
-    }).collect::<AppResult<Vec<_>>>()?;
+    let items = rows
+        .iter()
+        .map(|row| -> AppResult<api_contracts::orders::DeviceOrderSummary> {
+            Ok(api_contracts::orders::DeviceOrderSummary {
+                order_id: row.try_get::<u64, _>("id")?,
+                order_no: row.try_get::<String, _>("order_no")?,
+                user_id: row.try_get::<u64, _>("user_id")?,
+                port_no: row.try_get::<u8, _>("port_no")?,
+                status: row.try_get::<String, _>("status")?,
+                started_at: row
+                    .try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("started_at")?
+                    .map(|time| time.to_rfc3339()),
+                ended_at: row
+                    .try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("ended_at")?
+                    .map(|time| time.to_rfc3339()),
+                total_cents: row.try_get::<Option<i64>, _>("total_cents")?,
+            })
+        })
+        .collect::<AppResult<Vec<_>>>()?;
     Ok(Json(ApiEnvelope::ok(
-        serde_json::json!({ "device_id": device_id, "items": items }),
+        api_contracts::orders::DeviceOrdersResponse { device_id, items },
         common_error::current_request_id(),
     )))
 }

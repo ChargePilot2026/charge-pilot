@@ -1,6 +1,7 @@
 //! gateway 内部 HTTP API(17 个端点)
 
 use crate::{protocol::Frame, AppState};
+use api_contracts::gateway_devices as gd;
 use axum::{
     extract::{Path, State},
     Json,
@@ -19,13 +20,13 @@ pub async fn health(State(st): State<AppState>) -> AppResult<&'static str> {
 /// Close stale sessions in gateway_db. This is exposed only through the service-token router.
 pub async fn cleanup_idle_device_sessions(
     State(st): State<AppState>,
-) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+) -> AppResult<Json<common_error::ApiEnvelope<gd::CleanupSessionsResponse>>> {
     let result = sqlx::query(
         "UPDATE device_session SET ended_at = UTC_TIMESTAMP(3), close_reason = 'idle_timeout'
          WHERE ended_at IS NULL AND last_active_at < UTC_TIMESTAMP(3) - INTERVAL 10 MINUTE"
     ).execute(st.db.pool()).await?;
     Ok(Json(common_error::ApiEnvelope::ok(
-        json!({"closed_count": result.rows_affected()}),
+        gd::CleanupSessionsResponse { closed_count: result.rows_affected() },
         common_error::current_request_id(),
     )))
 }
@@ -37,14 +38,17 @@ pub use crate::scan::{scan_resolve, scan_port};
 pub async fn device_get(
     State(st): State<AppState>,
     Path(id): Path<String>,
-) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+) -> AppResult<Json<common_error::ApiEnvelope<gd::DeviceSummary>>> {
     let r: Option<(String, u64, u8, String, Option<String>)> = sqlx::query_as(
         "SELECT device_id, vendor_id, port_count, status, firmware_version FROM device WHERE device_id = ? AND deleted_at IS NULL"
     ).bind(&id).fetch_optional(st.db.pool()).await?;
     let r = r.ok_or_else(|| AppError::NotFound("device".into()))?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({
-        "device_id": r.0, "vendor_id": r.1, "port_count": r.2, "status": r.3, "firmware_version": r.4,
-    }), common_error::current_request_id())))
+    Ok(Json(common_error::ApiEnvelope::ok(
+        gd::DeviceSummary {
+            device_id: r.0, vendor_id: r.1, port_count: r.2, status: r.3, firmware_version: r.4,
+        },
+        common_error::current_request_id(),
+    )))
 }
 
 #[derive(Debug, Deserialize)]
@@ -57,7 +61,7 @@ pub async fn device_snapshot(
     State(st): State<AppState>,
     Path(id): Path<String>,
     Query(q): Query<SnapshotQuery>,
-) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+) -> AppResult<Json<common_error::ApiEnvelope<gd::DeviceSnapshotResponse>>> {
     let order_id = q.order_id.as_deref().filter(|value| !value.is_empty())
         .ok_or_else(|| AppError::BadRequest("order_id 必填".into()))?;
     let port_no = q.port_no.ok_or_else(|| AppError::BadRequest("port_no 必填".into()))?;
@@ -67,7 +71,7 @@ pub async fn device_snapshot(
          ORDER BY ts DESC LIMIT 100",
     )
     .bind(&id).bind(port_no).fetch_all(st.db.pool()).await?;
-    let mut snap = serde_json::Map::new();
+    let mut snap = gd::TelemetrySnapshot::default();
     let mut seen = std::collections::HashSet::new();
     for row in &rows {
         let metric: String = sqlx::Row::try_get(row, "metric")?;
@@ -75,47 +79,46 @@ pub async fn device_snapshot(
         if !seen.insert(field) { continue; }
         let value: Option<f64> = sqlx::Row::try_get(row, "value_num")?;
         if let Some(value) = value.filter(|value| value.is_finite()) {
-            snap.insert(field.to_string(), json!(value));
+            snap.set(field, value);
         }
         let ts: chrono::DateTime<chrono::Utc> = sqlx::Row::try_get(row, "ts")?;
-        snap.entry("ts".to_string()).or_insert_with(|| json!(ts.to_rfc3339()));
+        if snap.ts.is_none() { snap.ts = Some(ts.to_rfc3339()); }
     }
-    let v = json!({
-        "device_id": id,
-        "order_id": order_id,
-        "snapshot": Value::Object(snap),
-    });
-    Ok(Json(common_error::ApiEnvelope::ok(v, common_error::current_request_id())))
+    Ok(Json(common_error::ApiEnvelope::ok(
+        gd::DeviceSnapshotResponse { device_id: id, order_id: order_id.to_string(), snapshot: snap },
+        common_error::current_request_id(),
+    )))
 }
 
 pub async fn device_ports(
     State(st): State<AppState>,
     Path(id): Path<String>,
-) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+) -> AppResult<Json<common_error::ApiEnvelope<gd::DevicePortsResponse>>> {
     let rows = sqlx::query("SELECT id, port_no, port_code, status FROM device_port WHERE device_id = ? AND deleted_at IS NULL")
         .bind(&id).fetch_all(st.db.pool()).await?;
-    let items: Vec<Value> = rows.iter().map(|r| -> AppResult<Value> { Ok(json!({
-        "id": sqlx::Row::try_get::<u64, _>(r, "id")?,
-        "port_no": sqlx::Row::try_get::<u8, _>(r, "port_no")?,
-        "port_code": sqlx::Row::try_get::<String, _>(r, "port_code")?,
-        "status": sqlx::Row::try_get::<String, _>(r, "status")?,
-    })) }).collect::<AppResult<Vec<_>>>()?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"items": items}), common_error::current_request_id())))
+    let items = rows.iter().map(|r| -> AppResult<gd::DevicePort> { Ok(gd::DevicePort {
+        id: sqlx::Row::try_get::<u64, _>(r, "id")?,
+        port_no: sqlx::Row::try_get::<u8, _>(r, "port_no")?,
+        port_code: sqlx::Row::try_get::<String, _>(r, "port_code")?,
+        status: sqlx::Row::try_get::<String, _>(r, "status")?,
+    }) }).collect::<AppResult<Vec<_>>>()?;
+    Ok(Json(common_error::ApiEnvelope::ok(
+        gd::DevicePortsResponse { items },
+        common_error::current_request_id(),
+    )))
 }
 
 pub async fn device_orders(
     State(st): State<AppState>,
     Path(id): Path<String>,
-) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
-    // 通过 HTTP 调 user 服务查订单 — 类型化 client + 路径常量
+) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::orders::DeviceOrdersResponse>>> {
+    // 透传 user 服务的类型化结果:客户端已解包信封,这里不再手工取 `data`
     let cli = crate::clients::ServiceClient::new(st.http.clone(), st.service_token.clone());
     let path = api_contracts::paths::USER_INTERNAL_DEVICE_ORDERS.replace(":device_id", &id);
-    let response: Value = cli
+    let orders: api_contracts::orders::DeviceOrdersResponse = cli
         .get_typed(st.cfg.service_urls.user.as_deref(), &path)
         .await?;
-    let v = response.get("data").cloned()
-        .ok_or_else(|| AppError::ServiceUnavailable("user 服务订单响应缺少 data".into()))?;
-    Ok(Json(common_error::ApiEnvelope::ok(v, common_error::current_request_id())))
+    Ok(Json(common_error::ApiEnvelope::ok(orders, common_error::current_request_id())))
 }
 
 #[derive(Debug, Deserialize)]
@@ -130,7 +133,7 @@ pub async fn device_curve(
     State(st): State<AppState>,
     Path(id): Path<String>,
     Query(q): Query<CurveQuery>,
-) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+) -> AppResult<Json<common_error::ApiEnvelope<gd::DeviceCurveResponse>>> {
     let order_id = q.order_id.as_deref().filter(|value| !value.is_empty())
         .ok_or_else(|| AppError::BadRequest("order_id 必填".into()))?;
     let port_no = q.port_no.ok_or_else(|| AppError::BadRequest("port_no 必填".into()))?;
@@ -161,7 +164,7 @@ pub async fn device_curve(
         .bind(sample_interval_seconds).bind(sample_interval_seconds)
         .bind(&id).bind(port_no).bind(from).bind(now)
         .fetch_all(st.db.pool()).await?;
-    let mut points: std::collections::BTreeMap<i64, serde_json::Map<String, Value>> = std::collections::BTreeMap::new();
+    let mut points: std::collections::BTreeMap<i64, gd::CurvePoint> = std::collections::BTreeMap::new();
     for row in &rows {
         let metric: String = sqlx::Row::try_get(row, "metric")?;
         let Some(field) = metric_field(&metric) else { continue; };
@@ -169,21 +172,28 @@ pub async fn device_curve(
         let Some(value) = value.filter(|value| value.is_finite()) else { continue; };
         let ts: chrono::DateTime<chrono::Utc> = sqlx::Row::try_get(row, "ts")?;
         let bucket = ts.timestamp();
-        let point = points.entry(bucket).or_default();
-        point.entry("ts").or_insert_with(|| json!(chrono::DateTime::<chrono::Utc>::from_timestamp(bucket, 0).unwrap_or(ts).to_rfc3339()));
-        point.insert(field.into(), json!(value));
+        let point = points.entry(bucket).or_insert_with(|| gd::CurvePoint {
+            ts: chrono::DateTime::<chrono::Utc>::from_timestamp(bucket, 0).unwrap_or(ts).to_rfc3339(),
+            ..Default::default()
+        });
+        point.set(field, value);
     }
-    let series: Vec<Value> = points.into_values().map(Value::Object).collect();
-    let max_power_w = series.iter().filter_map(|point| point.get("power_w").and_then(Value::as_f64)).reduce(f64::max);
-    let max_current_a = series.iter().filter_map(|point| point.get("current_a").and_then(Value::as_f64)).reduce(f64::max);
-    let max_temperature_c = series.iter().filter_map(|point| point.get("temperature_c").and_then(Value::as_f64)).reduce(f64::max);
-    Ok(Json(common_error::ApiEnvelope::ok(json!({
-        "order_id": order_id,
-        "window": window,
-        "sample_interval_seconds": sample_interval_seconds,
-        "series": series,
-        "summary": {"max_power_w": max_power_w, "max_current_a": max_current_a, "max_temperature_c": max_temperature_c}
-    }), common_error::current_request_id())))
+    let series: Vec<gd::CurvePoint> = points.into_values().collect();
+    let summary = gd::CurveSummary {
+        max_power_w: series.iter().filter_map(|p| p.power_w).reduce(f64::max),
+        max_current_a: series.iter().filter_map(|p| p.current_a).reduce(f64::max),
+        max_temperature_c: series.iter().filter_map(|p| p.temperature_c).reduce(f64::max),
+    };
+    Ok(Json(common_error::ApiEnvelope::ok(
+        gd::DeviceCurveResponse {
+            order_id: order_id.to_string(),
+            window: window.to_string(),
+            sample_interval_seconds: sample_interval_seconds as u32,
+            series,
+            summary,
+        },
+        common_error::current_request_id(),
+    )))
 }
 
 #[derive(Debug, Deserialize)]
@@ -199,7 +209,7 @@ pub async fn device_historical_curve(
     State(st): State<AppState>,
     Path(id): Path<String>,
     Query(q): Query<HistCurveQuery>,
-) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+) -> AppResult<Json<common_error::ApiEnvelope<gd::DeviceHistoricalCurveResponse>>> {
     let _order_id = q.order_id.as_deref().filter(|value| !value.is_empty())
         .ok_or_else(|| AppError::BadRequest("order_id 必填".into()))?;
     let port_no = q.port_no.ok_or_else(|| AppError::BadRequest("port_no 必填".into()))?;
@@ -223,7 +233,7 @@ pub async fn device_historical_curve(
         table
     );
     let rows = sqlx::query(&sql).bind(&id).bind(port_no).bind(started_at).bind(ended_at).fetch_all(st.db.pool()).await?;
-    let mut series: std::collections::BTreeMap<String, serde_json::Map<String, Value>> = std::collections::BTreeMap::new();
+    let mut series: std::collections::BTreeMap<String, gd::HistoricalCurvePoint> = std::collections::BTreeMap::new();
     let mut max_power_w: Option<f64> = None;
     let mut max_temperature_c: Option<f64> = None;
     let mut power_weighted_sum = 0.0;
@@ -237,17 +247,12 @@ pub async fn device_historical_curve(
         let sample_count: u64 = sqlx::Row::try_get(row, "sample_count")?;
         let ts: chrono::DateTime<chrono::Utc> = sqlx::Row::try_get(row, "bucket_start")?;
         let ts = ts.to_rfc3339();
-        let point = series.entry(ts.clone()).or_default();
-        point.entry("bucket_start").or_insert_with(|| json!(ts));
-        if metric == "battery_soc" {
-            point.insert("battery_soc_end".into(), avg.map_or(Value::Null, |value| json!(value)));
-        } else if metric == "meter_kwh" {
-            point.insert("meter_kwh_end".into(), max.map_or(Value::Null, |value| json!(value)));
-        } else {
-            point.insert(format!("{field}_avg"), avg.map_or(Value::Null, |value| json!(value)));
-            point.insert(format!("{field}_min"), min.map_or(Value::Null, |value| json!(value)));
-            point.insert(format!("{field}_max"), max.map_or(Value::Null, |value| json!(value)));
-        }
+        let point = series.entry(ts.clone()).or_insert_with(|| gd::HistoricalCurvePoint {
+            bucket_start: ts,
+            ..Default::default()
+        });
+        // 电池取 avg、 电量取 max,其余 avg/min/max 三值——与旧实现逐项一致
+        point.set_stat(field, avg, min, max);
         if metric == "power_w" {
             if let Some(value) = avg {
                 power_weighted_sum += value * sample_count as f64;
@@ -259,14 +264,21 @@ pub async fn device_historical_curve(
             if let Some(value) = max { max_temperature_c = Some(max_temperature_c.map_or(value, |current| current.max(value))); }
         }
     }
-    let series: Vec<Value> = series.into_values().map(Value::Object).collect();
+    let series: Vec<gd::HistoricalCurvePoint> = series.into_values().collect();
     let average_power_w = (power_sample_count > 0)
         .then_some(power_weighted_sum / power_sample_count as f64);
-    Ok(Json(common_error::ApiEnvelope::ok(json!({
-        "granularity": granularity,
-        "series": series,
-        "summary": {"max_power_w": max_power_w, "max_temperature_c": max_temperature_c, "avg_power_w": average_power_w}
-    }), common_error::current_request_id())))
+    Ok(Json(common_error::ApiEnvelope::ok(
+        gd::DeviceHistoricalCurveResponse {
+            granularity: granularity.to_string(),
+            series,
+            summary: gd::HistoricalCurveSummary {
+                max_power_w,
+                max_temperature_c,
+                avg_power_w: average_power_w,
+            },
+        },
+        common_error::current_request_id(),
+    )))
 }
 
 fn metric_field(metric: &str) -> Option<&'static str> {
@@ -284,20 +296,16 @@ fn metric_field(metric: &str) -> Option<&'static str> {
 pub async fn device_reboot(
     State(_st): State<AppState>,
     Path(_id): Path<String>,
-) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
-    Err(AppError::ServiceUnavailable(
-        "设备重启指令未接入实际设备传输与 ACK，未创建或发送命令".into(),
-    ))
+) -> AppResult<Json<common_error::ApiEnvelope<gd::NotImplementedResponse>>> {
+    Err(AppError::ServiceUnavailable("设备重启指令未接入实际设备传输与 ACK，未创建或发送命令".into()))
 }
 
 pub async fn device_firmware_push(
     State(_st): State<AppState>,
     Path(_id): Path<String>,
     Json(_req): Json<Value>,
-) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
-    Err(AppError::ServiceUnavailable(
-        "OTA 固件传输、设备 ACK 与失败回滚尚未接入，未创建或发送命令".into(),
-    ))
+) -> AppResult<Json<common_error::ApiEnvelope<gd::NotImplementedResponse>>> {
+    Err(AppError::ServiceUnavailable("OTA 固件传输、设备 ACK 与失败回滚尚未接入，未创建或发送命令".into()))
 }
 
 // ===== charge control =====
@@ -313,7 +321,7 @@ pub async fn device_backfill(
     State(st): State<AppState>,
     Path(id): Path<String>,
     Json(req): Json<DeviceBackfillReq>,
-) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+) -> AppResult<Json<common_error::ApiEnvelope<gd::BackfillResponse>>> {
     if req.frames.is_empty() || req.frames.len() > 1000 {
         return Err(AppError::BadRequest("补传帧数量必须在 1–1000 之间".into()));
     }
@@ -341,7 +349,10 @@ pub async fn device_backfill(
     }
     tx.commit().await?;
     let n = measurements.len();
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"inserted": n}), common_error::current_request_id())))
+    Ok(Json(common_error::ApiEnvelope::ok(
+        gd::BackfillResponse { inserted: n },
+        common_error::current_request_id(),
+    )))
 }
 
 fn numeric_value(value: &Value) -> Option<f64> {
@@ -359,10 +370,8 @@ pub async fn device_command(
     State(_st): State<AppState>,
     Path(_id): Path<String>,
     Json(_req): Json<DeviceCommandReq>,
-) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
-    Err(AppError::ServiceUnavailable(
-        "通用设备指令传输与 ACK 尚未接入，未创建或发送命令".into(),
-    ))
+) -> AppResult<Json<common_error::ApiEnvelope<gd::NotImplementedResponse>>> {
+    Err(AppError::ServiceUnavailable("通用设备指令传输与 ACK 尚未接入，未创建或发送命令".into()))
 }
 
 use axum::extract::Query;
