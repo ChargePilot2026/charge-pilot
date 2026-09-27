@@ -78,48 +78,52 @@ fn validate_coupon(req: &CouponCreate) -> AppResult<()> {
     Ok(())
 }
 
-fn coupon_json(row: &sqlx::mysql::MySqlRow) -> AppResult<Value> {
-    Ok(json!({
-        "id": row.try_get::<u64, _>("id")?,
-        "code": row.try_get::<String, _>("code")?,
-        "name": row.try_get::<String, _>("name")?,
-        "discount_type": row.try_get::<String, _>("discount_type")?,
-        "discount_value_cents": row.try_get::<Option<i64>, _>("discount_value_cents")?,
-        "discount_percent": row.try_get::<Option<f64>, _>("discount_percent")?,
-        "min_charge_cents": row.try_get::<i64, _>("min_charge_cents")?,
-        "valid_hours": row.try_get::<i64, _>("valid_hours")?,
-        "total_quota": row.try_get::<i64, _>("total_quota")?,
-        "per_user_quota": row.try_get::<i64, _>("per_user_quota")?,
-        "status": row.try_get::<String, _>("status")?,
-        "start_at": row.try_get::<Option<chrono::NaiveDateTime>, _>("start_at")?.map(|v| v.and_utc().to_rfc3339()),
-        "end_at": row.try_get::<Option<chrono::NaiveDateTime>, _>("end_at")?.map(|v| v.and_utc().to_rfc3339()),
-    }))
+/// 列表与详情共用的投影(字段集一致)。
+fn coupon_json(row: &sqlx::mysql::MySqlRow) -> AppResult<api_contracts::charge::CouponTemplate> {
+    Ok(api_contracts::charge::CouponTemplate {
+        id: row.try_get::<u64, _>("id")?,
+        code: row.try_get::<String, _>("code")?,
+        name: row.try_get::<String, _>("name")?,
+        discount_type: row.try_get::<String, _>("discount_type")?,
+        discount_value_cents: row.try_get::<Option<i64>, _>("discount_value_cents")?,
+        discount_percent: row.try_get::<Option<f64>, _>("discount_percent")?,
+        min_charge_cents: row.try_get::<i64, _>("min_charge_cents")?,
+        valid_hours: row.try_get::<i64, _>("valid_hours")?,
+        total_quota: row.try_get::<i64, _>("total_quota")?,
+        per_user_quota: row.try_get::<i64, _>("per_user_quota")?,
+        status: row.try_get::<String, _>("status")?,
+        start_at: row.try_get::<Option<chrono::NaiveDateTime>, _>("start_at")?.map(|v| v.and_utc().to_rfc3339()),
+        end_at: row.try_get::<Option<chrono::NaiveDateTime>, _>("end_at")?.map(|v| v.and_utc().to_rfc3339()),
+    })
 }
 
-pub async fn list(State(st): State<AppState>) -> AppResult<Json<ApiEnvelope<Value>>> {
+pub async fn list(State(st): State<AppState>) -> AppResult<Json<ApiEnvelope<api_contracts::common::ListResponse<api_contracts::charge::CouponTemplate>>>> {
     let rows = sqlx::query("SELECT id,code,name,discount_type,discount_value_cents,CAST(discount_percent AS DOUBLE) AS discount_percent,min_charge_cents,valid_hours,total_quota,per_user_quota,status,start_at,end_at FROM coupon WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 200")
         .fetch_all(st.db.pool()).await?;
     let items = rows.iter().map(coupon_json).collect::<AppResult<Vec<_>>>()?;
-    Ok(Json(ApiEnvelope::ok(json!({"items":items}), common_error::current_request_id())))
+    Ok(Json(ApiEnvelope::ok(
+        api_contracts::common::ListResponse::new(items),
+        common_error::current_request_id(),
+    )))
 }
 
-pub async fn create(State(st): State<AppState>, Json(req): Json<CouponCreate>) -> AppResult<Json<ApiEnvelope<Value>>> {
+pub async fn create(State(st): State<AppState>, Json(req): Json<CouponCreate>) -> AppResult<Json<ApiEnvelope<api_contracts::common::CreatedResponse>>> {
     validate_coupon(&req)?;
     let result = sqlx::query("INSERT INTO coupon (code,name,discount_type,discount_value_cents,discount_percent,min_charge_cents,valid_hours,total_quota,per_user_quota,start_at,end_at) VALUES (?,?,?,?,?,COALESCE(?,0),COALESCE(?,24),COALESCE(?,0),COALESCE(?,1),?,?)")
         .bind(req.code.trim()).bind(req.name.trim()).bind(&req.discount_type).bind(req.discount_value_cents)
         .bind(req.discount_percent).bind(req.min_charge_cents).bind(req.valid_hours).bind(req.total_quota)
         .bind(req.per_user_quota).bind(req.start_at.as_ref().map(|v| v.naive_utc())).bind(req.end_at.as_ref().map(|v| v.naive_utc()))
         .execute(st.db.pool()).await?;
-    Ok(Json(ApiEnvelope::ok(json!({"id":result.last_insert_id()}), common_error::current_request_id())))
+    Ok(Json(ApiEnvelope::ok(api_contracts::common::CreatedResponse { id: result.last_insert_id() }, common_error::current_request_id())))
 }
 
-pub async fn get(State(st): State<AppState>, Path(id): Path<u64>) -> AppResult<Json<ApiEnvelope<Value>>> {
+pub async fn get(State(st): State<AppState>, Path(id): Path<u64>) -> AppResult<Json<ApiEnvelope<api_contracts::charge::CouponTemplate>>> {
     let row = sqlx::query("SELECT id,code,name,discount_type,discount_value_cents,CAST(discount_percent AS DOUBLE) AS discount_percent,min_charge_cents,valid_hours,total_quota,per_user_quota,status,start_at,end_at FROM coupon WHERE id=? AND deleted_at IS NULL")
         .bind(id).fetch_optional(st.db.pool()).await?.ok_or_else(|| AppError::NotFound("coupon".into()))?;
     Ok(Json(ApiEnvelope::ok(coupon_json(&row)?, common_error::current_request_id())))
 }
 
-pub async fn update(State(st): State<AppState>, Path(id): Path<u64>, Json(req): Json<CouponUpdate>) -> AppResult<Json<ApiEnvelope<Value>>> {
+pub async fn update(State(st): State<AppState>, Path(id): Path<u64>, Json(req): Json<CouponUpdate>) -> AppResult<Json<ApiEnvelope<api_contracts::common::UpdatedResponse>>> {
     if req.name.as_deref().is_some_and(|v| v.trim().is_empty() || v.chars().count() > 128 || v.chars().any(char::is_control))
         || req.status.as_deref().is_some_and(|v| !["active", "disabled"].contains(&v))
     {
@@ -129,10 +133,10 @@ pub async fn update(State(st): State<AppState>, Path(id): Path<u64>, Json(req): 
         .bind(req.name.as_deref().map(str::trim)).bind(req.status.as_deref()).bind(req.end_at.as_ref().map(|v| v.naive_utc())).bind(id)
         .execute(st.db.pool()).await?;
     if changed.rows_affected() == 0 { return Err(AppError::NotFound("coupon".into())); }
-    Ok(Json(ApiEnvelope::ok(json!({"updated":true}), common_error::current_request_id())))
+    Ok(Json(ApiEnvelope::ok(api_contracts::common::UpdatedResponse::new(), common_error::current_request_id())))
 }
 
-pub async fn delete(State(st): State<AppState>, Path(id): Path<u64>) -> AppResult<Json<ApiEnvelope<Value>>> {
+pub async fn delete(State(st): State<AppState>, Path(id): Path<u64>) -> AppResult<Json<ApiEnvelope<api_contracts::common::DeletedResponse>>> {
     let mut tx = st.db.pool().begin().await?;
     let exists: Option<u64> = sqlx::query_scalar("SELECT id FROM coupon WHERE id=? AND deleted_at IS NULL FOR UPDATE")
         .bind(id).fetch_optional(&mut *tx).await?;
@@ -144,13 +148,13 @@ pub async fn delete(State(st): State<AppState>, Path(id): Path<u64>) -> AppResul
         .bind(id).execute(&mut *tx).await?;
     if changed.rows_affected() == 0 { return Err(AppError::NotFound("coupon".into())); }
     tx.commit().await?;
-    Ok(Json(ApiEnvelope::ok(json!({"deleted":true}), common_error::current_request_id())))
+    Ok(Json(ApiEnvelope::ok(api_contracts::common::DeletedResponse::new(), common_error::current_request_id())))
 }
 
 #[derive(Debug, Deserialize)]
 pub struct StatsQuery { pub coupon_id: u64 }
 
-pub async fn stats(State(st): State<AppState>, axum::extract::Query(q): axum::extract::Query<StatsQuery>) -> AppResult<Json<ApiEnvelope<Value>>> {
+pub async fn stats(State(st): State<AppState>, axum::extract::Query(q): axum::extract::Query<StatsQuery>) -> AppResult<Json<ApiEnvelope<api_contracts::charge::CouponStats>>> {
     let row = sqlx::query("SELECT c.total_quota,COUNT(g.id) AS granted_count,
        COALESCE(SUM(g.status='used'),0) AS used_count,
        COALESCE(SUM(g.status='unused' AND g.expired_at>UTC_TIMESTAMP(3)),0) AS unused_count,
@@ -161,10 +165,15 @@ pub async fn stats(State(st): State<AppState>, axum::extract::Query(q): axum::ex
     let granted: i64 = row.try_get("granted_count")?;
     let used: i64 = row.try_get("used_count")?;
     let total_quota: i64 = row.try_get("total_quota")?;
-    let counts = json!({"coupon_id":q.coupon_id,"total_quota":total_quota,"granted_count":granted,
-        "used_count":used,"unused_count":row.try_get::<i64,_>("unused_count")?,
-        "expired_count":row.try_get::<i64,_>("expired_count")?,
-        "usage_rate":if granted>0 {used as f64/granted as f64} else {0.0}});
+    let counts = api_contracts::charge::CouponStats {
+        coupon_id: q.coupon_id,
+        total_quota,
+        granted_count: granted,
+        used_count: used,
+        unused_count: row.try_get::<i64,_>("unused_count")?,
+        expired_count: row.try_get::<i64,_>("expired_count")?,
+        usage_rate: if granted > 0 { used as f64 / granted as f64 } else { 0.0 },
+    };
     Ok(Json(ApiEnvelope::ok(counts, common_error::current_request_id())))
 }
 

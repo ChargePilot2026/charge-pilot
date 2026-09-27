@@ -406,3 +406,84 @@ mod curve_tests {
         assert!(v.get("total_kwh").is_none());
     }
 }
+
+// ===== 优惠券(user 生产,admin 透传)=====
+
+/// 优惠券模板。
+///
+/// 列表与详情**共用同一投影**(`coupon_json`),字段集一致 —— 与本仓其它
+/// "列表/详情不同"的模块不同,这里可以只用一个类型。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CouponTemplate {
+    pub id: u64,
+    pub code: String,
+    pub name: String,
+    /// `amount`(直减分)或 `percent`(折扣百分比)
+    pub discount_type: String,
+    pub discount_value_cents: Option<i64>,
+    pub discount_percent: Option<f64>,
+    pub min_charge_cents: i64,
+    pub valid_hours: i64,
+    pub total_quota: i64,
+    pub per_user_quota: i64,
+    pub status: String,
+    pub start_at: Option<String>,
+    pub end_at: Option<String>,
+}
+
+/// 优惠券发放统计。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CouponStats {
+    pub coupon_id: u64,
+    pub total_quota: i64,
+    pub granted_count: i64,
+    pub used_count: i64,
+    pub unused_count: i64,
+    pub expired_count: i64,
+    /// 已用 / 已发放;未发放过则为 0
+    pub usage_rate: f64,
+}
+
+#[cfg(test)]
+mod coupon_tests {
+    use super::*;
+
+    /// 回归护栏:`discount_percent` 是 f64(实现里 CAST 成 DOUBLE),
+    /// 不能用整数百分比
+    #[test]
+    fn discount_percent_is_float() {
+        let c = CouponTemplate {
+            id: 1, code: "C1".into(), name: "券".into(), discount_type: "percent".into(),
+            discount_value_cents: None, discount_percent: Some(8.5),
+            min_charge_cents: 1000, valid_hours: 24, total_quota: 100, per_user_quota: 2,
+            status: "active".into(), start_at: None, end_at: None,
+        };
+        let v = serde_json::to_value(&c).unwrap();
+        assert_eq!(v["discount_percent"], 8.5);
+    }
+
+    /// 两种折扣的字段互斥:直减用 cents,折扣用 percent
+    #[test]
+    fn amount_and_percent_discounts_are_distinct() {
+        let amount = CouponTemplate {
+            id: 1, code: "A".into(), name: "n".into(), discount_type: "amount".into(),
+            discount_value_cents: Some(500), discount_percent: None,
+            min_charge_cents: 0, valid_hours: 1, total_quota: 1, per_user_quota: 1,
+            status: "active".into(), start_at: None, end_at: None,
+        };
+        let v = serde_json::to_value(&amount).unwrap();
+        assert_eq!(v["discount_value_cents"], 500);
+        assert!(v["discount_percent"].is_null(), "未命中的折扣字段须为 null");
+    }
+
+    /// 未发放过时 usage_rate 为 0(不能 NaN)
+    #[test]
+    fn usage_rate_is_zero_when_nothing_granted() {
+        let s = CouponStats {
+            coupon_id: 1, total_quota: 10, granted_count: 0, used_count: 0,
+            unused_count: 0, expired_count: 0, usage_rate: 0.0,
+        };
+        let v = serde_json::to_value(&s).unwrap();
+        assert_eq!(v["usage_rate"], 0.0);
+    }
+}
