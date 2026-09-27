@@ -29,13 +29,13 @@ pub async fn start_result(
     State(st): State<AppState>,
     Path(order_id): Path<String>,
     Json(req): Json<api_contracts::StartResultRequest>,
-) -> AppResult<Json<common_error::ApiEnvelope<serde_json::Value>>> {
+) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::AckResponse>>> {
     let (port_code,user_id)=crate::charge_start::process(st.db.pool(),&order_id,&req).await?;
     let lock=PortLock::new(st.redis_cache.clone());
     if lock.release_if_match(&port_code,&format!("{user_id}:{order_id}")).await.is_err() {
         tracing::warn!(order_no=%order_id,"start result committed; hold release will expire or retry");
     }
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"ok":true}),common_error::current_request_id())))
+    Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::AckResponse::new(),common_error::current_request_id())))
 }
 
 #[derive(Debug, Deserialize)]

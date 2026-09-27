@@ -76,7 +76,7 @@ pub async fn feedback_reply(
     State(st): State<AppState>,
     Path(id): Path<String>,
     Json(req): Json<FeedbackAction>,
-) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::ProcessedResponse>>> {
     let feedback_id = id.parse::<u64>().map_err(|_| AppError::BadRequest("反馈编号无效".into()))?;
     if req.actor_id == 0 || !["reply", "close"].contains(&req.action.as_str()) {
         return Err(AppError::BadRequest("反馈处理动作无效".into()));
@@ -96,11 +96,11 @@ pub async fn feedback_reply(
     let old_reply: Option<String> = row.try_get("reply_content")?;
     if req.action == "reply" && status == "processed" && old_actor == Some(req.actor_id) && old_reply.as_deref() == reply {
         tx.commit().await?;
-        return Ok(Json(common_error::ApiEnvelope::ok(json!({"status":"processed","already_processed":true}), common_error::current_request_id())));
+        return Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::ProcessedResponse { status: "processed".into(), already_processed: true }, common_error::current_request_id())));
     }
     if req.action == "close" && status == "closed" {
         tx.commit().await?;
-        return Ok(Json(common_error::ApiEnvelope::ok(json!({"status":"closed","already_processed":true}), common_error::current_request_id())));
+        return Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::ProcessedResponse { status: "closed".into(), already_processed: true }, common_error::current_request_id())));
     }
     let next_status = if req.action == "reply" { "processed" } else { "closed" };
     if req.action == "reply" && status != "pending" {
@@ -116,7 +116,7 @@ pub async fn feedback_reply(
         sqlx::query("UPDATE feedback SET status='closed' WHERE id=?").bind(feedback_id).execute(&mut *tx).await?;
     }
     tx.commit().await?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"status":next_status,"already_processed":false}), common_error::current_request_id())))
+    Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::ProcessedResponse { status: next_status.to_string(), already_processed: false }, common_error::current_request_id())))
 }
 
 pub async fn fault_list(
@@ -238,7 +238,7 @@ pub struct FaultDispatch {
 
 pub async fn fault_dispatch(
     State(st): State<AppState>, Path(id): Path<String>, Json(req): Json<FaultDispatch>,
-) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::DispatchedResponse>>> {
     let report_id = id.parse::<u64>().map_err(|_| AppError::BadRequest("报修编号无效".into()))?;
     if req.actor_id == 0 || req.assigned_to == 0 { return Err(AppError::BadRequest("派单账号无效".into())); }
     let note = validate_fault_note(req.note.as_deref(), false)?;
@@ -249,7 +249,7 @@ pub async fn fault_dispatch(
     let assigned_to: Option<u64> = row.try_get("assigned_to")?;
     if status == "dispatched" && assigned_to == Some(req.assigned_to) {
         tx.commit().await?;
-        return Ok(Json(common_error::ApiEnvelope::ok(json!({"status":"dispatched","assigned_to":req.assigned_to.to_string(),"already_processed":true}), common_error::current_request_id())));
+        return Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::DispatchedResponse { status: "dispatched".into(), assigned_to: req.assigned_to.to_string(), already_processed: true }, common_error::current_request_id())));
     }
     if !["open", "dispatched"].contains(&status.as_str()) { return Err(AppError::Conflict("只有待派单或处理中报修可以派单".into())); }
     sqlx::query("UPDATE device_fault_report SET status='dispatched',assigned_to=?,resolved_at=NULL WHERE id=?")
@@ -261,7 +261,7 @@ pub async fn fault_dispatch(
         .bind(&status).bind("dispatched").bind(req.assigned_to).bind(note)
         .execute(&mut *tx).await?;
     tx.commit().await?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"status":"dispatched","assigned_to":req.assigned_to.to_string(),"already_processed":false}), common_error::current_request_id())))
+    Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::DispatchedResponse { status: "dispatched".into(), assigned_to: req.assigned_to.to_string(), already_processed: false }, common_error::current_request_id())))
 }
 
 #[derive(Debug, Deserialize)]
@@ -275,7 +275,7 @@ pub struct FaultResolve {
 
 pub async fn fault_resolve(
     State(st): State<AppState>, Path(id): Path<String>, Json(req): Json<FaultResolve>,
-) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::ProcessedResponse>>> {
     let report_id = id.parse::<u64>().map_err(|_| AppError::BadRequest("报修编号无效".into()))?;
     if req.actor_id == 0 || !["fixed", "closed"].contains(&req.status.as_str()) { return Err(AppError::BadRequest("处理状态无效".into())); }
     let note = validate_fault_note(req.note.as_deref(), req.status == "fixed")?;
@@ -286,7 +286,7 @@ pub async fn fault_resolve(
     let assigned_to: Option<u64> = row.try_get("assigned_to")?;
     if status == req.status && assigned_to == Some(req.actor_id) {
         tx.commit().await?;
-        return Ok(Json(common_error::ApiEnvelope::ok(json!({"status":req.status,"already_processed":true}), common_error::current_request_id())));
+        return Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::ProcessedResponse { status: req.status, already_processed: true }, common_error::current_request_id())));
     }
     if assigned_to != Some(req.actor_id) { return Err(AppError::Forbidden("只有当前指派的巡检人员可以更新报修状态".into())); }
     let allowed = (req.status == "fixed" && status == "dispatched") || (req.status == "closed" && status == "fixed");
@@ -302,5 +302,5 @@ pub async fn fault_resolve(
     ).bind(report_id).bind(req.actor_id).bind(&req.status).bind(&status).bind(&req.status)
         .bind(assigned_to).bind(note).execute(&mut *tx).await?;
     tx.commit().await?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"status":req.status,"already_processed":false}), common_error::current_request_id())))
+    Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::ProcessedResponse { status: req.status, already_processed: false }, common_error::current_request_id())))
 }

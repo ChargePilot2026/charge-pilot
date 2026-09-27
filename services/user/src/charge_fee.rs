@@ -15,12 +15,12 @@ pub async fn receive(
     State(st): State<AppState>,
     Path(cid): Path<u64>,
     Json(req): Json<FeeResult>,
-) -> AppResult<Json<ApiEnvelope<serde_json::Value>>> {
+) -> AppResult<Json<ApiEnvelope<api_contracts::common::AckResponse>>> {
     let mut tx = st.db.pool().begin().await?;
     apply(&mut tx, cid, &req).await?;
     tx.commit().await?;
     Ok(Json(ApiEnvelope::ok(
-        serde_json::json!({"ok":true}),
+        api_contracts::common::AckResponse::new(),
         common_error::current_request_id(),
     )))
 }

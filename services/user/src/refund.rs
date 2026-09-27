@@ -96,13 +96,13 @@ pub async fn result(
     State(st): State<AppState>,
     Path(refund_id): Path<String>,
     Json(req): Json<ResultReq>,
-) -> AppResult<Json<common_error::ApiEnvelope<serde_json::Value>>> {
+) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::AckResponse>>> {
     let mut tx = st.db.pool().begin().await?;
     crate::refund_result::apply(&mut tx, &refund_id, &req).await?;
     tx.commit().await?;
 
     Ok(Json(common_error::ApiEnvelope::ok(
-        json!({"ok": true}),
+        api_contracts::common::AckResponse::new(),
         common_error::current_request_id(),
     )))
 }
