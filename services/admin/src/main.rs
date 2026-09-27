@@ -7,6 +7,7 @@ mod api_types;
 mod auth;
 mod billing;
 mod ota;
+mod password;
 mod webhook;
 mod alert;
 mod clients;

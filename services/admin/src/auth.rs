@@ -180,7 +180,8 @@ pub async fn login(
     if is_login_blocked(&status, locked_until, chrono::Utc::now()) {
         return Err(AppError::Forbidden("account locked or disabled".into()));
     }
-    if !common_auth::verify_password(&req.password, &hash) {
+    // D13:argon2 是同步 CPU 密集计算,必须离开执行线程;并发由信号量限死。
+    if !crate::password::verify(req.password.clone(), hash.clone()).await {
         // 单条语句完成"计数 + 达阈值锁定 + 写 locked_until",并发失败下天然原子。
         // 契约:失败 5 次锁定 30 分钟。
         sqlx::query(

@@ -17,6 +17,7 @@ pub mod clients;
 pub mod auth;
 pub mod billing;
 pub mod ota;
+pub mod password;
 pub mod webhook;
 pub mod alert;
 pub mod stream_consumer;

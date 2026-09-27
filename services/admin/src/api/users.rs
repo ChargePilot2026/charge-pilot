@@ -5,7 +5,6 @@ use axum::{
     extract::{Path, State},
     Json,
 };
-use common_auth::hash_password;
 use crate::auth::ActiveAdmin;
 use common_error::{AppError, AppResult};
 use serde::Deserialize;
@@ -48,7 +47,8 @@ pub async fn list(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json
 
 pub async fn create(State(st): State<AppState>, _c: ActiveAdmin, Json(req): Json<UserCreateReq>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::CreatedFlag>>> {
     crate::auth::require_permission(&st,&_c,"admin_user.create").await?;
-    let hash = hash_password(&req.password)?;
+    // D13:argon2 哈希离开执行线程,并发受限。
+    let hash = crate::password::hash(req.password.clone()).await?;
     sqlx::query(
         "INSERT INTO admin_user_role (username, display_name, password_hash, phone, email, role_id, status)
          VALUES (?, ?, ?, ?, ?, ?, 'active')"
@@ -129,7 +129,8 @@ pub struct ResetPasswordReq { pub new_password: String }
 
 pub async fn reset_password(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>, Json(req): Json<ResetPasswordReq>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::ResetFlag>>> {
     crate::auth::require_permission(&st,&_c,"admin_user.reset_password").await?;
-    let hash = hash_password(&req.new_password)?;
+    // D13:argon2 哈希离开执行线程,并发受限。
+    let hash = crate::password::hash(req.new_password.clone()).await?;
     let n = sqlx::query("UPDATE admin_user_role SET password_hash = ?, failed_login_count = 0 WHERE id = ? AND deleted_at IS NULL")
         .bind(&hash).bind(id).execute(st.db.pool()).await?;
     if n.rows_affected() == 0 {
