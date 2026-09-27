@@ -26,52 +26,16 @@ pub async fn settlements(State(st): State<AppState>, _c: ActiveAdmin) -> AppResu
     Ok(Json(common_error::ApiEnvelope::ok(json!({"items": items}), common_error::current_request_id())))
 }
 
-pub async fn withdraw_list(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
-    let rows = sqlx::query("SELECT id, withdraw_no, party_id, party_code, amount_cents, status, created_at FROM withdraw_request ORDER BY id DESC LIMIT 200")
-        .fetch_all(st.db.pool()).await?;
-    let items: Vec<Value> = rows.iter().map(|r| -> AppResult<Value> { Ok(json!({
-        "id": sqlx::Row::try_get::<u64, _>(r, "id")?,
-        "withdraw_no": sqlx::Row::try_get::<String, _>(r, "withdraw_no")?,
-        "party_id": sqlx::Row::try_get::<u64, _>(r, "party_id")?,
-        "party_code": sqlx::Row::try_get::<String, _>(r, "party_code")?,
-        "amount_cents": sqlx::Row::try_get::<i64, _>(r, "amount_cents")?,
-        "status": sqlx::Row::try_get::<String, _>(r, "status")?,
-    })) }).collect::<AppResult<Vec<_>>>()?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"items": items}), common_error::current_request_id())))
-}
-
 #[derive(Debug, Deserialize)]
 pub struct WithdrawCreateReq {
     pub party_id: u64,
     pub amount_cents: i64,
 }
 
-pub async fn withdraw_create(State(st): State<AppState>, _c: ActiveAdmin, Json(req): Json<WithdrawCreateReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
-    crate::auth::require_permission(&st,&_c,"finance.withdraw.create").await?;
-    let no = IdGen::new("WDR").next();
-    sqlx::query(
-        "INSERT INTO withdraw_request (withdraw_no, party_id, party_code, amount_cents, status)
-         VALUES (?, ?, '', ?, 'pending')"
-    )
-    .bind(&no).bind(req.party_id).bind(req.amount_cents)
-    .execute(st.db.pool()).await?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"withdraw_no": no}), common_error::current_request_id())))
-}
-
 #[derive(Debug, Deserialize)]
 pub struct WithdrawReviewReq {
     pub approved: bool,
     pub note: Option<String>,
-}
-
-pub async fn withdraw_review(State(st): State<AppState>, c: ActiveAdmin, Path(id): Path<u64>, Json(req): Json<WithdrawReviewReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
-    crate::auth::require_permission(&st,&c,"finance.withdraw.review").await?;
-    let status = if req.approved { "approved" } else { "rejected" };
-    let n = sqlx::query("UPDATE withdraw_request SET status = ?, reviewed_by = ?, reviewed_at = NOW(3), note = ? WHERE id = ? AND status = 'pending'")
-        .bind(status).bind(c.admin_user_id).bind(req.note.as_deref()).bind(id)
-        .execute(st.db.pool()).await?;
-    if n.rows_affected() == 0 { return Err(AppError::Conflict("not pending".into())); }
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"reviewed": true}), common_error::current_request_id())))
 }
 
 pub async fn refunds(State(st): State<AppState>, c: ActiveAdmin, axum::extract::Query(q):axum::extract::Query<api_contracts::refunds::RefundQuery>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
