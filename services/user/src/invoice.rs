@@ -140,7 +140,7 @@ pub async fn apply(
     State(st): State<AppState>,
     claims: common_auth::UserClaims,
     Json(req): Json<InvoiceApplyReq>,
-) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::charge::InvoiceApplied>>> {
     let title = req.title.trim();
     if req.biz_type != "charge" || req.biz_id == 0 || req.total_cents <= 0 {
         return Err(AppError::BadRequest("仅支持已完成的充电订单开票".into()));
@@ -209,7 +209,10 @@ pub async fn apply(
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"invoice_no": invoice_no}), common_error::current_request_id())))
+    Ok(Json(common_error::ApiEnvelope::ok(
+        api_contracts::charge::InvoiceApplied { invoice_no },
+        common_error::current_request_id(),
+    )))
 }
 
 #[derive(Debug, Deserialize)]
@@ -219,7 +222,7 @@ pub async fn my(
     State(st): State<AppState>,
     claims: common_auth::UserClaims,
     Query(q): Query<InvoiceQuery>,
-) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::PagedResponse<api_contracts::charge::UserInvoice>>>> {
     let page = q.page.unwrap_or(1).max(1);
     let page_size = q.page_size.unwrap_or(20);
     if page > 100_000 || !(1..=100).contains(&page_size) {
@@ -242,22 +245,28 @@ pub async fn my(
     .bind(offset as i64)
     .fetch_all(st.db.pool())
     .await?;
-    let items: Vec<Value> = rows
+    let items = rows
         .iter()
-        .map(|r| -> AppResult<Value> {
-            Ok(json!({
-                "invoice_no": sqlx::Row::try_get::<String, _>(r, "invoice_no")?,
-                "biz_type": sqlx::Row::try_get::<String, _>(r, "biz_type")?,
-                "total_cents": sqlx::Row::try_get::<i64, _>(r, "total_cents")?,
-                "title": sqlx::Row::try_get::<String, _>(r, "title")?,
-                "review_status": sqlx::Row::try_get::<String, _>(r, "review_status")?,
-                "reject_reason": sqlx::Row::try_get::<Option<String>, _>(r, "reject_reason")?,
-                "invoice_url": sqlx::Row::try_get::<Option<String>, _>(r, "invoice_url")?,
-                "created_at": sqlx::Row::try_get::<chrono::DateTime<chrono::Utc>, _>(r, "created_at")?.to_rfc3339(),
-            }))
+        .map(|r| -> AppResult<api_contracts::charge::UserInvoice> {
+            Ok(api_contracts::charge::UserInvoice {
+                invoice_no: sqlx::Row::try_get::<String, _>(r, "invoice_no")?,
+                biz_type: sqlx::Row::try_get::<String, _>(r, "biz_type")?,
+                total_cents: sqlx::Row::try_get::<i64, _>(r, "total_cents")?,
+                title: sqlx::Row::try_get::<String, _>(r, "title")?,
+                review_status: sqlx::Row::try_get::<String, _>(r, "review_status")?,
+                reject_reason: sqlx::Row::try_get::<Option<String>, _>(r, "reject_reason")?,
+                invoice_url: sqlx::Row::try_get::<Option<String>, _>(r, "invoice_url")?,
+                created_at: sqlx::Row::try_get::<chrono::DateTime<chrono::Utc>, _>(r, "created_at")?.to_rfc3339(),
+            })
+
         })
         .collect::<AppResult<Vec<_>>>()?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"page": page, "page_size": page_size, "total": total, "items": items}), common_error::current_request_id())))
+    Ok(Json(common_error::ApiEnvelope::ok(
+        api_contracts::common::PagedResponse {
+            items, total, page, page_size, permissions: vec![],
+        },
+        common_error::current_request_id(),
+    )))
 }
 
 /// admin / billing 调: 获取发票详情
@@ -301,7 +310,7 @@ pub async fn internal_review(
     State(st): State<AppState>,
     axum::extract::Path(invoice_id): axum::extract::Path<String>,
     Json(req): Json<InvoiceReviewReq>,
-) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::charge::InvoiceReviewed>>> {
     if !["approve", "reject"].contains(&req.decision.as_str()) || req.actor_id == 0 {
         return Err(AppError::BadRequest("发票审核操作无效".into()));
     }
@@ -334,7 +343,10 @@ pub async fn internal_review(
             && sqlx::Row::try_get::<Option<String>, _>(&row, "invoice_url")?.as_deref() == req.invoice_url.as_deref();
         if same_decision {
             tx.commit().await?;
-            return Ok(Json(common_error::ApiEnvelope::ok(json!({"reviewed": true, "review_status": target_status}), common_error::current_request_id())));
+            return Ok(Json(common_error::ApiEnvelope::ok(
+                api_contracts::charge::InvoiceReviewed { reviewed: true, review_status: target_status.to_string() },
+                common_error::current_request_id(),
+            )));
         }
         return Err(AppError::Conflict("该发票申请已审核，不能更改审核结果".into()));
     }
@@ -361,5 +373,8 @@ pub async fn internal_review(
         .bind(target_status).bind(req.actor_id).bind(reason).bind(req.invoice_url.as_deref()).bind(id)
         .execute(&mut *tx).await?;
     tx.commit().await?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"reviewed": true, "review_status": target_status}), common_error::current_request_id())))
+    Ok(Json(common_error::ApiEnvelope::ok(
+                api_contracts::charge::InvoiceReviewed { reviewed: true, review_status: target_status.to_string() },
+                common_error::current_request_id(),
+            )))
 }

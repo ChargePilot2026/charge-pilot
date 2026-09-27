@@ -577,3 +577,64 @@ mod casework_tests {
         assert!(v["images"].is_array());
     }
 }
+
+// ===== 发票(user 生产,admin 审核)=====
+
+/// 开票申请结果。
+///
+/// ⚠️ 只回 `invoice_no`,不回 `invoice_request_id` —— 与 admin 侧
+/// `INTERNAL_INVOICE_DETAIL` 返回的主键名不同(那里叫 `invoice_request_id`),
+/// 两者不可混用。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InvoiceApplied {
+    pub invoice_no: String,
+}
+
+/// 用户的发票列表项。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserInvoice {
+    pub invoice_no: String,
+    /// 恒为 `charge`
+    pub biz_type: String,
+    pub total_cents: i64,
+    pub title: String,
+    /// `pending` / `issued` / `rejected`
+    pub review_status: String,
+    pub reject_reason: Option<String>,
+    pub invoice_url: Option<String>,
+    pub created_at: String,
+}
+
+/// 发票审核结果。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InvoiceReviewed {
+    pub reviewed: bool,
+    /// `issued` 或 `rejected`
+    pub review_status: String,
+}
+
+#[cfg(test)]
+mod invoice_tests {
+    use super::*;
+
+    /// 回归护栏:apply 只回 `invoice_no`,不混用 admin 侧的 `invoice_request_id`
+    #[test]
+    fn invoice_applied_uses_invoice_no() {
+        let v = serde_json::to_value(InvoiceApplied { invoice_no: "INV-1".into() }).unwrap();
+        assert_eq!(v["invoice_no"], "INV-1");
+        assert!(v.get("invoice_request_id").is_none());
+    }
+
+    /// 驳回时必须有原因,未驳回时为 null
+    #[test]
+    fn user_invoice_reject_reason_nullable() {
+        let u = UserInvoice {
+            invoice_no: "INV-1".into(), biz_type: "charge".into(), total_cents: 1000,
+            title: "个人".into(), review_status: "issued".into(),
+            reject_reason: None, invoice_url: None, created_at: "t".into(),
+        };
+        let v = serde_json::to_value(&u).unwrap();
+        assert!(v["reject_reason"].is_null());
+        assert!(v["invoice_url"].is_null());
+    }
+}
