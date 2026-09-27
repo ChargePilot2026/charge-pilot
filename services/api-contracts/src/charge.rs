@@ -665,6 +665,109 @@ mod manual_refund_tests {
     }
 }
 
+// ===== 退款(admin 消费 user 的内部列表)=====
+
+/// 退款单上的审核信息(admin 端补齐)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RefundReviewInfo {
+    /// `approved` / `awaiting_second`
+    pub status: String,
+    pub first_signer: String,
+    /// 第二签署人;仅第一签时为 null
+    pub second_signer: Option<String>,
+    pub first_comment: String,
+    pub second_comment: Option<String>,
+    pub approved_at: Option<String>,
+}
+
+/// 退款单(admin 列表项)。
+///
+/// ⚠️ `id` / `user_id` / `payment_order_id` 均为**字符串**。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminRefund {
+    pub id: String,
+    pub refund_no: String,
+    pub user_id: String,
+    pub payment_order_id: String,
+    pub biz_type: String,
+    pub refund_cents: i64,
+    pub status: String,
+    pub reason: Option<String>,
+    pub failure_reason: Option<String>,
+    pub created_at: String,
+    pub completed_at: Option<String>,
+    /// 未提交审核时**不出现**该键(不是 null)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub review: Option<RefundReviewInfo>,
+}
+
+#[cfg(test)]
+mod admin_refund_tests {
+    use super::*;
+
+    /// 回归护栏:主键三个字段都是字符串
+    #[test]
+    fn admin_refund_ids_are_strings() {
+        let v = serde_json::to_value(AdminRefund {
+            id: "1".into(), refund_no: "REF-1".into(), user_id: "2".into(),
+            payment_order_id: "3".into(), biz_type: "charge".into(), refund_cents: 500,
+            status: "pending".into(), reason: None, failure_reason: None,
+            created_at: "t".into(), completed_at: None, review: None,
+        })
+        .unwrap();
+        assert!(v["id"].is_string());
+        assert!(v["payment_order_id"].is_string());
+        // 未审核时 review 键不出现
+        assert!(v.get("review").is_none());
+    }
+}
+
+/// 退款领取结果(admin 领单后回执)。
+///
+/// ⚠️ `user_id` / `payment_order_id` 在这里是**数字**——与 `AdminRefund`
+/// (列表项)里的**字符串**不同。两者都是"退款相关",但 id 形态不一致,
+/// 合并成一个类型会破坏其中一方。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RefundClaimed {
+    pub refund_no: String,
+    pub user_id: u64,
+    pub payment_order_id: u64,
+    pub refund_cents: i64,
+    /// 领取后为 `processing`
+    pub status: String,
+}
+
+/// 退款详情(admin 单条查询)。主键是**数字**。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminRefundDetail {
+    pub id: u64,
+    pub user_id: u64,
+    pub refund_cents: i64,
+    pub status: String,
+    pub biz_type: String,
+    pub wechat_refund_id: Option<String>,
+    /// 提交双签审核后出现(字符串)
+    pub first_signer: Option<String>,
+    pub second_signer: Option<String>,
+}
+
+#[cfg(test)]
+mod refund_detail_tests {
+    use super::*;
+
+    /// 回归护栏:detail 的 id 是**数字**,而列表项 AdminRefund 的 id 是**字符串**
+    #[test]
+    fn refund_detail_id_is_number() {
+        let v = serde_json::to_value(AdminRefundDetail {
+            id: 1, user_id: 2, refund_cents: 500, status: "pending".into(),
+            biz_type: "charge".into(), wechat_refund_id: None,
+            first_signer: None, second_signer: None,
+        })
+        .unwrap();
+        assert!(v["id"].is_number(), "detail 的 id 不得是字符串");
+    }
+}
+
 /// 用户反馈。
 ///
 /// ⚠️ `id` / `user_id` / `order_id` / `replied_by` 是**字符串**——实现里

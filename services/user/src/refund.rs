@@ -15,7 +15,7 @@ use common_error::{AppError, AppResult};
 use serde::Deserialize;
 use serde_json::json;
 
-pub async fn list(State(st):State<AppState>,axum::extract::Query(q):axum::extract::Query<api_contracts::refunds::RefundQuery>)->AppResult<Json<common_error::ApiEnvelope<serde_json::Value>>>{
+pub async fn list(State(st):State<AppState>,axum::extract::Query(q):axum::extract::Query<api_contracts::refunds::RefundQuery>)->AppResult<Json<common_error::ApiEnvelope<api_contracts::common::PagedResponse<api_contracts::charge::AdminRefund>>>>{
     use sqlx::Row;
     if !q.valid(){return Err(AppError::BadRequest("退款筛选参数无效".into()));}
     let mut tx=st.db.pool().begin().await?;
@@ -26,16 +26,44 @@ pub async fn list(State(st):State<AppState>,axum::extract::Query(q):axum::extrac
         .bind(&q.status).bind(&q.status).bind(&q.refund_no).bind(&q.refund_no).bind(size).bind(u64::from(page-1)*u64::from(size)).fetch_all(&mut *tx).await?;
     let mut items=Vec::new();
     for row in rows {
-        items.push(json!({"id":row.try_get::<u64,_>("id")?.to_string(),"refund_no":row.try_get::<String,_>("refund_no")?,"user_id":row.try_get::<u64,_>("user_id")?.to_string(),"payment_order_id":row.try_get::<u64,_>("payment_order_id")?.to_string(),"biz_type":row.try_get::<String,_>("biz_type")?,"refund_cents":row.try_get::<i64,_>("refund_cents")?,"status":row.try_get::<String,_>("status")?,"reason":row.try_get::<Option<String>,_>("reason")?,"failure_reason":row.try_get::<Option<String>,_>("failure_reason")?,"created_at":row.try_get::<chrono::NaiveDateTime,_>("created_at")?.and_utc().to_rfc3339(),"completed_at":row.try_get::<Option<chrono::NaiveDateTime>,_>("completed_at")?.map(|t|t.and_utc().to_rfc3339())}));
-        let review=sqlx::query("SELECT first_signer,second_signer,first_comment,second_comment,approved_at FROM refund_review WHERE refund_record_id=?").bind(row.try_get::<u64,_>("id")?).fetch_optional(&mut *tx).await?;
-        if let Some(review)=review {
-            let second:Option<u64>=review.try_get("second_signer")?;
-            let item=items.last_mut().expect("just pushed");
-            item["review"]=json!({"status":if second.is_some(){"approved"}else{"awaiting_second"},"first_signer":review.try_get::<u64,_>("first_signer")?.to_string(),"second_signer":second.map(|v|v.to_string()),"first_comment":review.try_get::<String,_>("first_comment")?,"second_comment":review.try_get::<Option<String>,_>("second_comment")?,"approved_at":review.try_get::<Option<chrono::NaiveDateTime>,_>("approved_at")?.map(|v|v.and_utc().to_rfc3339())});
-        }
+        let rid: u64 = row.try_get("id")?;
+        // 先查审核信息再一次性构造结构体——原先 push 基础项后用 `item["review"]=`
+        // 回填,类型化后不再需要回填
+        let review_row = sqlx::query("SELECT first_signer,second_signer,first_comment,second_comment,approved_at FROM refund_review WHERE refund_record_id=?").bind(rid).fetch_optional(&mut *tx).await?;
+        let review = match review_row {
+            Some(r) => {
+                let second: Option<u64> = r.try_get("second_signer")?;
+                Some(api_contracts::charge::RefundReviewInfo {
+                    status: if second.is_some() { "approved" } else { "awaiting_second" }.into(),
+                    first_signer: r.try_get::<u64,_>("first_signer")?.to_string(),
+                    second_signer: second.map(|v| v.to_string()),
+                    first_comment: r.try_get::<String,_>("first_comment")?,
+                    second_comment: r.try_get::<Option<String>,_>("second_comment")?,
+                    approved_at: r.try_get::<Option<chrono::NaiveDateTime>,_>("approved_at")?.map(|v| v.and_utc().to_rfc3339()),
+                })
+            }
+            None => None,
+        };
+        items.push(api_contracts::charge::AdminRefund {
+            id: rid.to_string(),
+            refund_no: row.try_get::<String,_>("refund_no")?,
+            user_id: row.try_get::<u64,_>("user_id")?.to_string(),
+            payment_order_id: row.try_get::<u64,_>("payment_order_id")?.to_string(),
+            biz_type: row.try_get::<String,_>("biz_type")?,
+            refund_cents: row.try_get::<i64,_>("refund_cents")?,
+            status: row.try_get::<String,_>("status")?,
+            reason: row.try_get::<Option<String>,_>("reason")?,
+            failure_reason: row.try_get::<Option<String>,_>("failure_reason")?,
+            created_at: row.try_get::<chrono::NaiveDateTime,_>("created_at")?.and_utc().to_rfc3339(),
+            completed_at: row.try_get::<Option<chrono::NaiveDateTime>,_>("completed_at")?.map(|t| t.and_utc().to_rfc3339()),
+            review,
+        });
     }
     tx.commit().await?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"items":items,"total":total,"page":page,"page_size":size}),common_error::current_request_id())))
+    Ok(Json(common_error::ApiEnvelope::ok(
+        api_contracts::common::PagedResponse { items, total, page, page_size: size, permissions: vec![] },
+        common_error::current_request_id(),
+    )))
 }
 
 #[derive(Debug, Deserialize)]
@@ -48,7 +76,7 @@ pub struct ClaimReq {
 pub async fn claim(
     State(st): State<AppState>,
     Json(req): Json<ClaimReq>,
-) -> AppResult<Json<common_error::ApiEnvelope<serde_json::Value>>> {
+) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::charge::RefundClaimed>>>{
     if req.admin_user_id == 0 || uuid::Uuid::parse_str(&req.event_id).is_err() {
         return Err(AppError::BadRequest("退款领取身份或事件标识无效".into()));
     }
@@ -73,13 +101,13 @@ pub async fn claim(
     }
     tx.commit().await?;
     Ok(Json(common_error::ApiEnvelope::ok(
-        json!({
-            "refund_no": req.refund_no,
-            "user_id": user_id,
-            "payment_order_id": pay_id,
-            "refund_cents": cents,
-            "status": status,
-        }),
+        api_contracts::charge::RefundClaimed {
+            refund_no: req.refund_no,
+            user_id,
+            payment_order_id: pay_id,
+            refund_cents: cents,
+            status,
+        },
         common_error::current_request_id(),
     )))
 }
@@ -110,7 +138,7 @@ pub async fn result(
 pub async fn detail(
     State(st): State<AppState>,
     Path(refund_id): Path<String>,
-) -> AppResult<Json<common_error::ApiEnvelope<serde_json::Value>>> {
+) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::charge::AdminRefundDetail>>>{
     let r: Option<(u64, u64, i64, String, String, Option<String>)> = sqlx::query_as(
         "SELECT id, user_id, refund_cents, status, biz_type, wechat_refund_id
          FROM refund_record WHERE refund_no=? AND deleted_at IS NULL LIMIT 1",
@@ -121,16 +149,16 @@ pub async fn detail(
     let r = r.ok_or_else(|| AppError::NotFound("refund".into()))?;
     let review:Option<(u64,Option<u64>)>=sqlx::query_as("SELECT first_signer,second_signer FROM refund_review WHERE refund_record_id=?").bind(r.0).fetch_optional(st.db.pool()).await?;
     Ok(Json(common_error::ApiEnvelope::ok(
-        json!({
-            "id": r.0,
-            "user_id": r.1,
-            "refund_cents": r.2,
-            "status": r.3,
-            "biz_type": r.4,
-            "wechat_refund_id": r.5,
-            "first_signer": review.map(|v|v.0.to_string()),
-            "second_signer": review.and_then(|v|v.1).map(|v|v.to_string()),
-        }),
+        api_contracts::charge::AdminRefundDetail {
+            id: r.0,
+            user_id: r.1,
+            refund_cents: r.2,
+            status: r.3,
+            biz_type: r.4,
+            wechat_refund_id: r.5,
+            first_signer: review.map(|v| v.0.to_string()),
+            second_signer: review.and_then(|v| v.1).map(|v| v.to_string()),
+        },
         common_error::current_request_id(),
     )))
 }
