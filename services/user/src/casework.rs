@@ -22,7 +22,6 @@ pub struct PagedFault {
 use axum::{extract::{Path, Query, State}, Json};
 use common_error::{AppError, AppResult};
 use serde::Deserialize;
-use serde_json::{json, Value};
 use sqlx::{MySql, QueryBuilder, Row};
 
 #[derive(Debug, Deserialize)]

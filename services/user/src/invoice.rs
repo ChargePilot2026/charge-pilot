@@ -6,7 +6,7 @@ use common_db::IdGen;
 use common_error::{AppError, AppResult};
 use common_redis::{streams, StreamEnvelope};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::json;
 
 #[derive(Debug, Deserialize)]
 pub struct InvoiceApplyReq {
@@ -39,7 +39,6 @@ pub async fn resolve_invoiceable_cents(
     charge_order_id: u64,
     user_id: u64,
 ) -> AppResult<i64> {
-    use sqlx::Row;
 
     let conflict = || AppError::Conflict("订单不存在、未完成、未支付或已退款，暂不能开票".into());
 

@@ -3,7 +3,7 @@ use crate::AppState;
 use axum::{extract::{Path, State}, Json};
 use common_error::{ApiEnvelope, AppError, AppResult};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 use sqlx::Row;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

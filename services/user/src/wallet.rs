@@ -6,7 +6,6 @@ use axum::{extract::State, Json};
 use common_error::AppResult;
 
 use serde::Deserialize;
-use serde_json::Value;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -20,7 +19,7 @@ pub async fn recharge(
     State(st): State<AppState>,
     claims: common_auth::UserClaims,
     Json(req): Json<RechargeReq>,
-) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::charge::WalletRechargePrepared>>> {
     let response=crate::wallet_recharge::prepare(&st,claims.user_id,&claims.sub,&req).await?;
     Ok(Json(common_error::ApiEnvelope::ok(response,common_error::current_request_id())))
 }

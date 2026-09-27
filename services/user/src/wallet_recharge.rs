@@ -1,10 +1,10 @@
 //! Durable wallet recharge checkout. Provider retries use the original payment identity.
 use crate::AppState;
 use common_error::{AppError,AppResult};
-use serde_json::{json,Value};
+use serde_json::json;
 use sqlx::Row;
 
-pub async fn prepare(st:&AppState,uid:u64,openid:&str,req:&crate::wallet::RechargeReq)->AppResult<Value> {
+pub async fn prepare(st:&AppState,uid:u64,openid:&str,req:&crate::wallet::RechargeReq)->AppResult<api_contracts::charge::WalletRechargePrepared> {
  let id=uuid::Uuid::parse_str(&req.request_id).map_err(|_|AppError::BadRequest("request_id 必须为 UUID".into()))?.to_string();
  if id!=req.request_id || !(100..=100_000_000).contains(&req.amount_cents) {return Err(AppError::BadRequest("充值金额须在 1 元至 100 万元之间".into()));}
  let cfg=st.cfg.wechat.as_ref().ok_or_else(||AppError::Config("wechat missing".into()))?;
@@ -30,8 +30,12 @@ pub async fn prepare(st:&AppState,uid:u64,openid:&str,req:&crate::wallet::Rechar
  let pay=sqlx::query("SELECT order_no,status,expired_at,total_cents FROM payment_order WHERE id=? AND user_id=? AND biz_type='wallet_recharge' AND deleted_at IS NULL FOR UPDATE").bind(pid).bind(uid).fetch_one(&mut *tx).await?;
  let status:String=pay.try_get("status")?;
  let expiry:chrono::NaiveDateTime=pay.try_get("expired_at")?;
- let mut result=json!({"request_id":id,"pay_order_id":pid.to_string(),"pay_order_no":pay.try_get::<String,_>("order_no")?,"amount_cents":req.amount_cents,"status":status,"expires_at":expiry.and_utc().to_rfc3339()});
- if status!="initiated" || expiry.and_utc()<=chrono::Utc::now() {result["can_pay"]=json!(false);tx.commit().await?;return Ok(result);}
+ let order_no=pay.try_get::<String,_>("order_no")?;
+ let expires_at=expiry.and_utc().to_rfc3339();
+ if status!="initiated" || expiry.and_utc()<=chrono::Utc::now() {
+  tx.commit().await?;
+  return Ok(api_contracts::charge::WalletRechargePrepared{request_id:id,pay_order_id:pid.to_string(),pay_order_no:order_no,amount_cents:req.amount_cents,status,expires_at,can_pay:false,payment_params:None});
+ }
  let saved=sqlx::query("SELECT request_json,prepay_id FROM wallet_recharge_request WHERE request_id=? FOR UPDATE").bind(&id).fetch_one(&mut *tx).await?;
  let request:common_wechat::JsapiOrderReq=serde_json::from_value(saved.try_get("request_json")?)?;
  let request_expiry=chrono::DateTime::parse_from_rfc3339(&request.time_expire).map_err(|_|AppError::Conflict("支付到期时间异常".into()))?;
@@ -45,9 +49,23 @@ pub async fn prepare(st:&AppState,uid:u64,openid:&str,req:&crate::wallet::Rechar
  let params=common_wechat::sign_jsapi_pay(cfg,&prepay)?;
  tx.commit().await?;
  let can_pay=expiry.and_utc()>chrono::Utc::now();
- result["can_pay"]=json!(can_pay);
- if can_pay {result["payment_params"]=serde_json::to_value(params)?;}
- Ok(result)
+ Ok(api_contracts::charge::WalletRechargePrepared{
+  request_id:id,
+  pay_order_id:pid.to_string(),
+  pay_order_no:order_no,
+  amount_cents:req.amount_cents,
+  status,
+  expires_at,
+  can_pay,
+  payment_params:can_pay.then(|| api_contracts::charge::JsapiPaySign{
+   app_id:params.appId,
+   time_stamp:params.timeStamp,
+   nonce_str:params.nonceStr,
+   package:params.package,
+   sign_type:params.signType,
+   pay_sign:params.paySign,
+  }),
+ })
 }
 
 #[derive(serde::Deserialize)]
@@ -127,14 +145,17 @@ mod tests {
  let same:u64=sqlx::query_scalar("SELECT payment_order_id FROM wallet_recharge_request WHERE request_id=?").bind(&req.request_id).fetch_one(st.db.pool()).await.unwrap();assert_eq!(pid,same);
  sqlx::query("UPDATE wallet_recharge_request SET prepay_id='cached_recharge_test' WHERE request_id=?").bind(&req.request_id).execute(st.db.pool()).await.unwrap();
  let cached=prepare(&st,123,&tag,&req).await.unwrap();
- assert_eq!(cached["payment_params"]["package"],"prepay_id=cached_recharge_test");
- assert_eq!(cached["expires_at"],before.1.and_utc().to_rfc3339());
+ assert_eq!(cached.payment_params.as_ref().unwrap().package,"prepay_id=cached_recharge_test");
+ assert_eq!(cached.expires_at,before.1.and_utc().to_rfc3339());
+ assert!(cached.can_pay);
+ assert_eq!(cached.payment_params.as_ref().unwrap().sign_type,"RSA");
  assert!(prepare(&st,124,&tag,&req).await.is_err());assert!(prepare(&st,123,"other",&req).await.is_err());
  req.amount_cents=1002;assert!(prepare(&st,123,&tag,&req).await.is_err());req.amount_cents=1001;
  sqlx::query("UPDATE payment_order SET expired_at=DATE_SUB(UTC_TIMESTAMP(3),INTERVAL 1 SECOND) WHERE id=?").bind(pid).execute(st.db.pool()).await.unwrap();
- let expired=prepare(&st,123,&tag,&req).await.unwrap();assert_eq!(expired["can_pay"],false);assert!(expired.get("payment_params").is_none());
+ let expired=prepare(&st,123,&tag,&req).await.unwrap();assert!(!expired.can_pay);assert!(expired.payment_params.is_none());
+ assert!(serde_json::to_value(&expired).unwrap().get("payment_params").is_none());
  sqlx::query("UPDATE payment_order SET status='paid' WHERE id=?").bind(pid).execute(st.db.pool()).await.unwrap();
- let paid=prepare(&st,123,&tag,&req).await.unwrap();assert_eq!(paid["status"],"paid");assert_eq!(paid["can_pay"],false);
+ let paid=prepare(&st,123,&tag,&req).await.unwrap();assert_eq!(paid.status,"paid");assert!(!paid.can_pay);assert!(paid.payment_params.is_none());
  let claims=common_auth::UserClaims{sub:tag.clone(),user_id:123,sid:None,role:None,exp:0,iat:0,iss:"test".into()};
  let response=list(axum::extract::State(st.clone()),claims.clone(),axum::extract::Query(ListQuery{page:Some(1)})).await.unwrap();
  let value=serde_json::to_value(response.0).unwrap();assert!(value["data"]["items"].as_array().unwrap().iter().any(|v|v["request_id"]==req.request_id && v["status"]=="paid"));

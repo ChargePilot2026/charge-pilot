@@ -567,6 +567,42 @@ pub struct MyRecharges {
     pub items: Vec<RechargeRequest>,
 }
 
+/// 充值下单结果(POST /wallet/recharge 的响应体)。
+///
+/// 三条路径字段集不同:
+/// - 未过期可支付 : 全部字段 + `payment_params`
+/// - 已过期/已支付: 无 `payment_params`(**缺键**, 不是 null)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WalletRechargePrepared {
+    pub request_id: String,
+    /// 支付单 ID 是**字符串**(历史上 `pid.to_string()`)
+    pub pay_order_id: String,
+    pub pay_order_no: String,
+    pub amount_cents: i64,
+    pub status: String,
+    pub expires_at: String,
+    /// 服务端算出的可支付判定
+    pub can_pay: bool,
+    /// 仅可支付时出现
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payment_params: Option<JsapiPaySign>,
+}
+
+/// 微信 `wx.requestPayment` 的签名参数。
+///
+/// ⚠️ 字段名是**小驼峰**(`appId` / `timeStamp` / `nonceStr` / `signType` / `paySign`),
+/// 与仓库其余 snake_case 契约不同,前端直接透传给微信 SDK,不可改名。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JsapiPaySign {
+    pub app_id: String,
+    pub time_stamp: String,
+    pub nonce_str: String,
+    pub package: String,
+    pub sign_type: String,
+    pub pay_sign: String,
+}
+
 #[cfg(test)]
 mod payment_tests {
     use super::*;
@@ -579,6 +615,34 @@ mod payment_tests {
         })
         .unwrap();
         assert!(v["user_id"].is_string());
+    }
+
+    /// 回归护栏:不可支付时 `payment_params` 是**缺键**而非 null
+    #[test]
+    fn not_payable_omits_payment_params() {
+        let v = serde_json::to_value(WalletRechargePrepared {
+            request_id: "R1".into(), pay_order_id: "12".into(),
+            pay_order_no: "PAY1".into(), amount_cents: 100,
+            status: "initiated".into(), expires_at: "2026-01-01T00:00:00+00:00".into(),
+            can_pay: false, payment_params: None,
+        })
+        .unwrap();
+        assert!(v.get("payment_params").is_none());
+        assert_eq!(v["pay_order_id"], "12");
+    }
+
+    /// 回归护栏:微信签名参数是小驼峰键名,不可被 serde 默认改成 snake_case
+    #[test]
+    fn jsapi_pay_sign_keeps_camel_case_keys() {
+        let v = serde_json::to_value(JsapiPaySign {
+            app_id: "wx1".into(), time_stamp: "1".into(), nonce_str: "n".into(),
+            package: "prepay_id=p".into(), sign_type: "RSA".into(), pay_sign: "s".into(),
+        })
+        .unwrap();
+        for key in ["appId", "timeStamp", "nonceStr", "package", "signType", "paySign"] {
+            assert!(v.get(key).is_some(), "缺少小驼峰键 {key}");
+        }
+        assert!(v.get("app_id").is_none(), "不得出现 snake_case 键 app_id");
     }
 }
 
@@ -810,6 +874,130 @@ pub struct WalletRiskReview {
     pub actor_id: String,
     pub approved: bool,
     pub comment: String,
+}
+
+/// 退款申请列表项里拆出的单笔退款。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WalletRefundRequestPart {
+    pub refund_no: String,
+    pub refund_cents: i64,
+    pub status: String,
+    pub failure_reason: Option<String>,
+    pub completed_at: Option<String>,
+}
+
+/// 用户钱包退款申请列表项。
+///
+/// ⚠️ `refunded_cents` 与列表项 `status` 都是**服务端派生**的,不是申请表原值:
+/// 派生规则见 `list_in_transaction`。`review` 未审核过时是 **null(不是缺键)**。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WalletRefundRequestItem {
+    pub request_id: String,
+    pub amount_cents: i64,
+    pub refunded_cents: i64,
+    /// `rejected` / `manual_review` / `needs_review` / `success` / `processing` / `pending`
+    pub status: String,
+    pub reason: Option<String>,
+    pub created_at: String,
+    pub refund_orders: Vec<WalletRefundRequestPart>,
+    /// 未审核过为 `null`
+    pub review: Option<WalletRiskReview>,
+}
+
+/// 用户钱包退款申请列表。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WalletRefundRequests {
+    /// 字符串形式
+    pub user_id: String,
+    pub items: Vec<WalletRefundRequestItem>,
+    pub total: i64,
+    pub page: u32,
+    pub page_size: u32,
+}
+
+/// 管理员侧待风控处理的退款申请条目。
+///
+/// `review` / `release` 及其时间戳未发生时都是 **null(不是缺键)**。
+/// `can_release` 是服务端派生:已审核 且 冻结原因仍 `frozen` 且 尚未解冻。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WalletRiskListItem {
+    pub request_id: String,
+    /// 字符串形式
+    pub user_id: String,
+    pub amount_cents: i64,
+    pub reason: Option<String>,
+    pub created_at: String,
+    /// 取 `wallet_risk_review.response_json` 里的 `review` 子对象
+    pub review: Option<WalletRiskReview>,
+    pub review_created_at: Option<String>,
+    /// `wallet_risk_release.response_json` 整体
+    pub release: Option<WalletRiskReleased>,
+    pub release_created_at: Option<String>,
+    pub freeze_status: Option<String>,
+    pub can_release: bool,
+    /// 是否挂到了 `wallet_risk_freeze_link`(布尔化,不是原始 ID)
+    pub freeze_linked: bool,
+}
+
+/// 管理员侧待风控处理的退款申请列表。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WalletRiskList {
+    pub items: Vec<WalletRiskListItem>,
+    pub total: i64,
+    pub page: u32,
+    pub page_size: u32,
+}
+
+#[cfg(test)]
+mod wallet_refund_list_tests {
+    use super::*;
+
+    /// 回归护栏:列表项的 `review` 未审核过时必须是 **null 而不是缺键**
+    #[test]
+    fn list_item_review_is_null_not_absent() {
+        let v = serde_json::to_value(WalletRefundRequestItem {
+            request_id: "R1".into(), amount_cents: 500, refunded_cents: 0,
+            status: "manual_review".into(), reason: None, created_at: "x".into(),
+            refund_orders: vec![], review: None,
+        })
+        .unwrap();
+        assert!(v.as_object().unwrap().contains_key("review"), "review 键不得缺省");
+        assert!(v["review"].is_null());
+        assert!(v["refund_orders"].is_array());
+    }
+
+    /// 回归护栏:列表容器 `user_id` 是字符串,`total` 是数字
+    #[test]
+    fn request_list_user_id_is_string_total_is_number() {
+        let v = serde_json::to_value(WalletRefundRequests {
+            user_id: "9".into(), items: vec![], total: 0, page: 1, page_size: 20,
+        })
+        .unwrap();
+        assert!(v["user_id"].is_string());
+        assert!(v["total"].is_number());
+    }
+
+    /// 回归护栏:风控列表项未审核时 `review` / `release` 是 **null 而不是缺键**,
+    /// 且 `freeze_linked` 是布尔不是数字
+    #[test]
+    fn risk_list_item_nulls_are_present_and_freeze_linked_is_bool() {
+        let v = serde_json::to_value(WalletRiskListItem {
+            request_id: "R1".into(), user_id: "7".into(), amount_cents: 500,
+            reason: None, created_at: "x".into(),
+            review: None, review_created_at: None,
+            release: None, release_created_at: None,
+            freeze_status: Some("frozen".into()),
+            can_release: false, freeze_linked: true,
+        })
+        .unwrap();
+        let obj = v.as_object().unwrap();
+        for key in ["review", "review_created_at", "release", "release_created_at"] {
+            assert!(obj.contains_key(key), "{key} 键不得缺省");
+            assert!(v[key].is_null());
+        }
+        assert!(v["freeze_linked"].is_boolean());
+        assert_eq!(v["freeze_linked"], true);
+    }
 }
 
 #[cfg(test)]

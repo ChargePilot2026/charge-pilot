@@ -11,7 +11,6 @@ use axum::{extract::{Path, State}, Json};
 use common_error::{AppError, AppResult};
 use common_redis::PortLock;
 use serde::Deserialize;
-use serde_json::json;
 
 /// Only acknowledge a verified payment after all database effects are durable.
 pub async fn wechat_callback(
