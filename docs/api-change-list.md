@@ -109,6 +109,9 @@ settings.ota.update  membership.create  export.create
 | D18 | 站点详情经纬度颠倒 | 修正 |
 | D19 | 发票双签崩溃后重试一律报「用户发票申请已处理」,审核员被永久卡死 | 补齐 `InvoiceDetailResponse` 的审核人/发票链接/拒因字段,恢复分支生效 |
 | D20 | 告警规则详情的 `threshold` 被声明为字符串(实际是 JSON 列,`between` 存数组) | 改为原始 JSON 值;并补上缺失的 `enabled` 布尔字段 |
+| D21 | DLQ 重放每轮只取最早 200 条,积压增长时新数据永远排不上 | **未修复**,见 §6 |
+| D22 | 4 个 worker 定时循环未注册进 `scheduler::start_all`,运行期不执行 | **未修复**,见 §6 |
+| D23 | DLQ 重放 `XADD *` 生成新 entry id;`orig_group` 解析后从未使用 | **未修复**,见 §6 |
 
 ## 6. 遗留:需业务决策
 
@@ -117,12 +120,14 @@ settings.ota.update  membership.create  export.create
 | **D11** `webhook_retry` | **未实现**。生产 payload 是 `{alert_device_id, severity, event_id}`,**没有 `url`**,而消费者要求 `url` → 永远 `BadRequest` | 补齐投递实现,或接受"webhook 推送不可用"并在 UI 标注 |
 | **D16** 跨分时电价计费 | **未修复**。`api-contracts` 的 `ChargeEndMeter` 只有 `charged_wh`/`charged_seconds`/`ended_at`,**无分段读数**,因此任何跨电价订单都无法计费 | 补齐分段计量与结算,或转入人工异常处理流程 |
 | **D4 ③b** | DLQ 重放已实现并注册,但**未在真实 Redis 上端到端验证** | 需起 `compose.dev.yaml` 跑 V8b |
-| **D13** | Argon2 `spawn_blocking` 属 P3-admin 范围,**尚未实施** | 随 P3 一并完成 |
+| **D21** DLQ 重放追不上积压 | 每轮只取最早 200 条,无滑动游标 | 确认是改成增量扫描,还是接受"只追最早的"语义 |
+| **D22** 4 个 worker 循环未注册 | `export_run` / `reconcile_daily` / `billing_cycle_daily` / `alert_scan` 不执行 | 确认这 4 个是**该接线**还是**该删掉** |
+| **D23** DLQ 重放可能重复投递 | `XADD *` 新 entry id;`orig_group` 未使用 | 确认消费者是按 `event_id` 还是 entry id 去重 |
 
 ## 7. 尚未执行的阶段
 
 | 阶段 | 状态 | 说明 |
 |---|---|---|
-| P2 `api-contracts` 重写 | **未做** | 152 处 `ApiEnvelope<Value>` 仍待类型化(当前债务基线见架构守护测试输出) |
-| P3 逐服务迁移 | **未做** | 5 个服务尚未拆成 capability 切片;`AppState.db` 仍在(298 处引用) |
+| P2 `api-contracts` 重写 | **已完成** | 全仓 `ApiEnvelope<Value>` 归零;契约新增回归测试 40 余条 |
+| P3 逐服务迁移 | **大部分完成** | gateway / admin / billing / worker 已删 `AppState.db`。**admin 只换了连接来源**,SQL 仍在原模块、`DomainService::pool()` 仍是 `pub` —— 见下 |
 | P5 全局收口 | **未做** | lint 仍为 `allow`,未转 `deny` |
