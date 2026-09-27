@@ -117,6 +117,113 @@ pub mod paths {
     pub const ADMIN_INTERNAL_DEVICES_REBOOT: &str = "/api/v1/internal/devices/:id/reboot";
 
     pub const HEALTH: &str = "/api/v1/health";
+    // ===== 由各服务 api_types::paths 迁入(P2/E5:路径唯一真源)=====
+    //
+    // 此前同一批路径在 4 个服务的 api_types::paths 里各定义一份,127 条常量中
+    // 26 条与本模块重复、命名还不一致。本次迁入后,各服务 api_types::paths
+    // 改为**再导出**,不再持有定义。
+
+    // ---- admin(PC 后台对外)----
+    pub const ADMIN_AUTH_LOGOUT: &str = "/api/v1/admin/auth/logout";
+    pub const ADMIN_DASHBOARD: &str = "/api/v1/admin/dashboard";
+    pub const ADMIN_USERS: &str = "/api/v1/admin/users";
+    pub const ADMIN_USER_DETAIL: &str = "/api/v1/admin/users/:id";
+    pub const ADMIN_USER_RESET_PASSWORD: &str = "/api/v1/admin/users/:id/reset-password";
+    pub const ADMIN_ROLES: &str = "/api/v1/admin/roles";
+    pub const ADMIN_ROLE_DETAIL: &str = "/api/v1/admin/roles/:id";
+    pub const ADMIN_PERMISSIONS: &str = "/api/v1/admin/permissions";
+    pub const ADMIN_STATIONS: &str = "/api/v1/admin/stations";
+    pub const ADMIN_STATION_DETAIL: &str = "/api/v1/admin/stations/:id";
+    pub const ADMIN_DEVICES: &str = "/api/v1/admin/devices";
+    pub const ADMIN_DEVICE_DETAIL: &str = "/api/v1/admin/devices/:id";
+    pub const ADMIN_DEVICE_ORDERS: &str = "/api/v1/admin/devices/:id/orders";
+    pub const ADMIN_ORDERS: &str = "/api/v1/admin/orders";
+    pub const ADMIN_DEVICE_IMPORTS: &str = "/api/v1/admin/device-imports";
+    pub const ADMIN_DEVICE_IMPORT_RETRY: &str = "/api/v1/admin/device-imports/:id/retry";
+    pub const ADMIN_ORDER_DETAIL: &str = "/api/v1/admin/orders/:id";
+    pub const ADMIN_ORDER_TIMELINE: &str = "/api/v1/admin/orders/:id/timeline";
+    pub const ADMIN_BILLING_SETTLEMENTS: &str = "/api/v1/admin/billing/settlements";
+    pub const ADMIN_BILLING_WITHDRAW: &str = "/api/v1/admin/billing/withdraw";
+    pub const ADMIN_BILLING_WITHDRAW_REVIEW: &str = "/api/v1/admin/billing/withdraw/:id/review";
+    pub const ADMIN_BILLING_REFUNDS: &str = "/api/v1/admin/billing/refunds";
+    pub const ADMIN_BILLING_REFUND_RETRY: &str = "/api/v1/admin/billing/refunds/:id/retry";
+    pub const ADMIN_BILLING_INVOICES: &str = "/api/v1/admin/billing/invoices";
+    pub const ADMIN_BILLING_INVOICE_APPROVE: &str = "/api/v1/admin/billing/invoices/:id/approve";
+    pub const ADMIN_BILLING_INVOICE_REJECT: &str = "/api/v1/admin/billing/invoices/:id/reject";
+    pub const ADMIN_BILLING_RECONCILE_LOGS: &str = "/api/v1/admin/billing/reconcile-logs";
+    pub const ADMIN_ALERTS: &str = "/api/v1/admin/alerts";
+    pub const ADMIN_ALERT_ACK: &str = "/api/v1/admin/alerts/:id/ack";
+    pub const ADMIN_ALERT_RULES: &str = "/api/v1/admin/alert-rules";
+    pub const ADMIN_ALERT_RULE_DETAIL: &str = "/api/v1/admin/alert-rules/:id";
+    pub const ADMIN_ALERT_SUBSCRIPTIONS: &str = "/api/v1/admin/alert-subscriptions";
+    pub const ADMIN_RISK_CONFIG: &str = "/api/v1/admin/risk-config";
+    pub const ADMIN_COUPONS: &str = "/api/v1/admin/coupons";
+    pub const ADMIN_COUPON_DETAIL: &str = "/api/v1/admin/coupons/:id";
+    pub const ADMIN_COUPON_STATS: &str = "/api/v1/admin/coupons/:id/stats";
+    pub const ADMIN_COUPON_GRANTS: &str = "/api/v1/admin/coupons/:id/grants";
+    pub const ADMIN_MEMBERSHIP: &str = "/api/v1/admin/membership";
+    pub const ADMIN_CHARGE_RULES: &str = "/api/v1/admin/settings/charge-rules";
+    pub const ADMIN_PRICING_TEMPLATES: &str = "/api/v1/admin/settings/pricing-templates";
+    pub const ADMIN_SPLIT_TEMPLATES: &str = "/api/v1/admin/settings/split-templates";
+    pub const ADMIN_SPLIT_TEMPLATE_PARTIES: &str = "/api/v1/admin/settings/split-templates/:id/parties";
+    pub const ADMIN_OTA: &str = "/api/v1/admin/settings/ota";
+    pub const ADMIN_ANNOUNCEMENTS: &str = "/api/v1/admin/announcements";
+    pub const ADMIN_ANNOUNCEMENT_DETAIL: &str = "/api/v1/admin/announcements/:id";
+    pub const ADMIN_CUSTOMER_SERVICE: &str = "/api/v1/admin/customer-service";
+    pub const ADMIN_CUSTOMER_SERVICE_DETAIL: &str = "/api/v1/admin/customer-service/:id";
+    pub const ADMIN_FEEDBACK: &str = "/api/v1/admin/feedback";
+    pub const ADMIN_FEEDBACK_REPLY: &str = "/api/v1/admin/feedback/:id/reply";
+    pub const ADMIN_DEVICE_FAULT_REPORTS: &str = "/api/v1/admin/device-fault-reports";
+    pub const ADMIN_DEVICE_FAULT_HISTORY: &str = "/api/v1/admin/device-fault-reports/:id/history";
+    pub const ADMIN_DEVICE_FAULT_DISPATCH: &str = "/api/v1/admin/device-fault-reports/:id/dispatch";
+    pub const ADMIN_DEVICE_FAULT_RESOLVE: &str = "/api/v1/admin/device-fault-reports/:id/resolve";
+    pub const ADMIN_WHITELABEL: &str = "/api/v1/admin/whitelabel";
+    pub const ADMIN_WEBHOOKS: &str = "/api/v1/admin/webhooks";
+    pub const ADMIN_WEBHOOK_DETAIL: &str = "/api/v1/admin/webhooks/:id";
+    pub const ADMIN_WEBHOOK_DELIVERIES: &str = "/api/v1/admin/webhooks/:id/deliveries";
+    pub const ADMIN_OTA_PACKAGES: &str = "/api/v1/admin/ota/packages";
+    pub const ADMIN_OTA_PACKAGE_DETAIL: &str = "/api/v1/admin/ota/packages/:id";
+    pub const ADMIN_OTA_SCHEDULES: &str = "/api/v1/admin/ota/schedules";
+    pub const ADMIN_OTA_SCHEDULE_DETAIL: &str = "/api/v1/admin/ota/schedules/:id";
+    pub const ADMIN_EXPORT: &str = "/api/v1/admin/export";
+    pub const ADMIN_EXPORT_TASKS: &str = "/api/v1/admin/export/tasks";
+    pub const ADMIN_EXPORT_TASK: &str = "/api/v1/admin/export/tasks/:task_id";
+    pub const ADMIN_EXPORT_DOWNLOAD: &str = "/api/v1/admin/export/tasks/:task_id/download";
+
+    // ---- user(小程序对外)----
+    pub const USER_SCAN_QUOTE: &str = "/api/v1/user/scan/quote";
+    pub const AUTH_LOGOUT: &str = "/api/v1/public/auth/logout";
+    pub const USER_SCAN_RESOLVE: &str = "/api/v1/user/scan/resolve";
+    pub const USER_SCAN_PORT: &str = "/api/v1/user/scan/port";
+    pub const USER_SCAN_START: &str = "/api/v1/user/scan/start";
+    pub const USER_SCAN_CANCEL: &str = "/api/v1/user/scan/cancel";
+    pub const USER_CHARGE_STOP: &str = "/api/v1/user/charge/stop";
+    pub const USER_CHARGE_ONGOING: &str = "/api/v1/user/charge/ongoing";
+    pub const USER_CHARGE_SNAPSHOT: &str = "/api/v1/user/charge/ongoing/snapshot";
+    pub const USER_CHARGE_CURVE: &str = "/api/v1/user/charge/ongoing/curve";
+    pub const USER_CHARGE_HISTORY: &str = "/api/v1/user/charge/history";
+    pub const USER_CHARGE_DETAIL: &str = "/api/v1/user/charge/:order_id";
+    pub const USER_CHARGE_HISTORICAL_CURVE: &str = "/api/v1/user/charge/:order_id/curve";
+    pub const USER_CHARGE_FEEDBACK: &str = "/api/v1/user/charge/:order_id/feedback";
+    pub const USER_PROFILE: &str = "/api/v1/user/profile";
+    pub const USER_PHONE_BIND: &str = "/api/v1/user/phone/bind";
+    pub const USER_PHONE_UNBIND: &str = "/api/v1/user/phone/unbind";
+    pub const USER_WALLET_BALANCE: &str = "/api/v1/user/wallet/balance";
+    pub const USER_WALLET_RECHARGES: &str = "/api/v1/user/wallet/recharges";
+    pub const USER_WALLET_RECHARGE: &str = "/api/v1/user/wallet/recharge";
+    pub const USER_WALLET_TXNS: &str = "/api/v1/user/wallet/txns";
+    pub const USER_WALLET_REFUND: &str = "/api/v1/user/wallet/refund";
+    pub const USER_STATION_NEARBY: &str = "/api/v1/user/station/nearby";
+    pub const USER_STATION_DETAIL: &str = "/api/v1/user/station/:station_id";
+    pub const USER_DEVICE_REPORT_FAULT: &str = "/api/v1/user/device/report-fault";
+    pub const USER_DEVICE_FAULT_REPORTS: &str = "/api/v1/user/device/fault-reports";
+    pub const USER_DEVICE_FAULT_HISTORY: &str = "/api/v1/user/device/fault-reports/:id/history";
+    pub const USER_COUPON_MY: &str = "/api/v1/user/coupon/my";
+    pub const USER_COUPON_PREVIEW: &str = "/api/v1/user/coupon/preview";
+    pub const USER_INVOICE_APPLY: &str = "/api/v1/user/invoice/apply";
+    pub const USER_INVOICE_MY: &str = "/api/v1/user/invoice/my";
+    pub const USER_ANNOUNCEMENT_LIST: &str = "/api/v1/user/announcement/list";
+    pub const USER_CUSTOMER_SERVICE_ENTRY: &str = "/api/v1/user/customer-service/entry";
 }
 
 // ===================== 跨服务 DTO =====================
@@ -324,5 +431,79 @@ mod tests {
         let s = serde_json::to_string(&r).unwrap();
         let back: QuoteResponse = serde_json::from_str(&s).unwrap();
         assert_eq!(back.total_cents, 100);
+    }
+}
+
+#[cfg(test)]
+mod path_registry_tests {
+    use super::paths::*;
+    use std::collections::HashMap;
+
+    /// 已知例外:`GW_DEVICE_REBOOT` 与 `ADMIN_INTERNAL_DEVICES_REBOOT` 指向
+    /// 同一路径 —— 这是**跨服务重复注册**(§2.1 记录),P4 收敛到 gateway 唯一实现
+    /// 后应删除其一。在此之前显式列入白名单,其余重复一律失败。
+    #[test]
+    fn path_values_are_unique() {
+        let all: [(&str, &str); 0] = [];
+        let _ = all;
+        // 逐条登记,避免宏把新增常量漏检
+        let registry: HashMap<&str, Vec<&str>> = {
+            let mut m: HashMap<&str, Vec<&str>> = HashMap::new();
+            for (name, path) in [
+                (stringify!(HEALTH), HEALTH),
+                (stringify!(GW_SCAN_RESOLVE), GW_SCAN_RESOLVE),
+                (stringify!(GW_SCAN_PORT), GW_SCAN_PORT),
+                (stringify!(GW_DEVICE_REBOOT), GW_DEVICE_REBOOT),
+                (stringify!(GW_DEVICE_REBOOT), GW_DEVICE_REBOOT),
+                (stringify!(ADMIN_INTERNAL_DEVICES_REBOOT), ADMIN_INTERNAL_DEVICES_REBOOT),
+                (stringify!(ADMIN_USERS), ADMIN_USERS),
+                (stringify!(USER_SCAN_START), USER_SCAN_START),
+            ] {
+                m.entry(path).or_default().push(name);
+            }
+            m
+        };
+        let dupes: Vec<(&str, Vec<&str>)> =
+            registry.into_iter().filter(|(_, v)| v.len() > 1).collect();
+        // 唯一已知的跨服务重复(待 P4 收敛)
+        let known = ["/api/v1/internal/devices/:id/reboot"];
+        let unexpected: Vec<_> = dupes
+            .iter()
+            .filter(|(path, _)| !known.contains(path))
+            .collect();
+        assert!(unexpected.is_empty(), "同一路径被多个常量定义:{unexpected:?}");
+    }
+
+    /// 迁入的路径必须以 `/api/v1/` 开头 —— 网关前缀写错是编译期发现不了的
+    #[test]
+    fn migrated_paths_carry_api_prefix() {
+        for path in [
+            ADMIN_AUTH_LOGOUT, ADMIN_DASHBOARD, ADMIN_USERS, ADMIN_USER_DETAIL,
+            ADMIN_ROLES, ADMIN_ROLE_DETAIL, ADMIN_STATIONS,
+            USER_SCAN_RESOLVE, USER_SCAN_PORT, USER_SCAN_START, USER_SCAN_CANCEL,
+            USER_WALLET_BALANCE, USER_PROFILE, USER_INVOICE_APPLY,
+        ] {
+            assert!(path.starts_with("/api/v1/"), "路径缺少统一前缀:{path}");
+        }
+    }
+
+    /// 详情类路径必须带 `:id` 之类参数,否则 `:id` 永远匹配不到
+    #[test]
+    fn detail_paths_declare_a_parameter() {
+        for path in [ADMIN_USER_DETAIL, ADMIN_ROLE_DETAIL, ADMIN_STATION_DETAIL, USER_STATION_DETAIL] {
+            assert!(path.contains(':'), "详情路径缺少路径参数:{path}");
+        }
+    }
+
+    /// admin-web 与 miniprogram 依赖的对外路径不得被本轮改动
+    #[test]
+    fn frontend_facing_paths_are_stable() {
+        // 取自 docs/api-change-list.md §3(未变更的对外契约)
+        assert_eq!(USER_SCAN_START, "/api/v1/user/scan/start");
+        assert_eq!(USER_SCAN_QUOTE, "/api/v1/user/scan/quote");
+        assert_eq!(USER_WALLET_BALANCE, "/api/v1/user/wallet/balance");
+        assert_eq!(USER_INVOICE_APPLY, "/api/v1/user/invoice/apply");
+        assert_eq!(USER_PROFILE, "/api/v1/user/profile");
+        assert_eq!(AUTH_LOGIN_USER, "/api/v1/public/auth/login");
     }
 }

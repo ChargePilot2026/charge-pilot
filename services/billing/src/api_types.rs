@@ -10,19 +10,18 @@ use serde::{Deserialize, Serialize};
 // ===== 路径常量 =====
 
 pub mod paths {
-    // 内部 API(供其他服务调用)
-    pub const QUOTE: &str = "/api/v1/internal/quote";
-    pub const CALCULATE: &str = "/api/v1/internal/calculate";
-    pub const FEE_BREAKDOWN: &str = "/api/v1/internal/orders/:order_id/fee-breakdown";
-    pub const SPLIT: &str = "/api/v1/internal/split";
-    pub const ORDER_SPLIT: &str = "/api/v1/internal/orders/:order_id/split";
-    pub const SETTLEMENT_DETAIL: &str = "/api/v1/internal/settlements/:settlement_id";
-    pub const INVOICE_SETTLE_DETAIL: &str = "/api/v1/internal/invoices/:invoice_id/settle-detail";
-    pub const REFUND_CALC: &str = "/api/v1/internal/refunds/:refund_id/calc";
-    pub const WITHDRAW_REQUESTS: &str = "/api/v1/internal/withdraw-requests";
-
-    // 健康检查
-    pub const HEALTH: &str = "/api/v1/health";
+    // P2/E5:路径**唯一真源**是 `api-contracts::paths`。本模块只做再导出/别名。
+    // 迁移期保留本模块是为了不改 `.route()` 注册(P3 再收口)。
+    pub use api_contracts::paths::BILLING_QUOTE as QUOTE;
+    pub use api_contracts::paths::BILLING_CALCULATE as CALCULATE;
+    pub use api_contracts::paths::BILLING_FEE_BREAKDOWN as FEE_BREAKDOWN;
+    pub use api_contracts::paths::BILLING_SPLIT as SPLIT;
+    pub use api_contracts::paths::BILLING_ORDER_SPLIT as ORDER_SPLIT;
+    pub use api_contracts::paths::BILLING_SETTLEMENT_DETAIL as SETTLEMENT_DETAIL;
+    pub use api_contracts::paths::BILLING_INVOICE_SETTLE_DETAIL as INVOICE_SETTLE_DETAIL;
+    pub use api_contracts::paths::BILLING_REFUND_CALC as REFUND_CALC;
+    pub use api_contracts::paths::BILLING_WITHDRAW_REQUESTS as WITHDRAW_REQUESTS;
+    pub use api_contracts::paths::HEALTH;
 }
 
 // ===== DTO:请求 =====

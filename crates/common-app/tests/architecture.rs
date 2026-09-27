@@ -25,16 +25,24 @@ fn repo_root() -> PathBuf {
 
 /// 收集所有 Rust 源文件
 /// 扫描豁免:这些文件按设计就包含路径字面量或违规样例。
+fn is_contracts_lib(path: &Path) -> bool {
+    path.components()
+        .any(|c| c.as_os_str() == "api-contracts")
+}
+
 fn is_exempt(path: &Path) -> bool {
     matches!(
         path.file_name().and_then(|n| n.to_str()),
         // 契约基线快照按设计记录全部路径字面量
         Some("contract_baseline.rs") | Some("contract_baseline_data.rs")
-            // 路径常量所在的契约文件
+            // 路径常量的再导出层(不含定义,只有 pub use)
             | Some("api_types.rs")
             // 守护测试自身含预期失败样例
             | Some("architecture.rs")
     )
+        // **路径唯一真源本身** —— 定义处必须允许字面量,
+        // 否则指标会惩罚"把路径集中到一处"这一目标本身
+        || is_contracts_lib(path)
 }
 
 fn sources(root: &Path) -> Vec<PathBuf> {

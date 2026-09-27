@@ -6,99 +6,93 @@
 use serde::{Deserialize, Serialize};
 
 pub mod paths {
-    // --- 公开路由(无需鉴权)---
-    pub const AUTH_LOGIN: &str = "/api/v1/admin/auth/login";
-    pub const AUTH_REFRESH: &str = "/api/v1/admin/auth/refresh";
-
-    // --- 内部路由(其他服务调用)---
-    pub const INTERNAL_ANNOUNCEMENTS_ACTIVE: &str = "/api/v1/internal/announcements/active";
-    pub const INTERNAL_STATIONS_NEARBY: &str = "/api/v1/internal/stations/nearby";
-    pub const INTERNAL_STATIONS_DETAIL: &str = "/api/v1/internal/stations/:station_id";
-    pub const INTERNAL_PRICING_RULES_GET: &str = "/api/v1/internal/pricing-rules/:id";
-    pub const INTERNAL_SPLIT_TEMPLATES_GET: &str = "/api/v1/internal/split-templates/:id";
-    pub const INTERNAL_ALERTS_ACTIVE: &str = "/api/v1/internal/alerts";
-    pub const INTERNAL_DEVICES_REBOOT: &str = "/api/v1/internal/devices/:id/reboot";
-
-    // --- PC 后台路由(需 AdminClaims JWT)---
-    pub const ADMIN_AUTH_LOGOUT: &str = "/api/v1/admin/auth/logout";
-    pub const ADMIN_DASHBOARD: &str = "/api/v1/admin/dashboard";
-    pub const ADMIN_USERS: &str = "/api/v1/admin/users";
-    pub const ADMIN_USER_DETAIL: &str = "/api/v1/admin/users/:id";
-    pub const ADMIN_USER_RESET_PASSWORD: &str = "/api/v1/admin/users/:id/reset-password";
-    pub const ADMIN_ROLES: &str = "/api/v1/admin/roles";
-    pub const ADMIN_ROLE_DETAIL: &str = "/api/v1/admin/roles/:id";
-    pub const ADMIN_PERMISSIONS: &str = "/api/v1/admin/permissions";
-
-    pub const ADMIN_STATIONS: &str = "/api/v1/admin/stations";
-    pub const ADMIN_STATION_DETAIL: &str = "/api/v1/admin/stations/:id";
-
-    pub const ADMIN_DEVICES: &str = "/api/v1/admin/devices";
-    pub const ADMIN_DEVICE_DETAIL: &str = "/api/v1/admin/devices/:id";
-    pub const ADMIN_DEVICE_ORDERS: &str = "/api/v1/admin/devices/:id/orders";
-
-    pub const ADMIN_ORDERS: &str = "/api/v1/admin/orders";
-    pub const ADMIN_DEVICE_IMPORTS: &str = "/api/v1/admin/device-imports";
-    pub const ADMIN_DEVICE_IMPORT_RETRY: &str = "/api/v1/admin/device-imports/:id/retry";
-    pub const ADMIN_ORDER_DETAIL: &str = "/api/v1/admin/orders/:id";
-    pub const ADMIN_ORDER_TIMELINE: &str = "/api/v1/admin/orders/:id/timeline";
-
-    pub const ADMIN_BILLING_SETTLEMENTS: &str = "/api/v1/admin/billing/settlements";
-    pub const ADMIN_BILLING_WITHDRAW: &str = "/api/v1/admin/billing/withdraw";
-    pub const ADMIN_BILLING_WITHDRAW_REVIEW: &str = "/api/v1/admin/billing/withdraw/:id/review";
-    pub const ADMIN_BILLING_REFUNDS: &str = "/api/v1/admin/billing/refunds";
-    pub const ADMIN_BILLING_REFUND_RETRY: &str = "/api/v1/admin/billing/refunds/:id/retry";
-    pub const ADMIN_BILLING_INVOICES: &str = "/api/v1/admin/billing/invoices";
-    pub const ADMIN_BILLING_INVOICE_APPROVE: &str = "/api/v1/admin/billing/invoices/:id/approve";
-    pub const ADMIN_BILLING_INVOICE_REJECT: &str = "/api/v1/admin/billing/invoices/:id/reject";
-    pub const ADMIN_BILLING_RECONCILE_LOGS: &str = "/api/v1/admin/billing/reconcile-logs";
-
-    pub const ADMIN_ALERTS: &str = "/api/v1/admin/alerts";
-    pub const ADMIN_ALERT_ACK: &str = "/api/v1/admin/alerts/:id/ack";
-    pub const ADMIN_ALERT_RULES: &str = "/api/v1/admin/alert-rules";
-    pub const ADMIN_ALERT_RULE_DETAIL: &str = "/api/v1/admin/alert-rules/:id";
-    pub const ADMIN_ALERT_SUBSCRIPTIONS: &str = "/api/v1/admin/alert-subscriptions";
-    pub const ADMIN_RISK_CONFIG: &str = "/api/v1/admin/risk-config";
-
-    pub const ADMIN_COUPONS: &str = "/api/v1/admin/coupons";
-    pub const ADMIN_COUPON_DETAIL: &str = "/api/v1/admin/coupons/:id";
-    pub const ADMIN_COUPON_STATS: &str = "/api/v1/admin/coupons/:id/stats";
-    pub const ADMIN_COUPON_GRANTS: &str = "/api/v1/admin/coupons/:id/grants";
-    pub const ADMIN_MEMBERSHIP: &str = "/api/v1/admin/membership";
-
-    pub const ADMIN_CHARGE_RULES: &str = "/api/v1/admin/settings/charge-rules";
-    pub const ADMIN_PRICING_TEMPLATES: &str = "/api/v1/admin/settings/pricing-templates";
-    pub const ADMIN_SPLIT_TEMPLATES: &str = "/api/v1/admin/settings/split-templates";
-    pub const ADMIN_SPLIT_TEMPLATE_PARTIES: &str = "/api/v1/admin/settings/split-templates/:id/parties";
-    pub const ADMIN_OTA: &str = "/api/v1/admin/settings/ota";
-
-    pub const ADMIN_ANNOUNCEMENTS: &str = "/api/v1/admin/announcements";
-    pub const ADMIN_ANNOUNCEMENT_DETAIL: &str = "/api/v1/admin/announcements/:id";
-    pub const ADMIN_CUSTOMER_SERVICE: &str = "/api/v1/admin/customer-service";
-    pub const ADMIN_CUSTOMER_SERVICE_DETAIL: &str = "/api/v1/admin/customer-service/:id";
-    pub const ADMIN_FEEDBACK: &str = "/api/v1/admin/feedback";
-    pub const ADMIN_FEEDBACK_REPLY: &str = "/api/v1/admin/feedback/:id/reply";
-    pub const ADMIN_DEVICE_FAULT_REPORTS: &str = "/api/v1/admin/device-fault-reports";
-    pub const ADMIN_DEVICE_FAULT_HISTORY: &str = "/api/v1/admin/device-fault-reports/:id/history";
-    pub const ADMIN_DEVICE_FAULT_DISPATCH: &str = "/api/v1/admin/device-fault-reports/:id/dispatch";
-    pub const ADMIN_DEVICE_FAULT_RESOLVE: &str = "/api/v1/admin/device-fault-reports/:id/resolve";
-
-    pub const ADMIN_WHITELABEL: &str = "/api/v1/admin/whitelabel";
-
-    pub const ADMIN_WEBHOOKS: &str = "/api/v1/admin/webhooks";
-    pub const ADMIN_WEBHOOK_DETAIL: &str = "/api/v1/admin/webhooks/:id";
-    pub const ADMIN_WEBHOOK_DELIVERIES: &str = "/api/v1/admin/webhooks/:id/deliveries";
-
-    pub const ADMIN_OTA_PACKAGES: &str = "/api/v1/admin/ota/packages";
-    pub const ADMIN_OTA_PACKAGE_DETAIL: &str = "/api/v1/admin/ota/packages/:id";
-    pub const ADMIN_OTA_SCHEDULES: &str = "/api/v1/admin/ota/schedules";
-    pub const ADMIN_OTA_SCHEDULE_DETAIL: &str = "/api/v1/admin/ota/schedules/:id";
-
-    pub const ADMIN_EXPORT: &str = "/api/v1/admin/export";
-    pub const ADMIN_EXPORT_TASKS: &str = "/api/v1/admin/export/tasks";
-    pub const ADMIN_EXPORT_TASK: &str = "/api/v1/admin/export/tasks/:task_id";
-    pub const ADMIN_EXPORT_DOWNLOAD: &str = "/api/v1/admin/export/tasks/:task_id/download";
-
-    pub const HEALTH: &str = "/api/v1/health";
+    // P2/E5:路径**唯一真源**是 `api-contracts::paths`。
+    // 本模块改为再导出/别名,不再持有定义 —— 消除各服务私有副本。
+    // 迁移期保留本模块是为了不改 131 处 `.route()` 注册(P3 再收口)。
+    pub use api_contracts::paths::ADMIN_ALERTS;
+    pub use api_contracts::paths::ADMIN_ALERT_ACK;
+    pub use api_contracts::paths::ADMIN_ALERT_RULES;
+    pub use api_contracts::paths::ADMIN_ALERT_RULE_DETAIL;
+    pub use api_contracts::paths::ADMIN_ALERT_SUBSCRIPTIONS;
+    pub use api_contracts::paths::ADMIN_ANNOUNCEMENTS;
+    pub use api_contracts::paths::ADMIN_ANNOUNCEMENT_DETAIL;
+    pub use api_contracts::paths::ADMIN_AUTH_LOGOUT;
+    pub use api_contracts::paths::ADMIN_BILLING_INVOICES;
+    pub use api_contracts::paths::ADMIN_BILLING_INVOICE_APPROVE;
+    pub use api_contracts::paths::ADMIN_BILLING_INVOICE_REJECT;
+    pub use api_contracts::paths::ADMIN_BILLING_RECONCILE_LOGS;
+    pub use api_contracts::paths::ADMIN_BILLING_REFUNDS;
+    pub use api_contracts::paths::ADMIN_BILLING_REFUND_RETRY;
+    pub use api_contracts::paths::ADMIN_BILLING_SETTLEMENTS;
+    pub use api_contracts::paths::ADMIN_BILLING_WITHDRAW;
+    pub use api_contracts::paths::ADMIN_BILLING_WITHDRAW_REVIEW;
+    pub use api_contracts::paths::ADMIN_CHARGE_RULES;
+    pub use api_contracts::paths::ADMIN_COUPONS;
+    pub use api_contracts::paths::ADMIN_COUPON_DETAIL;
+    pub use api_contracts::paths::ADMIN_COUPON_GRANTS;
+    pub use api_contracts::paths::ADMIN_COUPON_STATS;
+    pub use api_contracts::paths::ADMIN_CUSTOMER_SERVICE;
+    pub use api_contracts::paths::ADMIN_CUSTOMER_SERVICE_DETAIL;
+    pub use api_contracts::paths::ADMIN_DASHBOARD;
+    pub use api_contracts::paths::ADMIN_DEVICES;
+    pub use api_contracts::paths::ADMIN_DEVICE_DETAIL;
+    pub use api_contracts::paths::ADMIN_DEVICE_FAULT_DISPATCH;
+    pub use api_contracts::paths::ADMIN_DEVICE_FAULT_HISTORY;
+    pub use api_contracts::paths::ADMIN_DEVICE_FAULT_REPORTS;
+    pub use api_contracts::paths::ADMIN_DEVICE_FAULT_RESOLVE;
+    pub use api_contracts::paths::ADMIN_DEVICE_IMPORTS;
+    pub use api_contracts::paths::ADMIN_DEVICE_IMPORT_RETRY;
+    pub use api_contracts::paths::ADMIN_DEVICE_ORDERS;
+    pub use api_contracts::paths::ADMIN_EXPORT;
+    pub use api_contracts::paths::ADMIN_EXPORT_DOWNLOAD;
+    pub use api_contracts::paths::ADMIN_EXPORT_TASK;
+    pub use api_contracts::paths::ADMIN_EXPORT_TASKS;
+    pub use api_contracts::paths::ADMIN_FEEDBACK;
+    pub use api_contracts::paths::ADMIN_FEEDBACK_REPLY;
+    pub use api_contracts::paths::ADMIN_MEMBERSHIP;
+    pub use api_contracts::paths::ADMIN_ORDERS;
+    pub use api_contracts::paths::ADMIN_ORDER_DETAIL;
+    pub use api_contracts::paths::ADMIN_ORDER_TIMELINE;
+    pub use api_contracts::paths::ADMIN_OTA;
+    pub use api_contracts::paths::ADMIN_OTA_PACKAGES;
+    pub use api_contracts::paths::ADMIN_OTA_PACKAGE_DETAIL;
+    pub use api_contracts::paths::ADMIN_OTA_SCHEDULES;
+    pub use api_contracts::paths::ADMIN_OTA_SCHEDULE_DETAIL;
+    pub use api_contracts::paths::ADMIN_PERMISSIONS;
+    pub use api_contracts::paths::ADMIN_PRICING_TEMPLATES;
+    pub use api_contracts::paths::ADMIN_RISK_CONFIG;
+    pub use api_contracts::paths::ADMIN_ROLES;
+    pub use api_contracts::paths::ADMIN_ROLE_DETAIL;
+    pub use api_contracts::paths::ADMIN_SPLIT_TEMPLATES;
+    pub use api_contracts::paths::ADMIN_SPLIT_TEMPLATE_PARTIES;
+    pub use api_contracts::paths::ADMIN_STATIONS;
+    pub use api_contracts::paths::ADMIN_STATION_DETAIL;
+    pub use api_contracts::paths::ADMIN_USERS;
+    pub use api_contracts::paths::ADMIN_USER_DETAIL;
+    pub use api_contracts::paths::ADMIN_USER_RESET_PASSWORD;
+    pub use api_contracts::paths::ADMIN_WEBHOOKS;
+    pub use api_contracts::paths::ADMIN_WEBHOOK_DELIVERIES;
+    pub use api_contracts::paths::ADMIN_WEBHOOK_DETAIL;
+    pub use api_contracts::paths::ADMIN_WHITELABEL;
+    // 命名对齐:值与 `AUTH_LOGIN_ADMIN` 相同,统一到契约名
+    pub use api_contracts::paths::AUTH_LOGIN_ADMIN as AUTH_LOGIN;
+    // 命名对齐:值与 `AUTH_REFRESH_ADMIN` 相同,统一到契约名
+    pub use api_contracts::paths::AUTH_REFRESH_ADMIN as AUTH_REFRESH;
+    pub use api_contracts::paths::HEALTH;
+    // 命名对齐:值与 `ADMIN_INTERNAL_ALERTS_ACTIVE` 相同,统一到契约名
+    pub use api_contracts::paths::ADMIN_INTERNAL_ALERTS_ACTIVE as INTERNAL_ALERTS_ACTIVE;
+    // 命名对齐:值与 `ADMIN_INTERNAL_ANNOUNCEMENTS_ACTIVE` 相同,统一到契约名
+    pub use api_contracts::paths::ADMIN_INTERNAL_ANNOUNCEMENTS_ACTIVE as INTERNAL_ANNOUNCEMENTS_ACTIVE;
+    // 命名对齐:值与 `GW_DEVICE_REBOOT` 相同,统一到契约名
+    pub use api_contracts::paths::GW_DEVICE_REBOOT as INTERNAL_DEVICES_REBOOT;
+    // 命名对齐:值与 `ADMIN_INTERNAL_PRICING_RULES_GET` 相同,统一到契约名
+    pub use api_contracts::paths::ADMIN_INTERNAL_PRICING_RULES_GET as INTERNAL_PRICING_RULES_GET;
+    // 命名对齐:值与 `ADMIN_INTERNAL_SPLIT_TEMPLATES_GET` 相同,统一到契约名
+    pub use api_contracts::paths::ADMIN_INTERNAL_SPLIT_TEMPLATES_GET as INTERNAL_SPLIT_TEMPLATES_GET;
+    // 命名对齐:值与 `ADMIN_INTERNAL_STATIONS_DETAIL` 相同,统一到契约名
+    pub use api_contracts::paths::ADMIN_INTERNAL_STATIONS_DETAIL as INTERNAL_STATIONS_DETAIL;
+    // 命名对齐:值与 `ADMIN_INTERNAL_STATIONS_NEARBY` 相同,统一到契约名
+    pub use api_contracts::paths::ADMIN_INTERNAL_STATIONS_NEARBY as INTERNAL_STATIONS_NEARBY;
 }
 
 // ===== DTO:Admin Auth =====

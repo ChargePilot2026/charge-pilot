@@ -10,58 +10,66 @@ use serde::{Deserialize, Serialize};
 // ===== 路径常量 =====
 
 pub mod paths {
-    pub const USER_SCAN_QUOTE: &str = "/api/v1/user/scan/quote";
-    // --- 公开路由(无需 JWT)---
-    pub const AUTH_LOGIN: &str = "/api/v1/public/auth/login";
-    pub const AUTH_LOGOUT: &str = "/api/v1/public/auth/logout";
-    pub const AUTH_REFRESH: &str = "/api/v1/public/auth/refresh";
-    pub const PAYMENT_WECHAT_CALLBACK: &str = "/api/v1/public/payment/wechat/callback";
-
-    // --- 内部路由(其他服务调用,需 ServiceToken)---
-    pub const INTERNAL_START_RESULT: &str = "/api/v1/internal/charge-orders/:order_id/start-result";
-    pub const INTERNAL_REFUND_CLAIM: &str = "/api/v1/internal/refund-records/claim";
-    pub const INTERNAL_REFUND_RESULT: &str = "/api/v1/internal/refund-records/:refund_id/result";
-    pub const INTERNAL_REFUND_DETAIL: &str = "/api/v1/internal/refunds/:refund_id";
-    pub const INTERNAL_PAYMENT_DETAIL: &str = "/api/v1/internal/payment-orders/:payment_order_id";
-    pub const INTERNAL_ORDER_DETAIL: &str = "/api/v1/internal/orders/:order_id";
-    pub const INTERNAL_INVOICE_DETAIL: &str = "/api/v1/internal/invoices/:invoice_id";
-    pub const INTERNAL_COUPON_STATS: &str = "/api/v1/internal/coupons/stats";
-    pub const INTERNAL_DASHBOARD_METRICS: &str = "/api/v1/internal/dashboard/metrics";
-
-    // --- 用户路由(需 UserClaims JWT)---
-    pub const USER_SCAN_RESOLVE: &str = "/api/v1/user/scan/resolve";
-    pub const USER_SCAN_PORT: &str = "/api/v1/user/scan/port";
-    pub const USER_SCAN_START: &str = "/api/v1/user/scan/start";
-    pub const USER_SCAN_CANCEL: &str = "/api/v1/user/scan/cancel";
-    pub const USER_CHARGE_STOP: &str = "/api/v1/user/charge/stop";
-    pub const USER_CHARGE_ONGOING: &str = "/api/v1/user/charge/ongoing";
-    pub const USER_CHARGE_SNAPSHOT: &str = "/api/v1/user/charge/ongoing/snapshot";
-    pub const USER_CHARGE_CURVE: &str = "/api/v1/user/charge/ongoing/curve";
-    pub const USER_CHARGE_HISTORY: &str = "/api/v1/user/charge/history";
-    pub const USER_CHARGE_DETAIL: &str = "/api/v1/user/charge/:order_id";
-    pub const USER_CHARGE_HISTORICAL_CURVE: &str = "/api/v1/user/charge/:order_id/curve";
-    pub const USER_CHARGE_FEEDBACK: &str = "/api/v1/user/charge/:order_id/feedback";
-    pub const USER_PROFILE: &str = "/api/v1/user/profile";
-    pub const USER_PHONE_BIND: &str = "/api/v1/user/phone/bind";
-    pub const USER_PHONE_UNBIND: &str = "/api/v1/user/phone/unbind";
-    pub const USER_WALLET_BALANCE: &str = "/api/v1/user/wallet/balance";
-    pub const USER_WALLET_RECHARGES: &str = "/api/v1/user/wallet/recharges";
-    pub const USER_WALLET_RECHARGE: &str = "/api/v1/user/wallet/recharge";
-    pub const USER_WALLET_TXNS: &str = "/api/v1/user/wallet/txns";
-    pub const USER_WALLET_REFUND: &str = "/api/v1/user/wallet/refund";
-    pub const USER_STATION_NEARBY: &str = "/api/v1/user/station/nearby";
-    pub const USER_STATION_DETAIL: &str = "/api/v1/user/station/:station_id";
-    pub const USER_DEVICE_REPORT_FAULT: &str = "/api/v1/user/device/report-fault";
-    pub const USER_DEVICE_FAULT_REPORTS: &str = "/api/v1/user/device/fault-reports";
-    pub const USER_DEVICE_FAULT_HISTORY: &str = "/api/v1/user/device/fault-reports/:id/history";
-    pub const USER_COUPON_MY: &str = "/api/v1/user/coupon/my";
-    pub const USER_COUPON_PREVIEW: &str = "/api/v1/user/coupon/preview";
-    pub const USER_INVOICE_APPLY: &str = "/api/v1/user/invoice/apply";
-    pub const USER_INVOICE_MY: &str = "/api/v1/user/invoice/my";
-    pub const USER_ANNOUNCEMENT_LIST: &str = "/api/v1/user/announcement/list";
-    pub const USER_CUSTOMER_SERVICE_ENTRY: &str = "/api/v1/user/customer-service/entry";
-
-    pub const HEALTH: &str = "/api/v1/health";
+    // P2/E5:路径**唯一真源**是 `api-contracts::paths`。
+    // 本模块改为再导出/别名,不再持有定义 —— 消除各服务私有副本。
+    // 迁移期保留本模块是为了不改 131 处 `.route()` 注册(P3 再收口)。
+    // 命名对齐:值与 `AUTH_LOGIN_USER` 相同,统一到契约名
+    pub use api_contracts::paths::AUTH_LOGIN_USER as AUTH_LOGIN;
+    pub use api_contracts::paths::AUTH_LOGOUT;
+    // 命名对齐:值与 `AUTH_REFRESH_USER` 相同,统一到契约名
+    pub use api_contracts::paths::AUTH_REFRESH_USER as AUTH_REFRESH;
+    pub use api_contracts::paths::HEALTH;
+    // 命名对齐:值与 `USER_INTERNAL_COUPON_STATS` 相同,统一到契约名
+    pub use api_contracts::paths::USER_INTERNAL_COUPON_STATS as INTERNAL_COUPON_STATS;
+    // 命名对齐:值与 `USER_INTERNAL_DASHBOARD_METRICS` 相同,统一到契约名
+    pub use api_contracts::paths::USER_INTERNAL_DASHBOARD_METRICS as INTERNAL_DASHBOARD_METRICS;
+    // 命名对齐:值与 `USER_INTERNAL_INVOICE_DETAIL` 相同,统一到契约名
+    pub use api_contracts::paths::USER_INTERNAL_INVOICE_DETAIL as INTERNAL_INVOICE_DETAIL;
+    // 命名对齐:值与 `USER_INTERNAL_ORDER_DETAIL` 相同,统一到契约名
+    pub use api_contracts::paths::USER_INTERNAL_ORDER_DETAIL as INTERNAL_ORDER_DETAIL;
+    // 命名对齐:值与 `USER_INTERNAL_PAYMENT_DETAIL` 相同,统一到契约名
+    pub use api_contracts::paths::USER_INTERNAL_PAYMENT_DETAIL as INTERNAL_PAYMENT_DETAIL;
+    // 命名对齐:值与 `USER_INTERNAL_REFUND_CLAIM` 相同,统一到契约名
+    pub use api_contracts::paths::USER_INTERNAL_REFUND_CLAIM as INTERNAL_REFUND_CLAIM;
+    // 命名对齐:值与 `USER_INTERNAL_REFUND_DETAIL` 相同,统一到契约名
+    pub use api_contracts::paths::USER_INTERNAL_REFUND_DETAIL as INTERNAL_REFUND_DETAIL;
+    // 命名对齐:值与 `USER_INTERNAL_REFUND_RESULT` 相同,统一到契约名
+    pub use api_contracts::paths::USER_INTERNAL_REFUND_RESULT as INTERNAL_REFUND_RESULT;
+    // 命名对齐:值与 `USER_INTERNAL_START_RESULT` 相同,统一到契约名
+    pub use api_contracts::paths::USER_INTERNAL_START_RESULT as INTERNAL_START_RESULT;
+    pub use api_contracts::paths::PAYMENT_WECHAT_CALLBACK;
+    pub use api_contracts::paths::USER_ANNOUNCEMENT_LIST;
+    pub use api_contracts::paths::USER_CHARGE_CURVE;
+    pub use api_contracts::paths::USER_CHARGE_DETAIL;
+    pub use api_contracts::paths::USER_CHARGE_FEEDBACK;
+    pub use api_contracts::paths::USER_CHARGE_HISTORICAL_CURVE;
+    pub use api_contracts::paths::USER_CHARGE_HISTORY;
+    pub use api_contracts::paths::USER_CHARGE_ONGOING;
+    pub use api_contracts::paths::USER_CHARGE_SNAPSHOT;
+    pub use api_contracts::paths::USER_CHARGE_STOP;
+    pub use api_contracts::paths::USER_COUPON_MY;
+    pub use api_contracts::paths::USER_COUPON_PREVIEW;
+    pub use api_contracts::paths::USER_CUSTOMER_SERVICE_ENTRY;
+    pub use api_contracts::paths::USER_DEVICE_FAULT_HISTORY;
+    pub use api_contracts::paths::USER_DEVICE_FAULT_REPORTS;
+    pub use api_contracts::paths::USER_DEVICE_REPORT_FAULT;
+    pub use api_contracts::paths::USER_INVOICE_APPLY;
+    pub use api_contracts::paths::USER_INVOICE_MY;
+    pub use api_contracts::paths::USER_PHONE_BIND;
+    pub use api_contracts::paths::USER_PHONE_UNBIND;
+    pub use api_contracts::paths::USER_PROFILE;
+    pub use api_contracts::paths::USER_SCAN_CANCEL;
+    pub use api_contracts::paths::USER_SCAN_PORT;
+    pub use api_contracts::paths::USER_SCAN_QUOTE;
+    pub use api_contracts::paths::USER_SCAN_RESOLVE;
+    pub use api_contracts::paths::USER_SCAN_START;
+    pub use api_contracts::paths::USER_STATION_DETAIL;
+    pub use api_contracts::paths::USER_STATION_NEARBY;
+    pub use api_contracts::paths::USER_WALLET_BALANCE;
+    pub use api_contracts::paths::USER_WALLET_RECHARGE;
+    pub use api_contracts::paths::USER_WALLET_RECHARGES;
+    pub use api_contracts::paths::USER_WALLET_REFUND;
+    pub use api_contracts::paths::USER_WALLET_TXNS;
 }
 
 // ===== DTO:扫码 / 充电 =====

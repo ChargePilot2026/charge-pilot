@@ -704,17 +704,17 @@ P4 改 `common-redis` 影响全部 5 个服务的消费者，**不能只跑 bill
 | **P0** | ✅ | `--all-targets` 零 error |
 | **P0.5** | ✅ | D9 / D1 / D2 / D10 / D14 五项全部落地并附行为测试；D1 覆盖 **56/56** 管理端写端点 |
 | **P1a** | ✅ | 九项全部落地：工具链锁 1.88、`Db::begin()→Tx`、request_id 全链、`clippy.toml`、路由注册表、契约基线（228 条）、`common-app` 服务对象骨架、D12 gateway 启动与就绪 |
-| **P1b** | ✅ | 架构守护 + 扫描测试落地，**债务基线 1072 处 / 57 文件**（只报告不阻断） |
+| **P1b** | ✅ | 架构守护 + 扫描测试落地。债务基线 **1072 → 949 处 / 56 文件**（P2 的 E5 去重与 gateway 类型化各降一部分；只报告不阻断） |
 | **P4** | ✅ | D3 / D4③b / D4②裁剪水位 / D5 / D6 / D15 / D17 + migration 接管（`migrate-baseline` 工具、5 个 Dockerfile 补 `COPY migrations`、compose 挂载 + 独立 migrate job） |
 | **P6** | ✅ | `docs/api-change-list.md`；P2 的 gateway 类型化未改变任何字段名，§3 仍成立 |
 
-**当前闸口**：V1 `cargo check --workspace --all-targets` **零 error**；V2 `cargo test --workspace` **168 passed / 0 failed**。
+**当前闸口**：V1 `cargo check --workspace --all-targets` **零 error**；V2 `cargo test --workspace` **172 passed / 0 failed**。
 
 ### 未完成
 
 | 阶段 | 原因 |
 |---|---|
-| **P2** `api-contracts` 重写 | **进行中**。gateway 已归零（`ApiEnvelope<Value>` 11→0、`json!` 18→0），新增 `gateway_devices` / `orders::DeviceOrders*` 契约 + 7 个 DTO 测试。user(29) / admin(111) 待做 |
+| **P2** `api-contracts` 重写 | **进行中**。① gateway 已归零（`ApiEnvelope<Value>` 11→0、`json!` 18→0）② **E5 路径单一真源完成**：`api-contracts::paths` 79→177 条，admin/user/billing 的 `api_types::paths` 131 条定义全部改为再导出/别名（**零调用方改动**），并加 4 个防回潮测试。user(48) / admin(117) 的 Value 类型化待做 |
 | **P3** 逐服务迁移 | 未启动。5 个服务仍是扁平的 handler 模块；`AppState.db` 298 处引用未收敛 |
 | **P5** 全局收口 | 依赖 P2/P3。lint 仍为 `allow`，未转 `deny` |
 | **D13** Argon2 `spawn_blocking` | 属 P3-admin 范围，随之顺延 |
