@@ -46,6 +46,7 @@ pub struct Permission {
     pub code: String,
     pub name: String,
     pub module: String,
+    pub description: Option<String>,
 }
 
 pub type PermissionList = ListResponse<Permission>;
@@ -437,5 +438,75 @@ mod finance_tests {
         };
         let v = serde_json::to_value(&s).unwrap();
         assert_eq!(v["period_start"], "2026-09-01");
+    }
+}
+
+// ===== 仪表盘(user 生产 / admin 消费后追加 active_alerts)=====
+
+/// 趋势里的单日汇总。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DailyTrendPoint {
+    /// `YYYY-MM-DD`
+    pub day: String,
+    pub completed_orders: u64,
+    pub settled_cents: i64,
+}
+
+/// user 服务的充电指标。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserChargeMetrics {
+    pub charging_orders: u64,
+    pub today_order_users: u64,
+    pub today_completed_orders: u64,
+    pub today_settled_cents: i64,
+    pub daily_trend: Vec<DailyTrendPoint>,
+    pub updated_at: String,
+}
+
+/// admin 转发给 PC 后台的最终形态 = user 指标 + 告警数。
+///
+/// `active_alerts` 由 admin 侧查询 `alert_event` 后**追加**,user 侧不提供。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminDashboard {
+    pub charging_orders: u64,
+    pub today_order_users: u64,
+    pub today_completed_orders: u64,
+    pub today_settled_cents: i64,
+    pub daily_trend: Vec<DailyTrendPoint>,
+    pub updated_at: String,
+    pub active_alerts: u64,
+}
+
+#[cfg(test)]
+mod dashboard_tests {
+    use super::*;
+
+    /// 回归护栏:admin 侧必须补上 `active_alerts`,否则后台告警卡片恒为 0
+    #[test]
+    fn admin_dashboard_adds_active_alerts() {
+        let d = AdminDashboard {
+            charging_orders: 3, today_order_users: 2, today_completed_orders: 1,
+            today_settled_cents: 1000,
+            daily_trend: vec![],
+            updated_at: "2026-09-28T00:00:00Z".into(),
+            active_alerts: 5,
+        };
+        let v = serde_json::to_value(&d).unwrap();
+        assert_eq!(v["active_alerts"], 5);
+    }
+
+    /// 趋势固定 7 天,空数据也要补零(否则前端折线断裂)
+    #[test]
+    fn daily_trend_is_seven_points() {
+        let points: Vec<DailyTrendPoint> = (0..7)
+            .map(|i| DailyTrendPoint {
+                day: format!("2026-09-{:02}", i + 1),
+                completed_orders: 0,
+                settled_cents: 0,
+            })
+            .collect();
+        assert_eq!(points.len(), 7);
+        let v = serde_json::to_value(points).unwrap();
+        assert_eq!(v.as_array().unwrap().len(), 7);
     }
 }

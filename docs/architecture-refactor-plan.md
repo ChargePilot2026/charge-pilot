@@ -708,13 +708,13 @@ P4 改 `common-redis` 影响全部 5 个服务的消费者，**不能只跑 bill
 | **P4** | ✅ | D3 / D4③b / D4②裁剪水位 / D5 / D6 / D15 / D17 + migration 接管（`migrate-baseline` 工具、5 个 Dockerfile 补 `COPY migrations`、compose 挂载 + 独立 migrate job） |
 | **P6** | ✅ | `docs/api-change-list.md`；P2 的 gateway 类型化未改变任何字段名，§3 仍成立 |
 
-**当前闸口**：V1 `cargo check --workspace --all-targets` **零 error**；V2 `cargo test --workspace` **203 passed / 0 failed**。
+**当前闸口**：V1 `cargo check --workspace --all-targets` **零 error**；V2 `cargo test --workspace` **205 passed / 0 failed**。
 
 ### 未完成
 
 | 阶段 | 原因 |
 |---|---|
-| **P2** `api-contracts` 重写 | **进行中**。① gateway 已归零（`ApiEnvelope<Value>` 11→0、`json!` 18→0）② **E5 路径单一真源完成**：`api-contracts::paths` 79→177 条，admin/user/billing 的 `api_types::paths` 131 条定义全部改为再导出/别名（**零调用方改动**），并加 4 个防回潮测试。**user/api.rs 归零**(Value 13→1)· user 余 35 · **admin 117→79** 待做;`withdraw_*` 死代码已删(D3 闭环) |
+| **P2** `api-contracts` 重写 | **进行中**。① gateway 已归零（`ApiEnvelope<Value>` 11→0、`json!` 18→0）② **E5 路径单一真源完成**：`api-contracts::paths` 79→177 条，admin/user/billing 的 `api_types::paths` 131 条定义全部改为再导出/别名（**零调用方改动**），并加 4 个防回潮测试。**user/api.rs 归零**(Value 13→1)· user 余 35 · **admin 117→77** 待做;`withdraw_*` 死代码已删(D3 闭环) |
 | **P3** 逐服务迁移 | 未启动。5 个服务仍是扁平的 handler 模块；`AppState.db` 298 处引用未收敛 |
 | **P5** 全局收口 | 依赖 P2/P3。lint 仍为 `allow`，未转 `deny` |
 | **D13** Argon2 `spawn_blocking` | 属 P3-admin 范围，随之顺延 |

@@ -3,11 +3,10 @@
 use crate::AppState;
 use axum::{extract::State, Json};
 use common_error::AppResult;
-use serde_json::{json, Value};
 use sqlx::Row;
 use std::collections::HashMap;
 
-pub async fn metrics(State(st): State<AppState>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn metrics(State(st): State<AppState>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::admin::UserChargeMetrics>>> {
     let today = chrono::Utc::now().date_naive();
     let today_start = today.and_hms_opt(0, 0, 0).expect("midnight");
     let tomorrow_start = (today + chrono::Duration::days(1)).and_hms_opt(0, 0, 0).expect("midnight");
@@ -35,23 +34,24 @@ pub async fn metrics(State(st): State<AppState>) -> AppResult<Json<common_error:
             (row.try_get::<i64, _>("completed_orders")?, row.try_get::<i64, _>("settled_cents")?),
         );
     }
+    // 固定 7 天:无数据的日期也要补零,否则后台折线断裂
     let mut trend = Vec::with_capacity(7);
     for offset in 0..7 {
         let day = today - chrono::Duration::days(6 - offset);
         let (completed_orders, settled_cents) = by_day.get(&day).copied().unwrap_or_default();
-        trend.push(json!({
-            "day":day.to_string(),
-            "completed_orders":completed_orders.max(0) as u64,
-            "settled_cents":settled_cents,
-        }));
+        trend.push(api_contracts::admin::DailyTrendPoint {
+            day: day.to_string(),
+            completed_orders: completed_orders.max(0) as u64,
+            settled_cents,
+        });
     }
-    let data = json!({
-        "charging_orders":charging_orders.max(0) as u64,
-        "today_order_users":today_order_users.max(0) as u64,
-        "today_completed_orders":today_summary.try_get::<i64,_>("completed_orders")?.max(0) as u64,
-        "today_settled_cents":today_summary.try_get::<i64,_>("settled_cents")?,
-        "daily_trend":trend,
-        "updated_at":chrono::Utc::now().to_rfc3339(),
-    });
+    let data = api_contracts::admin::UserChargeMetrics {
+        charging_orders: charging_orders.max(0) as u64,
+        today_order_users: today_order_users.max(0) as u64,
+        today_completed_orders: today_summary.try_get::<i64,_>("completed_orders")?.max(0) as u64,
+        today_settled_cents: today_summary.try_get::<i64,_>("settled_cents")?,
+        daily_trend: trend,
+        updated_at: chrono::Utc::now().to_rfc3339(),
+    };
     Ok(Json(common_error::ApiEnvelope::ok(data, common_error::current_request_id())))
 }

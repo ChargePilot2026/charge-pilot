@@ -97,15 +97,20 @@ pub async fn delete(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<
     Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::DeletedResponse::new(), common_error::current_request_id())))
 }
 
-pub async fn permissions(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn permissions(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::ListResponse<api_contracts::admin::Permission>>>> {
     let rows = sqlx::query("SELECT id, code, name, module, description FROM permission ORDER BY module, id")
         .fetch_all(st.db.pool()).await?;
-    let items: Vec<Value> = rows.iter().map(|r| -> AppResult<Value> { Ok(json!({
-        "id": sqlx::Row::try_get::<u64, _>(r, "id")?,
-        "code": sqlx::Row::try_get::<String, _>(r, "code")?,
-        "name": sqlx::Row::try_get::<String, _>(r, "name")?,
-        "module": sqlx::Row::try_get::<String, _>(r, "module")?,
-        "description": sqlx::Row::try_get::<Option<String>, _>(r, "description")?,
-    })) }).collect::<AppResult<Vec<_>>>()?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"items": items}), common_error::current_request_id())))
+    let items = rows.iter().map(|r| -> AppResult<api_contracts::admin::Permission> {
+        Ok(api_contracts::admin::Permission {
+            id: sqlx::Row::try_get::<u64, _>(r, "id")?,
+            code: sqlx::Row::try_get::<String, _>(r, "code")?,
+            name: sqlx::Row::try_get::<String, _>(r, "name")?,
+            module: sqlx::Row::try_get::<String, _>(r, "module")?,
+            description: sqlx::Row::try_get::<Option<String>, _>(r, "description")?,
+        })
+    }).collect::<AppResult<Vec<_>>>()?;
+    Ok(Json(common_error::ApiEnvelope::ok(
+        api_contracts::common::ListResponse::new(items),
+        common_error::current_request_id(),
+    )))
 }
