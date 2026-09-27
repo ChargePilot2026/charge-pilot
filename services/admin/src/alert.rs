@@ -31,12 +31,12 @@ pub async fn list(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json
     )))
 }
 
-pub async fn ack(State(st): State<AppState>, c: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn ack(State(st): State<AppState>, c: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::AckFlag>>> {
     crate::auth::require_permission(&st,&c,"alert.ack").await?;
     let n = sqlx::query("UPDATE alert_event SET status = 'acknowledged', acked_by = ?, acked_at = NOW(3) WHERE id = ? AND status = 'active'")
         .bind(c.admin_user_id).bind(id).execute(st.db.pool()).await?;
     if n.rows_affected() == 0 { return Err(AppError::Conflict("not active".into())); }
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"acked": true}), common_error::current_request_id())))
+    Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::AckFlag::new(true), common_error::current_request_id())))
 }
 
 pub async fn rules_list(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::ListResponse<api_contracts::admin::AlertRule>>>> {
@@ -82,16 +82,16 @@ pub async fn rules_create(State(st): State<AppState>, _c: ActiveAdmin, Json(req)
     Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::CreatedResponse { id: id }, common_error::current_request_id())))
 }
 
-pub async fn rules_get(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn rules_get(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::admin::AlertRuleDetail>>> {
     let r: Option<(u64, String, String, String, String, serde_json::Value, u32, String, i8)> = sqlx::query_as(
         "SELECT id, name, device_id_pattern, metric, op, threshold, window_seconds, severity, enabled FROM alert_rule WHERE id = ? AND deleted_at IS NULL"
     ).bind(id).fetch_optional(st.db.pool()).await?;
     let r = r.ok_or_else(|| AppError::NotFound("rule".into()))?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({
-        "id": r.0, "name": r.1, "device_id_pattern": r.2,
-        "metric": r.3, "op": r.4, "threshold": r.5,
-        "window_seconds": r.6, "severity": r.7, "enabled": r.8 != 0,
-    }), common_error::current_request_id())))
+    let detail = api_contracts::admin::AlertRuleDetail {
+        id: r.0, name: r.1, device_id_pattern: r.2, metric: r.3, op: r.4,
+        threshold: r.5, window_seconds: r.6, severity: r.7, enabled: r.8 != 0,
+    };
+    Ok(Json(common_error::ApiEnvelope::ok(detail, common_error::current_request_id())))
 }
 
 #[derive(Debug, Deserialize)]

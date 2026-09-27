@@ -153,11 +153,12 @@ pub async fn alerts_active(State(st): State<AppState>, axum::extract::Query(q): 
     )))
 }
 
-pub async fn device_reboot(State(st): State<AppState>, Path(id): Path<String>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn device_reboot(State(st): State<AppState>, Path(id): Path<String>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::gateway_devices::NotImplementedResponse>>> {
     // 调 gateway 内部接口 — 类型化 client + 路径常量,禁止拼 URL
     let cli = crate::clients::ServiceClient::new(st.http.clone(), st.service_token.clone());
     let path = api_types::paths::INTERNAL_DEVICES_REBOOT.replace(":id", &id);
-    let v: Value = cli
+    // gateway 侧该端点是未接入的桩,响应类型即 NotImplementedResponse。
+    let v: api_contracts::gateway_devices::NotImplementedResponse = cli
         .post_typed(st.cfg.service_urls.gateway.as_deref(), &path, &serde_json::json!({}))
         .await?;
     Ok(Json(common_error::ApiEnvelope::ok(v, common_error::current_request_id())))

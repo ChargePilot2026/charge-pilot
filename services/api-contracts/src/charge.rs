@@ -1367,3 +1367,70 @@ mod refund_review_tests {
         assert!(v.get("status").is_none());
     }
 }
+
+/// 运营发券结果。admin 端点原样透传,故落契约而非留在 user 内部。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CouponGrantResult {
+    pub request_id: String,
+    pub coupon_id: u64,
+    pub coupon_grant_id: u64,
+    pub user_id: u64,
+    /// `granted` / 幂等重放沿用上次状态
+    pub status: String,
+    pub expired_at: String,
+}
+
+#[cfg(test)]
+mod coupon_grant_tests {
+    use super::*;
+
+    /// 回归护栏:coupon_id / coupon_grant_id 是**数字**,request_id 是字符串
+    #[test]
+    fn coupon_grant_result_id_kinds() {
+        let v = serde_json::to_value(CouponGrantResult {
+            request_id: "11111111-1111-1111-1111-111111111111".into(),
+            coupon_id: 3, coupon_grant_id: 900, user_id: 7,
+            status: "granted".into(), expired_at: "x".into(),
+        })
+        .unwrap();
+        assert!(v["coupon_id"].is_number());
+        assert_eq!(v["coupon_grant_id"], 900);
+        assert!(v["user_id"].is_number());
+        assert!(v["request_id"].is_string());
+    }
+}
+
+/// 反馈分页响应。
+///
+/// ⚠️ 刻意**不带** `permissions` —— 与 `common::PagedResponse` 键集合不同,
+/// 复用会凭空多出一个空数组。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PagedFeedback {
+    pub items: Vec<Feedback>,
+    pub total: i64,
+    pub page: u32,
+    pub page_size: u32,
+}
+
+/// 报修分页响应(同 `PagedFeedback`,不带 permissions)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PagedFault {
+    pub items: Vec<FaultReport>,
+    pub total: i64,
+    pub page: u32,
+    pub page_size: u32,
+}
+
+#[cfg(test)]
+mod casework_paging_tests {
+    use super::*;
+
+    /// 回归护栏:分页响应**不得**凭空多出 `permissions` 键
+    #[test]
+    fn paged_feedback_has_no_permissions_key() {
+        let v = serde_json::to_value(PagedFeedback { items: vec![], total: 0, page: 1, page_size: 20 }).unwrap();
+        assert!(v.get("permissions").is_none());
+        let f = serde_json::to_value(PagedFault { items: vec![], total: 0, page: 1, page_size: 20 }).unwrap();
+        assert!(f.get("permissions").is_none());
+    }
+}

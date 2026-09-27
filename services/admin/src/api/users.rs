@@ -46,7 +46,7 @@ pub async fn list(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json
     )))
 }
 
-pub async fn create(State(st): State<AppState>, _c: ActiveAdmin, Json(req): Json<UserCreateReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn create(State(st): State<AppState>, _c: ActiveAdmin, Json(req): Json<UserCreateReq>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::CreatedFlag>>> {
     crate::auth::require_permission(&st,&_c,"admin_user.create").await?;
     let hash = hash_password(&req.password)?;
     sqlx::query(
@@ -56,7 +56,7 @@ pub async fn create(State(st): State<AppState>, _c: ActiveAdmin, Json(req): Json
     .bind(&req.username).bind(req.display_name.as_deref()).bind(&hash)
     .bind(req.phone.as_deref()).bind(req.email.as_deref()).bind(req.role_id)
     .execute(st.db.pool()).await?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"created": true}), common_error::current_request_id())))
+    Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::CreatedFlag::new(), common_error::current_request_id())))
 }
 
 pub async fn get(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::admin::AdminUserDetail>>> {
@@ -127,7 +127,7 @@ pub async fn delete(State(st): State<AppState>, actor: ActiveAdmin, Path(id): Pa
 #[derive(Debug, Deserialize)]
 pub struct ResetPasswordReq { pub new_password: String }
 
-pub async fn reset_password(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>, Json(req): Json<ResetPasswordReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn reset_password(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>, Json(req): Json<ResetPasswordReq>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::ResetFlag>>> {
     crate::auth::require_permission(&st,&_c,"admin_user.reset_password").await?;
     let hash = hash_password(&req.new_password)?;
     let n = sqlx::query("UPDATE admin_user_role SET password_hash = ?, failed_login_count = 0 WHERE id = ? AND deleted_at IS NULL")
@@ -135,5 +135,5 @@ pub async fn reset_password(State(st): State<AppState>, _c: ActiveAdmin, Path(id
     if n.rows_affected() == 0 {
         return Err(AppError::NotFound("user".into()));
     }
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"reset": true}), common_error::current_request_id())))
+    Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::ResetFlag::new(), common_error::current_request_id())))
 }

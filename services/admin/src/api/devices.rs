@@ -49,18 +49,20 @@ impl DeviceQuery {
 }
 const FROM: &str=" FROM device_meta d LEFT JOIN station s ON s.id=d.station_id AND s.deleted_at IS NULL";
 const COLUMNS: &str="SELECT d.id,d.device_id,d.station_id,s.name AS station_name,s.code AS station_code,d.vendor_id,d.model,d.status,d.install_at";
-fn device(r: &sqlx::mysql::MySqlRow) -> AppResult<Value> {
-    Ok(json!({
-        "id":r.try_get::<u64,_>("id")?, "device_id":r.try_get::<String,_>("device_id")?,
-        "station_id":r.try_get::<Option<u64>,_>("station_id")?,
-        "station_name":r.try_get::<Option<String>,_>("station_name")?,
-        "station_code":r.try_get::<Option<String>,_>("station_code")?,
-        "vendor_id":r.try_get::<Option<u64>,_>("vendor_id")?, "model":r.try_get::<Option<String>,_>("model")?,
-        "status":r.try_get::<String,_>("status")?,
-        "install_at":r.try_get::<Option<chrono::DateTime<chrono::Utc>>,_>("install_at")?.map(|t|t.to_rfc3339()),
-    }))
+fn device(r: &sqlx::mysql::MySqlRow) -> AppResult<api_contracts::admin::DeviceRow> {
+    Ok(api_contracts::admin::DeviceRow {
+        id: r.try_get("id")?,
+        device_id: r.try_get("device_id")?,
+        station_id: r.try_get("station_id")?,
+        station_name: r.try_get("station_name")?,
+        station_code: r.try_get("station_code")?,
+        vendor_id: r.try_get("vendor_id")?,
+        model: r.try_get("model")?,
+        status: r.try_get("status")?,
+        install_at: r.try_get::<Option<chrono::DateTime<chrono::Utc>>,_>("install_at")?.map(|t|t.to_rfc3339()),
+    })
 }
-pub async fn list(State(st): State<AppState>, actor: ActiveAdmin, Query(q): Query<DeviceQuery>) -> AppResult<Json<ApiEnvelope<Value>>> {
+pub async fn list(State(st): State<AppState>, actor: ActiveAdmin, Query(q): Query<DeviceQuery>) -> AppResult<Json<ApiEnvelope<api_contracts::common::PagedResponse<api_contracts::admin::DeviceRow>>>> {
     let permissions=authorize(&st,&actor).await?;
     let (page,size)=q.validate()?;
     let mut tx=st.db.pool().begin().await?;
@@ -71,9 +73,9 @@ pub async fn list(State(st): State<AppState>, actor: ActiveAdmin, Query(q): Quer
     let rows=sql.build().fetch_all(&mut *tx).await?;
     let items=rows.iter().map(device).collect::<AppResult<Vec<_>>>()?;
     tx.commit().await?;
-    Ok(Json(ApiEnvelope::ok(json!({"items":items,"total":total,"page":page,"page_size":size,"permissions":permissions}),common_error::current_request_id())))
+    Ok(Json(ApiEnvelope::ok(api_contracts::common::PagedResponse{items,total,page,page_size:size,permissions},common_error::current_request_id())))
 }
-pub async fn get(State(st): State<AppState>, actor: ActiveAdmin, Path(id): Path<String>) -> AppResult<Json<ApiEnvelope<Value>>> {
+pub async fn get(State(st): State<AppState>, actor: ActiveAdmin, Path(id): Path<String>) -> AppResult<Json<ApiEnvelope<api_contracts::admin::DeviceRow>>> {
     authorize(&st,&actor).await?;
     let row=sqlx::query(&format!("{COLUMNS}{FROM} WHERE d.device_id=? AND d.deleted_at IS NULL"))
         .bind(id).fetch_optional(st.db.pool()).await?.ok_or_else(||AppError::NotFound("device".into()))?;

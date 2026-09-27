@@ -30,6 +30,18 @@ pub struct ProcessedResponse {
     pub already_processed: bool,
 }
 
+/// 单布尔确认。用于 `{"acked":true}` 这类"只回一个标志位"的确认型响应。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AckFlag {
+    pub acked: bool,
+}
+
+impl AckFlag {
+    pub fn new(acked: bool) -> Self {
+        Self { acked }
+    }
+}
+
 /// 派单结果(带受理人)。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DispatchedResponse {
@@ -151,6 +163,14 @@ mod tests {
         assert_eq!(serde_json::to_value(DeletedResponse::new()).unwrap()["deleted"], true);
     }
 
+    /// 回归护栏:字段名是 `acked` 不是 `ok`/`success`
+    #[test]
+    fn ack_flag_uses_acked_field() {
+        let v = serde_json::to_value(AckFlag::new(true)).unwrap();
+        assert_eq!(v["acked"], true);
+        assert!(v.get("ok").is_none());
+    }
+
     #[test]
     fn dispatched_keeps_assigned_to_as_string() {
         let v = serde_json::to_value(DispatchedResponse {
@@ -160,5 +180,54 @@ mod tests {
         })
         .unwrap();
         assert_eq!(v["assigned_to"], "7");
+    }
+}
+
+/// 单标志确认(键名不同于 `AckResponse`)。
+///
+/// 现有实现有两种并存的写法,按现状固化、**不强行统一**:
+/// - `{"created":true}` / `{"reset":true}` —— admin 用户与密码端点
+/// - `{"acked":true}` —— 告警确认端点
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreatedFlag {
+    pub created: bool,
+}
+
+impl CreatedFlag {
+    pub fn new() -> Self {
+        Self { created: true }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResetFlag {
+    pub reset: bool,
+}
+
+impl ResetFlag {
+    pub fn new() -> Self {
+        Self { reset: true }
+    }
+}
+
+#[cfg(test)]
+mod flag_tests {
+    use super::*;
+
+    /// 回归护栏:三种确认标志的键名各自独立,不可互换
+    #[test]
+    fn flag_field_names_are_distinct() {
+        let created = serde_json::to_value(CreatedFlag::new()).unwrap();
+        assert_eq!(created["created"], true);
+        assert!(created.get("reset").is_none());
+        assert!(created.get("ok").is_none());
+
+        let reset = serde_json::to_value(ResetFlag::new()).unwrap();
+        assert_eq!(reset["reset"], true);
+        assert!(reset.get("created").is_none());
+
+        let acked = serde_json::to_value(AckFlag::new(true)).unwrap();
+        assert_eq!(acked["acked"], true);
+        assert!(acked.get("created").is_none());
     }
 }

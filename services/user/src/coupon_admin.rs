@@ -37,15 +37,7 @@ pub struct CouponGrantRequest {
     pub user_id: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CouponGrantResult {
-    pub request_id: String,
-    pub coupon_id: u64,
-    pub coupon_grant_id: u64,
-    pub user_id: u64,
-    pub status: String,
-    pub expired_at: String,
-}
+pub use api_contracts::charge::CouponGrantResult;
 
 fn validate_coupon(req: &CouponCreate) -> AppResult<()> {
     let code = req.code.trim();

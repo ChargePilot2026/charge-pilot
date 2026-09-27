@@ -2,23 +2,7 @@
 
 use crate::AppState;
 
-/// 反馈分页响应(带 total/page/page_size,与只回 `items` 的列表不同)
-#[derive(serde::Serialize)]
-pub struct PagedFeedback {
-    pub items: Vec<api_contracts::charge::Feedback>,
-    pub total: i64,
-    pub page: u32,
-    pub page_size: u32,
-}
-
-/// 报修分页响应
-#[derive(serde::Serialize)]
-pub struct PagedFault {
-    pub items: Vec<api_contracts::charge::FaultReport>,
-    pub total: i64,
-    pub page: u32,
-    pub page_size: u32,
-}
+pub use api_contracts::charge::{PagedFault, PagedFeedback};
 use axum::{extract::{Path, Query, State}, Json};
 use common_error::{AppError, AppResult};
 use serde::Deserialize;

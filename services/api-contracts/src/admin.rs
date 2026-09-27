@@ -541,7 +541,9 @@ pub struct AlertRule {
     pub enabled: bool,
 }
 
-/// 告警规则详情(比列表多 3 个字段)。
+/// 告警规则详情(比列表多 `device_id_pattern` / `threshold` / `window_seconds`)。
+///
+/// ⚠️ `enabled` 是**boolean**(实现里 `i8 != 0` 转换),与列表项一致。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AlertRuleDetail {
     pub id: u64,
@@ -549,9 +551,12 @@ pub struct AlertRuleDetail {
     pub device_id_pattern: String,
     pub metric: String,
     pub op: String,
-    pub threshold: String,
+    /// ⚠️ `alert_rule.threshold` 是 **JSON 列**,故此处是原始 JSON 值而非字符串:
+    /// `between` 规则存的是数组,写成 `String` 会直接解码失败。
+    pub threshold: serde_json::Value,
     pub window_seconds: u32,
     pub severity: String,
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -633,8 +638,8 @@ mod alert_tests {
     fn alert_rule_detail_has_device_pattern() {
         let d = AlertRuleDetail {
             id: 1, name: "n".into(), device_id_pattern: "GW-*".into(),
-            metric: "power_w".into(), op: ">".into(), threshold: "3000".into(),
-            window_seconds: 60, severity: "warning".into(),
+            metric: "power_w".into(), op: ">".into(), threshold: serde_json::json!(3000),
+            window_seconds: 60, severity: "warning".into(), enabled: false,
         };
         let v = serde_json::to_value(&d).unwrap();
         assert_eq!(v["device_id_pattern"], "GW-*");
@@ -1218,6 +1223,38 @@ mod finance_admin_tests {
         assert!(replay.get("rejected").is_none());
     }
 
+    /// 回归护栏:告警规则详情的 `enabled` 是**布尔**不是数字,
+    /// 且不得缺省(前端按 `enabled` 决定复选框勾选)
+    #[test]
+    fn alert_rule_detail_enabled_is_bool_and_present() {
+        let v = serde_json::to_value(AlertRuleDetail {
+            id: 1, name: "过温".into(), device_id_pattern: "%".into(),
+            metric: "temp".into(), op: ">".into(),
+            threshold: serde_json::json!(80),
+            window_seconds: 60, severity: "high".into(), enabled: true,
+        })
+        .unwrap();
+        assert_eq!(v["enabled"], true);
+        assert!(v.get("enabled").is_some());
+        // threshold 是 JSON 列原样透出:数字是数字,`between` 的数组也不能被压成字符串
+        assert_eq!(v["threshold"], 80);
+
+    }
+
+    /// 回归护栏:`between` 规则的 threshold 是**数组**,不得退化成字符串
+    #[test]
+    fn alert_rule_detail_keeps_between_threshold_as_array() {
+        let v = serde_json::to_value(AlertRuleDetail {
+            id: 1, name: "n".into(), device_id_pattern: "*".into(),
+            metric: "power_w".into(), op: "between".into(),
+            threshold: serde_json::json!([100, 3000]),
+            window_seconds: 60, severity: "warning".into(), enabled: true,
+        })
+        .unwrap();
+        assert!(v["threshold"].is_array());
+        assert_eq!(v["threshold"][1], 3000);
+    }
+
     /// 回归护栏:重试回执的 `already_queued` 必须是布尔
     #[test]
     fn refund_retry_queued_is_bool() {
@@ -1228,5 +1265,150 @@ mod finance_admin_tests {
         .unwrap();
         assert!(v["queued"].is_boolean());
         assert!(v["already_queued"].is_boolean());
+    }
+}
+
+// ===== 白标配置 =====
+
+/// 白标配置对外视图(12 个字段,全部恒存在)。
+///
+/// 六个后台可改字段(admin_logo_url / service_wechat_id / icp_record_no /
+/// custom_domain / agreement_url / privacy_url)存在 `config_json` 里,
+/// 缺省时取到 `null` —— 故这六个声明为 `serde_json::Value` 而非 `Option`,
+/// 序列化恒为 `null`/值,键始终存在。`id` 与 `miniprogram_name` 来自同表独立列。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WhitelabelPublicConfig {
+    pub id: u64,
+    pub miniprogram_name: String,
+    pub miniprogram_logo_url: Option<String>,
+    pub admin_logo_url: serde_json::Value,
+    pub theme_color: Option<String>,
+    pub service_phone: Option<String>,
+    pub service_wechat_id: serde_json::Value,
+    pub icp_record_no: serde_json::Value,
+    pub custom_domain: serde_json::Value,
+    pub agreement_url: serde_json::Value,
+    pub privacy_url: serde_json::Value,
+    pub about_us: Option<String>,
+}
+
+impl WhitelabelPublicConfig {
+    /// 尚未配置任何一行时的默认视图(历史实现回 `{}`)。
+    pub fn unset() -> Self {
+        Self {
+            id: 0,
+            miniprogram_name: String::new(),
+            miniprogram_logo_url: None,
+            admin_logo_url: serde_json::Value::Null,
+            theme_color: None,
+            service_phone: None,
+            service_wechat_id: serde_json::Value::Null,
+            icp_record_no: serde_json::Value::Null,
+            custom_domain: serde_json::Value::Null,
+            agreement_url: serde_json::Value::Null,
+            privacy_url: serde_json::Value::Null,
+            about_us: None,
+        }
+    }
+}
+
+/// 白标保存结果。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WhitelabelSaved {
+    /// 恒为 1(配置行固定 id=1)
+    pub id: u64,
+    pub config: WhitelabelPublicConfig,
+}
+
+#[cfg(test)]
+mod whitelabel_tests {
+    use super::*;
+
+    /// 回归护栏:12 个键必须**全部存在**(含 null),前端按固定路径读
+    #[test]
+    fn whitelabel_config_keeps_all_twelve_keys() {
+        let v = serde_json::to_value(WhitelabelPublicConfig::unset()).unwrap();
+        assert_eq!(v.as_object().unwrap().len(), 12);
+        for key in [
+            "id", "miniprogram_name", "miniprogram_logo_url", "admin_logo_url",
+            "theme_color", "service_phone", "service_wechat_id", "icp_record_no",
+            "custom_domain", "agreement_url", "privacy_url", "about_us",
+        ] {
+            assert!(v.as_object().unwrap().contains_key(key), "缺键 {key}");
+        }
+    }
+
+    /// 回归护栏:保存结果是 `{"id":…,"config":{…}}` 两层
+    #[test]
+    fn whitelabel_saved_nests_config() {
+        let v = serde_json::to_value(WhitelabelSaved { id: 1, config: WhitelabelPublicConfig::unset() }).unwrap();
+        assert_eq!(v["id"], 1);
+        assert!(v["config"]["miniprogram_name"].is_string());
+    }
+}
+
+/// 会员卡记录(会员卡模板功能预留,仅展示既有记录)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MembershipCard {
+    pub id: u64,
+    pub user_id: u64,
+    pub card_type: String,
+    pub status: String,
+    pub price_cents: i64,
+    pub start_at: Option<String>,
+    pub end_at: Option<String>,
+}
+
+#[cfg(test)]
+mod membership_tests {
+    use super::*;
+
+    /// 回归护栏:列表项 `id` / `user_id` 是**数字**(与多数契约的字符串约定不同),
+    /// 改成字符串会破坏后台列表主键跳转
+    #[test]
+    fn membership_card_ids_are_numbers() {
+        let v = serde_json::to_value(MembershipCard {
+            id: 1, user_id: 7, card_type: "monthly".into(), status: "active".into(),
+            price_cents: 9900, start_at: None, end_at: None,
+        })
+        .unwrap();
+        assert!(v["id"].is_number());
+        assert!(v["user_id"].is_number());
+        assert!(v["start_at"].is_null());
+    }
+}
+
+/// admin 设备列表项 / 设备详情(两者字段集相同,故共用)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceRow {
+    pub id: u64,
+    pub device_id: String,
+    pub station_id: Option<u64>,
+    pub station_name: Option<String>,
+    pub station_code: Option<String>,
+    pub vendor_id: Option<u64>,
+    pub model: Option<String>,
+    pub status: String,
+    pub install_at: Option<String>,
+}
+
+#[cfg(test)]
+mod device_row_tests {
+    use super::*;
+
+    /// 回归护栏:站点信息是**内联的 name/code**(LEFT JOIN 出来的),
+    /// 且未关联站点时为 null,键不得缺省
+    #[test]
+    fn device_row_keeps_nullable_station_keys() {
+        let v = serde_json::to_value(DeviceRow {
+            id: 1, device_id: "GW-1".into(), station_id: None,
+            station_name: None, station_code: None, vendor_id: None,
+            model: None, status: "online".into(), install_at: None,
+        })
+        .unwrap();
+        for key in ["station_id", "station_name", "station_code", "install_at"] {
+            assert!(v.as_object().unwrap().contains_key(key), "缺键 {key}");
+        }
+        assert!(v["station_name"].is_null());
     }
 }

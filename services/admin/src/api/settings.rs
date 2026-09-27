@@ -43,7 +43,7 @@ pub struct ChargeRuleCreateReq {
     pub min_charge_cents: i64,
 }
 
-pub async fn charge_rule_create(State(st): State<AppState>, _c: ActiveAdmin, Json(req): Json<ChargeRuleCreateReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn charge_rule_create(State(st): State<AppState>, _c: ActiveAdmin, Json(req): Json<ChargeRuleCreateReq>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::CreatedResponse>>> {
     crate::auth::require_permission(&st,&_c,"pricing.rule.create").await?;
     let mut tx = st.db.pool().begin().await?;
     let result = sqlx::query(
@@ -67,7 +67,7 @@ pub async fn charge_rule_create(State(st): State<AppState>, _c: ActiveAdmin, Jso
         .await?;
     tx.commit().await?;
 
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"id": id}), common_error::current_request_id())))
+    Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::CreatedResponse { id }, common_error::current_request_id())))
 }
 
 // ===== 计费模板 =====
@@ -94,13 +94,13 @@ pub struct PricingTemplateCreateReq {
     pub default_pricing_rule_id: Option<u64>,
 }
 
-pub async fn pricing_template_create(State(st): State<AppState>, _c: ActiveAdmin, Json(req): Json<PricingTemplateCreateReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn pricing_template_create(State(st): State<AppState>, _c: ActiveAdmin, Json(req): Json<PricingTemplateCreateReq>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::CreatedResponse>>> {
     crate::auth::require_permission(&st,&_c,"pricing.template.create").await?;
     let result = sqlx::query("INSERT INTO pricing_template (code, name, default_pricing_rule_id) VALUES (?, ?, ?)")
         .bind(&req.code).bind(&req.name).bind(req.default_pricing_rule_id)
         .execute(st.db.pool()).await?;
     let id = result.last_insert_id();
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"id": id}), common_error::current_request_id())))
+    Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::CreatedResponse { id }, common_error::current_request_id())))
 }
 
 // ===== 分账模板 =====
@@ -128,13 +128,13 @@ pub struct SplitTemplateCreateReq {
     pub mode: String,
 }
 
-pub async fn split_template_create(State(st): State<AppState>, _c: ActiveAdmin, Json(req): Json<SplitTemplateCreateReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn split_template_create(State(st): State<AppState>, _c: ActiveAdmin, Json(req): Json<SplitTemplateCreateReq>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::CreatedResponse>>> {
     crate::auth::require_permission(&st,&_c,"finance.split_template.create").await?;
     let result = sqlx::query("INSERT INTO split_template (code, name, mode) VALUES (?, ?, ?)")
         .bind(&req.code).bind(&req.name).bind(&req.mode)
         .execute(st.db.pool()).await?;
     let id = result.last_insert_id();
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"id": id}), common_error::current_request_id())))
+    Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::CreatedResponse { id }, common_error::current_request_id())))
 }
 
 pub async fn split_parties(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::ListResponse<api_contracts::admin::SplitParty>>>> {
@@ -176,7 +176,8 @@ pub async fn split_party_create(State(st): State<AppState>, _c: ActiveAdmin, Pat
 }
 
 // ===== OTA 配置 =====
-pub async fn ota_get(State(_st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+/// 未接入的桩:永远返回 `Err`,成功响应体不存在,故类型写 `()`。
+pub async fn ota_get(State(_st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<()>>> {
     Err(AppError::ServiceUnavailable("OTA 配置存储尚未接入".into()))
 }
 
