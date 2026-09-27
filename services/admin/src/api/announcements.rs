@@ -7,22 +7,28 @@ use common_error::{AppError, AppResult};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-pub async fn list(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn list(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::ListResponse<api_contracts::admin::AnnouncementListItem>>>> {
     let rows = sqlx::query(
         "SELECT id, title, content, scope, priority, start_at, end_at, status, created_at
          FROM announcement WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 200"
     ).fetch_all(st.db.pool()).await?;
-    let items: Vec<Value> = rows.iter().map(|r| -> AppResult<Value> { Ok(json!({
-        "id": sqlx::Row::try_get::<u64, _>(r, "id")?,
-        "title": sqlx::Row::try_get::<String, _>(r, "title")?,
-        "content": sqlx::Row::try_get::<String, _>(r, "content")?,
-        "scope": sqlx::Row::try_get::<String, _>(r, "scope")?,
-        "priority": sqlx::Row::try_get::<u8, _>(r, "priority")?,
-        "start_at": sqlx::Row::try_get::<chrono::DateTime<chrono::Utc>, _>(r, "start_at")?.to_rfc3339(),
-        "end_at": sqlx::Row::try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(r, "end_at")?.map(|t| t.to_rfc3339()),
-        "status": sqlx::Row::try_get::<String, _>(r, "status")?,
-    })) }).collect::<AppResult<Vec<_>>>()?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"items": items}), common_error::current_request_id())))
+    let items = rows.iter().map(|r| -> AppResult<api_contracts::admin::AnnouncementListItem> {
+        Ok(api_contracts::admin::AnnouncementListItem {
+            id: sqlx::Row::try_get::<u64, _>(r, "id")?,
+            title: sqlx::Row::try_get::<String, _>(r, "title")?,
+            content: sqlx::Row::try_get::<String, _>(r, "content")?,
+            scope: sqlx::Row::try_get::<String, _>(r, "scope")?,
+            priority: sqlx::Row::try_get::<u8, _>(r, "priority")?,
+            start_at: sqlx::Row::try_get::<chrono::DateTime<chrono::Utc>, _>(r, "start_at")?.to_rfc3339(),
+            end_at: sqlx::Row::try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(r, "end_at")?
+                .map(|t| t.to_rfc3339()),
+            status: sqlx::Row::try_get::<String, _>(r, "status")?,
+        })
+    }).collect::<AppResult<Vec<_>>>()?;
+    Ok(Json(common_error::ApiEnvelope::ok(
+        api_contracts::common::ListResponse::new(items),
+        common_error::current_request_id(),
+    )))
 }
 
 #[derive(Debug, Deserialize)]

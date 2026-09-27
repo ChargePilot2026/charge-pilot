@@ -70,32 +70,33 @@ pub struct Station {
 
 // ===== 公告 =====
 
+/// 公告**列表**项。含生效时间段,不含 `created_at`(详情也不含)。
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AnnouncementDetail {
+pub struct AnnouncementListItem {
     pub id: u64,
     pub title: String,
     pub content: String,
+    pub scope: String,
     pub priority: u8,
-    pub status: String,
-    pub start_at: Option<String>,
+    pub start_at: String,
     pub end_at: Option<String>,
-    pub created_at: String,
+    pub status: String,
 }
 
 // ===== 客服配置 =====
 
+/// 客服配置**列表**项。比详情少 `working_hours_json`。
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CustomerServiceConfig {
+pub struct CustomerServiceListItem {
     pub id: u64,
     pub agent_wechat: String,
     pub agent_name: Option<String>,
-    pub path: String,
+    pub path: Option<String>,
+    pub priority: u32,
     pub enabled: bool,
-    pub priority: i32,
-    pub created_at: String,
 }
 
-pub type CustomerServiceList = ListResponse<CustomerServiceConfig>;
+pub type CustomerServiceList = ListResponse<CustomerServiceListItem>;
 
 // ===== 优惠券 =====
 
@@ -221,6 +222,31 @@ pub struct AdminUserDetail {
 mod detail_tests {
     use super::*;
 
+    /// 回归护栏:公告列表项有生效时间段,**没有** created_at
+    #[test]
+    fn announcement_list_item_has_window_not_created_at() {
+        let a = AnnouncementListItem {
+            id: 1, title: "t".into(), content: "c".into(), scope: "user".into(),
+            priority: 3, start_at: "2026-09-01T00:00:00Z".into(), end_at: None, status: "published".into(),
+        };
+        let v = serde_json::to_value(&a).unwrap();
+        assert!(v["start_at"].is_string());
+        assert!(v["end_at"].is_null());
+        assert!(v.get("created_at").is_none());
+    }
+
+    /// 客服列表项的 priority 是 u32(详情同为 u32),enabled 是 boolean
+    #[test]
+    fn customer_service_list_item_types() {
+        let c = CustomerServiceListItem {
+            id: 1, agent_wechat: "w".into(), agent_name: None, path: None,
+            priority: 0, enabled: true,
+        };
+        let v = serde_json::to_value(&c).unwrap();
+        assert!(v["enabled"].is_boolean());
+        assert!(v.get("working_hours_json").is_none(), "列表项不含工作时间");
+    }
+
     /// 回归护栏:detail 不得凭空多出列表里的字段
     /// (后台按字段存在与否渲染,多字段会被当成"后端有、页面没接")
     #[test]
@@ -280,5 +306,76 @@ mod detail_tests {
         };
         let v = serde_json::to_value(&d).unwrap();
         assert!(v["enabled"].is_boolean());
+    }
+}
+
+// ===== 计费与分账配置(D1 涉及的敏感面)=====
+
+/// 计费规则项。`time_of_use_json` 是分时电价表,结构可配置,保留动态 JSON。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChargeRule {
+    pub id: u64,
+    pub name: String,
+    pub mode: String,
+    pub service_fee_cents_per_kwh: i64,
+    pub service_fee_cents_per_min: i64,
+    pub min_charge_cents: i64,
+    /// 规则版本号(实现里读的是 u32)
+    pub version: u32,
+    pub status: String,
+}
+
+/// 计费模板
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PricingTemplate {
+    pub id: u64,
+    pub code: String,
+    pub name: String,
+}
+
+/// 分账模板。`mode` 决定分账池口径(mode_a 全额 / mode_b 服务费)——
+/// billing/src/api.rs 依赖它校验,不可改语义。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SplitTemplate {
+    pub id: u64,
+    pub code: String,
+    pub name: String,
+    pub mode: String,
+}
+
+/// 分账参与方。`ratio_bp` 是万分比。
+///
+/// ⚠️ D1:向已合计 10000 的模板追加正比例参与方,会使 billing 分账因
+/// 比例校验失败而停止。此结构是那个风险的载体,字段不可随意增删。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SplitParty {
+    pub id: u64,
+    pub party_code: String,
+    pub party_name: String,
+    /// 万分比
+    pub ratio_bp: u32,
+}
+
+#[cfg(test)]
+mod pricing_tests {
+    use super::*;
+
+    /// 回归护栏:分账参与方的比例单位是**万分比**
+    #[test]
+    fn ratio_is_basis_points() {
+        let p = SplitParty {
+            id: 1, party_code: "operator".into(), party_name: "运营商".into(), ratio_bp: 5000,
+        };
+        let v = serde_json::to_value(&p).unwrap();
+        assert_eq!(v["ratio_bp"], 5000, "比例单位是万分比,不是百分数");
+    }
+
+    /// 分账模板的 mode 决定分账池口径,billing 依赖,不可改成布尔
+    #[test]
+    fn split_template_keeps_mode_string() {
+        let t = SplitTemplate { id: 1, code: "ST".into(), name: "模板".into(), mode: "mode_b".into() };
+        let v = serde_json::to_value(&t).unwrap();
+        assert_eq!(v["mode"], "mode_b");
+        assert!(v["mode"].is_string());
     }
 }

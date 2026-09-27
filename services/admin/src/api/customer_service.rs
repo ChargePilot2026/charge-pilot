@@ -7,18 +7,23 @@ use common_error::{AppError, AppResult};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-pub async fn list(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn list(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::ListResponse<api_contracts::admin::CustomerServiceListItem>>>> {
     let rows = sqlx::query("SELECT id, agent_wechat, agent_name, path, priority, enabled FROM customer_service_config ORDER BY priority DESC, id ASC")
         .fetch_all(st.db.pool()).await?;
-    let items: Vec<Value> = rows.iter().map(|r| -> AppResult<Value> { Ok(json!({
-        "id": sqlx::Row::try_get::<u64, _>(r, "id")?,
-        "agent_wechat": sqlx::Row::try_get::<String, _>(r, "agent_wechat")?,
-        "agent_name": sqlx::Row::try_get::<Option<String>, _>(r, "agent_name")?,
-        "path": sqlx::Row::try_get::<Option<String>, _>(r, "path")?,
-        "priority": sqlx::Row::try_get::<u32, _>(r, "priority")?,
-        "enabled": sqlx::Row::try_get::<i8, _>(r, "enabled")? != 0,
-    })) }).collect::<AppResult<Vec<_>>>()?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"items": items}), common_error::current_request_id())))
+    let items = rows.iter().map(|r| -> AppResult<api_contracts::admin::CustomerServiceListItem> {
+        Ok(api_contracts::admin::CustomerServiceListItem {
+            id: sqlx::Row::try_get::<u64, _>(r, "id")?,
+            agent_wechat: sqlx::Row::try_get::<String, _>(r, "agent_wechat")?,
+            agent_name: sqlx::Row::try_get::<Option<String>, _>(r, "agent_name")?,
+            path: sqlx::Row::try_get::<Option<String>, _>(r, "path")?,
+            priority: sqlx::Row::try_get::<u32, _>(r, "priority")?,
+            enabled: sqlx::Row::try_get::<i8, _>(r, "enabled")? != 0,
+        })
+    }).collect::<AppResult<Vec<_>>>()?;
+    Ok(Json(common_error::ApiEnvelope::ok(
+        api_contracts::common::ListResponse::new(items),
+        common_error::current_request_id(),
+    )))
 }
 
 #[derive(Debug, Deserialize)]

@@ -11,20 +11,25 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 // ===== 计费规则 =====
-pub async fn charge_rules(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn charge_rules(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::ListResponse<api_contracts::admin::ChargeRule>>>> {
     let rows = sqlx::query("SELECT id, name, mode, service_fee_cents_per_kwh, service_fee_cents_per_min, min_charge_cents, version, status FROM pricing_rule WHERE deleted_at IS NULL")
         .fetch_all(st.db.pool()).await?;
-    let items: Vec<Value> = rows.iter().map(|r| -> AppResult<Value> { Ok(json!({
-        "id": sqlx::Row::try_get::<u64, _>(r, "id")?,
-        "name": sqlx::Row::try_get::<String, _>(r, "name")?,
-        "mode": sqlx::Row::try_get::<String, _>(r, "mode")?,
-        "service_fee_cents_per_kwh": sqlx::Row::try_get::<i64, _>(r, "service_fee_cents_per_kwh")?,
-        "service_fee_cents_per_min": sqlx::Row::try_get::<i64, _>(r, "service_fee_cents_per_min")?,
-        "min_charge_cents": sqlx::Row::try_get::<i64, _>(r, "min_charge_cents")?,
-        "version": sqlx::Row::try_get::<u32, _>(r, "version")?,
-        "status": sqlx::Row::try_get::<String, _>(r, "status")?,
-    })) }).collect::<AppResult<Vec<_>>>()?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"items": items}), common_error::current_request_id())))
+        let items = rows.iter().map(|r| -> AppResult<api_contracts::admin::ChargeRule> {
+        Ok(api_contracts::admin::ChargeRule {
+            id: sqlx::Row::try_get::<u64, _>(r, "id")?,
+            name: sqlx::Row::try_get::<String, _>(r, "name")?,
+            mode: sqlx::Row::try_get::<String, _>(r, "mode")?,
+            service_fee_cents_per_kwh: sqlx::Row::try_get::<i64, _>(r, "service_fee_cents_per_kwh")?,
+            service_fee_cents_per_min: sqlx::Row::try_get::<i64, _>(r, "service_fee_cents_per_min")?,
+            min_charge_cents: sqlx::Row::try_get::<i64, _>(r, "min_charge_cents")?,
+            version: sqlx::Row::try_get::<u32, _>(r, "version")?,
+            status: sqlx::Row::try_get::<String, _>(r, "status")?,
+        })
+    }).collect::<AppResult<Vec<_>>>()?;
+    Ok(Json(common_error::ApiEnvelope::ok(
+        api_contracts::common::ListResponse::new(items),
+        common_error::current_request_id(),
+    )))
 }
 
 #[derive(Debug, Deserialize)]
@@ -66,15 +71,20 @@ pub async fn charge_rule_create(State(st): State<AppState>, _c: ActiveAdmin, Jso
 }
 
 // ===== 计费模板 =====
-pub async fn pricing_templates(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn pricing_templates(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::ListResponse<api_contracts::admin::PricingTemplate>>>> {
     let rows = sqlx::query("SELECT id, code, name, default_pricing_rule_id FROM pricing_template WHERE deleted_at IS NULL")
         .fetch_all(st.db.pool()).await?;
-    let items: Vec<Value> = rows.iter().map(|r| -> AppResult<Value> { Ok(json!({
-        "id": sqlx::Row::try_get::<u64, _>(r, "id")?,
-        "code": sqlx::Row::try_get::<String, _>(r, "code")?,
-        "name": sqlx::Row::try_get::<String, _>(r, "name")?,
-    })) }).collect::<AppResult<Vec<_>>>()?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"items": items}), common_error::current_request_id())))
+        let items = rows.iter().map(|r| -> AppResult<api_contracts::admin::PricingTemplate> {
+        Ok(api_contracts::admin::PricingTemplate {
+            id: sqlx::Row::try_get::<u64, _>(r, "id")?,
+            code: sqlx::Row::try_get::<String, _>(r, "code")?,
+            name: sqlx::Row::try_get::<String, _>(r, "name")?,
+        })
+    }).collect::<AppResult<Vec<_>>>()?;
+    Ok(Json(common_error::ApiEnvelope::ok(
+        api_contracts::common::ListResponse::new(items),
+        common_error::current_request_id(),
+    )))
 }
 
 #[derive(Debug, Deserialize)]
@@ -94,16 +104,21 @@ pub async fn pricing_template_create(State(st): State<AppState>, _c: ActiveAdmin
 }
 
 // ===== 分账模板 =====
-pub async fn split_templates(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn split_templates(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::ListResponse<api_contracts::admin::SplitTemplate>>>> {
     let rows = sqlx::query("SELECT id, code, name, mode, status FROM split_template WHERE deleted_at IS NULL")
         .fetch_all(st.db.pool()).await?;
-    let items: Vec<Value> = rows.iter().map(|r| -> AppResult<Value> { Ok(json!({
-        "id": sqlx::Row::try_get::<u64, _>(r, "id")?,
-        "code": sqlx::Row::try_get::<String, _>(r, "code")?,
-        "name": sqlx::Row::try_get::<String, _>(r, "name")?,
-        "mode": sqlx::Row::try_get::<String, _>(r, "mode")?,
-    })) }).collect::<AppResult<Vec<_>>>()?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"items": items}), common_error::current_request_id())))
+        let items = rows.iter().map(|r| -> AppResult<api_contracts::admin::SplitTemplate> {
+        Ok(api_contracts::admin::SplitTemplate {
+            id: sqlx::Row::try_get::<u64, _>(r, "id")?,
+            code: sqlx::Row::try_get::<String, _>(r, "code")?,
+            name: sqlx::Row::try_get::<String, _>(r, "name")?,
+            mode: sqlx::Row::try_get::<String, _>(r, "mode")?,
+        })
+    }).collect::<AppResult<Vec<_>>>()?;
+    Ok(Json(common_error::ApiEnvelope::ok(
+        api_contracts::common::ListResponse::new(items),
+        common_error::current_request_id(),
+    )))
 }
 
 #[derive(Debug, Deserialize)]
@@ -122,16 +137,21 @@ pub async fn split_template_create(State(st): State<AppState>, _c: ActiveAdmin, 
     Ok(Json(common_error::ApiEnvelope::ok(json!({"id": id}), common_error::current_request_id())))
 }
 
-pub async fn split_parties(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn split_parties(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::ListResponse<api_contracts::admin::SplitParty>>>> {
     let rows = sqlx::query("SELECT id, party_code, party_name, ratio_bp FROM split_party WHERE split_template_id = ?")
         .bind(id).fetch_all(st.db.pool()).await?;
-    let items: Vec<Value> = rows.iter().map(|r| -> AppResult<Value> { Ok(json!({
-        "id": sqlx::Row::try_get::<u64, _>(r, "id")?,
-        "party_code": sqlx::Row::try_get::<String, _>(r, "party_code")?,
-        "party_name": sqlx::Row::try_get::<String, _>(r, "party_name")?,
-        "ratio_bp": sqlx::Row::try_get::<u32, _>(r, "ratio_bp")?,
-    })) }).collect::<AppResult<Vec<_>>>()?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"items": items}), common_error::current_request_id())))
+        let items = rows.iter().map(|r| -> AppResult<api_contracts::admin::SplitParty> {
+        Ok(api_contracts::admin::SplitParty {
+            id: sqlx::Row::try_get::<u64, _>(r, "id")?,
+            party_code: sqlx::Row::try_get::<String, _>(r, "party_code")?,
+            party_name: sqlx::Row::try_get::<String, _>(r, "party_name")?,
+            ratio_bp: sqlx::Row::try_get::<u32, _>(r, "ratio_bp")?,
+        })
+    }).collect::<AppResult<Vec<_>>>()?;
+    Ok(Json(common_error::ApiEnvelope::ok(
+        api_contracts::common::ListResponse::new(items),
+        common_error::current_request_id(),
+    )))
 }
 
 #[derive(Debug, Deserialize)]
