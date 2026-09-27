@@ -25,7 +25,7 @@
 
 | 端点 | 变化 | 说明 |
 |---|---|---|
-| `POST /api/v1/internal/devices/:id/reboot` | 双层信封 → 单层信封 | **D7**。原返回 `{code:0,data:{code:0,data:…}}` |
+| `POST /api/v1/internal/devices/:id/reboot` | 双层信封 → 单层信封 | **D7**,已修。原返回 `{code:0,data:{code:0,data:…}}`,现为单层。**注意**:该端点本身仍是未接入的桩(恒 503),信封修复只是前置条件 |
 | `GET /api/v1/internal/invoices/:invoice_id/settle-detail` | 行为变化 | **D6**。原先恒报 `Table 'billing_db.invoice_request' doesn't exist`;现改经 user 服务内部端点。**404 仍返回 `found:false`** |
 | `GET /api/v1/internal/invoices/:invoice_id` | `json!` → 类型化 DTO | 新增 `api_contracts::InvoiceDetailResponse`。字段为**子集**(去掉了 `title`/`tax_no`/`email` 等),跨服务 DTO 只保留消费方需要的字段 |
 | `GET /api/v1/internal/invoices/:invoice_id` | **新增 4 个字段** | **D19**。补 `reviewed_by`(数字)/ `reviewed_at` / `reject_reason` / `invoice_url`。admin 端靠这三项判定发票双签的崩溃恢复,原先恒不成立。只增不改,向前兼容 |
@@ -101,7 +101,7 @@ settings.ota.update  membership.create  export.create
 | D9 | 可通过 `/../` 读取静态目录**外**任意文件 | 拒绝 `..`/绝对路径 + `canonicalize` 后包含性校验 |
 | D10 | 跨电价边界的 30 秒/超 10 小时订单返回 `Conflict` 而非全额退款 | 先校验计量、再判退款资格,归零不依赖计价成功 |
 | D12 | gateway TCP 监听失败仍启动且健康检查返回 `ok` | bind 失败即启动失败;监听退出即进程退出 |
-| D13 | Argon2 阻塞 Tokio 执行线程 | 见 `services/admin/src/auth.rs` 后续阶段 |
+| D13 | Argon2 阻塞 Tokio 执行线程(实测 20ms 定时器被推迟到 193ms) | 已修:`spawn_blocking` + 信号量背压,见 `services/admin/src/password.rs` |
 | D14 | 预付 1000 可开票 1000(实结 400 + 退款 600) | 按实结额,且审核时复核 |
 | D15 | 阻塞消费挡住同连接的发布/探活 | 阻塞读走独立底层连接 |
 | D16 | 跨分时电价订单**无法计费**(`ChargeEndMeter` 无分段读数) | **未修复**,见 §6 |
