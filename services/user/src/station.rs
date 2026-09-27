@@ -174,6 +174,10 @@ pub async fn my_fault_history(
         to_status: sqlx::Row::try_get::<Option<String>,_>(row,"to_status")?,
         note: sqlx::Row::try_get::<Option<String>,_>(row,"note")?,
         created_at: sqlx::Row::try_get::<chrono::DateTime<chrono::Utc>,_>(row,"created_at")?.to_rfc3339(),
+        // 用户视角不带 admin 专属字段
+        actor_id: None,
+        assigned_to: None,
+        user_visible: None,
     }) }).collect::<AppResult<Vec<_>>>()?;
     Ok(Json(common_error::ApiEnvelope::ok(
         api_contracts::common::PagedResponse { items, total, page, page_size, permissions: vec![] },

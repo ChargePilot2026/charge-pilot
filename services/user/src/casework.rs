@@ -194,7 +194,7 @@ async fn fault_history_rows(
     report_id: u64,
     q: &QueueQuery,
     user_id: Option<u64>,
-) -> AppResult<Value> {
+) -> AppResult<api_contracts::common::PagedResponse<api_contracts::charge::FaultHistoryEvent>> {
     let (page, page_size, offset) = paging(q)?;
     let report_exists: bool = if let Some(user_id) = user_id {
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM device_fault_report WHERE id=? AND user_id=? AND deleted_at IS NULL)")
@@ -224,28 +224,39 @@ async fn fault_history_rows(
         ).bind(report_id).bind(page_size).bind(offset).fetch_all(st.db.pool()).await?;
         (total, rows)
     };
-    let items = rows.iter().map(|row| -> AppResult<Value> {
-        let mut item = json!({
-            "event_id": row.try_get::<u64, _>("id")?.to_string(),
-            "event_type": row.try_get::<String, _>("event_type")?,
-            "from_status": row.try_get::<Option<String>, _>("from_status")?,
-            "to_status": row.try_get::<Option<String>, _>("to_status")?,
-            "note": row.try_get::<Option<String>, _>("note")?,
-            "created_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at")?.to_rfc3339(),
-        });
-        if user_id.is_none() {
-            item["actor_id"] = json!(row.try_get::<Option<u64>, _>("actor_id")?.map(|v| v.to_string()));
-            item["assigned_to"] = json!(row.try_get::<Option<u64>, _>("assigned_to")?.map(|v| v.to_string()));
-            item["user_visible"] = json!(row.try_get::<bool, _>("user_visible")?);
-        }
-        Ok(item)
+    let items = rows.iter().map(|row| -> AppResult<api_contracts::charge::FaultHistoryEvent> {
+        // admin 视角(user_id.is_none())多三个字段;用户视角不出现
+        let admin_view = user_id.is_none();
+        Ok(api_contracts::charge::FaultHistoryEvent {
+            event_id: row.try_get::<u64, _>("id")?.to_string(),
+            event_type: row.try_get::<String, _>("event_type")?,
+            from_status: row.try_get::<Option<String>, _>("from_status")?,
+            to_status: row.try_get::<Option<String>, _>("to_status")?,
+            note: row.try_get::<Option<String>, _>("note")?,
+            created_at: row.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at")?.to_rfc3339(),
+            actor_id: if admin_view {
+                row.try_get::<Option<u64>, _>("actor_id")?.map(|v| v.to_string())
+            } else {
+                None
+            },
+            assigned_to: if admin_view {
+                row.try_get::<Option<u64>, _>("assigned_to")?.map(|v| v.to_string())
+            } else {
+                None
+            },
+            user_visible: if admin_view {
+                Some(row.try_get::<bool, _>("user_visible")?)
+            } else {
+                None
+            },
+        })
     }).collect::<AppResult<Vec<_>>>()?;
-    Ok(json!({"items":items,"total":total,"page":page,"page_size":page_size}))
+    Ok(api_contracts::common::PagedResponse { items, total, page, page_size, permissions: vec![] })
 }
 
 pub async fn fault_history(
     State(st): State<AppState>, Path(id): Path<String>, Query(q): Query<QueueQuery>,
-) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::PagedResponse<api_contracts::charge::FaultHistoryEvent>>>> {
     let report_id = id.parse::<u64>().map_err(|_| AppError::BadRequest("报修编号无效".into()))?;
     let result = fault_history_rows(&st, report_id, &q, None).await?;
     Ok(Json(common_error::ApiEnvelope::ok(result, common_error::current_request_id())))

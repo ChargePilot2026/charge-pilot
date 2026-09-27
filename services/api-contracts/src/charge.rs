@@ -507,15 +507,10 @@ pub struct MyFaultReport {
 }
 
 /// 用户看到的报修流转事件。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MyFaultEvent {
-    pub event_id: String,
-    pub event_type: String,
-    pub from_status: Option<String>,
-    pub to_status: Option<String>,
-    pub note: Option<String>,
-    pub created_at: String,
-}
+///
+/// 与 [`FaultHistoryEvent`] **同义**——差别只在序列化时后三个 admin 专属字段
+/// 不出现。保留此别名以便调用方按"用户视角"命名,避免误传 admin 字段。
+pub type MyFaultEvent = FaultHistoryEvent;
 
 #[cfg(test)]
 mod my_fault_tests {
@@ -810,7 +805,11 @@ pub struct FaultReport {
     pub updated_at: String,
 }
 
-/// 报修状态流转事件。
+/// 报修状态流转事件(admin 与 user 共用)。
+///
+/// admin 视角多 3 个字段(`actor_id` / `assigned_to` / `user_visible`),
+/// user 视角不带——实现里就是 `if user_id.is_none()` 条件下才追加这三个键。
+/// 这里用 `Option` + `skip_serializing_if` 精确复刻:**用户侧不出现这些键**。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FaultHistoryEvent {
     pub event_id: String,
@@ -819,6 +818,15 @@ pub struct FaultHistoryEvent {
     pub to_status: Option<String>,
     pub note: Option<String>,
     pub created_at: String,
+    /// 仅 admin 视角
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actor_id: Option<String>,
+    /// 仅 admin 视角
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assigned_to: Option<String>,
+    /// 仅 admin 视角
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_visible: Option<bool>,
 }
 
 #[cfg(test)]
