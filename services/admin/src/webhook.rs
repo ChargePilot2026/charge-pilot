@@ -8,19 +8,29 @@ use common_redis::StreamEnvelope;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-pub async fn list(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn list(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::ListResponse<api_contracts::admin::WebhookSubscription>>>> {
     let rows = sqlx::query(
         "SELECT id, name, url, secret, event_types, enabled, created_at FROM webhook_subscription WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 200"
     ).fetch_all(st.db.pool()).await?;
-    let items: Vec<Value> = rows.iter().map(|r| -> AppResult<Value> { Ok(json!({
-        "id": sqlx::Row::try_get::<u64, _>(r, "id")?,
-        "name": sqlx::Row::try_get::<String, _>(r, "name")?,
-        "url": sqlx::Row::try_get::<String, _>(r, "url")?,
-        "secret_prefix": sqlx::Row::try_get::<String, _>(r, "secret")?.chars().take(8).collect::<String>(),
-        "event_types": sqlx::Row::try_get::<serde_json::Value, _>(r, "event_types")?,
-        "enabled": sqlx::Row::try_get::<i8, _>(r, "enabled")? != 0,
-    })) }).collect::<AppResult<Vec<_>>>()?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"items": items}), common_error::current_request_id())))
+        let items = rows.iter().map(|r| -> AppResult<api_contracts::admin::WebhookSubscription> {
+        Ok(api_contracts::admin::WebhookSubscription {
+            id: sqlx::Row::try_get::<u64, _>(r, "id")?,
+            name: sqlx::Row::try_get::<String, _>(r, "name")?,
+            url: sqlx::Row::try_get::<String, _>(r, "url")?,
+            // 完整密钥不外泄:只回前 8 个字符作为前缀
+            secret_prefix: sqlx::Row::try_get::<String, _>(r, "secret")?.chars().take(8).collect::<String>(),
+            // event_types 是 JSON 数组列,sqlx 的 try_get 不支持 Vec<String> 直线解码
+            event_types: serde_json::from_value(
+                sqlx::Row::try_get::<serde_json::Value, _>(r, "event_types")?,
+            )
+            .map_err(|e| AppError::Internal(format!("webhook event_types 解析失败: {e}")))?,
+            enabled: sqlx::Row::try_get::<i8, _>(r, "enabled")? != 0,
+        })
+    }).collect::<AppResult<Vec<_>>>()?;
+    Ok(Json(common_error::ApiEnvelope::ok(
+        api_contracts::common::ListResponse::new(items),
+        common_error::current_request_id(),
+    )))
 }
 
 #[derive(Debug, Deserialize)]

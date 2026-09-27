@@ -640,3 +640,65 @@ mod alert_tests {
         assert_eq!(v["device_id_pattern"], "GW-*");
     }
 }
+
+// ===== Webhook 订阅 =====
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebhookSubscription {
+    pub id: u64,
+    pub name: String,
+    pub url: String,
+    /// 密钥前缀(完整密钥只在创建时返回一次)
+    pub secret_prefix: String,
+    /// 订阅的事件类型
+    pub event_types: Vec<String>,
+    pub enabled: bool,
+}
+
+/// 创建订阅的响应。**`secret` 只在这里出现一次**,之后只能看到前缀。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebhookCreated {
+    pub id: u64,
+    pub secret: String,
+}
+
+/// 投递记录。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebhookDelivery {
+    pub id: u64,
+    pub event_type: String,
+    /// HTTP 响应码;网络失败时为空
+    pub response_status: Option<u16>,
+    pub attempt_count: u32,
+    pub duration_ms: Option<u32>,
+    pub delivered_at: Option<String>,
+}
+
+#[cfg(test)]
+mod webhook_tests {
+    use super::*;
+
+    /// 回归护栏:完整密钥**只在创建响应里出现**,列表/详情只有前缀。
+    /// 若把 secret 加进 WebhookSubscription,每次查询都会泄露。
+    #[test]
+    fn secret_only_returned_on_create() {
+        let sub = WebhookSubscription {
+            id: 1, name: "n".into(), url: "https://x".into(),
+            secret_prefix: "whsec_ab".into(), event_types: vec!["alert_recorded".into()], enabled: true,
+        };
+        let v = serde_json::to_value(&sub).unwrap();
+        assert!(v.get("secret").is_none(), "列表/详情不得返回完整密钥");
+        assert_eq!(v["secret_prefix"], "whsec_ab");
+    }
+
+    /// 投递未成功时 `response_status` 为空
+    #[test]
+    fn delivery_status_is_nullable() {
+        let d = WebhookDelivery {
+            id: 1, event_type: "alert_recorded".into(), response_status: None,
+            attempt_count: 3, duration_ms: None, delivered_at: None,
+        };
+        let v = serde_json::to_value(&d).unwrap();
+        assert!(v["response_status"].is_null());
+    }
+}
