@@ -8,13 +8,13 @@ fn conflict()->AppError {AppError::Conflict("退款状态或审核快照已变�
 
 #[derive(serde::Deserialize)]
 pub struct Approval {pub actor_id:u64,pub comment:String}
-pub async fn reject_receive(axum::extract::State(st):axum::extract::State<crate::AppState>,axum::extract::Path(no):axum::extract::Path<String>,axum::Json(req):axum::Json<Approval>)->AppResult<axum::Json<common_error::ApiEnvelope<Value>>>{
+pub async fn reject_receive(axum::extract::State(st):axum::extract::State<crate::AppState>,axum::extract::Path(no):axum::extract::Path<String>,axum::Json(req):axum::Json<Approval>)->AppResult<axum::Json<common_error::ApiEnvelope<api_contracts::charge::RefundRejected>>>{
     let mut tx=st.db.pool().begin().await?;
     let result=reject(&mut tx,&no,req.actor_id,&req.comment).await?;
     tx.commit().await?;
     Ok(axum::Json(common_error::ApiEnvelope::ok(result,common_error::current_request_id())))
 }
-async fn reject(tx:&mut sqlx::Transaction<'_,sqlx::MySql>,no:&str,actor:u64,reason:&str)->AppResult<Value>{
+async fn reject(tx:&mut sqlx::Transaction<'_,sqlx::MySql>,no:&str,actor:u64,reason:&str)->AppResult<api_contracts::charge::RefundRejected>{
     let reason=reason.trim();
     if actor==0 || reason.is_empty() || reason.chars().count()>255 || reason.chars().any(char::is_control){return Err(AppError::BadRequest("拒绝身份或原因无效".into()));}
     let ids:Vec<(u64,u64)>=sqlx::query_as("SELECT id,payment_order_id FROM refund_record WHERE refund_no=? AND deleted_at IS NULL").bind(no).fetch_all(&mut **tx).await?;
@@ -24,7 +24,7 @@ async fn reject(tx:&mut sqlx::Transaction<'_,sqlx::MySql>,no:&str,actor:u64,reas
     let row=sqlx::query("SELECT status,biz_type,biz_id,claimed_by FROM refund_record WHERE id=? AND deleted_at IS NULL FOR UPDATE").bind(rid).fetch_one(&mut **tx).await?;
     let prior:Option<(u64,String)>=sqlx::query_as("SELECT actor_id,reason FROM refund_rejection WHERE refund_record_id=?").bind(rid).fetch_optional(&mut **tx).await?;
     if let Some((who,original))=prior {
-        if who==actor && original==reason && row.try_get::<String,_>("status")?=="rejected"{return Ok(json!({"refund_no":no,"review_status":"rejected"}));}
+        if who==actor && original==reason && row.try_get::<String,_>("status")?=="rejected"{return Ok(api_contracts::charge::RefundRejected { refund_no: no.to_string(), review_status: "rejected".into() });}
         return Err(conflict());
     }
     if row.try_get::<String,_>("status")?!="pending" || row.try_get::<String,_>("biz_type")?!="charge" || row.try_get::<Option<u64>,_>("claimed_by")?.is_some(){return Err(conflict());}
@@ -35,16 +35,16 @@ async fn reject(tx:&mut sqlx::Transaction<'_,sqlx::MySql>,no:&str,actor:u64,reas
     sqlx::query("INSERT INTO refund_rejection(refund_record_id,actor_id,reason) VALUES (?,?,?)").bind(rid).bind(actor).bind(reason).execute(&mut **tx).await?;
     sqlx::query("UPDATE refund_record SET status='rejected',failure_reason=?,completed_at=UTC_TIMESTAMP(3) WHERE id=?").bind(reason).bind(rid).execute(&mut **tx).await?;
     crate::order_events::record(tx,row.try_get("biz_id")?,"refund_review_rejected",&format!("admin:{actor}"),reason).await?;
-    Ok(json!({"refund_no":no,"review_status":"rejected"}))
+    Ok(api_contracts::charge::RefundRejected { refund_no: no.to_string(), review_status: "rejected".into() })
 }
-pub async fn receive(axum::extract::State(st):axum::extract::State<crate::AppState>,axum::extract::Path(no):axum::extract::Path<String>,axum::Json(req):axum::Json<Approval>)->AppResult<axum::Json<common_error::ApiEnvelope<Value>>>{
+pub async fn receive(axum::extract::State(st):axum::extract::State<crate::AppState>,axum::extract::Path(no):axum::extract::Path<String>,axum::Json(req):axum::Json<Approval>)->AppResult<axum::Json<common_error::ApiEnvelope<api_contracts::charge::RefundReviewed>>>{
     let mut tx=st.db.pool().begin().await?;
     let result=approve(&mut tx,&no,req.actor_id,&req.comment).await?;
     tx.commit().await?;
     Ok(axum::Json(common_error::ApiEnvelope::ok(result,common_error::current_request_id())))
 }
 
-pub async fn approve(tx:&mut sqlx::Transaction<'_,sqlx::MySql>,no:&str,actor:u64,comment:&str)->AppResult<Value> {
+pub async fn approve(tx:&mut sqlx::Transaction<'_,sqlx::MySql>,no:&str,actor:u64,comment:&str)->AppResult<api_contracts::charge::RefundReviewed> {
     let comment=comment.trim();
     if actor==0 || comment.is_empty() || comment.chars().count()>255 || comment.chars().any(char::is_control) {return Err(AppError::BadRequest("审核身份或意见无效".into()));}
     let ids:Vec<(u64,u64)>=sqlx::query_as("SELECT id,payment_order_id FROM refund_record WHERE refund_no=? AND deleted_at IS NULL").bind(no).fetch_all(&mut **tx).await?;
@@ -67,7 +67,12 @@ pub async fn approve(tx:&mut sqlx::Transaction<'_,sqlx::MySql>,no:&str,actor:u64
         if actor==first || second==Some(actor) {
             let original=if actor==first{review.try_get::<String,_>("first_comment")?}else{review.try_get::<Option<String>,_>("second_comment")?.ok_or_else(conflict)?};
             if comment!=original {return Err(conflict());}
-            return Ok(json!({"refund_no":no,"review_status":if second.is_some(){"approved"}else{"awaiting_second"},"first_signer":first.to_string(),"second_signer":second.map(|v|v.to_string())}));
+            return Ok(api_contracts::charge::RefundReviewed {
+                refund_no: no.to_string(),
+                review_status: if second.is_some() { "approved" } else { "awaiting_second" }.into(),
+                first_signer: Some(first.to_string()),
+                second_signer: second.map(|v| v.to_string()),
+            });
         }
         if second.is_some(){return Err(conflict());}
     }
@@ -97,5 +102,10 @@ pub async fn approve(tx:&mut sqlx::Transaction<'_,sqlx::MySql>,no:&str,actor:u64
         None
     };
     crate::order_events::record(tx,cid,if first.is_some(){"refund_review_approved"}else{"refund_review_first_signed"},&format!("admin:{actor}"),comment).await?;
-    Ok(json!({"refund_no":no,"review_status":if first.is_some(){"approved"}else{"awaiting_second"},"first_signer":first.unwrap_or(actor).to_string(),"second_signer":first.map(|_|actor.to_string())}))
+    Ok(api_contracts::charge::RefundReviewed {
+        refund_no: no.to_string(),
+        review_status: if first.is_some() { "approved" } else { "awaiting_second" }.into(),
+        first_signer: Some(first.unwrap_or(actor).to_string()),
+        second_signer: first.map(|_| actor.to_string()),
+    })
 }

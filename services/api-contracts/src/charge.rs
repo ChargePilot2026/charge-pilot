@@ -714,3 +714,65 @@ mod my_coupon_tests {
         assert!(v.get("used_count").is_none());
     }
 }
+
+/// 登出结果。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoggedOut {
+    pub logged_out: bool,
+}
+
+#[cfg(test)]
+mod logout_tests {
+    use super::*;
+
+    #[test]
+    fn logged_out_is_true() {
+        let v = serde_json::to_value(LoggedOut { logged_out: true }).unwrap();
+        assert_eq!(v["logged_out"], true);
+    }
+}
+
+/// 退款审核结果(admin 调 user 内部端点)。
+///
+/// ⚠️ `review_status` 是**三态**,不是两态:
+/// `awaiting_second`(仅第一签)/ `approved` / `rejected`。
+/// 退款走**双签**,所以返回里带两个签署人。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RefundReviewed {
+    pub refund_no: String,
+    /// `awaiting_second` / `approved` / `rejected`
+    pub review_status: String,
+    /// 第一签署人(字符串)。`rejected` 分支不带此字段。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_signer: Option<String>,
+    /// 第二签署人;尚未完成双签时为空
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub second_signer: Option<String>,
+}
+
+/// 退款被拒结果(无签署人)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RefundRejected {
+    pub refund_no: String,
+    pub review_status: String,
+}
+
+#[cfg(test)]
+mod refund_review_tests {
+    use super::*;
+
+    /// 回归护栏:`review_status` 是三态(含 awaiting_second),签署人为字符串
+    #[test]
+    fn refund_reviewed_has_three_states() {
+        let v = serde_json::to_value(RefundReviewed {
+            refund_no: "REF-1".into(), review_status: "awaiting_second".into(),
+            first_signer: Some("7".into()), second_signer: None,
+        })
+        .unwrap();
+        assert_eq!(v["review_status"], "awaiting_second");
+        assert!(v["first_signer"].is_string());
+        // 未完成双签时 second_signer 不出现
+        assert!(v.get("second_signer").is_none());
+        assert!(v.get("status").is_none());
+    }
+}

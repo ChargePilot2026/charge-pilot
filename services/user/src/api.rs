@@ -771,12 +771,12 @@ pub async fn phone_bind(
 pub async fn phone_unbind(
     State(st): State<AppState>,
     claims: UserClaims,
-) -> AppResult<Json<crate::api_envelope::Envelope<serde_json::Value>>> {
+) -> AppResult<Json<crate::api_envelope::Envelope<api_contracts::charge::PhoneUnbindResponse>>> {
     sqlx::query("UPDATE `user` SET phone_enc = NULL, phone_hash = NULL WHERE id = ?")
         .bind(claims.user_id)
         .execute(st.db.pool())
         .await?;
-    Ok(Json(crate::api_envelope::Envelope::ok(json!({"unbound": true}), common_error::current_request_id())))
+    Ok(Json(crate::api_envelope::Envelope::ok(api_contracts::charge::PhoneUnbindResponse { unbound: true }, common_error::current_request_id())))
 }
 
 // ===================== 公告 / 客服 =====================

@@ -56,9 +56,9 @@ pub async fn refresh(State(st): State<AppState>, headers: HeaderMap) -> AppResul
     let refresh_token=rotate(&st.redis_cache,old,&stored).await?;
     Ok(Json(ApiEnvelope::ok(Tokens {token,refresh_token,jwt_expires_in:900},common_error::current_request_id())))
 }
-pub async fn logout(State(st): State<AppState>, headers: HeaderMap) -> AppResult<Json<ApiEnvelope<serde_json::Value>>> {
+pub async fn logout(State(st): State<AppState>, headers: HeaderMap) -> AppResult<Json<ApiEnvelope<api_contracts::charge::LoggedOut>> >{
     revoke(&st.redis_cache,bearer(&headers)?).await?;
-    Ok(Json(ApiEnvelope::ok(serde_json::json!({"logged_out":true}),common_error::current_request_id())))
+    Ok(Json(ApiEnvelope::ok(api_contracts::charge::LoggedOut { logged_out: true },common_error::current_request_id())))
 }
 
 fn session_key(sid: &str) -> String { format!("auth:user:session:{sid}") }
