@@ -489,6 +489,7 @@ D5 保留"允许丢失"选项，与 D4 把 `pricing_rule_changed` 列为可靠�
 
 
 | **D18** | **站点详情经纬度颠倒** | `admin/src/api/internal.rs::stations_detail` 的 SQL 列序为 `(…, longitude, latitude, …)`,即 `r.4=longitude` / `r.5=latitude`,但代码写成 `"longitude": r.5, "latitude": r.4` —— **两者互换**。同文件 `stations_nearby` 正确,仅此一处错;该端点被 user/gateway 消费 | **修**:改为按字段名显式赋值(`longitude: r.4, latitude: r.5`),并由 `StationForUser` 类型固定字段名,杜绝按列序错配 | **P2** | 测试 `coordinates_are_not_swapped` 断言北京站经度 116.397 > 纬度 39.908 |
+| **D19** | **发票双签的崩溃恢复分支恒不成立** | `admin/src/billing.rs::invoice_approve` / `invoice_reject` 判定"上游已由**同一管理员**处理过"时读的是 `detail.reviewed_by` / `detail.invoice_url` / `detail.reject_reason`,但 user 侧 `InvoiceDetailResponse` **从未携带这三个字段**(`invoice_request` 表里其实有列,只是没 select 出来)。于是 `detail.get("reviewed_by")` 恒为 `None`,恢复条件恒为假 → 上游已提交、admin 库事务回滚的重试一律被判 `Conflict("用户发票申请已处理")`,**审核员会被永久卡死** | **修**:按"跨服务契约两端同时接线"原则,把 `reviewed_by` / `reviewed_at` / `reject_reason` / `invoice_url` 四项补进 `InvoiceDetailResponse`,user 侧 `internal_detail` 一并 select 出来 | **P2** | 契约测试 `invoice_detail_carries_admin_idempotency_fields` 断言 `reviewed_by` 是**数字**(admin 端用 `as_u64` 判定);admin 侧恢复分支改为字段访问后由类型系统保证可编译 |
 
 ### migration 接管
 

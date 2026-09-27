@@ -291,6 +291,11 @@ pub async fn internal_detail(
             invoice_type: sqlx::Row::try_get::<String, _>(&row, "invoice_type")?,
             review_status: sqlx::Row::try_get::<String, _>(&row, "review_status")?,
             created_at: sqlx::Row::try_get::<chrono::DateTime<chrono::Utc>, _>(&row, "created_at")?.to_rfc3339(),
+            // admin 的发票双签/崩溃恢复要靠这三项判定幂等重放,缺一即恒不成立。
+            reviewed_by: sqlx::Row::try_get::<Option<u64>, _>(&row, "reviewed_by")?,
+            reviewed_at: sqlx::Row::try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(&row, "reviewed_at")?.map(|v| v.to_rfc3339()),
+            reject_reason: sqlx::Row::try_get::<Option<String>, _>(&row, "reject_reason")?,
+            invoice_url: sqlx::Row::try_get::<Option<String>, _>(&row, "invoice_url")?,
         },
         common_error::current_request_id(),
     )))

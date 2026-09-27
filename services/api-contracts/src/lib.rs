@@ -232,6 +232,11 @@ pub mod paths {
 // ===================== 跨服务 DTO =====================
 
 /// user 服务内部发票详情(billing 消费;`invoice_request` 归 user_db 所有)
+///
+/// ⚠️ `reviewed_by` / `invoice_url` / `reject_reason` 三项是 admin 双签/崩溃恢复
+/// 的判定依据:admin 端要靠它们判断"上一次是否已由**同一管理员**处理过",
+/// 从而把"上游已提交、admin 库事务回滚"的重试识别为幂等重放而非冲突。
+/// 这三项曾一度缺失,导致 admin 的恢复分支恒不成立(见方案 §七·五 D19)。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InvoiceDetailResponse {
     pub invoice_request_id: u64,
@@ -243,6 +248,35 @@ pub struct InvoiceDetailResponse {
     pub invoice_type: String,
     pub review_status: String,
     pub created_at: String,
+    /// 数字形式(与 `reviewed_by` 列同型)
+    pub reviewed_by: Option<u64>,
+    pub reviewed_at: Option<String>,
+    pub reject_reason: Option<String>,
+    pub invoice_url: Option<String>,
+}
+
+#[cfg(test)]
+mod invoice_detail_tests {
+    use super::*;
+
+    /// 回归护栏:admin 的发票幂等恢复依赖这三个键,键不得缺省,
+    /// 且 `reviewed_by` 是**数字**不是字符串(admin 端用 `as_u64` 判定)
+    #[test]
+    fn invoice_detail_carries_admin_idempotency_fields() {
+        let v = serde_json::to_value(InvoiceDetailResponse {
+            invoice_request_id: 1, invoice_no: "INV1".into(), user_id: 7,
+            biz_type: "charge".into(), biz_id: 9, total_cents: 100,
+            invoice_type: "normal".into(), review_status: "issued".into(),
+            created_at: "x".into(),
+            reviewed_by: Some(77), reviewed_at: Some("x".into()),
+            reject_reason: None, invoice_url: Some("https://x".into()),
+        })
+        .unwrap();
+        assert!(v["reviewed_by"].is_number());
+        assert_eq!(v["reviewed_by"], 77);
+        assert_eq!(v["invoice_url"], "https://x");
+        assert!(v.as_object().unwrap().contains_key("reject_reason"));
+    }
 }
 
 // ---- gateway <-> user/device ----

@@ -27,7 +27,9 @@
 |---|---|---|
 | `POST /api/v1/internal/devices/:id/reboot` | 双层信封 → 单层信封 | **D7**。原返回 `{code:0,data:{code:0,data:…}}` |
 | `GET /api/v1/internal/invoices/:invoice_id/settle-detail` | 行为变化 | **D6**。原先恒报 `Table 'billing_db.invoice_request' doesn't exist`;现改经 user 服务内部端点。**404 仍返回 `found:false`** |
-| `GET /api/v1/internal/invoices/:invoice_id` | `json!` → 类型化 DTO | 新增 `api_contracts::InvoiceDetailResponse`。字段为**子集**(去掉了 `title`/`tax_no`/`email`/`reject_reason`/`invoice_url` 等),跨服务 DTO 只保留消费方需要的字段 |
+| `GET /api/v1/internal/invoices/:invoice_id` | `json!` → 类型化 DTO | 新增 `api_contracts::InvoiceDetailResponse`。字段为**子集**(去掉了 `title`/`tax_no`/`email` 等),跨服务 DTO 只保留消费方需要的字段 |
+| `GET /api/v1/internal/invoices/:invoice_id` | **新增 4 个字段** | **D19**。补 `reviewed_by`(数字)/ `reviewed_at` / `reject_reason` / `invoice_url`。admin 端靠这三项判定发票双签的崩溃恢复,原先恒不成立。只增不改,向前兼容 |
+| `GET /api/v1/admin/finance/invoices` | 键顺序变化 | 17 个字段的**集合与取值完全一致**,仅序列化顺序按契约声明重排 |
 | 全部 admin 写接口 | 新增 **403 拒绝** | **D1**。此前任一登录态管理员可调用;现在按操作权限矩阵校验,无权限返回 403 且**数据库零变更** |
 | `POST /api/v1/public/auth/login` | 新增拒绝路径 | **D2**。`disabled` 账号此前可登录,现返回 403 |
 | `POST /api/v1/admin/auth/refresh` | 权限来源改变 | **D2**。原先复制旧 token 的角色/权限,现**重新查库**;停用/撤权后 refresh 返回 403 |
@@ -102,6 +104,8 @@ settings.ota.update  membership.create  export.create
 | D15 | 阻塞消费挡住同连接的发布/探活 | 阻塞读走独立底层连接 |
 | D16 | 跨分时电价订单**无法计费**(`ChargeEndMeter` 无分段读数) | **未修复**,见 §6 |
 | D17 | 限流键可能永不过期 | `INCR`+`EXPIRE` 合并为 Lua 原子操作 |
+| D18 | 站点详情经纬度颠倒 | 修正 |
+| D19 | 发票双签崩溃后重试一律报「用户发票申请已处理」,审核员被永久卡死 | 补齐 `InvoiceDetailResponse` 的审核人/发票链接/拒因字段,恢复分支生效 |
 
 ## 6. 遗留:需业务决策
 

@@ -947,3 +947,286 @@ mod station_tests {
         assert!(v["items"].is_array());
     }
 }
+
+// ===== 财务:退款审核(admin 侧聚合视图) =====
+
+/// admin 退款列表项的 `review` 视图。
+///
+/// ⚠️ 与 user 侧 `charge::RefundReviewInfo` **刻意不同**:
+/// 退款被拒且从未产生审核行时,admin 会把 `review` 补成
+/// `{"status":"rejected"}` —— **只有 status 一个键**,
+/// `first_signer` / `second_signer` / 两个 comment / `approved_at` 全部缺省。
+/// 若复用 user 侧类型(那些字段是必填),序列化会凭空多出 null 键。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AdminRefundReviewView {
+    /// `approved` / `awaiting_second` / `rejected`
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_signer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub second_signer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_comment: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub second_comment: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approved_at: Option<String>,
+}
+
+/// admin 侧退款列表项:user 服务的 `charge::AdminRefund` 加上
+/// admin 本地派生的操作可用性与重试任务。
+///
+/// 四个派生字段的判定口径(改动会直接影响后台按钮显隐):
+/// - `can_approve` : 有审核权限 且 status==pending 且 biz_type==charge
+///                   且 review.status != approved 且 review.first_signer != 当前管理员
+/// - `can_reject`  : 有审核权限 且 status==pending 且 biz_type==charge
+///                   且 review.status == awaiting_second
+/// - `can_retry`   : 有重试权限 且 refund_task 存在 且 last_error 非空
+///                   且 stage ∈ {queued, querying, reporting};无任务行时 false
+/// - `task`        : 无任务行时是 **null(不是缺键)**
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AdminRefundRow {
+    /// 字符串形式
+    pub id: String,
+    pub refund_no: String,
+    /// 字符串形式
+    pub user_id: String,
+    /// 字符串形式
+    pub payment_order_id: String,
+    pub biz_type: String,
+    pub refund_cents: i64,
+    pub status: String,
+    pub reason: Option<String>,
+    pub failure_reason: Option<String>,
+    pub created_at: String,
+    pub completed_at: Option<String>,
+    /// 未审核且未拒绝时为 null
+    pub review: Option<AdminRefundReviewView>,
+    pub can_approve: bool,
+    pub can_reject: bool,
+    pub can_retry: bool,
+    /// 无 `refund_task` 行时是 null
+    pub task: Option<AdminRefundTask>,
+}
+
+/// admin 本地 `refund_task` 的对外视图。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AdminRefundTask {
+    /// `queued` / `querying` / `reporting` / `manual_review` / …
+    pub stage: String,
+    pub attempts: u32,
+    pub last_error: Option<String>,
+    pub scheduled_at: String,
+}
+
+#[cfg(test)]
+mod refund_admin_view_tests {
+    use super::*;
+
+    /// 回归护栏:被拒且无审核行的退款,`review` 只有 `status` 一个键。
+    /// 误用 user 侧的 `RefundReviewInfo` 会凭空多出 5 个 null 键。
+    #[test]
+    fn rejected_review_view_has_status_only() {
+        let v = serde_json::to_value(AdminRefundReviewView {
+            status: "rejected".into(), first_signer: None, second_signer: None,
+            first_comment: None, second_comment: None, approved_at: None,
+        })
+        .unwrap();
+        assert_eq!(v.as_object().unwrap().len(), 1, "不得凭空多出 null 键");
+        assert_eq!(v["status"], "rejected");
+    }
+
+    /// 回归护栏:`task` 无任务行时是 null 而不是缺键 —— 前端按 `task === null` 判断
+    #[test]
+    fn refund_row_task_is_null_when_absent() {
+        let v = serde_json::to_value(AdminRefundRow {
+            id: "1".into(), refund_no: "REF1".into(), user_id: "7".into(),
+            payment_order_id: "9".into(), biz_type: "charge".into(),
+            refund_cents: 100, status: "pending".into(), reason: None,
+            failure_reason: None, created_at: "x".into(), completed_at: None,
+            review: None, can_approve: false, can_reject: false, can_retry: false,
+            task: None,
+        })
+        .unwrap();
+        assert!(v.as_object().unwrap().contains_key("task"), "task 键不得缺省");
+        assert!(v["task"].is_null());
+        // 派生字段必须全部存在,前端直接读
+        for key in ["can_approve", "can_reject", "can_retry"] {
+            assert!(v[key].is_boolean(), "{key} 必须是布尔");
+        }
+    }
+
+    /// 回归护栏:id / user_id / payment_order_id 都是**字符串**
+    #[test]
+    fn refund_row_ids_are_strings() {
+        let v = serde_json::to_value(AdminRefundTask {
+            stage: "queued".into(), attempts: 2, last_error: Some("boom".into()),
+            scheduled_at: "x".into(),
+        })
+        .unwrap();
+        assert!(v["attempts"].is_number());
+        assert!(v["last_error"].is_string());
+    }
+}
+
+// ===== 财务:重试 / 发票双签 / 钱包风控 =====
+
+/// 退款自动任务重试受理结果。
+///
+/// ⚠️ `already_queued` 为 true 时**不会**写审计日志、不重置 stage/次数/单号,
+/// 只是确认任务本就在队列里。改动前须确认这两条语义。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RefundRetryQueued {
+    pub queued: bool,
+    pub already_queued: bool,
+    pub refund_no: String,
+    /// 重试时该任务的 `refund_task.stage`
+    pub stage: String,
+}
+
+/// admin 发票审核队列列表项 = user 发票详情 + admin 本地 `invoice_review` 队列态。
+///
+/// 八个 `queue_*` / 双签人字段是 admin 侧 `invoice_review` 表的列,
+/// **ID 一律转成字符串**,时间转 RFC3339。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InvoiceReviewRow {
+    pub invoice_request_id: u64,
+    pub invoice_no: String,
+    pub user_id: u64,
+    pub biz_type: String,
+    pub biz_id: u64,
+    pub total_cents: i64,
+    pub invoice_type: String,
+    pub created_at: String,
+    /// user 侧 `invoice_request.review_status`
+    pub review_status: String,
+    /// admin 侧 `invoice_review.review_status`
+    pub queue_review_status: String,
+    /// 字符串
+    pub queue_reviewed_by: Option<String>,
+    pub queue_reject_reason: Option<String>,
+    /// 字符串
+    pub first_reviewer_id: Option<String>,
+    pub first_reviewed_at: Option<String>,
+    /// 字符串
+    pub second_reviewer_id: Option<String>,
+    pub second_reviewed_at: Option<String>,
+    pub invoice_url: Option<String>,
+}
+
+/// 发票审核回执。
+///
+/// 六条路径的键集合不同,故用可选字段复刻:
+/// - 首签落定      : {reviewed, review_status:"awaiting_second", first_reviewer_id}
+/// - 二次签发      : {reviewed, review_status:"issued", recovered:false}
+/// - 二次签发(恢复): {reviewed, review_status:"issued", recovered:true}
+/// - 首签幂等重放  : {reviewed, review_status:"awaiting_second", already_processed:true}
+/// - 二次幂等重放  : {reviewed, review_status:"issued", already_processed:true}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InvoiceReviewAck {
+    pub reviewed: bool,
+    /// `awaiting_second` / `issued`
+    pub review_status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_reviewer_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovered: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub already_processed: Option<bool>,
+}
+
+/// 发票拒签回执。
+///
+/// - 正常拒签 / 恢复拒签 : {reviewed, review_status:"rejected", rejected:true}
+/// - 幂等重放            : {reviewed, review_status:"rejected", already_processed:true}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InvoiceRejectAck {
+    pub reviewed: bool,
+    pub review_status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejected: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub already_processed: Option<bool>,
+}
+
+/// 钱包风控列表项 = user 侧 `charge::WalletRiskListItem`,但 `can_release`
+/// 被 admin 用**本地** `finance.wallet_risk.release` 权限再收紧一次。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AdminWalletRiskRow {
+    pub request_id: String,
+    /// 字符串
+    pub user_id: String,
+    pub amount_cents: i64,
+    pub reason: Option<String>,
+    pub created_at: String,
+    pub review: Option<crate::charge::WalletRiskReview>,
+    pub review_created_at: Option<String>,
+    pub release: Option<crate::charge::WalletRiskReleased>,
+    pub release_created_at: Option<String>,
+    pub freeze_status: Option<String>,
+    /// user 侧已算一遍,admin 再与本地解冻权限取**与**
+    pub can_release: bool,
+    pub freeze_linked: bool,
+}
+
+#[cfg(test)]
+mod finance_admin_tests {
+    use super::*;
+
+    /// 回归护栏:幂等重放标记是**缺键**而非 null —— 前端按 `!== undefined` 判断
+    #[test]
+    fn idempotent_replay_marks_are_absent_not_null() {
+        let v = serde_json::to_value(InvoiceReviewAck {
+            reviewed: true, review_status: "issued".into(),
+            first_reviewer_id: None, recovered: None, already_processed: Some(true),
+        })
+        .unwrap();
+        let obj = v.as_object().unwrap();
+        assert!(!obj.contains_key("recovered"), "recovered 不得凭空出现 null");
+        assert!(!obj.contains_key("first_reviewer_id"));
+        assert_eq!(v["already_processed"], true);
+    }
+
+    /// 回归护栏:首签落定必须带 `first_reviewer_id` 且是字符串
+    #[test]
+    fn first_approval_carries_reviewer_id_as_string() {
+        let v = serde_json::to_value(InvoiceReviewAck {
+            reviewed: true, review_status: "awaiting_second".into(),
+            first_reviewer_id: Some("77".into()), recovered: None, already_processed: None,
+        })
+        .unwrap();
+        assert_eq!(v["first_reviewer_id"], "77");
+    }
+
+    /// 回归护栏:拒签回执的 `rejected` 与 `already_processed` 互斥出现
+    #[test]
+    fn reject_ack_never_carries_both_marks() {
+        let recovered = serde_json::to_value(InvoiceRejectAck {
+            reviewed: true, review_status: "rejected".into(),
+            rejected: Some(true), already_processed: None,
+        })
+        .unwrap();
+        assert_eq!(recovered["rejected"], true);
+        assert!(recovered.get("already_processed").is_none());
+
+        let replay = serde_json::to_value(InvoiceRejectAck {
+            reviewed: true, review_status: "rejected".into(),
+            rejected: None, already_processed: Some(true),
+        })
+        .unwrap();
+        assert_eq!(replay["already_processed"], true);
+        assert!(replay.get("rejected").is_none());
+    }
+
+    /// 回归护栏:重试回执的 `already_queued` 必须是布尔
+    #[test]
+    fn refund_retry_queued_is_bool() {
+        let v = serde_json::to_value(RefundRetryQueued {
+            queued: true, already_queued: false, refund_no: "REF1".into(),
+            stage: "querying".into(),
+        })
+        .unwrap();
+        assert!(v["queued"].is_boolean());
+        assert!(v["already_queued"].is_boolean());
+    }
+}

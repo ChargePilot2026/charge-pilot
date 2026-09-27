@@ -43,60 +43,82 @@ pub struct WithdrawReviewReq {
     pub note: Option<String>,
 }
 
-pub async fn refunds(State(st): State<AppState>, c: ActiveAdmin, axum::extract::Query(q):axum::extract::Query<api_contracts::refunds::RefundQuery>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn refunds(State(st): State<AppState>, c: ActiveAdmin, axum::extract::Query(q):axum::extract::Query<api_contracts::refunds::RefundQuery>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::PagedResponse<api_contracts::admin::AdminRefundRow>>>> {
     let allowed:i64=sqlx::query_scalar("SELECT COUNT(*) FROM admin_user_role a JOIN role r ON r.id=a.role_id JOIN role_permission rp ON rp.role_id=r.id JOIN permission p ON p.id=rp.permission_id WHERE a.id=? AND a.status='active' AND a.deleted_at IS NULL AND r.deleted_at IS NULL AND p.code='finance.refund.read'").bind(c.admin_user_id).fetch_one(st.db.pool()).await?;
     if allowed==0{return Err(AppError::Forbidden("缺少 finance.refund.read 权限".into()));}
     if !q.valid(){return Err(AppError::BadRequest("退款筛选参数无效".into()));}
-    let mut v:Value=common_http::internal::ApiClient::new(st.http.clone(),st.service_token.clone()).get(st.cfg.service_urls.user.as_deref(),p::USER_INTERNAL_REFUND_LIST,&q).await?;
+    let mut page:api_contracts::common::PagedResponse<api_contracts::charge::AdminRefund>=common_http::internal::ApiClient::new(st.http.clone(),st.service_token.clone()).get(st.cfg.service_urls.user.as_deref(),p::USER_INTERNAL_REFUND_LIST,&q).await?;
     use sqlx::Row;
     let can_retry:i64=sqlx::query_scalar("SELECT COUNT(*) FROM admin_user_role a JOIN role_permission rp ON rp.role_id=a.role_id JOIN permission p ON p.id=rp.permission_id WHERE a.id=? AND p.code='finance.refund.retry'").bind(c.admin_user_id).fetch_one(st.db.pool()).await?;
-    let items=v.get_mut("items").and_then(Value::as_array_mut).ok_or_else(||AppError::ServiceUnavailable("退款列表响应异常".into()))?;
     let can_review:i64=sqlx::query_scalar("SELECT COUNT(*) FROM admin_user_role a JOIN role r ON r.id=a.role_id JOIN role_permission rp ON rp.role_id=r.id JOIN permission p ON p.id=rp.permission_id WHERE a.id=? AND a.status='active' AND a.deleted_at IS NULL AND r.deleted_at IS NULL AND r.code='customer_finance' AND p.code='order.refund.review'").bind(c.admin_user_id).fetch_one(st.db.pool()).await?;
-    for item in items {
-        item["can_approve"]=json!(can_review>0 && item["status"]=="pending" && item["biz_type"]=="charge" && item["review"]["status"]!="approved" && item["review"]["first_signer"]!=c.admin_user_id.to_string());
-        item["can_reject"]=json!(can_review>0 && item["status"]=="pending" && item["biz_type"]=="charge" && item["review"]["status"]=="awaiting_second");
-        if item["status"]=="rejected"{item["review"]["status"]=json!("rejected");}
-        let no=item.get("refund_no").and_then(Value::as_str).ok_or_else(||AppError::ServiceUnavailable("退款列表缺少单号".into()))?;
-        let task=sqlx::query("SELECT stage,attempts,last_error,scheduled_at FROM refund_task WHERE refund_no=?").bind(no).fetch_optional(st.db.pool()).await?;
-        item["can_retry"]=json!(false);
-        item["task"]=Value::Null;
-        if let Some(task)=task {
-            let stage:String=task.try_get("stage")?;
-            let error:Option<String>=task.try_get("last_error")?;
-            item["can_retry"]=json!(can_retry>0 && error.is_some() && ["queued","querying","reporting"].contains(&stage.as_str()));
-            item["task"]=json!({"stage":stage,"attempts":task.try_get::<u32,_>("attempts")?,"last_error":error,"scheduled_at":task.try_get::<chrono::NaiveDateTime,_>("scheduled_at")?.and_utc().to_rfc3339()});
-        }
+    let mut items=Vec::with_capacity(page.items.len());
+    for item in std::mem::take(&mut page.items) {
+        // 被拒且从未产生审核行时,review 是 null —— 原实现会在其上补出
+        // {"status":"rejected"}(serde_json 对 Null 索引赋值会自动建对象),
+        // 故这里显式构造,而不是让 Option 直接落 null。
+        let me=c.admin_user_id.to_string();
+        let review:Option<api_contracts::admin::AdminRefundReviewView>=match item.review.as_ref() {
+            Some(r)=>Some(api_contracts::admin::AdminRefundReviewView{
+                status:if item.status=="rejected"{"rejected".to_string()}else{r.status.clone()},
+                first_signer:Some(r.first_signer.clone()),second_signer:r.second_signer.clone(),
+                first_comment:Some(r.first_comment.clone()),second_comment:r.second_comment.clone(),
+                approved_at:r.approved_at.clone(),
+            }),
+            None=>if item.status=="rejected"{Some(api_contracts::admin::AdminRefundReviewView{status:"rejected".into(),first_signer:None,second_signer:None,first_comment:None,second_comment:None,approved_at:None})}else{None},
+        };
+        let review_status=review.as_ref().map(|r|r.status.as_str());
+        let first_signer=review.as_ref().and_then(|r|r.first_signer.as_deref());
+        let can_approve=can_review>0 && item.status=="pending" && item.biz_type=="charge" && review_status!=Some("approved") && first_signer!=Some(me.as_str());
+        let can_reject=can_review>0 && item.status=="pending" && item.biz_type=="charge" && review_status==Some("awaiting_second");
+        let task_row=sqlx::query("SELECT stage,attempts,last_error,scheduled_at FROM refund_task WHERE refund_no=?").bind(&item.refund_no).fetch_optional(st.db.pool()).await?;
+        let (can_retry, task)=match task_row {
+            Some(t)=>{
+                let stage:String=t.try_get("stage")?;
+                let error:Option<String>=t.try_get("last_error")?;
+                (can_retry>0 && error.is_some() && ["queued","querying","reporting"].contains(&stage.as_str()),
+                 Some(api_contracts::admin::AdminRefundTask{stage,attempts:t.try_get("attempts")?,last_error:error,scheduled_at:t.try_get::<chrono::NaiveDateTime,_>("scheduled_at")?.and_utc().to_rfc3339()}))
+            }
+            None=>(false,None),
+        };
+        items.push(api_contracts::admin::AdminRefundRow{
+         id:item.id,refund_no:item.refund_no,user_id:item.user_id,payment_order_id:item.payment_order_id,
+         biz_type:item.biz_type,refund_cents:item.refund_cents,status:item.status,reason:item.reason,
+         failure_reason:item.failure_reason,created_at:item.created_at,completed_at:item.completed_at,
+         review,can_approve,can_reject,can_retry,task,
+        });
     }
-    Ok(Json(common_error::ApiEnvelope::ok(v, common_error::current_request_id())))
+    let response=api_contracts::common::PagedResponse{items,total:page.total,page:page.page,page_size:page.page_size,permissions:page.permissions};
+    Ok(Json(common_error::ApiEnvelope::ok(response, common_error::current_request_id())))
 }
-
 #[derive(Deserialize)]
 pub struct RefundRetryReq { pub reason: String }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RefundApprovalReq { pub approve_comment:String }
-pub async fn refund_approve(State(st):State<AppState>,c:ActiveAdmin,Path(no):Path<String>,Json(req):Json<RefundApprovalReq>)->AppResult<Json<common_error::ApiEnvelope<Value>>>{
+pub async fn refund_approve(State(st):State<AppState>,c:ActiveAdmin,Path(no):Path<String>,Json(req):Json<RefundApprovalReq>)->AppResult<Json<common_error::ApiEnvelope<api_contracts::charge::RefundReviewed>>>{
     crate::auth::require_permission(&st,&c,"order.refund.review").await?;
-    review_decision(st,c,no,req,false).await
+    review_decision::<api_contracts::charge::RefundReviewed>(st,c,no,req,false).await
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RefundRejectReq {pub reason:String}
-pub async fn refund_create(State(st):State<AppState>,c:ActiveAdmin,Path(id):Path<u64>,Json(req):Json<api_contracts::refunds::ManualRefundRequest>)->AppResult<Json<common_error::ApiEnvelope<Value>>>{
+pub async fn refund_create(State(st):State<AppState>,c:ActiveAdmin,Path(id):Path<u64>,Json(req):Json<api_contracts::refunds::ManualRefundRequest>)->AppResult<Json<common_error::ApiEnvelope<api_contracts::charge::ManualRefundCreated>>>{
     crate::auth::require_permission(&st,&c,"order.refund.create").await?;
     let mut tx=st.db.pool().begin().await?;
     let grants:Vec<String>=sqlx::query_scalar("SELECT p.code FROM admin_user_role a JOIN role r ON r.id=a.role_id JOIN role_permission rp ON rp.role_id=r.id JOIN permission p ON p.id=rp.permission_id WHERE a.id=? AND a.status='active' AND a.deleted_at IS NULL AND r.deleted_at IS NULL AND r.code='customer_finance' AND p.code IN ('order.read','order.refund.create','order.refund.review') FOR SHARE").bind(c.admin_user_id).fetch_all(&mut *tx).await?;
     if grants.len()!=3{return Err(AppError::Forbidden("发起退款需客户财务角色及订单查看、退款申请、退款审核权限".into()));}
-    let result:Value=common_http::internal::ApiClient::new(st.http.clone(),st.service_token.clone()).post(st.cfg.service_urls.user.as_deref(),&p::USER_INTERNAL_ORDER_REFUND_CREATE.replace(":order_id",&id.to_string()),&json!({"actor_id":c.admin_user_id,"request":req})).await?;
+    let result:api_contracts::charge::ManualRefundCreated=common_http::internal::ApiClient::new(st.http.clone(),st.service_token.clone()).post(st.cfg.service_urls.user.as_deref(),&p::USER_INTERNAL_ORDER_REFUND_CREATE.replace(":order_id",&id.to_string()),&json!({"actor_id":c.admin_user_id,"request":req})).await?;
     sqlx::query("INSERT INTO audit_log(actor_id,module,action,target_type,target_id,after_json,created_month) VALUES (?,'finance','refund.create','charge_order',?,?,DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))").bind(c.admin_user_id).bind(id.to_string()).bind(json!({"request":req,"result":result})).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(Json(common_error::ApiEnvelope::ok(result,common_error::current_request_id())))
 }
-pub async fn refund_reject(State(st):State<AppState>,c:ActiveAdmin,Path(no):Path<String>,Json(req):Json<RefundRejectReq>)->AppResult<Json<common_error::ApiEnvelope<Value>>>{
+pub async fn refund_reject(State(st):State<AppState>,c:ActiveAdmin,Path(no):Path<String>,Json(req):Json<RefundRejectReq>)->AppResult<Json<common_error::ApiEnvelope<api_contracts::charge::RefundRejected>>>{
     crate::auth::require_permission(&st,&c,"order.refund.review").await?;
-    review_decision(st,c,no,RefundApprovalReq{approve_comment:req.reason},true).await
+    review_decision::<api_contracts::charge::RefundRejected>(st,c,no,RefundApprovalReq{approve_comment:req.reason},true).await
 }
-async fn review_decision(st:AppState,c:ActiveAdmin,no:String,req:RefundApprovalReq,reject:bool)->AppResult<Json<common_error::ApiEnvelope<Value>>>{
+/// 同意侧上游回 `RefundReviewed`(带签署人),拒绝侧回 `RefundRejected`(不带),
+/// 键集合本就不同,故用泛型承载而不是强行合并成一个类型。
+async fn review_decision<T:serde::de::DeserializeOwned+serde::Serialize>(st:AppState,c:ActiveAdmin,no:String,req:RefundApprovalReq,reject:bool)->AppResult<Json<common_error::ApiEnvelope<T>>>{
     if no.is_empty() || no.len()>64 || !no.bytes().all(|b|b.is_ascii_alphanumeric() || b"_-|*@".contains(&b)) || req.approve_comment.trim().is_empty() || req.approve_comment.chars().count()>255 || req.approve_comment.chars().any(char::is_control){return Err(AppError::BadRequest("退款单号或审核意见无效".into()));}
     let mut tx=st.db.pool().begin().await?;
     // Lock the actual account and grant rows until this approval has been sent.
@@ -106,19 +128,20 @@ async fn review_decision(st:AppState,c:ActiveAdmin,no:String,req:RefundApprovalR
     }
     authorize(&mut tx,c.admin_user_id).await?;
     let client=common_http::internal::ApiClient::new(st.http.clone(),st.service_token.clone());
-    let detail:Value=client.get(st.cfg.service_urls.user.as_deref(),&p::USER_INTERNAL_REFUND_DETAIL.replace(":refund_id",&no),&()).await?;
-    if let Some(first)=detail.get("first_signer").and_then(Value::as_str).filter(|_|!reject){
+    let detail:api_contracts::charge::AdminRefundDetail=client.get(st.cfg.service_urls.user.as_deref(),&p::USER_INTERNAL_REFUND_DETAIL.replace(":refund_id",&no),&()).await?;
+    // 拒绝分支不看首签人;同意分支必须重新校验首签人账号仍有效。
+    if let Some(first)=detail.first_signer.as_deref().filter(|_|!reject){
         let first=first.parse::<u64>().map_err(|_|AppError::ServiceUnavailable("审核身份响应无效".into()))?;
         authorize(&mut tx,first).await?;
     }
     let path=if reject{p::USER_INTERNAL_REFUND_REJECT}else{p::USER_INTERNAL_REFUND_APPROVE};
-    let result:Value=client.post(st.cfg.service_urls.user.as_deref(),&path.replace(":refund_id",&no),&json!({"actor_id":c.admin_user_id,"comment":req.approve_comment})).await?;
+    let result:T=client.post(st.cfg.service_urls.user.as_deref(),&path.replace(":refund_id",&no),&json!({"actor_id":c.admin_user_id,"comment":req.approve_comment})).await?;
     if reject{sqlx::query("UPDATE refund_task SET stage='manual_review',last_error='退款审核已拒绝' WHERE refund_no=? AND stage IN ('queued','querying','reporting')").bind(&no).execute(&mut *tx).await?;}
     sqlx::query("INSERT INTO audit_log(actor_id,module,action,target_type,target_id,after_json,created_month) VALUES (?,'finance',?,'refund_record',?,?,DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))").bind(c.admin_user_id).bind(if reject{"refund.reject"}else{"refund.approve"}).bind(&no).bind(json!({"comment":req.approve_comment,"result":result})).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(Json(common_error::ApiEnvelope::ok(result,common_error::current_request_id())))
 }
-pub async fn refund_retry(State(st): State<AppState>, c: ActiveAdmin, Path(no): Path<String>, Json(req):Json<RefundRetryReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn refund_retry(State(st): State<AppState>, c: ActiveAdmin, Path(no): Path<String>, Json(req):Json<RefundRetryReq>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::admin::RefundRetryQueued>>> {
     crate::auth::require_permission(&st,&c,"finance.refund.retry").await?;
     use sqlx::Row;
     let reason=req.reason.trim();
@@ -141,7 +164,7 @@ pub async fn refund_retry(State(st): State<AppState>, c: ActiveAdmin, Path(no): 
             .bind(c.admin_user_id).bind(&no).bind(json!({"reason":reason,"stage":stage})).execute(&mut *tx).await?;
     }
     tx.commit().await?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"queued":true,"already_queued":already_queued,"refund_no":no,"stage":stage}),common_error::current_request_id())))
+    Ok(Json(common_error::ApiEnvelope::ok(api_contracts::admin::RefundRetryQueued{queued:true,already_queued,refund_no:no,stage},common_error::current_request_id())))
 }
 
 async fn authorize_invoice_review(st: &AppState, actor: &ActiveAdmin) -> AppResult<()> {
@@ -161,7 +184,7 @@ async fn authorize_invoice_review(st: &AppState, actor: &ActiveAdmin) -> AppResu
     Ok(())
 }
 
-pub async fn invoices(State(st): State<AppState>, c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn invoices(State(st): State<AppState>, c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::ListResponse<api_contracts::admin::InvoiceReviewRow>>>> {
     authorize_invoice_review(&st, &c).await?;
     let rows = sqlx::query(
         "SELECT invoice_request_id,review_status,reviewed_by,reject_reason,
@@ -173,25 +196,36 @@ pub async fn invoices(State(st): State<AppState>, c: ActiveAdmin) -> AppResult<J
     for row in rows {
         let id: u64 = sqlx::Row::try_get(&row, "invoice_request_id")?;
         let path = p::USER_INTERNAL_INVOICE_DETAIL.replace(":invoice_id", &id.to_string());
-        let mut detail: Value = client.get(st.cfg.service_urls.user.as_deref(), &path, &()).await?;
-        detail["queue_review_status"] = json!(sqlx::Row::try_get::<String, _>(&row, "review_status")?);
-        detail["queue_reviewed_by"] = json!(sqlx::Row::try_get::<Option<u64>, _>(&row, "reviewed_by")?.map(|v| v.to_string()));
-        detail["queue_reject_reason"] = json!(sqlx::Row::try_get::<Option<String>, _>(&row, "reject_reason")?);
-        detail["first_reviewer_id"] = json!(sqlx::Row::try_get::<Option<u64>, _>(&row, "first_reviewer_id")?.map(|v| v.to_string()));
-        detail["first_reviewed_at"] = json!(sqlx::Row::try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(&row, "first_reviewed_at")?.map(|v| v.to_rfc3339()));
-        detail["second_reviewer_id"] = json!(sqlx::Row::try_get::<Option<u64>, _>(&row, "second_reviewer_id")?.map(|v| v.to_string()));
-        detail["second_reviewed_at"] = json!(sqlx::Row::try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(&row, "second_reviewed_at")?.map(|v| v.to_rfc3339()));
-        detail["invoice_url"] = json!(sqlx::Row::try_get::<Option<String>, _>(&row, "invoice_url")?);
-        items.push(detail);
+        let detail: api_contracts::InvoiceDetailResponse = client.get(st.cfg.service_urls.user.as_deref(), &path, &()).await?;
+        items.push(api_contracts::admin::InvoiceReviewRow {
+            invoice_request_id: detail.invoice_request_id,
+            invoice_no: detail.invoice_no,
+            user_id: detail.user_id,
+            biz_type: detail.biz_type,
+            biz_id: detail.biz_id,
+            total_cents: detail.total_cents,
+            invoice_type: detail.invoice_type,
+            created_at: detail.created_at,
+            // user 侧的审核态与 admin 队列态是两个库的列,前端要分开看
+            review_status: detail.review_status,
+            queue_review_status: sqlx::Row::try_get(&row, "review_status")?,
+            queue_reviewed_by: sqlx::Row::try_get::<Option<u64>, _>(&row, "reviewed_by")?.map(|v| v.to_string()),
+            queue_reject_reason: sqlx::Row::try_get::<Option<String>, _>(&row, "reject_reason")?,
+            first_reviewer_id: sqlx::Row::try_get::<Option<u64>, _>(&row, "first_reviewer_id")?.map(|v| v.to_string()),
+            first_reviewed_at: sqlx::Row::try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(&row, "first_reviewed_at")?.map(|v| v.to_rfc3339()),
+            second_reviewer_id: sqlx::Row::try_get::<Option<u64>, _>(&row, "second_reviewer_id")?.map(|v| v.to_string()),
+            second_reviewed_at: sqlx::Row::try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(&row, "second_reviewed_at")?.map(|v| v.to_rfc3339()),
+            invoice_url: sqlx::Row::try_get::<Option<String>, _>(&row, "invoice_url")?,
+        });
     }
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"items": items}), common_error::current_request_id())))
+    Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::ListResponse::new(items), common_error::current_request_id())))
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InvoiceApproveReq { pub invoice_url: String }
 
-pub async fn invoice_approve(State(st): State<AppState>, c: ActiveAdmin, Path(id): Path<u64>, Json(req): Json<InvoiceApproveReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn invoice_approve(State(st): State<AppState>, c: ActiveAdmin, Path(id): Path<u64>, Json(req): Json<InvoiceApproveReq>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::admin::InvoiceReviewAck>>> {
     authorize_invoice_review(&st, &c).await?;
     let invoice_url = req.invoice_url.trim();
     let valid_url = invoice_url.len() <= 512 && reqwest::Url::parse(invoice_url)
@@ -209,16 +243,15 @@ pub async fn invoice_approve(State(st): State<AppState>, c: ActiveAdmin, Path(id
     if local_status == "approved" {
         if second_reviewer == Some(c.admin_user_id) && saved_url.as_deref() == Some(invoice_url) {
             tx.commit().await?;
-            return Ok(Json(common_error::ApiEnvelope::ok(json!({"reviewed":true,"review_status":"issued","already_processed":true}), common_error::current_request_id())));
+            return Ok(Json(common_error::ApiEnvelope::ok(api_contracts::admin::InvoiceReviewAck{reviewed:true,review_status:"issued".into(),first_reviewer_id:None,recovered:None,already_processed:Some(true)}, common_error::current_request_id())));
         }
         return Err(AppError::Conflict("发票申请已完成审核".into()));
     }
     if local_status == "rejected" { return Err(AppError::Conflict("已拒绝的发票申请不能开具".into())); }
     let path = p::USER_INTERNAL_INVOICE_DETAIL.replace(":invoice_id", &id.to_string());
     let client = common_http::internal::ApiClient::new(st.http.clone(), st.service_token.clone());
-    let detail: Value = client.get(st.cfg.service_urls.user.as_deref(), &path, &()).await?;
-    let user_status = detail.get("review_status").and_then(Value::as_str)
-        .ok_or_else(|| AppError::ServiceUnavailable("user 服务发票审核状态响应无效".into()))?;
+    let detail: api_contracts::InvoiceDetailResponse = client.get(st.cfg.service_urls.user.as_deref(), &path, &()).await?;
+    let user_status = detail.review_status.as_str();
     if local_status == "pending" {
         if user_status != "pending" { return Err(AppError::Conflict("用户发票申请已处理，不能再次审核".into())); }
         sqlx::query("UPDATE invoice_review SET review_status='awaiting_second',first_reviewer_id=?,first_reviewed_at=UTC_TIMESTAMP(3),invoice_url=? WHERE invoice_request_id=?")
@@ -226,13 +259,13 @@ pub async fn invoice_approve(State(st): State<AppState>, c: ActiveAdmin, Path(id
         sqlx::query("INSERT INTO audit_log(actor_id,module,action,target_type,target_id,after_json,created_month) VALUES (?,'finance','invoice.first_approve','invoice_request',?,?,DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))")
             .bind(c.admin_user_id).bind(id.to_string()).bind(json!({"invoice_url":invoice_url})).execute(&mut *tx).await?;
         tx.commit().await?;
-        return Ok(Json(common_error::ApiEnvelope::ok(json!({"reviewed":true,"review_status":"awaiting_second","first_reviewer_id":c.admin_user_id.to_string()}), common_error::current_request_id())));
+        return Ok(Json(common_error::ApiEnvelope::ok(api_contracts::admin::InvoiceReviewAck{reviewed:true,review_status:"awaiting_second".into(),first_reviewer_id:Some(c.admin_user_id.to_string()),recovered:None,already_processed:None}, common_error::current_request_id())));
     }
     if local_status != "awaiting_second" { return Err(AppError::Conflict("发票审核状态已变化".into())); }
     if first_reviewer == Some(c.admin_user_id) {
         if saved_url.as_deref() == Some(invoice_url) {
             tx.commit().await?;
-            return Ok(Json(common_error::ApiEnvelope::ok(json!({"reviewed":true,"review_status":"awaiting_second","already_processed":true}), common_error::current_request_id())));
+            return Ok(Json(common_error::ApiEnvelope::ok(api_contracts::admin::InvoiceReviewAck{reviewed:true,review_status:"awaiting_second".into(),first_reviewer_id:None,recovered:None,already_processed:Some(true)}, common_error::current_request_id())));
         }
         return Err(AppError::Forbidden("首次审核人不能完成第二次复核".into()));
     }
@@ -248,14 +281,16 @@ pub async fn invoice_approve(State(st): State<AppState>, c: ActiveAdmin, Path(id
         ).bind(first_id).fetch_optional(&mut *tx).await?;
         if first_active.is_none() { return Err(AppError::Forbidden("首次审核人账号已停用或已撤销发票审核权限".into())); }
     }
-    let result: Value = if user_status == "issued"
-        && detail.get("reviewed_by").and_then(Value::as_u64) == Some(c.admin_user_id)
-        && detail.get("invoice_url").and_then(Value::as_str) == Some(invoice_url)
+    // 崩溃恢复:上游已由同一管理员签发过、只是 admin 库事务回滚,识别为幂等重放。
+    let result: api_contracts::admin::InvoiceReviewAck = if user_status == "issued"
+        && detail.reviewed_by == Some(c.admin_user_id)
+        && detail.invoice_url.as_deref() == Some(invoice_url)
     {
-        json!({"reviewed":true,"review_status":"issued","recovered":true})
+        api_contracts::admin::InvoiceReviewAck{reviewed:true,review_status:"issued".into(),first_reviewer_id:None,recovered:Some(true),already_processed:None}
     } else {
         if user_status != "pending" { return Err(AppError::Conflict("用户发票申请已处理，不能再次审核".into())); }
-        client.post(st.cfg.service_urls.user.as_deref(), &path, &json!({"decision":"approve","actor_id":c.admin_user_id,"invoice_url":invoice_url})).await?
+        let upstream:api_contracts::charge::InvoiceReviewed=client.post(st.cfg.service_urls.user.as_deref(), &path, &json!({"decision":"approve","actor_id":c.admin_user_id,"invoice_url":invoice_url})).await?;
+        api_contracts::admin::InvoiceReviewAck{reviewed:true,review_status:upstream.review_status,first_reviewer_id:None,recovered:None,already_processed:None}
     };
     sqlx::query("UPDATE invoice_review SET review_status='approved',second_reviewer_id=?,second_reviewed_at=UTC_TIMESTAMP(3),reviewed_by=?,reviewed_at=UTC_TIMESTAMP(3),reject_reason=NULL WHERE invoice_request_id=?")
         .bind(c.admin_user_id).bind(c.admin_user_id).bind(id).execute(&mut *tx).await?;
@@ -269,7 +304,7 @@ pub async fn invoice_approve(State(st): State<AppState>, c: ActiveAdmin, Path(id
 #[serde(deny_unknown_fields)]
 pub struct InvoiceRejectReq { pub reason: String }
 
-pub async fn invoice_reject(State(st): State<AppState>, c: ActiveAdmin, Path(id): Path<u64>, Json(req): Json<InvoiceRejectReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn invoice_reject(State(st): State<AppState>, c: ActiveAdmin, Path(id): Path<u64>, Json(req): Json<InvoiceRejectReq>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::admin::InvoiceRejectAck>>> {
     if req.reason.trim().is_empty() || req.reason.chars().count() > 255 || req.reason.chars().any(char::is_control) {
         return Err(AppError::BadRequest("拒绝原因必须填写且最多 255 字".into()));
     }
@@ -285,22 +320,23 @@ pub async fn invoice_reject(State(st): State<AppState>, c: ActiveAdmin, Path(id)
         && sqlx::Row::try_get::<Option<String>, _>(&local, "reject_reason")?.as_deref() == Some(req.reason.trim())
     {
         tx.commit().await?;
-        return Ok(Json(common_error::ApiEnvelope::ok(json!({"reviewed":true,"review_status":"rejected","already_processed":true}), common_error::current_request_id())));
+        return Ok(Json(common_error::ApiEnvelope::ok(api_contracts::admin::InvoiceRejectAck{reviewed:true,review_status:"rejected".into(),rejected:None,already_processed:Some(true)}, common_error::current_request_id())));
     }
     if local_status == "approved" || local_status == "rejected" { return Err(AppError::Conflict("发票申请已完成审核".into())); }
     let path = p::USER_INTERNAL_INVOICE_DETAIL.replace(":invoice_id", &id.to_string());
     let client = common_http::internal::ApiClient::new(st.http.clone(), st.service_token.clone());
-    let detail: Value = client.get(st.cfg.service_urls.user.as_deref(), &path, &()).await?;
-    let user_status = detail.get("review_status").and_then(Value::as_str)
-        .ok_or_else(|| AppError::ServiceUnavailable("user 服务发票审核状态响应无效".into()))?;
-    let result: Value = if user_status == "rejected"
-        && detail.get("reviewed_by").and_then(Value::as_u64) == Some(c.admin_user_id)
-        && detail.get("reject_reason").and_then(Value::as_str) == Some(req.reason.trim())
+    let detail: api_contracts::InvoiceDetailResponse = client.get(st.cfg.service_urls.user.as_deref(), &path, &()).await?;
+    let user_status = detail.review_status.as_str();
+    // 崩溃恢复:上游已由同一管理员拒签过、只是 admin 库事务回滚,识别为幂等重放。
+    let result: api_contracts::admin::InvoiceRejectAck = if user_status == "rejected"
+        && detail.reviewed_by == Some(c.admin_user_id)
+        && detail.reject_reason.as_deref() == Some(req.reason.trim())
     {
-        json!({"reviewed":true,"review_status":"rejected","recovered":true})
+        api_contracts::admin::InvoiceRejectAck{reviewed:true,review_status:"rejected".into(),rejected:Some(true),already_processed:None}
     } else {
         if user_status != "pending" { return Err(AppError::Conflict("用户发票申请已处理，不能再次拒绝".into())); }
-        client.post(st.cfg.service_urls.user.as_deref(), &path, &json!({"decision":"reject","actor_id":c.admin_user_id,"reason":req.reason.trim()})).await?
+        let upstream:api_contracts::charge::InvoiceReviewed=client.post(st.cfg.service_urls.user.as_deref(), &path, &json!({"decision":"reject","actor_id":c.admin_user_id,"reason":req.reason.trim()})).await?;
+        api_contracts::admin::InvoiceRejectAck{reviewed:true,review_status:upstream.review_status,rejected:Some(true),already_processed:None}
     };
     sqlx::query("UPDATE invoice_review SET review_status='rejected',reviewed_by=?,reviewed_at=UTC_TIMESTAMP(3),reject_reason=? WHERE invoice_request_id=?")
         .bind(c.admin_user_id).bind(req.reason.trim()).bind(id).execute(&mut *tx).await?;
@@ -342,28 +378,30 @@ async fn wallet_risk_authorize(tx:&mut sqlx::Transaction<'_,sqlx::MySql>,actor:u
  let permission=if release{"finance.wallet_risk.release"}else{"finance.wallet_risk.review"};
  let rows:Vec<u64>=sqlx::query_scalar("SELECT a.id FROM admin_user_role a JOIN role r ON r.id=a.role_id JOIN role_permission rp ON rp.role_id=r.id JOIN permission p ON p.id=rp.permission_id WHERE a.id=? AND a.status='active' AND a.deleted_at IS NULL AND r.deleted_at IS NULL AND r.code IN ('customer_finance','customer_cs') AND p.code=? AND (?=FALSE OR r.code='customer_finance') FOR SHARE").bind(actor).bind(permission).bind(release).fetch_all(&mut **tx).await?;
  if rows.is_empty(){return Err(AppError::Forbidden(format!("角色或权限不足，需要 {permission}")));}Ok(())
-}pub async fn wallet_risks(State(st):State<AppState>,c:ActiveAdmin,axum::extract::Query(q):axum::extract::Query<WalletRiskQuery>)->AppResult<Json<common_error::ApiEnvelope<Value>>>{
+}pub async fn wallet_risks(State(st):State<AppState>,c:ActiveAdmin,axum::extract::Query(q):axum::extract::Query<WalletRiskQuery>)->AppResult<Json<common_error::ApiEnvelope<api_contracts::charge::WalletRiskList>>>{
  let mut tx=st.db.pool().begin().await?;wallet_risk_authorize(&mut tx,c.admin_user_id,false).await?;
- let mut result:Value=common_http::internal::ApiClient::new(st.http.clone(),st.service_token.clone()).get(st.cfg.service_urls.user.as_deref(),p::USER_INTERNAL_WALLET_RISKS,&q).await?;
+ let mut result:api_contracts::charge::WalletRiskList=common_http::internal::ApiClient::new(st.http.clone(),st.service_token.clone()).get(st.cfg.service_urls.user.as_deref(),p::USER_INTERNAL_WALLET_RISKS,&q).await?;
  let can_release=match wallet_risk_authorize(&mut tx,c.admin_user_id,true).await {Ok(())=>true,Err(AppError::Forbidden(_))=>false,Err(e)=>return Err(e)};
- if let Some(items)=result["items"].as_array_mut(){for item in items{item["can_release"]=json!(can_release && item["can_release"]==true);}}
+ // user 侧已按"已审核 + 冻结原因仍 frozen + 未解冻"算过一遍,
+ // admin 再与本地 finance.wallet_risk.release 权限取**与**,不是覆盖。
+ for item in &mut result.items{item.can_release=can_release && item.can_release;}
  tx.commit().await?;Ok(Json(common_error::ApiEnvelope::ok(result,common_error::current_request_id())))
 }
-pub async fn wallet_risk_review(State(st):State<AppState>,c:ActiveAdmin,Path(id):Path<String>,Json(req):Json<WalletRiskDecision>)->AppResult<Json<common_error::ApiEnvelope<Value>>>{
+pub async fn wallet_risk_review(State(st):State<AppState>,c:ActiveAdmin,Path(id):Path<String>,Json(req):Json<WalletRiskDecision>)->AppResult<Json<common_error::ApiEnvelope<api_contracts::charge::WalletRefundApplied>>>{
  let id=uuid::Uuid::parse_str(&id).map_err(|_|AppError::BadRequest("申请编号无效".into()))?.to_string();
  let mut tx=st.db.pool().begin().await?;wallet_risk_authorize(&mut tx,c.admin_user_id,false).await?;
- let result:Value=common_http::internal::ApiClient::new(st.http.clone(),st.service_token.clone()).post(st.cfg.service_urls.user.as_deref(),&p::USER_INTERNAL_WALLET_RISK_REVIEW.replace(":request_id",&id),&json!({"actor_id":c.admin_user_id,"approved":req.approved,"comment":req.comment})).await?;
- sqlx::query("INSERT INTO audit_log(actor_id,module,action,target_type,target_id,after_json,created_month) VALUES (?,'finance','wallet_risk.review','wallet_refund_request',?,?,DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))").bind(c.admin_user_id).bind(&id).bind(&result).execute(&mut *tx).await?;
+ let result:api_contracts::charge::WalletRefundApplied=common_http::internal::ApiClient::new(st.http.clone(),st.service_token.clone()).post(st.cfg.service_urls.user.as_deref(),&p::USER_INTERNAL_WALLET_RISK_REVIEW.replace(":request_id",&id),&json!({"actor_id":c.admin_user_id,"approved":req.approved,"comment":req.comment})).await?;
+ sqlx::query("INSERT INTO audit_log(actor_id,module,action,target_type,target_id,after_json,created_month) VALUES (?,'finance','wallet_risk.review','wallet_refund_request',?,?,DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))").bind(c.admin_user_id).bind(&id).bind(serde_json::to_value(&result)?).execute(&mut *tx).await?;
  tx.commit().await?;Ok(Json(common_error::ApiEnvelope::ok(result,common_error::current_request_id())))
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WalletRiskRelease {pub comment:String}
-pub async fn wallet_risk_release(State(st):State<AppState>,c:ActiveAdmin,Path(id):Path<String>,Json(req):Json<WalletRiskRelease>)->AppResult<Json<common_error::ApiEnvelope<Value>>>{
+pub async fn wallet_risk_release(State(st):State<AppState>,c:ActiveAdmin,Path(id):Path<String>,Json(req):Json<WalletRiskRelease>)->AppResult<Json<common_error::ApiEnvelope<api_contracts::charge::WalletRiskReleased>>>{
  let id=uuid::Uuid::parse_str(&id).map_err(|_|AppError::BadRequest("申请编号无效".into()))?.to_string();
  let mut tx=st.db.pool().begin().await?;wallet_risk_authorize(&mut tx,c.admin_user_id,true).await?;
- let result:Value=common_http::internal::ApiClient::new(st.http.clone(),st.service_token.clone()).post(st.cfg.service_urls.user.as_deref(),&p::USER_INTERNAL_WALLET_RISK_RELEASE.replace(":request_id",&id),&json!({"actor_id":c.admin_user_id,"comment":req.comment})).await?;
- sqlx::query("INSERT INTO audit_log(actor_id,module,action,target_type,target_id,after_json,created_month) VALUES (?,'finance','wallet_risk.release','wallet_refund_request',?,?,DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))").bind(c.admin_user_id).bind(&id).bind(&result).execute(&mut *tx).await?;
+ let result:api_contracts::charge::WalletRiskReleased=common_http::internal::ApiClient::new(st.http.clone(),st.service_token.clone()).post(st.cfg.service_urls.user.as_deref(),&p::USER_INTERNAL_WALLET_RISK_RELEASE.replace(":request_id",&id),&json!({"actor_id":c.admin_user_id,"comment":req.comment})).await?;
+ sqlx::query("INSERT INTO audit_log(actor_id,module,action,target_type,target_id,after_json,created_month) VALUES (?,'finance','wallet_risk.release','wallet_refund_request',?,?,DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))").bind(c.admin_user_id).bind(&id).bind(serde_json::to_value(&result)?).execute(&mut *tx).await?;
  tx.commit().await?;Ok(Json(common_error::ApiEnvelope::ok(result,common_error::current_request_id())))
 }
