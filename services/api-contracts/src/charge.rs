@@ -487,3 +487,93 @@ mod coupon_tests {
         assert_eq!(v["usage_rate"], 0.0);
     }
 }
+
+// ===== 工单与报修(user 生产,admin 消费)=====
+
+/// 用户反馈。
+///
+/// ⚠️ `id` / `user_id` / `order_id` / `replied_by` 是**字符串**——实现里
+/// 显式 `.to_string()`,小程序侧按字符串处理,改成数字会破坏。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Feedback {
+    pub id: String,
+    pub user_id: String,
+    pub order_id: Option<String>,
+    pub device_id: Option<String>,
+    pub rating: Option<u8>,
+    /// `rating` / `complaint` / `suggestion`
+    pub category: String,
+    pub content: Option<String>,
+    /// 图片 URL 数组,无图为空数组(不是 null)
+    pub images: Vec<serde_json::Value>,
+    /// `pending` / `processed` / `closed`
+    pub status: String,
+    pub replied_by: Option<String>,
+    pub replied_at: Option<String>,
+    pub reply_content: Option<String>,
+    pub created_at: String,
+}
+
+/// 设备报修。⚠️ `id` / `user_id` / `assigned_to` 同为**字符串**。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FaultReport {
+    pub id: String,
+    pub device_id: String,
+    pub user_id: Option<String>,
+    /// `user`(用户上报)或 `device`(设备自检)
+    pub report_source: String,
+    pub fault_type: String,
+    pub description: Option<String>,
+    pub images: Vec<serde_json::Value>,
+    pub status: String,
+    pub assigned_to: Option<String>,
+    pub resolved_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// 报修状态流转事件。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FaultHistoryEvent {
+    pub event_id: String,
+    pub event_type: String,
+    pub from_status: Option<String>,
+    pub to_status: Option<String>,
+    pub note: Option<String>,
+    pub created_at: String,
+}
+
+#[cfg(test)]
+mod casework_tests {
+    use super::*;
+
+    /// 回归护栏:id/user_id 是**字符串**(实现显式 to_string),
+    /// 小程序侧按字符串处理,改成数字会破坏
+    #[test]
+    fn feedback_ids_are_strings() {
+        let f = Feedback {
+            id: "1".into(), user_id: "2".into(), order_id: Some("3".into()),
+            device_id: None, rating: Some(5), category: "rating".into(),
+            content: None, images: vec![], status: "pending".into(),
+            replied_by: None, replied_at: None, reply_content: None,
+            created_at: "2026-09-28T00:00:00Z".into(),
+        };
+        let v = serde_json::to_value(&f).unwrap();
+        assert!(v["id"].is_string(), "id 必须是字符串");
+        assert!(v["user_id"].is_string());
+        assert!(v["replied_by"].is_null());
+    }
+
+    /// 无图时是**空数组**而非 null(实现里 unwrap_or_else(|| json!([])))
+    #[test]
+    fn images_default_to_empty_array() {
+        let f = Feedback {
+            id: "1".into(), user_id: "2".into(), order_id: None, device_id: None,
+            rating: None, category: "complaint".into(), content: None,
+            images: vec![], status: "pending".into(), replied_by: None,
+            replied_at: None, reply_content: None, created_at: "t".into(),
+        };
+        let v = serde_json::to_value(&f).unwrap();
+        assert!(v["images"].is_array());
+    }
+}

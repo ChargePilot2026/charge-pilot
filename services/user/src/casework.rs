@@ -1,6 +1,24 @@
 //! Internal customer service and inspection queues backed by user_db.
 
 use crate::AppState;
+
+/// 反馈分页响应(带 total/page/page_size,与只回 `items` 的列表不同)
+#[derive(serde::Serialize)]
+pub struct PagedFeedback {
+    pub items: Vec<api_contracts::charge::Feedback>,
+    pub total: i64,
+    pub page: u32,
+    pub page_size: u32,
+}
+
+/// 报修分页响应
+#[derive(serde::Serialize)]
+pub struct PagedFault {
+    pub items: Vec<api_contracts::charge::FaultReport>,
+    pub total: i64,
+    pub page: u32,
+    pub page_size: u32,
+}
 use axum::{extract::{Path, Query, State}, Json};
 use common_error::{AppError, AppResult};
 use serde::Deserialize;
@@ -26,7 +44,7 @@ fn paging(q: &QueueQuery) -> AppResult<(u32, u32, u64)> {
 pub async fn feedback_list(
     State(st): State<AppState>,
     Query(q): Query<QueueQuery>,
-) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+) -> AppResult<Json<common_error::ApiEnvelope<PagedFeedback>>> {
     if q.status.as_deref().is_some_and(|s| !["pending", "processed", "closed"].contains(&s)) {
         return Err(AppError::BadRequest("feedback status 无效".into()));
     }
@@ -44,24 +62,26 @@ pub async fn feedback_list(
     query.push(" ORDER BY created_at DESC,id DESC LIMIT ").push_bind(page_size)
         .push(" OFFSET ").push_bind(offset);
     let rows = query.build().fetch_all(st.db.pool()).await?;
-    let items: Vec<Value> = rows.iter().map(|r| -> AppResult<Value> {
-        Ok(json!({
-            "id": sqlx::Row::try_get::<u64, _>(r, "id")?.to_string(),
-            "user_id": sqlx::Row::try_get::<u64, _>(r, "user_id")?.to_string(),
-            "order_id": sqlx::Row::try_get::<Option<u64>, _>(r, "order_id")?.map(|v| v.to_string()),
-            "device_id": sqlx::Row::try_get::<Option<String>, _>(r, "device_id")?,
-            "rating": sqlx::Row::try_get::<Option<u8>, _>(r, "rating")?,
-            "category": sqlx::Row::try_get::<String, _>(r, "category")?,
-            "content": sqlx::Row::try_get::<Option<String>, _>(r, "content")?,
-            "images": sqlx::Row::try_get::<Option<Value>, _>(r, "images_json")?.unwrap_or_else(|| json!([])),
-            "status": sqlx::Row::try_get::<String, _>(r, "status")?,
-            "replied_by": sqlx::Row::try_get::<Option<u64>, _>(r, "replied_by")?.map(|v| v.to_string()),
-            "replied_at": sqlx::Row::try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(r, "replied_at")?.map(|v| v.to_rfc3339()),
-            "reply_content": sqlx::Row::try_get::<Option<String>, _>(r, "reply_content")?,
-            "created_at": sqlx::Row::try_get::<chrono::DateTime<chrono::Utc>, _>(r, "created_at")?.to_rfc3339(),
-        }))
+    let items = rows.iter().map(|r| -> AppResult<api_contracts::charge::Feedback> {
+        Ok(api_contracts::charge::Feedback {
+            id: sqlx::Row::try_get::<u64, _>(r, "id")?.to_string(),
+            user_id: sqlx::Row::try_get::<u64, _>(r, "user_id")?.to_string(),
+            order_id: sqlx::Row::try_get::<Option<u64>, _>(r, "order_id")?.map(|v| v.to_string()),
+            device_id: sqlx::Row::try_get::<Option<String>, _>(r, "device_id")?,
+            rating: sqlx::Row::try_get::<Option<u8>, _>(r, "rating")?,
+            category: sqlx::Row::try_get::<String, _>(r, "category")?,
+            content: sqlx::Row::try_get::<Option<String>, _>(r, "content")?,
+            images: sqlx::Row::try_get::<Option<serde_json::Value>, _>(r, "images_json")?
+                .and_then(|v| serde_json::from_value(v).ok())
+                .unwrap_or_default(),
+            status: sqlx::Row::try_get::<String, _>(r, "status")?,
+            replied_by: sqlx::Row::try_get::<Option<u64>, _>(r, "replied_by")?.map(|v| v.to_string()),
+            replied_at: sqlx::Row::try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(r, "replied_at")?.map(|v| v.to_rfc3339()),
+            reply_content: sqlx::Row::try_get::<Option<String>, _>(r, "reply_content")?,
+            created_at: sqlx::Row::try_get::<chrono::DateTime<chrono::Utc>, _>(r, "created_at")?.to_rfc3339(),
+        })
     }).collect::<AppResult<Vec<_>>>()?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"items":items,"total":total,"page":page,"page_size":page_size}), common_error::current_request_id())))
+    Ok(Json(common_error::ApiEnvelope::ok(PagedFeedback { items, total, page, page_size }, common_error::current_request_id())))
 }
 
 #[derive(Debug, Deserialize)]
@@ -122,7 +142,7 @@ pub async fn feedback_reply(
 pub async fn fault_list(
     State(st): State<AppState>,
     Query(q): Query<QueueQuery>,
-) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+) -> AppResult<Json<common_error::ApiEnvelope<PagedFault>>> {
     if q.status.as_deref().is_some_and(|s| !["open", "dispatched", "fixed", "closed"].contains(&s)) {
         return Err(AppError::BadRequest("fault status 无效".into()));
     }
@@ -137,21 +157,25 @@ pub async fn fault_list(
     if let Some(status) = q.status.as_deref() { query.push(" AND status = ").push_bind(status); }
     query.push(" ORDER BY created_at DESC,id DESC LIMIT ").push_bind(page_size).push(" OFFSET ").push_bind(offset);
     let rows = query.build().fetch_all(st.db.pool()).await?;
-    let items: Vec<Value> = rows.iter().map(|r| -> AppResult<Value> { Ok(json!({
-        "id": sqlx::Row::try_get::<u64, _>(r,"id")?.to_string(),
-        "device_id": sqlx::Row::try_get::<String, _>(r,"device_id")?,
-        "user_id": sqlx::Row::try_get::<Option<u64>, _>(r,"user_id")?.map(|v|v.to_string()),
-        "report_source": sqlx::Row::try_get::<String, _>(r,"report_source")?,
-        "fault_type": sqlx::Row::try_get::<String, _>(r,"fault_type")?,
-        "description": sqlx::Row::try_get::<Option<String>, _>(r,"description")?,
-        "images": sqlx::Row::try_get::<Option<Value>, _>(r,"images_json")?.unwrap_or_else(||json!([])),
-        "status": sqlx::Row::try_get::<String, _>(r,"status")?,
-        "assigned_to": sqlx::Row::try_get::<Option<u64>, _>(r,"assigned_to")?.map(|v|v.to_string()),
-        "resolved_at": sqlx::Row::try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(r,"resolved_at")?.map(|v|v.to_rfc3339()),
-        "created_at": sqlx::Row::try_get::<chrono::DateTime<chrono::Utc>, _>(r,"created_at")?.to_rfc3339(),
-        "updated_at": sqlx::Row::try_get::<chrono::DateTime<chrono::Utc>, _>(r,"updated_at")?.to_rfc3339(),
-    })) }).collect::<AppResult<Vec<_>>>()?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"items":items,"total":total,"page":page,"page_size":page_size}), common_error::current_request_id())))
+    let items = rows.iter().map(|r| -> AppResult<api_contracts::charge::FaultReport> {
+        Ok(api_contracts::charge::FaultReport {
+            id: sqlx::Row::try_get::<u64, _>(r,"id")?.to_string(),
+            device_id: sqlx::Row::try_get::<String, _>(r,"device_id")?,
+            user_id: sqlx::Row::try_get::<Option<u64>, _>(r,"user_id")?.map(|v|v.to_string()),
+            report_source: sqlx::Row::try_get::<String, _>(r,"report_source")?,
+            fault_type: sqlx::Row::try_get::<String, _>(r,"fault_type")?,
+            description: sqlx::Row::try_get::<Option<String>, _>(r,"description")?,
+            images: sqlx::Row::try_get::<Option<serde_json::Value>, _>(r,"images_json")?
+                .and_then(|v| serde_json::from_value(v).ok())
+                .unwrap_or_default(),
+            status: sqlx::Row::try_get::<String, _>(r,"status")?,
+            assigned_to: sqlx::Row::try_get::<Option<u64>, _>(r,"assigned_to")?.map(|v|v.to_string()),
+            resolved_at: sqlx::Row::try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(r,"resolved_at")?.map(|v|v.to_rfc3339()),
+            created_at: sqlx::Row::try_get::<chrono::DateTime<chrono::Utc>, _>(r,"created_at")?.to_rfc3339(),
+            updated_at: sqlx::Row::try_get::<chrono::DateTime<chrono::Utc>, _>(r,"updated_at")?.to_rfc3339(),
+        })
+    }).collect::<AppResult<Vec<_>>>()?;
+    Ok(Json(common_error::ApiEnvelope::ok(PagedFault { items, total, page, page_size }, common_error::current_request_id())))
 }
 
 fn validate_fault_note(note: Option<&str>, required: bool) -> AppResult<Option<String>> {
