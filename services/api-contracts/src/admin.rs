@@ -655,6 +655,17 @@ pub struct WebhookSubscription {
     pub enabled: bool,
 }
 
+/// 订阅**详情**。⚠️ 比列表**少 `enabled`** —— 实现里 `get` 未查该列。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebhookSubscriptionDetail {
+    pub id: u64,
+    pub name: String,
+    pub url: String,
+    /// 密钥前缀(完整密钥只在创建时返回一次)
+    pub secret_prefix: String,
+    pub event_types: Vec<String>,
+}
+
 /// 创建订阅的响应。**`secret` 只在这里出现一次**,之后只能看到前缀。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebhookCreated {
@@ -667,8 +678,9 @@ pub struct WebhookCreated {
 pub struct WebhookDelivery {
     pub id: u64,
     pub event_type: String,
-    /// HTTP 响应码;网络失败时为空
-    pub response_status: Option<u16>,
+    /// HTTP 响应码;网络失败时为空。
+    /// ⚠️ 是 **i32** 不是 u16(实现直接读 INT 列)。
+    pub response_status: Option<i32>,
     pub attempt_count: u32,
     pub duration_ms: Option<u32>,
     pub delivered_at: Option<String>,
@@ -689,6 +701,28 @@ mod webhook_tests {
         let v = serde_json::to_value(&sub).unwrap();
         assert!(v.get("secret").is_none(), "列表/详情不得返回完整密钥");
         assert_eq!(v["secret_prefix"], "whsec_ab");
+    }
+
+    /// 回归护栏:详情**不含** `enabled`(实现未查该列),列表才有
+    #[test]
+    fn webhook_detail_has_no_enabled() {
+        let d = WebhookSubscriptionDetail {
+            id: 1, name: "n".into(), url: "https://x".into(),
+            secret_prefix: "whsec_ab".into(), event_types: vec![],
+        };
+        let v = serde_json::to_value(&d).unwrap();
+        assert!(v.get("enabled").is_none());
+    }
+
+    /// 回归护栏:响应码是 i32(实现读 INT 列),负值/异常码不应被截断
+    #[test]
+    fn delivery_status_is_i32() {
+        let d = WebhookDelivery {
+            id: 1, event_type: "e".into(), response_status: Some(-1),
+            attempt_count: 1, duration_ms: None, delivered_at: None,
+        };
+        let v = serde_json::to_value(&d).unwrap();
+        assert_eq!(v["response_status"], -1);
     }
 
     /// 投递未成功时 `response_status` 为空
