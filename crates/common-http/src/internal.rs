@@ -89,7 +89,7 @@ impl ApiClient {
                     continue;
                 }
                 Err(error) => {
-                    tracing::error!(%error, %path, "internal GET failed");
+                    tracing::error!(%error, %path, backtrace = %common_error::backtrace(), "internal GET failed");
                     return Err(AppError::ServiceUnavailable("下游服务连接失败".into()));
                 }
             };
@@ -102,11 +102,11 @@ impl ApiClient {
             }
             // An internal service-token failure must not log the operator out.
             if !status.is_success() && status != reqwest::StatusCode::BAD_REQUEST && status != reqwest::StatusCode::CONFLICT {
-                tracing::error!(%status, %path, "internal API rejected request");
+                tracing::error!(%status, %path, backtrace = %common_error::backtrace(), "internal API rejected request");
                 return Err(AppError::ServiceUnavailable("下游服务暂时不可用".into()));
             }
             let envelope: ApiEnvelope<T> = response.json().await.map_err(|error| {
-                tracing::error!(%error, %path, "invalid internal API envelope");
+                tracing::error!(%error, %path, backtrace = %common_error::backtrace(), "invalid internal API envelope");
                 AppError::ServiceUnavailable("下游响应格式错误".into())
             })?;
             return match envelope.code {

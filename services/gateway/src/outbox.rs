@@ -84,7 +84,7 @@ async fn publish_locked(
         Err(_) => {
             sqlx::query("UPDATE event_outbox SET status='failed',last_error='Invalid event envelope' WHERE id=?")
                 .bind(id).execute(&mut **tx).await?;
-            tracing::error!(outbox_id = id, "invalid gateway outbox event requires repair");
+            tracing::error!(outbox_id = id, backtrace = %common_error::backtrace(), "invalid gateway outbox event requires repair");
         }
     }
     Ok(())

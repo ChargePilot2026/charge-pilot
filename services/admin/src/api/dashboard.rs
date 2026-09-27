@@ -15,9 +15,9 @@ pub async fn get(State(st): State<AppState>, c: AdminClaims) -> AppResult<Json<c
     if !allowed { return Err(AppError::Forbidden("缺少 dashboard.read 权限".into())); }
     let user_metrics: Value = common_http::internal::ApiClient::new(st.http.clone(), st.service_token.clone())
         .get(st.cfg.service_urls.user.as_deref(), api_contracts::paths::USER_INTERNAL_DASHBOARD_METRICS, &()).await?;
-    let active_alerts: u64 = sqlx::query_scalar("SELECT COUNT(*) FROM alert_event WHERE status='active'")
+    let active_alerts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM alert_event WHERE status='active'")
         .fetch_one(st.db.pool()).await?;
     let mut data = user_metrics;
-    data["active_alerts"] = json!(active_alerts);
+    data["active_alerts"] = json!(active_alerts.max(0) as u64);
     Ok(Json(common_error::ApiEnvelope::ok(data, common_error::current_request_id())))
 }

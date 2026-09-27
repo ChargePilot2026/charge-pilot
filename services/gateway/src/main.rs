@@ -82,7 +82,7 @@ async fn main() -> AppResult<()> {
     let tcp_bind = std::env::var("GATEWAY_TCP_BIND").unwrap_or_else(|_| "0.0.0.0:9100".into());
     tokio::spawn(async move {
         if let Err(e) = protocol::tcp::run_tcp_listener(&tcp_bind, tcp_state).await {
-            tracing::error!(error=%e, "tcp listener exited");
+            tracing::error!(error = %e, backtrace = %common_error::backtrace(), "tcp listener exited");
         }
     });
 

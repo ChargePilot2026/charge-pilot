@@ -33,7 +33,7 @@ pub async fn feedback_list(
     let (page, page_size, offset) = paging(&q)?;
     let mut count = QueryBuilder::<MySql>::new("SELECT COUNT(*) FROM feedback WHERE deleted_at IS NULL");
     if let Some(status) = q.status.as_deref() { count.push(" AND status = ").push_bind(status); }
-    let total: u64 = count.build_query_scalar().fetch_one(st.db.pool()).await?;
+    let total: i64 = count.build_query_scalar().fetch_one(st.db.pool()).await?;
 
     let mut query = QueryBuilder::<MySql>::new(
         "SELECT id,user_id,order_id,device_id,rating,category,content,images_json,status,
@@ -129,7 +129,7 @@ pub async fn fault_list(
     let (page, page_size, offset) = paging(&q)?;
     let mut count = QueryBuilder::<MySql>::new("SELECT COUNT(*) FROM device_fault_report WHERE deleted_at IS NULL");
     if let Some(status) = q.status.as_deref() { count.push(" AND status = ").push_bind(status); }
-    let total: u64 = count.build_query_scalar().fetch_one(st.db.pool()).await?;
+    let total: i64 = count.build_query_scalar().fetch_one(st.db.pool()).await?;
     let mut query = QueryBuilder::<MySql>::new(
         "SELECT id,device_id,user_id,report_source,fault_type,description,images_json,status,assigned_to,resolved_at,created_at,updated_at
          FROM device_fault_report WHERE deleted_at IS NULL",
@@ -182,7 +182,7 @@ async fn fault_history_rows(
     if !report_exists { return Err(AppError::NotFound("报修不存在".into())); }
 
     let (total, rows) = if user_id.is_some() {
-        let total: u64 = sqlx::query_scalar("SELECT COUNT(*) FROM device_fault_report_event WHERE report_id=? AND user_visible=1")
+        let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM device_fault_report_event WHERE report_id=? AND user_visible=1")
             .bind(report_id).fetch_one(st.db.pool()).await?;
         let rows = sqlx::query(
             "SELECT id,event_type,from_status,to_status,note,created_at
@@ -191,7 +191,7 @@ async fn fault_history_rows(
         ).bind(report_id).bind(page_size).bind(offset).fetch_all(st.db.pool()).await?;
         (total, rows)
     } else {
-        let total: u64 = sqlx::query_scalar("SELECT COUNT(*) FROM device_fault_report_event WHERE report_id=?")
+        let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM device_fault_report_event WHERE report_id=?")
             .bind(report_id).fetch_one(st.db.pool()).await?;
         let rows = sqlx::query(
             "SELECT id,event_type,actor_id,from_status,to_status,assigned_to,note,user_visible,created_at

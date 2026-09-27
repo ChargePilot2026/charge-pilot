@@ -119,7 +119,7 @@ pub async fn my_fault_reports(
         return Err(common_error::AppError::BadRequest("page 必须为 1–100000，page_size 必须为 1–100".into()));
     }
     let offset = u64::from(page - 1) * u64::from(page_size);
-    let total: u64 = sqlx::query_scalar("SELECT COUNT(*) FROM device_fault_report WHERE user_id=? AND deleted_at IS NULL")
+    let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM device_fault_report WHERE user_id=? AND deleted_at IS NULL")
         .bind(claims.user_id).fetch_one(st.db.pool()).await?;
     let rows = sqlx::query(
         "SELECT id,device_id,fault_type,description,status,assigned_to,resolved_at,created_at,updated_at
@@ -156,7 +156,7 @@ pub async fn my_fault_history(
     ).bind(report_id).bind(claims.user_id).fetch_one(st.db.pool()).await?;
     if !owns_report { return Err(AppError::NotFound("报修不存在".into())); }
     let offset = u64::from(page - 1) * u64::from(page_size);
-    let total: u64 = sqlx::query_scalar(
+    let total: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM device_fault_report_event WHERE report_id=? AND user_visible=1",
     ).bind(report_id).fetch_one(st.db.pool()).await?;
     let rows = sqlx::query(

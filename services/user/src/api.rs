@@ -174,7 +174,7 @@ pub async fn scan_start(
         Ok(value) => value,
         Err(error) => {
             if let Err(release_error) = lock.release_if_match(&port.port_id, &holder).await {
-                tracing::error!(%release_error, "failed to release unsuccessful checkout reservation");
+                tracing::error!(%release_error, backtrace = %common_error::backtrace(), "failed to release unsuccessful checkout reservation");
             }
             return Err(error);
         }

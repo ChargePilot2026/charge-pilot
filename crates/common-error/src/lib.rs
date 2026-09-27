@@ -14,8 +14,28 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Serialize};
+use std::backtrace::Backtrace;
 use thiserror::Error;
 use uuid::Uuid;
+
+/// Capture the current Rust backtrace as a displayable string. Costs a few µs when
+/// `RUST_BACKTRACE`/`RUST_LIB_BACKTRACE` is `1`/`full`; returns "disabled" otherwise
+/// so the structured field is always present in JSON logs.
+///
+/// `pub` so business code can include it in `tracing::error!` / `tracing::warn!`
+/// calls without duplicating the env-var check:
+/// `tracing::error!(error = %e, backtrace = %common_error::backtrace(), "...")`.
+pub fn backtrace() -> String {
+    match std::env::var_os("RUST_BACKTRACE").or_else(|| std::env::var_os("RUST_LIB_BACKTRACE")) {
+        Some(v) if v != "0" => Backtrace::force_capture().to_string(),
+        _ => "<backtrace disabled (set RUST_BACKTRACE=full)>".into(),
+    }
+}
+
+// Keep the private name for backward compat inside this crate.
+fn capture_bt() -> String {
+    backtrace()
+}
 
 /// 统一响应包装(对齐 docs/api/user.md § 通用约定)
 #[derive(Debug, Serialize, Deserialize)]
@@ -140,19 +160,19 @@ impl AppError {
     pub fn message(&self) -> String {
         match self {
             AppError::Database(e) => {
-                tracing::error!(error = %e, "database error");
+                tracing::error!(error = %e, backtrace = %capture_bt(), "database error");
                 "数据库错误".into()
             }
             AppError::Redis(e) => {
-                tracing::error!(error = %e, "redis error");
+                tracing::error!(error = %e, backtrace = %capture_bt(), "redis error");
                 "缓存错误".into()
             }
             AppError::Internal(m) => {
-                tracing::error!(error = %m, "internal error");
+                tracing::error!(error = %m, backtrace = %capture_bt(), "internal error");
                 "服务器内部错误".into()
             }
             AppError::HttpClient(m) => {
-                tracing::error!(error = %m, "http client error");
+                tracing::error!(error = %m, backtrace = %capture_bt(), "http client error");
                 "上游服务错误".into()
             }
             other => other.to_string(),
@@ -169,7 +189,13 @@ impl IntoResponse for AppError {
 
         // 5xx 始终写 error 日志
         if status.is_server_error() {
-            tracing::error!(request_id = %request_id, code = code, "server error: {}", message);
+            tracing::error!(
+                request_id = %request_id,
+                code = code,
+                backtrace = %capture_bt(),
+                "server error: {}",
+                message
+            );
         } else {
             tracing::debug!(request_id = %request_id, code = code, "client error: {}", message);
         }

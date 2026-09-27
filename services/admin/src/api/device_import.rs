@@ -226,11 +226,11 @@ pub fn spawn_recovery(state: AppState) {
                     for (id, actor_id) in jobs {
                         if let Err(error) = finish(state.clone(), actor_id, id.clone(), true).await
                         {
-                            tracing::error!(%id,%error,"device import recovery failed");
+                            tracing::error!(%id, %error, backtrace = %common_error::backtrace(), "device import recovery failed");
                         }
                     }
                 }
-                Err(error) => tracing::error!(%error,"cannot load pending device imports"),
+                Err(error) => tracing::error!(%error, backtrace = %common_error::backtrace(), "cannot load pending device imports"),
             }
         }
     });
