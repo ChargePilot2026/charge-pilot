@@ -191,13 +191,16 @@ pub async fn scan_cancel(
     State(st): State<AppState>,
     claims: UserClaims,
     Json(req): Json<ScanCancelRequest>,
-) -> AppResult<Json<crate::api_envelope::Envelope<serde_json::Value>>> {
+) -> AppResult<Json<crate::api_envelope::Envelope<api_contracts::charge::ScanCancelResponse>>> {
     let mut tx = st.db.pool().begin().await?;
     let port_code = crate::checkout::cancel_pending(&mut tx, claims.user_id, &req.order_no).await?;
     tx.commit().await?;
     let lock = PortLock::new(st.redis_cache.clone());
     lock.release_if_match(&port_code, &format!("{}:{}", claims.user_id, req.order_no)).await?;
-    Ok(Json(crate::api_envelope::Envelope::ok(serde_json::json!({"order_no": req.order_no, "cancelled": true}), common_error::current_request_id())))
+    Ok(Json(crate::api_envelope::Envelope::ok(
+        api_contracts::charge::ScanCancelResponse { order_no: req.order_no, cancelled: true },
+        common_error::current_request_id(),
+    )))
 }
 
 // ===================== 充电 =====================
@@ -236,7 +239,7 @@ pub async fn charge_stop(
 pub async fn charge_ongoing(
     State(st): State<AppState>,
     claims: UserClaims,
-) -> AppResult<Json<crate::api_envelope::Envelope<serde_json::Value>>> {
+) -> AppResult<Json<crate::api_envelope::Envelope<Option<api_contracts::charge::OngoingCharge>>>> {
     let r = sqlx::query(
         "SELECT id, order_no, device_id, port_no, status, started_at, total_cents
          FROM charge_order WHERE user_id = ? AND deleted_at IS NULL AND status IN ('pending_payment','paid','charging')
@@ -245,16 +248,19 @@ pub async fn charge_ongoing(
     .bind(claims.user_id)
     .fetch_optional(st.db.pool())
     .await?;
-    let v = match r {
-        None => serde_json::Value::Null,
-        Some(r) => json!({
-            "order_id": r.try_get::<u64, _>("id")?,
-            "order_no": r.try_get::<String, _>("order_no")?,
-            "device_id": r.try_get::<String, _>("device_id")?,
-            "port_no": r.try_get::<u8, _>("port_no")?,
-            "status": r.try_get::<String, _>("status")?,
-            "started_at": r.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("started_at")?.map(|t| t.to_rfc3339()),
-            "total_cents": r.try_get::<Option<i64>, _>("total_cents")?,
+    // 无进行中订单时 data 是 JSON null(不是空对象)—— 小程序按此判"无进行中订单"
+    let v: Option<api_contracts::charge::OngoingCharge> = match r {
+        None => None,
+        Some(r) => Some(api_contracts::charge::OngoingCharge {
+            order_id: r.try_get::<u64, _>("id")?,
+            order_no: r.try_get::<String, _>("order_no")?,
+            device_id: r.try_get::<String, _>("device_id")?,
+            port_no: r.try_get::<u8, _>("port_no")?,
+            status: r.try_get::<String, _>("status")?,
+            started_at: r
+                .try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("started_at")?
+                .map(|t| t.to_rfc3339()),
+            total_cents: r.try_get::<Option<i64>, _>("total_cents")?,
         }),
     };
     Ok(Json(crate::api_envelope::Envelope::ok(v, common_error::current_request_id())))
@@ -288,7 +294,7 @@ pub async fn charge_snapshot(
     State(st): State<AppState>,
     claims: UserClaims,
     Query(q): Query<SnapshotQuery>,
-) -> AppResult<Json<crate::api_envelope::Envelope<serde_json::Value>>> {
+) -> AppResult<Json<crate::api_envelope::Envelope<api_contracts::charge::ChargeSnapshot>>> {
     if q.order_id.is_empty() || q.order_id.len()>64 {return Err(AppError::BadRequest("订单标识无效".into()));}
     // The database owns authorization and lifecycle, even when Redis has a snapshot.
     let (filter, numeric_id) = match q.order_id.parse::<u64>() {Ok(id)=>("id",Some(id)),Err(_)=>("order_no",None)};
@@ -304,39 +310,60 @@ pub async fn charge_snapshot(
     let device_id: String = r.try_get("device_id")?;
     let port_no: u8 = r.try_get("port_no")?;
     let poll_continue = matches!(status.as_str(), "pending_payment" | "paid" | "charging");
-    let mut resp = json!({
-        "order_id": r.try_get::<u64,_>("id")?, "order_no":order_no,
-        "status":status, "charge_state":status,
-        "current_power_w": null, "power_w":null, "current_a":null,
-        "charged_kwh": r.try_get::<Option<String>,_>("charged_kwh")?,
-        "current_fee_cents":r.try_get::<Option<i64>,_>("total_cents")?,
-        "temperature_c": null, "voltage_v": null, "battery_soc":null,
-        "elapsed_seconds": r.try_get::<Option<u32>,_>("charged_seconds")?,
-        "telemetry_available":false,
-        "poll_continue": poll_continue,
-        "next_poll_after_ms": if poll_continue {5000} else {0},
-        "server_ts":chrono::Utc::now().to_rfc3339(),
-    });
+    // 遥测字段初值全为 null:小程序按 `=== null` 判"暂时无遥测",不能省略
+    let mut telemetry = api_contracts::gateway_devices::TelemetrySnapshot::default();
+    // current_power_w 是本接口的兼容字段(与 power_w 同值),不属于 gateway 契约
+    let mut current_power_w: Option<f64> = None;
+    let mut telemetry_available = false;
+    let mut telemetry_ts = None;
     if status=="charging" {
         let path = p::GW_DEVICE_SNAPSHOT.replace(":id", &device_id);
         let query = DeviceSnapshotQuery { order_id: order_no.clone(), port_no };
-        let snapshot: serde_json::Value = common_http::internal::ApiClient::new(st.http.clone(), st.service_token.clone())
+        let snapshot: api_contracts::gateway_devices::DeviceSnapshotResponse =
+            common_http::internal::ApiClient::new(st.http.clone(), st.service_token.clone())
             .get(st.cfg.service_urls.gateway.as_deref(), &path, &query).await?;
-        if let Some(data) = snapshot.get("snapshot") {
-            for (source, target) in [("power_w", "power_w"), ("power_w", "current_power_w"),
-                ("current_a", "current_a"), ("voltage_v", "voltage_v"),
-                ("temperature_c", "temperature_c"), ("battery_soc", "battery_soc")] {
-                if let Some(value) = data.get(source) {
-                    let number = value.as_f64().or_else(|| value.as_str().and_then(|text| text.parse::<f64>().ok()));
-                    if number.is_some_and(f64::is_finite) {
-                        resp[target] = value.clone();
-                        resp["telemetry_available"] = json!(true);
-                    }
+        let src = snapshot.snapshot;
+        // power_w 同时填入 current_power_w(兼容旧字段)
+        if let Some(v) = src.power_w { telemetry.power_w = Some(v); current_power_w = Some(v); telemetry_available = true; }
+        for (target, value) in [
+            (0usize, src.current_a), (1, src.voltage_v), (2, src.temperature_c), (3, src.battery_soc),
+        ] {
+            if let Some(v) = value {
+                telemetry_available = true;
+                match target {
+                    0 => telemetry.current_a = Some(v),
+                    1 => telemetry.voltage_v = Some(v),
+                    2 => telemetry.temperature_c = Some(v),
+                    _ => telemetry.battery_soc = Some(v),
                 }
             }
-            if let Some(value) = data.get("ts") { resp["telemetry_ts"] = value.clone(); }
         }
-        if let Err(error) = common_redis::write_snapshot(&st.redis_cache, &order_no, &resp).await {
+        telemetry_ts = src.ts.map(serde_json::Value::String);
+    }
+    let is_charging = status == "charging";
+    let resp = api_contracts::charge::ChargeSnapshot {
+        order_id: r.try_get::<u64,_>("id")?,
+        order_no: order_no.clone(),
+        status: status.clone(),
+        charge_state: status,
+        current_power_w,
+        power_w: telemetry.power_w,
+        current_a: telemetry.current_a,
+        charged_kwh: r.try_get::<Option<String>,_>("charged_kwh")?,
+        current_fee_cents: r.try_get::<Option<i64>,_>("total_cents")?,
+        temperature_c: telemetry.temperature_c,
+        voltage_v: telemetry.voltage_v,
+        battery_soc: telemetry.battery_soc,
+        elapsed_seconds: r.try_get::<Option<u32>,_>("charged_seconds")?,
+        telemetry_available,
+        poll_continue,
+        next_poll_after_ms: if poll_continue {5000} else {0},
+        server_ts: chrono::Utc::now().to_rfc3339(),
+        telemetry_ts,
+    };
+    if is_charging {
+        let resp_value = serde_json::to_value(&resp)?;
+        if let Err(error) = common_redis::write_snapshot(&st.redis_cache, &order_no, &resp_value).await {
             tracing::warn!(order_no, error = %error, "charge snapshot cache write failed");
         }
     }
