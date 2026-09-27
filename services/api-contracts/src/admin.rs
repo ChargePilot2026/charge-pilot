@@ -736,3 +736,81 @@ mod webhook_tests {
         assert!(v["response_status"].is_null());
     }
 }
+
+// ===== OTA =====
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OtaPackage {
+    pub id: u64,
+    pub code: String,
+    pub vendor_id: Option<u64>,
+    pub version: String,
+    pub size_bytes: u64,
+    pub checksum_sha256: String,
+    pub status: String,
+    pub created_at: String,
+}
+
+/// OTA 固件详情。⚠️ 比列表**少** `vendor_id`/`status`/`created_at`,
+/// **多** `storage_url`(设备下载地址)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OtaPackageDetail {
+    pub id: u64,
+    pub code: String,
+    pub version: String,
+    pub storage_url: String,
+    pub checksum_sha256: String,
+    pub size_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OtaSchedule {
+    pub id: u64,
+    pub package_id: u64,
+    pub rollout_strategy: String,
+    /// 未分批时为空
+    pub batch_size: Option<u32>,
+    pub status: String,
+    pub scheduled_at: Option<String>,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+}
+
+/// 升级计划详情(比列表少 `batch_size` 与三个时间戳)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OtaScheduleDetail {
+    pub id: u64,
+    pub package_id: u64,
+    pub rollout_strategy: String,
+    pub status: String,
+}
+
+#[cfg(test)]
+mod ota_tests {
+    use super::*;
+
+    /// 回归护栏:详情才有 `storage_url`(设备靠它下载),列表不该暴露
+    #[test]
+    fn package_detail_has_storage_url() {
+        let d = OtaPackageDetail {
+            id: 1, code: "P1".into(), version: "1.0.0".into(),
+            storage_url: "https://cdn/fw.bin".into(),
+            checksum_sha256: "ab".into(), size_bytes: 1024,
+        };
+        let v = serde_json::to_value(&d).unwrap();
+        assert_eq!(v["storage_url"], "https://cdn/fw.bin");
+        assert!(v.get("created_at").is_none());
+    }
+
+    /// 未开始/进行中的计划,时间戳为 null
+    #[test]
+    fn schedule_timestamps_are_nullable() {
+        let s = OtaSchedule {
+            id: 1, package_id: 2, rollout_strategy: "batch".into(), batch_size: Some(10),
+            status: "pending".into(), scheduled_at: None, started_at: None, completed_at: None,
+        };
+        let v = serde_json::to_value(&s).unwrap();
+        assert!(v["scheduled_at"].is_null());
+        assert!(v["completed_at"].is_null());
+    }
+}
