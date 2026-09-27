@@ -26,6 +26,7 @@ pub mod paths {
     pub const INTERNAL_ORDER_DETAIL: &str = "/api/v1/internal/orders/:order_id";
     pub const INTERNAL_INVOICE_DETAIL: &str = "/api/v1/internal/invoices/:invoice_id";
     pub const INTERNAL_COUPON_STATS: &str = "/api/v1/internal/coupons/stats";
+    pub const INTERNAL_DASHBOARD_METRICS: &str = "/api/v1/internal/dashboard/metrics";
 
     // --- 用户路由(需 UserClaims JWT)---
     pub const USER_SCAN_RESOLVE: &str = "/api/v1/user/scan/resolve";
@@ -51,6 +52,8 @@ pub mod paths {
     pub const USER_STATION_NEARBY: &str = "/api/v1/user/station/nearby";
     pub const USER_STATION_DETAIL: &str = "/api/v1/user/station/:station_id";
     pub const USER_DEVICE_REPORT_FAULT: &str = "/api/v1/user/device/report-fault";
+    pub const USER_DEVICE_FAULT_REPORTS: &str = "/api/v1/user/device/fault-reports";
+    pub const USER_DEVICE_FAULT_HISTORY: &str = "/api/v1/user/device/fault-reports/:id/history";
     pub const USER_COUPON_MY: &str = "/api/v1/user/coupon/my";
     pub const USER_COUPON_PREVIEW: &str = "/api/v1/user/coupon/preview";
     pub const USER_INVOICE_APPLY: &str = "/api/v1/user/invoice/apply";

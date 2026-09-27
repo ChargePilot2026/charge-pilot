@@ -295,6 +295,64 @@ pub async fn user_history(
     list_owned(state, query, Some(claims.user_id)).await
 }
 
+/// Internal, service-token protected order list used by gateway device operations.
+pub async fn device_orders(
+    State(st): State<AppState>,
+    Path(device_id): Path<String>,
+) -> AppResult<Json<ApiEnvelope<serde_json::Value>>> {
+    if device_id.is_empty() || device_id.len() > 64 {
+        return Err(AppError::BadRequest("设备编号无效".into()));
+    }
+    let rows = sqlx::query(
+        "SELECT id, order_no, user_id, port_no, status, started_at, ended_at, total_cents
+         FROM charge_order WHERE device_id = ? AND deleted_at IS NULL ORDER BY id DESC LIMIT 100",
+    )
+    .bind(&device_id)
+    .fetch_all(st.db.pool())
+    .await?;
+    let items: Vec<serde_json::Value> = rows.iter().map(|row| -> AppResult<serde_json::Value> {
+        Ok(serde_json::json!({
+            "order_id": row.try_get::<u64, _>("id")?,
+            "order_no": row.try_get::<String, _>("order_no")?,
+            "user_id": row.try_get::<u64, _>("user_id")?,
+            "port_no": row.try_get::<u8, _>("port_no")?,
+            "status": row.try_get::<String, _>("status")?,
+            "started_at": row.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("started_at")?.map(|time| time.to_rfc3339()),
+            "ended_at": row.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("ended_at")?.map(|time| time.to_rfc3339()),
+            "total_cents": row.try_get::<Option<i64>, _>("total_cents")?,
+        }))
+    }).collect::<AppResult<Vec<_>>>()?;
+    Ok(Json(ApiEnvelope::ok(
+        serde_json::json!({ "device_id": device_id, "items": items }),
+        common_error::current_request_id(),
+    )))
+}
+
+/// Internal snapshot warmer input. The user service owns charge-order lifecycle data.
+pub async fn charging_orders_for_snapshots(
+    State(st): State<AppState>,
+) -> AppResult<Json<ApiEnvelope<serde_json::Value>>> {
+    let rows = sqlx::query(
+        "SELECT order_no, device_id, port_no, CAST(charged_kwh AS CHAR) AS charged_kwh, charged_seconds
+         FROM charge_order WHERE status = 'charging' AND deleted_at IS NULL ORDER BY id DESC LIMIT 100",
+    )
+    .fetch_all(st.db.pool())
+    .await?;
+    let items: Vec<serde_json::Value> = rows.iter().map(|row| -> AppResult<serde_json::Value> {
+        Ok(serde_json::json!({
+            "order_no": row.try_get::<String, _>("order_no")?,
+            "device_id": row.try_get::<String, _>("device_id")?,
+            "port_no": row.try_get::<u8, _>("port_no")?,
+            "charged_kwh": row.try_get::<Option<String>, _>("charged_kwh")?,
+            "charged_seconds": row.try_get::<Option<u32>, _>("charged_seconds")?,
+        }))
+    }).collect::<AppResult<Vec<_>>>()?;
+    Ok(Json(ApiEnvelope::ok(
+        serde_json::json!({ "items": items }),
+        common_error::current_request_id(),
+    )))
+}
+
 #[derive(Serialize)]
 pub struct UserOrderDetail {
     #[serde(flatten)]
@@ -303,6 +361,7 @@ pub struct UserOrderDetail {
     pub refunded_cents: Option<i64>,
     pub payment_order_no: Option<String>,
     pub failure_reason: Option<String>,
+    pub feedback_submitted: bool,
 }
 
 pub async fn user_detail(
@@ -330,6 +389,13 @@ pub async fn user_detail(
         order.service_fee_cents = billing.service_cents;
         order.total_fee_cents = billing.total_cents;
     }
+    let feedback_submitted: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM feedback WHERE user_id = ? AND order_id = ? AND deleted_at IS NULL)",
+    )
+    .bind(claims.user_id)
+    .bind(order.order_id)
+    .fetch_one(state.db.pool())
+    .await?;
     // Settlement participants belong to operators, not the end user's response.
     Ok(Json(ApiEnvelope::ok(
         UserOrderDetail {
@@ -338,6 +404,7 @@ pub async fn user_detail(
             refunded_cents: detail.refunded_cents,
             payment_order_no: detail.payment_order_no,
             failure_reason: detail.failure_reason,
+            feedback_submitted,
         },
         common_error::current_request_id(),
     )))

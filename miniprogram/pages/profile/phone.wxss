@@ -1,0 +1,1 @@
+.container{padding:24rpx}.card{padding:28rpx;background:#fff;border-radius:16rpx;margin-bottom:20rpx}.heading{font-size:36rpx;font-weight:600;margin-bottom:16rpx}.text-secondary{font-size:26rpx;color:#888;line-height:1.6}.status{margin:30rpx 0;font-size:30rpx}.success{color:#237804}.error{color:#a8071a}

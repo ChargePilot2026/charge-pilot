@@ -1,0 +1,13 @@
+<view class="container">
+  <view wx:if="{{needsLogin}}" class="card"><view>登录后可管理手机号绑定</view><button type="primary" bindtap="login">微信登录</button></view>
+  <view wx:elif="{{loading}}" class="card">正在读取绑定状态…</view>
+  <view wx:else class="card">
+    <view class="heading">手机号绑定</view>
+    <view class="text-secondary">通过微信手机号快速验证组件授权。服务端只保存手机号哈希，不接收客户端填写的手机号。</view>
+    <view class="status">{{bound ? '当前账号已绑定手机号' : '当前账号尚未绑定手机号'}}</view>
+    <button wx:if="{{!bound}}" type="primary" open-type="getPhoneNumber" bindgetphonenumber="onGetPhoneNumber" loading="{{busy}}" disabled="{{busy}}">授权并绑定手机号</button>
+    <button wx:if="{{bound}}" bindtap="unbind" loading="{{busy}}" disabled="{{busy}}">解除绑定</button>
+  </view>
+  <view wx:if="{{notice}}" class="card success">{{notice}}</view>
+  <view wx:if="{{error}}" class="card error"><view>{{error}}</view><button wx:if="{{!needsLogin}}" bindtap="load" disabled="{{busy}}">刷新状态</button></view>
+</view>

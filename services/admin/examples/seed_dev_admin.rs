@@ -61,6 +61,14 @@ async fn main() -> AppResult<()> {
         .execute(&mut *tx).await?;
     sqlx::query("INSERT IGNORE INTO role_permission (role_id,permission_id) SELECT ?,id FROM permission WHERE code IN ('station.read','station.create','station.update','station.delete')")
         .bind(role_id).execute(&mut *tx).await?;
+    sqlx::query("INSERT IGNORE INTO permission (code,name,module) VALUES ('invoice.review','审核发票申请','finance'),('feedback.read','查看用户反馈','customer_service'),('feedback.reply','回复用户反馈','customer_service'),('fault.read','查看设备报修','inspection'),('fault.dispatch','派单处理设备报修','inspection'),('whitelabel.read','查看白标配置','settings'),('whitelabel.update','更新白标配置','settings'),('dashboard.read','查看运营仪表盘','dashboard')")
+        .execute(&mut *tx).await?;
+    sqlx::query("INSERT IGNORE INTO role_permission (role_id,permission_id) SELECT ?,id FROM permission WHERE code IN ('invoice.review','feedback.read','feedback.reply','fault.read','fault.dispatch','whitelabel.read','whitelabel.update','dashboard.read')")
+        .bind(role_id).execute(&mut *tx).await?;
+    sqlx::query("INSERT IGNORE INTO permission (code,name,module,description) VALUES ('coupon.read','查看优惠券','coupon','查询优惠券模板和发放统计'),('coupon.create','创建优惠券','coupon','创建优惠券模板'),('coupon.update','编辑优惠券','coupon','修改优惠券模板'),('coupon.delete','删除优惠券','coupon','软删除优惠券模板'),('coupon.grant','发放优惠券','coupon','向指定用户发放优惠券')")
+        .execute(&mut *tx).await?;
+    sqlx::query("INSERT IGNORE INTO role_permission (role_id,permission_id) SELECT ?,id FROM permission WHERE code IN ('coupon.read','coupon.create','coupon.update','coupon.delete','coupon.grant')")
+        .bind(role_id).execute(&mut *tx).await?;
     if existing.is_some() {
         tx.commit().await?;
         println!("Development administrator already exists; credentials preserved.");

@@ -1,6 +1,6 @@
 # gateway_db 数据库表设计
 
-**所属服务**:gateway(对外 :9100 TCP / :1883 MQTT,设备长连接接入)
+**所属服务**:gateway(对外 :9100 TCP/JSON;MQTT Broker 未接入且 :1883 未监听)
 **Schema 名**:`gateway_db`
 **字符集 / 排序规则**:`utf8mb4` / `utf8mb4_unicode_ci`
 **引擎**:InnoDB(全表)
@@ -26,7 +26,7 @@
 | --- | --- | --- | --- |
 | `vendor` | 厂商字典 | 不分 | ~10 |
 | `device` | 设备主表 | 不分 | ~5000 |
-| `device_session` | 连接会话(TCP/MQTT) | 按月分区 | ~50 万 |
+| `device_session` | 当前为 TCP/JSON 连接会话(MQTT 尚未接入) | 按月分区 | ~50 万 |
 | `telemetry` | 遥测原始数据 | **按 device_id hash 分 16 张表**(§ 4.8)+ 按月分区 | **1 个月 ≈ 2.2 亿** |
 | `telemetry_aggregate_15min` | **15 分钟聚合**(保留 3 年) | 按月分区 | 3 年 ≈ 5000 万 |
 | `telemetry_aggregate_hourly` | **小时聚合**(保留 3 年) | 按月分区 | 3 年 ≈ 1.3 亿 |
@@ -181,7 +181,7 @@
 
 ## 表 3:`gateway_db.device_session`
 
-**业务说明**:**设备连接会话记录**。每次 TCP/MQTT 连接建立一条记录,断开时 UPDATE 断开时间。**按月分区**,超 6 个月物理归档(只用于排障)。
+**业务说明**:**设备连接会话记录**。当前 TCP/JSON 连接建立后写入会话，断开时更新断开时间；MQTT 会话尚未接入。**按月分区**,超 6 个月物理归档(只用于排障)。
 
 **关键业务规则**:
 
@@ -228,7 +228,7 @@
 
 ### 业务规则
 
-- **新建**:TCP/MQTT 连接建立 + 鉴权通过 → INSERT `device_session(disconnected_at=NULL)`
+- **新建**:TCP/JSON 连接建立 + 鉴权通过 → INSERT `device_session(disconnected_at=NULL)`
 - **更新**:连接断开 → UPDATE `disconnected_at=NOW(), disconnect_reason`
 - **重复连接**:同一 `device_id` 已存在活跃会话(`disconnected_at IS NULL`)→ 旧会话 UPDATE 断开(`disconnect_reason='device_restart'`)+ 新会话 INSERT
 - **物理归档**:worker 每日扫表 → `disconnected_at < NOW() - 6 MONTH` → `DELETE`(DROP PARTITION)
@@ -297,13 +297,12 @@
 
 ### 业务规则
 
-- **入库**:gateway 收到设备遥测帧 → 解析 → 七重防护校验(§ 6.4)→ INSERT 物理表
+- **当前入库**:gateway 收到 TCP JSON 遥测帧 → 校验有限数值/SOC 范围 → INSERT 测量值并更新聚合。完整七重防护阈值检测尚未接入
 - **充电中快照**:`user-api` 收到小程序轮询时查最新 N 条 → 缓存到 Redis(`snapshot:{order_id}`,TTL 10s)
-- **告警触发**:`alert_rule` 匹配 → 发布 `alert_stream` 事件
-- **聚合清理**(方案 A,§ 4.6 修订):
-  - worker 每小时跑一次聚合任务 → 把上一小时的原始 telemetry 按 15 分钟 / 小时双粒度聚合 → 写 `telemetry_aggregate_15min` / `telemetry_aggregate_hourly`
-  - worker 每日扫表 → 原始超 1 月的物理删除
-  - 聚合表保留 3 年,超期按月分区 DROP PARTITION
+- **告警触发**:自动 `alert_rule` 匹配尚未接入；TCP 设备主动上报 `alert` 帧时才发布 `alert_stream`
+- **当前聚合**:原始遥测与 15 分钟/小时聚合在同一事务更新；不是 worker 定时重算
+- **数据清理**:原始遥测与聚合数据的归档、保留期删除尚未接入
+- `raw_frame_log` 当前没有写入路径；设备日志 API 未注册
 - **路由层**:`crates/common-db/router.rs` 中 `telemetry::route(device_id)` 函数返回物理表名,业务代码不直接拼表名
 
 ---
@@ -403,7 +402,7 @@
 
 ### 业务规则
 
-- **下发指令**:worker 消费 `ota_schedule_stream` → 通过 MQTT 下行 → INSERT 本表
+- **下发指令**:目标设计由 worker 消费 `ota_schedule_stream` 后通过 MQTT 下行；当前 OTA handler 返回暂不可用并进入 Redis DLQ，本表没有 OTA 写入路径
 - **超时检测**:30 min 内未收到设备 ACK(`command_status='sent'` 持续 30 min)→ 视为超时(§ 6.6 双触发)→ `command_status='timeout'` + 触发回滚
 - **物理归档**:worker 每日扫表 → `sent_at < NOW() - 12 MONTH` → `DELETE`(DROP PARTITION)
 

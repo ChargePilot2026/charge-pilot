@@ -21,9 +21,12 @@ pub async fn apply(tx:&mut sqlx::Transaction<'_,sqlx::MySql>,id:&str,req:&Releas
  let wallets=sqlx::query("SELECT id,status FROM wallet_account WHERE user_id=? AND deleted_at IS NULL FOR UPDATE").bind(uid).fetch_all(&mut **tx).await?;
  if wallets.len()!=1{return Err(AppError::Conflict("钱包账户异常".into()));}
  let logs=sqlx::query("SELECT id,trigger_rule,frozen_action,status FROM risk_freeze_log WHERE user_id=? ORDER BY id FOR UPDATE").bind(uid).fetch_all(&mut **tx).await?;
- let target=logs.iter().find(|r|r.try_get::<u64,_>("id").ok()==Some(freeze_id)).ok_or_else(||AppError::Conflict("冻结记录不匹配".into()))?;
+ let mut target=None;
+ for log in &logs { if log.try_get::<u64,_>("id")?==freeze_id { target=Some(log); break; } }
+ let target=target.ok_or_else(||AppError::Conflict("冻结记录不匹配".into()))?;
  if target.try_get::<String,_>("trigger_rule")?!="wallet_refund_frequency" || target.try_get::<String,_>("frozen_action")?!="wallet_refund" || target.try_get::<String,_>("status")?!="frozen" {return Err(AppError::Conflict("冻结原因或状态已变化".into()));}
- let other_frozen=logs.iter().any(|r|r.try_get::<u64,_>("id").ok()!=Some(freeze_id)&&r.try_get::<String,_>("status").ok().as_deref()==Some("frozen"));
+ let mut other_frozen=false;
+ for log in &logs { if log.try_get::<u64,_>("id")?!=freeze_id && log.try_get::<String,_>("status")?=="frozen" { other_frozen=true; break; } }
  // Existing frozen user identity remains authoritative, even after this cause is resolved.
  let activated=!other_frozen && user.as_deref()==Some("active");
  sqlx::query("UPDATE risk_freeze_log SET status='unfrozen',unfreeze_at=UTC_TIMESTAMP(3) WHERE id=?").bind(freeze_id).execute(&mut **tx).await?;

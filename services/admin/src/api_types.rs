@@ -16,12 +16,12 @@ pub mod paths {
     pub const INTERNAL_STATIONS_DETAIL: &str = "/api/v1/internal/stations/:station_id";
     pub const INTERNAL_PRICING_RULES_GET: &str = "/api/v1/internal/pricing-rules/:id";
     pub const INTERNAL_SPLIT_TEMPLATES_GET: &str = "/api/v1/internal/split-templates/:id";
-    pub const INTERNAL_EXPORT_TASK_GET: &str = "/api/v1/internal/export/tasks/:id";
     pub const INTERNAL_ALERTS_ACTIVE: &str = "/api/v1/internal/alerts";
     pub const INTERNAL_DEVICES_REBOOT: &str = "/api/v1/internal/devices/:id/reboot";
 
     // --- PC 后台路由(需 AdminClaims JWT)---
     pub const ADMIN_AUTH_LOGOUT: &str = "/api/v1/admin/auth/logout";
+    pub const ADMIN_DASHBOARD: &str = "/api/v1/admin/dashboard";
     pub const ADMIN_USERS: &str = "/api/v1/admin/users";
     pub const ADMIN_USER_DETAIL: &str = "/api/v1/admin/users/:id";
     pub const ADMIN_USER_RESET_PASSWORD: &str = "/api/v1/admin/users/:id/reset-password";
@@ -62,6 +62,7 @@ pub mod paths {
     pub const ADMIN_COUPONS: &str = "/api/v1/admin/coupons";
     pub const ADMIN_COUPON_DETAIL: &str = "/api/v1/admin/coupons/:id";
     pub const ADMIN_COUPON_STATS: &str = "/api/v1/admin/coupons/:id/stats";
+    pub const ADMIN_COUPON_GRANTS: &str = "/api/v1/admin/coupons/:id/grants";
     pub const ADMIN_MEMBERSHIP: &str = "/api/v1/admin/membership";
 
     pub const ADMIN_CHARGE_RULES: &str = "/api/v1/admin/settings/charge-rules";
@@ -74,6 +75,12 @@ pub mod paths {
     pub const ADMIN_ANNOUNCEMENT_DETAIL: &str = "/api/v1/admin/announcements/:id";
     pub const ADMIN_CUSTOMER_SERVICE: &str = "/api/v1/admin/customer-service";
     pub const ADMIN_CUSTOMER_SERVICE_DETAIL: &str = "/api/v1/admin/customer-service/:id";
+    pub const ADMIN_FEEDBACK: &str = "/api/v1/admin/feedback";
+    pub const ADMIN_FEEDBACK_REPLY: &str = "/api/v1/admin/feedback/:id/reply";
+    pub const ADMIN_DEVICE_FAULT_REPORTS: &str = "/api/v1/admin/device-fault-reports";
+    pub const ADMIN_DEVICE_FAULT_HISTORY: &str = "/api/v1/admin/device-fault-reports/:id/history";
+    pub const ADMIN_DEVICE_FAULT_DISPATCH: &str = "/api/v1/admin/device-fault-reports/:id/dispatch";
+    pub const ADMIN_DEVICE_FAULT_RESOLVE: &str = "/api/v1/admin/device-fault-reports/:id/resolve";
 
     pub const ADMIN_WHITELABEL: &str = "/api/v1/admin/whitelabel";
 
@@ -87,6 +94,9 @@ pub mod paths {
     pub const ADMIN_OTA_SCHEDULE_DETAIL: &str = "/api/v1/admin/ota/schedules/:id";
 
     pub const ADMIN_EXPORT: &str = "/api/v1/admin/export";
+    pub const ADMIN_EXPORT_TASKS: &str = "/api/v1/admin/export/tasks";
+    pub const ADMIN_EXPORT_TASK: &str = "/api/v1/admin/export/tasks/:task_id";
+    pub const ADMIN_EXPORT_DOWNLOAD: &str = "/api/v1/admin/export/tasks/:task_id/download";
 
     pub const HEALTH: &str = "/api/v1/health";
 }

@@ -88,59 +88,72 @@ async fn handle_frame(frame: &Frame, state: &AppState, session: &str) -> AppResu
     match frame.msg_type.as_str() {
         "heartbeat" => { /* 设备心跳 */ }
         "telemetry" => {
-            // 持久化到 telemetry 表
-            sqlx::query(
-                "INSERT INTO telemetry (device_id, port_no, metric, value_num, ts)
-                 VALUES (?, ?, 'power_w', ?, ?)",
-            )
-            .bind(&frame.device_id)
-            .bind(frame.port_no.unwrap_or(0))
-            .bind(
-                frame
-                    .payload
-                    .get("power_w")
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(0.0),
-            )
-            .bind(frame.ts)
-            .execute(state.db.pool())
-            .await?;
+            let port_no = frame.port_no.ok_or_else(|| common_error::AppError::BadRequest("遥测帧缺少端口号".into()))?;
+            let mut measurements = Vec::new();
+            for metric in ["power_w", "voltage_v", "current_a", "temperature_c", "battery_soc", "meter_kwh"] {
+                let Some(value) = frame.payload.get(metric).and_then(|value| {
+                    value.as_f64().or_else(|| value.as_str().and_then(|text| text.parse::<f64>().ok()))
+                }).filter(|value| value.is_finite()) else { continue; };
+                if metric == "battery_soc" && !(0.0..=100.0).contains(&value) {
+                    return Err(common_error::AppError::BadRequest("SOC 遥测值必须在 0–100 之间".into()));
+                }
+                measurements.push((metric, value));
+            }
+            if measurements.is_empty() { return Err(common_error::AppError::BadRequest("遥测帧不含有效测量值".into())); }
+            let mut tx = state.db.pool().begin().await?;
+            for (metric, value) in measurements {
+                sqlx::query(
+                    "INSERT INTO telemetry (device_id, port_no, metric, value_num, ts) VALUES (?, ?, ?, ?, ?)",
+                )
+                .bind(&frame.device_id).bind(port_no).bind(metric).bind(value).bind(frame.ts)
+                .execute(&mut *tx).await?;
+                crate::telemetry_obs::aggregate_measurement(
+                    &mut tx, &frame.device_id, port_no, metric, value, frame.ts,
+                ).await?;
+            }
+            tx.commit().await?;
         }
         "status" => {
-            // 发布 device_event_stream
+            let status = frame.payload.get("status").and_then(|v| v.as_str())
+                .filter(|value| !value.is_empty() && value.len() <= 64 && !value.chars().any(char::is_control))
+                .ok_or_else(|| common_error::AppError::BadRequest("设备状态帧缺少有效 status".into()))?;
             let env = StreamEnvelope::new(
                 "device_status",
                 "gateway",
                 json!({
                     "device_id": frame.device_id,
                     "port_no": frame.port_no,
-                    "status": frame.payload.get("status").cloned().unwrap_or(serde_json::Value::Null),
+                    "status": status,
                 }),
             );
-            let _ = state
-                .redis_stream
-                .xadd_envelope(common_redis::streams::DEVICE_EVENT, &env)
-                .await;
+            let mut tx = state.db.pool().begin().await?;
+            crate::outbox::enqueue(&mut tx, common_redis::streams::DEVICE_EVENT, &env).await?;
+            tx.commit().await?;
         }
         "ack" => {
             crate::charge_command::acknowledge(state, session, frame).await?;
         }
         "alert" => {
-            // 越界告警 → alert_stream
+            let metric = frame.payload.get("metric").and_then(|v| v.as_str())
+                .filter(|value| !value.is_empty() && value.len() <= 64 && !value.chars().any(char::is_control))
+                .ok_or_else(|| common_error::AppError::BadRequest("设备告警帧缺少有效 metric".into()))?;
+            let severity = frame.payload.get("severity").and_then(|v| v.as_str()).unwrap_or("warning");
+            if !["warning", "critical", "fatal"].contains(&severity) {
+                return Err(common_error::AppError::BadRequest("设备告警 severity 无效".into()));
+            }
             let env = StreamEnvelope::new(
                 "device_alert",
                 "gateway",
                 json!({
                     "device_id": frame.device_id,
-                    "metric": frame.payload.get("metric").cloned().unwrap_or(serde_json::Value::Null),
-                    "severity": frame.payload.get("severity").cloned().unwrap_or(json!("warning")),
-                    "value": frame.payload.get("value").cloned().unwrap_or(serde_json::Value::Null),
+                    "metric": metric,
+                    "severity": severity,
+                    "value": frame.payload.get("value"),
                 }),
             );
-            let _ = state
-                .redis_stream
-                .xadd_envelope(common_redis::streams::ALERT, &env)
-                .await;
+            let mut tx = state.db.pool().begin().await?;
+            crate::outbox::enqueue(&mut tx, common_redis::streams::ALERT, &env).await?;
+            tx.commit().await?;
         }
         _ => {
             warn!(msg_type = %frame.msg_type, "unknown frame type");

@@ -22,10 +22,10 @@
   |                    |-- 事务提交后返回 200 --> 微信        |                  |                   |
   |                    | outbox 发布器重试 XADD charge_started_stream ----->|            |                   |
   |                    |                     |                    |---- 消费并验逻辑锁 -->|                   |
-  |                    |                     |                    |                  | MQTT START → 设备 ACK|
+  |                    |                     |                    |                  | TCP/JSON START Frame → 设备 ACK|
   |                    |<-- POST /api/v1/internal/charge-orders/{id}/start-result --------|                   |
   |                    | user_db 事务:INSERT active_port_charge + status=charging         |                   |
-  |                    |-- 持久化确认 ------->|                    |<---- ACK Stream --|                   |
+  |                    |-- 持久化确认 ------->|                    |                  |                   |
   | GET /charge/ongoing/snapshot            |                    |                  |                   |
   |------------------->| Redis miss → HTTP gateway snapshot;本地查 user_db  |            |                   |
   |                    |                     |                    |                  | 设备停止 → charge_ended_stream
@@ -44,23 +44,23 @@
 ### § 2.1 支付失败或迟到
 
 - 用户拒付时没有成功回调;小程序依支付结果更新界面,待支付订单由超时任务关闭。收到失败通知时 user 只更新自己的支付单和充电订单,并按 `order_no` 原子比较删除逻辑锁。
-- 成功回调在订单已取消、超时或锁属于他人后到达:user 仍记录真实支付成功,但同事务写 `event_outbox(type='charge_refund_requested', stream_name='comp_tx_stream')`,不写启动事件。billing 消费补偿事件、查询 user 支付金额后,按 `event_key` 幂等发布 `refund_required_stream`。
+- 成功回调在订单已取消或已失效后到达:user 仍记录真实支付成功,并在同一事务创建 `refund_record`、写 `refund_required_stream` outbox，不写启动事件。admin 消费该事件并领取退款记录；此场景不经 `comp_tx_stream`。
 
 ### § 2.2 gateway 启动失败
 
 ```text
-gateway 消费 charge_started_stream → MQTT START → 设备 ACK failed / 超时
+gateway 消费 charge_started_stream → TCP/JSON START Frame → 设备 ACK failed / 超时
   → POST user /api/v1/internal/charge-orders/{order_id}/start-result(result=failed)
-  → user 事务:charge_order=failed + event_outbox(type=charge_refund_requested)
-  → user 发布 comp_tx_stream → billing 发布 refund_required_stream
+  → user 事务:charge_order=failed + refund_record + event_outbox(refund_required)
+  → user 发布 refund_required_stream
   → admin 消费并调 user 内部接口领取 refund_record → 微信退款 → 调 user 回写结果
 ```
 
-gateway 不直接更新 `user_db`,也不发布 `refund_required_stream`。若设备已经闭合继电器但 user 的端口占用唯一键冲突,gateway 必须先发 STOP 并确认断电,再报告失败;未确认断电时告警并转人工处置。
+gateway 不直接更新 `user_db`,也不发布 `refund_required_stream`。启动结果经 user 内部 HTTP 回执；user 事务负责更新订单并创建退款记录。若设备已经闭合继电器但 user 的端口占用唯一键冲突,gateway 必须先发 STOP 并确认断电,再报告失败;未确认断电时告警并转人工处置。
 
 ### § 2.3 充电结束或超时
 
-gateway 检测设备停止或超过最长充电时间时发 `charge_ended_stream`;user 消费后更新 `charge_order` 并以 `port_id` + `charge_order_id` 删除 `active_port_charge`,关闭轮询缓存。billing 独立消费并写本 schema 计费/分账表;符合退款条件时由 billing 发布 `refund_required_stream`。
+gateway 检测到设备停止状态时发 `charge_ended_stream`;当前未实现最长充电时间扫描。billing 独立消费并写费用、分账和 `fee_delivery`。user 消费结束事件、确认结束状态后更新订单并关闭轮询缓存；收到 fee delivery 后事务内写实结费用，符合条件时由 user 创建退款记录并发布 `refund_required_stream`。
 
 ### § 2.4 用户 60 秒内主动取消
 

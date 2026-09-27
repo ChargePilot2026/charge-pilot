@@ -4,15 +4,14 @@
 //!   - charge_ended_stream.user-cg → 关闭轮询
 //!   - pricing_rule_changed_stream.user-cg → 失效本地计费规则缓存
 //!   - coupon_grant_required_stream.user-cg → 写 coupon_grant
-//!   - comp_tx_stream.user-cg → 用户侧业务补偿(本期仅记账)
+//!   - comp_tx_stream is consumed by worker for refund outcome audit only
 
 use crate::AppState;
 use async_trait::async_trait;
 use common_error::AppResult;
-use common_redis::{StreamEntry, StreamEnvelope};
+use common_redis::StreamEntry;
 use common_stream::{ConsumerGroup, StreamHandler};
-use serde_json::json;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 pub async fn spawn_all(state: AppState) -> AppResult<()> {
     let cg = ConsumerGroup::new(state.redis_stream.clone());
@@ -79,33 +78,8 @@ pub struct CouponGrantHandler { pub state: AppState }
 #[async_trait]
 impl StreamHandler for CouponGrantHandler {
     async fn handle(&self, entry: &StreamEntry) -> AppResult<()> {
-        let payload = &entry.envelope.payload;
-        let user_id = payload.get("user_id").and_then(|v| v.as_u64()).unwrap_or(0);
-        let coupon_id = payload.get("coupon_id").and_then(|v| v.as_u64()).unwrap_or(0);
-        let source = payload.get("source").and_then(|v| v.as_str()).unwrap_or("activity");
-        if user_id == 0 || coupon_id == 0 {
-            error!(?payload, "invalid coupon_grant payload");
-            return Ok(());
-        }
-        let now = chrono::Utc::now();
-        let valid_hours: i64 = sqlx::query_scalar("SELECT valid_hours FROM coupon WHERE id = ?")
-            .bind(coupon_id)
-            .fetch_optional(self.state.db.pool())
-            .await
-            .ok()
-            .flatten()
-            .unwrap_or(720) as i64;
-        sqlx::query(
-            "INSERT INTO coupon_grant (coupon_id, user_id, grant_source, expired_at)
-             VALUES (?, ?, ?, DATE_ADD(NOW(3), INTERVAL ? HOUR))"
-        )
-        .bind(coupon_id)
-        .bind(user_id)
-        .bind(source)
-        .bind(valid_hours)
-        .execute(self.state.db.pool())
-        .await?;
-        info!(user_id, coupon_id, source, "coupon granted");
+        let result = crate::coupon_admin::grant_activity_event(&self.state, entry).await?;
+        info!(user_id=result.user_id, coupon_id=result.coupon_id, coupon_grant_id=result.coupon_grant_id, "coupon grant event applied idempotently");
         Ok(())
     }
 }

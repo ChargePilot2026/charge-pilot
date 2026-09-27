@@ -1,0 +1,1 @@
+.container{padding:24rpx}.card{padding:28rpx;background:#fff;border-radius:16rpx;margin:20rpx 0}.row{display:flex;justify-content:space-between;align-items:center}.title{font-size:30rpx;font-weight:600}.tag{color:#1677ff}.text-secondary{font-size:24rpx;color:#888;margin-top:10rpx}.error{color:#a8071a;margin-top:12rpx}

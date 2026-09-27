@@ -86,7 +86,8 @@
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/api/v1/user/profile` | 个人中心 |
-| POST | `/api/v1/user/phone/bind` | 绑定手机号(可选,绑送奖励) |
+| POST | `/api/v1/user/phone/bind` | 通过微信一次性凭证验证并绑定手机号 |
+| POST | `/api/v1/user/phone/unbind` | 解除当前账号的手机号绑定 |
 | GET | `/api/v1/user/wallet/balance` | 钱包余额查询 |
 | POST | `/api/v1/user/wallet/recharge` | 钱包充值(微信支付下单) |
 | GET | `/api/v1/user/wallet/txns` | 余额流水(分页) |
@@ -100,6 +101,8 @@
 | GET | `/api/v1/user/station/nearby` | 附近站点(经纬度 + 半径) |
 | GET | `/api/v1/user/station/{station_id}` | 站点详情(端口列表 + 实时空闲数) |
 | POST | `/api/v1/user/device/report-fault` | 用户报修充电桩故障 |
+| GET | `/api/v1/user/device/fault-reports` | 查询本人设备报修进度 |
+| GET | `/api/v1/user/device/fault-reports/{id}/history` | 查看本人报修公开处理记录和备注 |
 
 ### 优惠券与发票
 
@@ -242,7 +245,7 @@ Wechatpay-Nonce: ...
 4. 在 `user_db` 事务内锁定对应 `payment_order` 行;`biz_type='charge'` 时再锁定对应 `charge_order`。以 `payment_callback_idempotent.wechat_transaction_id` 唯一键防重复入账:
    - 首次成功回调:INSERT 幂等记录,将支付单置为 `success` 并回填 `wechat_transaction_id` / `paid_at`。
    - 若充电订单仍为 `pending_payment` 且逻辑锁仍属于本 `order_no`,同事务 INSERT `event_outbox(event_key='charge-start:{payment_order_id}', stream_name='charge_started_stream')`。
-   - 若订单已取消 / 超时或锁已属于他人,同事务 INSERT `event_outbox(stream_name='comp_tx_stream', event_key='charge-refund:{payment_order_id}', payload.type='charge_refund_requested')`;不得启动设备。billing 消费该补偿事件后发布 `refund_required_stream`。
+   - 若订单已取消 / 超时或锁已属于他人,同事务写入 `refund_record` 和 `refund_required_stream` outbox;不得启动设备。`comp_tx_stream` 不承担待退款请求。
    - 若 `biz_type='recharge'`,同事务按支付单号幂等增加 `wallet_account` 余额并写 `wallet_txn`;不发 `charge_started_stream`。
    - 若幂等记录已存在,不重复入账;仍须检查对应 outbox 是否待发布,由发布器继续重试。
 5. 事务提交后由 user outbox 发布器 `XADD` 并重试至确认,消费者用 `event_key` 去重。只有数据库事务成功才返回 200;数据库失败返回 5xx 让微信重试。Redis 暂时不可用不丢事件,发布器告警并继续重试。
@@ -531,9 +534,7 @@ Wechatpay-Nonce: ...
 
 **业务逻辑**(P1-7 修正:**禁止跨库直读**,所有跨服务数据走 HTTP 内部接口):
 1. 校验 `order_id` 属于当前 user(防越权)
-2. 查 Redis `snapshot:{order_id}`(TTL 10s,**gateway** 通过 `device_event_stream` 主动填充):
-   - **Hit** → 返回缓存数据
-   - **Miss** → **HTTP 调 gateway**:`GET /api/v1/internal/devices/{device_id}/snapshot?order_id={order_id}`(详见 `gateway.md` § 四)→ 拿 telemetry 最新数据 → 查 `user_db.charge_order`(本 schema)→ 组合 → 回填 Redis 缓存(TTL 10s)
+2. 先查 `user_db.charge_order` 并校验用户归属；充电中时 **HTTP 调 gateway**:`GET /api/v1/internal/devices/{device_id}/snapshot?order_id={order_id}&port_no={port_no}`(详见 `gateway.md` § 四)，组合真实遥测并回填 Redis 缓存(TTL 10s)。缓存不能覆盖数据库状态或订单身份。
 3. 推断 `poll_continue`:
    - `status='charging'` → true
    - `status` ∈ {`finished` / `failed` / `cancelled`} → false(前端跳转充电结束页)
@@ -603,7 +604,7 @@ Wechatpay-Nonce: ...
 **业务逻辑**(P1-7 修正:跨库走 HTTP):
 1. 校验 `order_id` 属于当前 user(防越权 → `1003`)
 2. 查 `user_db.charge_order.started_at` + `ended_at`(若已结束)确定时间窗
-3. **HTTP 调 gateway**:`GET /api/v1/internal/devices/{device_id}/curve?order_id={order_id}&window=last_5min`(详见 `gateway.md` § 四):
+3. **HTTP 调 gateway**:`GET /api/v1/internal/devices/{device_id}/curve?order_id={order_id}&port_no={port_no}&started_at={started_at}&window=last_5min`(详见 `gateway.md` § 四):
    - gateway 在 `gateway_db` 内部查 telemetry(分 16 张表,按 `device_id` hash 路由)
    - gateway 返回采样后的时间序列
 4. **采样压缩**(gateway 侧完成):
@@ -650,13 +651,13 @@ Wechatpay-Nonce: ...
 
 **业务逻辑**:
 1. 校验订单属于当前 user + status='charging'
-2. **HTTP RPC 调 gateway**(`POST /api/v1/internal/stop-charge`)→ 网关通过 MQTT 下发断电指令 → 等设备 ACK
+2. **HTTP RPC 调 gateway**(`POST /api/v1/internal/charge-orders/stop`)→ 网关通过已验证的 TCP JSON 会话下发 STOP → 等设备 ACK
 3. 同步返回 `status='cancelling'`,前端跳转到"结算中"页面
 4. **退款判定 + 执行全部异步**:
    - 设备 ACK 后 gateway 发 `charge_ended_stream` → billing 消费 → 算费 + 判退款
-   - 若需退款(全额 / 部分):**billing 发布 `refund_required_stream`** → admin 消费 → 调微信退款 API(详见 `docs/api/billing.md` § 六 + `docs/api/admin.md` § F)
-   - 最终结果通过 `charge_ended_stream` + `refund_required_stream` 异步通知 user → 推送小程序消息
-5. **本期 user 服务不发 `refund_required_stream`**(沿用 cross-reference § 1 真实生产者清单:billing 单生产)
+   - 若需退款(全额 / 部分):user 将退款记录与 `refund_required_stream` outbox 同事务保存 → admin 消费并调微信退款 API(详见 `docs/api/admin.md` § F)
+   - 微信退款回调由 user 更新退款/支付状态，并写 `refund_completed` 到 `comp_tx_stream`，worker 仅审计该结果
+5. **退款事件由 user 服务发出**；billing 不消费 `comp_tx_stream`，也不写用户退款表。
 
 **错误码**:
 - `1001`: JWT 失效
@@ -823,7 +824,7 @@ Wechatpay-Nonce: ...
 **业务逻辑**(P1-7 修正:跨库走 HTTP):
 1. 校验 `order_id` 属于当前 user
 2. 查 `user_db.charge_order.started_at` + `ended_at` 确定时间窗
-3. **HTTP 调 gateway**:`GET /api/v1/internal/devices/{device_id}/historical-curve?order_id={order_id}&started_at={started_at}&ended_at={ended_at}&granularity={15min|hourly}`(详见 `gateway.md` § 四):
+3. **HTTP 调 gateway**:`GET /api/v1/internal/devices/{device_id}/historical-curve?order_id={order_id}&port_no={port_no}&started_at={started_at}&ended_at={ended_at}&granularity={15min|hourly}`(详见 `gateway.md` § 四):
    - gateway 在 `gateway_db` 内部查对应聚合表(`telemetry_aggregate_15min` / `telemetry_aggregate_hourly`)
    - gateway 返回采样后的时间序列
 4. 算 `summary` 字段(gateway 侧完成)
@@ -839,8 +840,8 @@ Wechatpay-Nonce: ...
 
 **鉴权**:[JWT]
 **限流**:每 user 1 req/order(每笔订单只能评价一次)
-**触发场景**:小程序"充电结束页" → 用户点击"评价 / 投诉"
-**业务目标**:用户对充电体验评分 + 文字反馈 / 投诉分类(需求 § 5.3)
+**触发场景**:小程序订单详情 → 用户提交评价、投诉或建议
+**业务目标**:对已完成充电订单提交一次反馈
 
 **路径参数**:
 | 参数 | 类型 | 说明 |
@@ -850,11 +851,10 @@ Wechatpay-Nonce: ...
 **请求体**:
 ```json
 {
-  "rating": 5,                    // 1-5 星(投诉场景可填 1)
-  "comment": "充电很快,设备正常",   // 文字评论(选填)
-  "category": "experience",       // "experience" 体验 / "device" 设备 / "fee" 费用
-  "is_complaint": false,          // true = 投诉(客户运营重点跟进)
-  "contact_back": true            // 是否希望客服回复(留微信号等)
+  "rating": 5,
+  "category": "rating",             // "rating" / "complaint" / "suggestion"
+  "content": "充电很快，设备正常",   // 选填,最多 2000 字
+  "images": []                      // 可选,最多 5 个 HTTPS 链接
 }
 ```
 
@@ -863,22 +863,16 @@ Wechatpay-Nonce: ...
 {
   "code": 0,
   "data": {
-    "feedback_id": 54321,
-    "created_at": "2026-09-25T15:00:00Z",
-    "estimated_response_hours": 24  // 若 contact_back=true,客户客服响应 SLA
+    "submitted": true,
+    "feedback_id": "54321"
   }
 }
 ```
 
 **业务逻辑**:
-1. 校验 `order_id` 属于当前 user + `status='finished'`
-2. 校验是否已评价过(查 `feedback` 表唯一索引 `uk_feedback_order_user`)→ 已评过返回 `2019`
-3. **事务**:
-   - INSERT `feedback(rating, comment, category, is_complaint, contact_back)`
-   - `is_complaint=true` → 写 `alert_stream` 事件(优先级 mid)+ 推送客户运营 PC 后台 + 客服微信通知
-   - `contact_back=true` + `is_complaint=false` → 写入客服待回访队列
-4. 推送小程序消息"评价已收到,感谢您的反馈"
-5. 同步返回 `feedback_id`
+1. 校验订单归属及 `status='completed'`，锁订单行以串行化重复提交。
+2. 每笔订单只接受一次反馈；校验评分、类型、内容和 HTTPS 图片链接。
+3. 在 `feedback` 表持久化并返回反馈 ID。后台通过服务间队列读取记录、回复或关闭；微信模板消息/订阅消息推送仍未配置。
 
 **错误码**:
 - `1001` / `1003` / `1004`
@@ -918,7 +912,7 @@ Wechatpay-Nonce: ...
 **业务逻辑**:
 1. 校验 JWT 拿 user_id
 2. 查 `user_db.user`(主键)+ `wallet_account`(1:1)+ `coupon_grant` COUNT(`status='unused'`)+ `membership_card`
-3. 手机号绑定状态:`phone_enc IS NOT NULL → true`,不返回明文(§ 9.4 MVP 脱敏)
+3. 手机号绑定状态:`phone_hash IS NOT NULL → true`,不返回明文
 
 **错误码**:
 - `1001`(标准)
@@ -928,14 +922,13 @@ Wechatpay-Nonce: ...
 ### `POST /api/v1/user/phone/bind`
 
 **鉴权**:[JWT]
-**触发场景**:小程序"绑定手机号"按钮 → 前端用 `wx.getPhoneNumber` 拿明文手机号
-**业务目标**:手机号绑定 + **触发绑送奖励**(§ 5.3.2,需求文档)
+**触发场景**:小程序"绑定手机号"按钮 → `wx.getPhoneNumber` 返回一次性凭证
+**业务目标**:由微信服务端验证手机号并绑定；当前未配置绑送奖励
 
 **请求体**:
 ```json
 {
-  "phone": "13800138000",         // 明文,前端从 wx.getPhoneNumber 拿到(微信已做合法性校验,后端再做格式校验)
-  "code": "..."                   // wx.getPhoneNumber 返回的动态令牌(后端需调微信接口解密,本期简化不验证)
+  "code": "..."                   // wx.getPhoneNumber 授权事件返回的一次性凭证
 }
 ```
 
@@ -943,33 +936,29 @@ Wechatpay-Nonce: ...
 ```json
 {
   "code": 0,
-  "data": {
-    "bound": true,
-    "rewards": [                    // 绑送奖励(本期固定:1 张优惠券 + 0 元余额,客户可配)
-      {
-        "type": "coupon",
-        "coupon_grant_id": 98765,
-        "coupon_name": "新人 5 元抵扣券"
-      }
-    ]
-  }
+  "data": { "bound": true }
 }
 ```
 
 **业务逻辑**:
-1. 校验手机号格式(11 位 + 1[3-9]开头)
-2. 校验手机号未绑定其他账号(查 `user.phone_hash` 唯一):
-   - 已绑定 → 返回 `2006`(该手机号已被其他账号绑定)
-3. **事务**:
-   - `UPDATE user SET phone_enc=AES_ENCRYPT($phone, $key), phone_hash=SHA256($phone), registered_at 不变`
-   - 查 `coupon` 模板中 `grant_source='phone_bind'` 的模板
-   - 对每个模板 INSERT `coupon_grant(status='unused')`(发券,本期不送余额)
-4. 推送小程序消息"您已绑定手机号,获得 X 优惠券"
-5. 记录 `audit_log`("用户绑定手机号")
+1. 服务端使用微信小程序 access token 调用 `wxa/business/getuserphonenumber` 消费一次性凭证；access token 缓存于业务 Redis。
+2. 校验微信返回的手机号格式并在服务端计算 SHA-256，不接收客户端自报手机号或哈希，不持久化明文。
+3. 事务内检查手机号未绑定其他有效账号并更新当前用户；`user.phone_hash` 由唯一索引保证并发绑定冲突返回 409。
+4. 微信凭证过期或微信服务暂不可用时不修改账号，用户重新授权后可重试。手机号绑定赠券尚未配置模板来源，当前不发放奖励。
 
 **错误码**:
-- `1001` / `2006`(已绑其他账号)
-- `2008`: 手机号格式不合法
+- `1001` / `1002`(手机号已绑定其他账号)
+- `1000`: 微信手机号格式或授权凭证无效
+
+---
+
+### `POST /api/v1/user/phone/unbind`
+
+**鉴权**:[JWT]
+**请求体**:无
+**响应**:`{ "code": 0, "data": { "unbound": true } }`
+
+解除当前用户的手机号哈希绑定并清除兼容字段 `phone_enc`。解除后该手机号可由其他账号重新绑定；再次绑定仍需完成微信手机号授权。
 
 ---
 
@@ -1100,7 +1089,7 @@ Wechatpay-Nonce: ...
    - 每笔可退 = `paid_fee_cents - 该笔已退金额`
    - 凑到 `amount_cents` 为止(或所有笔次耗尽)
 4. **事务内**:对每笔生成 `refund_record(payment_order_id, refund_cents, refund_reason='recharge_refund', status='pending')` + 冻结对应 `wallet_account.available_cents`(预扣,防双花)
-5. **同步调用微信退款 API**(不走 Stream,user 自己发起同步调用;`refund_required_stream` 仅用于充电退款,billing 单生产)→ 写 `wallet_txn(txn_type='refund', status=success/failed)` + UPDATE `refund_record.status`
+5. 退款审核通过后 user 写入 `refund_required_stream` outbox，由 admin 调用微信退款 API；退款结果回调再更新钱包/退款记录。钱包退款也使用此 Stream，不由 user 同步调用微信退款。
 6. 同步返回"已受理"(`request_id`),实际到账通过微信回调异步确认;失败时回滚冻结 + 标 `refund_record.status='failed'` + 触发风控复核
 
 **错误码**:
@@ -1225,9 +1214,9 @@ Wechatpay-Nonce: ...
 **请求 query**:
 | 参数 | 类型 | 默认 | 说明 |
 | --- | --- | --- | --- |
+| `status` | string | `unused` | `unused`（有效可用）、`used` 或 `expired` |
 | `page` | int | 1 | 页码 |
-| `page_size` | int | 20 | 每页条数(最大 100) |
-| `only_available` | bool | true | 只显示 status='unused' 且在有效期内 |
+| `page_size` | int | 20 | 每页条数(1–100) |
 
 **响应(200)**:
 ```json
@@ -1235,26 +1224,26 @@ Wechatpay-Nonce: ...
   "code": 0,
   "data": {
     "total": 3,
-    "items": [
-      {
-        "coupon_grant_id": 98765,
-        "coupon_name": "新人 5 元抵扣券",
-        "coupon_type": "fixed_amount",
-        "discount_cents": 500,
-        "min_spend_cents": 0,
-        "valid_from": "2026-09-25T00:00:00Z",
-        "valid_until": "2026-10-25T00:00:00Z",
+    "page": 1,
+    "page_size": 20,
+    "items": [{
+        "grant_id": 98765,
+        "name": "新人 5 元抵扣券",
+        "discount_type": "amount",
+        "discount_value_cents": 500,
+        "discount_percent": null,
+        "min_charge_cents": 0,
+        "expired_at": "2026-10-25T00:00:00Z",
         "status": "unused"
-      }
-    ]
+    }]
   }
 }
 ```
 
 **业务逻辑**:
-1. 查 `coupon_grant WHERE user_id = ? AND (status='unused' AND valid_until > NOW())`,按 `valid_until ASC` 排序(快过期的在前)
-2. 关联 `coupon` 表拿名称 / 类型 / 面值
-3. 分页返回
+1. 只查当前用户且未软删除的发放记录，并按 `expired_at` 排序。
+2. `unused` 筛选排除已过期记录；`expired` 同时包含已标记过期以及尚未清理但已过期的未使用记录。
+3. 返回模板名称、折扣配置、门槛和发放实例状态，分页最大 100 条。
 
 **错误码**:
 - `1001`
@@ -1270,7 +1259,7 @@ Wechatpay-Nonce: ...
 ```json
 {
   "coupon_grant_id": 98765,
-  "order_total_cents": 3000          // 预估订单总金额(充电中页面调用)
+  "estimated_total_cents": 3000      // 预估金额(分)
 }
 ```
 
@@ -1279,25 +1268,23 @@ Wechatpay-Nonce: ...
 {
   "code": 0,
   "data": {
-    "valid": true,
-    "coupon_grant_id": 98765,
-    "coupon_name": "新人 5 元抵扣券",
-    "discount_cents": 500,           // 实际可减 5 元
-    "final_cents": 2500,             // 实付 25 元
-    "reason": null                    // valid=false 时填原因
+    "coupon_id": 123,
+    "discount_type": "amount",
+    "discount_cents": 500,
+    "final_cents": 2500
   }
 }
 ```
 
 **业务逻辑**:
-1. 校验 `coupon_grant` 属于当前 user
-2. 校验 `status='unused'` 且 `valid_until > NOW()`
-3. 校验 `order_total_cents >= min_spend_cents`
+1. 校验 `coupon_grant` 属于当前 user、状态未使用且未超过 `expired_at`。
+2. 校验估算金额为正且不超过 1,000,000 元。
+3. 校验 `estimated_total_cents >= min_charge_cents`。
 4. 算折扣:
-   - `fixed_amount` → `discount_cents`(模板面值)
-   - `percentage` → `order_total * percent`,但 ≤ `max_discount_cents`
-   - `full_reduction` → `discount_cents`(但 `order_total >= min_spend`)
-5. 返回 `valid=true` + 折扣明细
+   - `amount` → 抵扣金额不超过预计订单金额
+   - `percentage` → 按模板折扣比例计算
+   - `time_free` → 按全额抵扣预览
+4. 预览不核销优惠券，也不创建订单或支付单。当前扫码支付尚未接入优惠券抵扣。
 
 **错误码**:
 - `1001` / `1004` / `1003`(券不属于当前 user)
@@ -1314,11 +1301,13 @@ Wechatpay-Nonce: ...
 **请求体**:
 ```json
 {
-  "invoice_type": "company",         // "personal" / "company"
+  "biz_type": "charge",
+  "biz_id": 12345,                     // 本人已完成的 charge_order.id
+  "total_cents": 10500,                // 必须与实际支付金额相同
+  "invoice_type": "normal",            // "normal" / "vat_special"
   "title": "某科技有限公司",
-  "tax_id": "91110000123456789X",     // company 时必填
-  "email": "finance@example.com",
-  "payment_order_ids": [12345, 67890]  // 申请开票的支付订单(可多选)
+  "tax_no": null,
+  "email": "finance@example.com"
 }
 ```
 
@@ -1326,27 +1315,19 @@ Wechatpay-Nonce: ...
 ```json
 {
   "code": 0,
-  "data": {
-    "request_no": "INV20260925...",
-    "amount_cents": 10500,
-    "status": "pending",               // 待审核
-    "estimated_processing_hours": 48  // 客户财务审核 SOP(可配)
-  }
+  "data": { "invoice_no": "INV20260925..." }
 }
 ```
 
 **业务逻辑**:
-1. 校验 `invoice_type` / `title` / `email` 格式;`company` 时 `tax_id` 必填(否则 `2013`)
-2. 校验 `payment_order_ids` 全部属于当前 user + `biz_type='charge' + status='success'`(充值款不开票)
-3. 校验金额守恒:`SUM(paid_fee_cents) = 用户填的金额` → 自动重算,无需前端传 amount
-4. INSERT `invoice_request(status='pending')` + 记录 `audit_log`
-5. 客户财务 PC 后台"发票审核"队列收到通知(推送 Webhook)
-6. 同步返回 `request_no` + `status='pending'`
+1. 当前只允许对本人已完成、支付成功且无退款的单笔充电订单开票，钱包充值不支持。
+2. 服务端锁定支付单并校验 `total_cents` 与实际实付金额相等；重复申请返回冲突。
+3. 校验标题、发票类型、专票税号及邮箱，然后创建待审记录。
 
 **错误码**:
 - `1001` / `1003` / `1004`
-- `2013`: 必填字段缺失(company 时缺 tax_id)
-- `2014`: 支付订单中有未支付 / 已退款的订单
+- `1000`: 字段、发票类型、税号或金额无效
+- `1002`: 订单不符合开票条件或已存在申请
 
 ---
 
@@ -1360,15 +1341,19 @@ Wechatpay-Nonce: ...
 {
   "code": 0,
   "data": {
+    "total": 1,
+    "page": 1,
+    "page_size": 20,
     "items": [
       {
-        "request_no": "INV20260925...",
-        "invoice_type": "company",
+        "invoice_no": "INV20260925...",
+        "biz_type": "charge",
         "title": "某科技有限公司",
-        "amount_cents": 10500,
-        "status": "pending",            // "pending" / "approved" / "rejected" / "issued" / "failed"
+        "total_cents": 10500,
+        "review_status": "pending",
         "created_at": "2026-09-25T14:00:00Z",
-        "invoice_file_url": null       // 已开票才有
+        "reject_reason": null,
+        "invoice_url": null
       }
     ]
   }
@@ -1377,7 +1362,7 @@ Wechatpay-Nonce: ...
 
 **业务逻辑**:
 1. 查 `invoice_request WHERE user_id = ? AND deleted_at IS NULL`,按时间倒序
-2. 关联 `invoice_review` 拿最新状态(`admin_db.invoice_review` 决定 `status`)
+2. 返回当前审核状态、拒绝原因及已开具的发票链接，同时返回 total/page/page_size；page/page_size 默认 1/20，最大 100。
 
 **错误码**:
 - `1001`
@@ -1391,12 +1376,6 @@ Wechatpay-Nonce: ...
 **鉴权**:[JWT]
 **业务目标**:当前生效的公告列表(展示 + 弹窗)
 
-**请求 query**:
-| 参数 | 类型 | 说明 |
-| --- | --- | --- |
-| `display_mode` | string | 可选过滤(popup / list / banner) |
-| `limit` | int(默认 5) | 条数 |
-
 **响应(200)**:
 ```json
 {
@@ -1404,14 +1383,10 @@ Wechatpay-Nonce: ...
   "data": {
     "items": [
       {
-        "announcement_id": 123,
+        "id": 123,
         "title": "国庆期间维护通知",
         "content": "10月1日 02:00-04:00 维护...",
-        "announcement_type": "maintenance",
-        "display_mode": "popup",
-        "priority": 8,
-        "valid_from": "2026-09-30T00:00:00Z",
-        "valid_until": "2026-10-02T00:00:00Z"
+        "priority": 8
       }
     ]
   }
@@ -1419,10 +1394,8 @@ Wechatpay-Nonce: ...
 ```
 
 **业务逻辑**:
-1. 查 `admin_db.announcement WHERE status='enabled' AND valid_from <= NOW() AND (valid_until IS NULL OR valid_until > NOW()) AND deleted_at IS NULL`
-2. 可选 `display_mode` 过滤
-3. 按 `priority ASC, valid_from DESC` 排序(高级别优先)
-4. LIMIT
+1. user 服务经 Service Token 调用 admin 内部接口，查询当前有效且未撤回公告。
+2. 上游缺失或失败按真实服务错误返回，不转换成空公告列表。
 
 **错误码**:
 - `1001`
@@ -1440,20 +1413,19 @@ Wechatpay-Nonce: ...
 ```json
 {
   "device_id": "xx_001",            // 报修的设备 ID
-  "port_id": "xx_001_03",          // 可选,具体哪个端口故障
-  "fault_type": "charging_failure", // 故障类型枚举
+  "fault_type": "electrical",      // 故障类型枚举
   "description": "插头插上后无反应",  // 文字描述
-  "photos": [                      // 可选,照片 URL 列表(小程序上传到 OSS 后)
+  "images": [                      // 可选,HTTPS 图片 URL 列表(小程序上传到 OSS 后)
     "https://bucket.oss/photo1.jpg"
   ]
 }
 ```
 
 `fault_type` 枚举:
-- `charging_failure`:充电失败(插上无反应 / 启动失败)
-- `port_damage`:硬件损坏(插头 / 端口物理损伤)
-- `display_abnormal`:显示异常(屏幕 / 指示灯)
-- `network_failure`:网络故障(扫码后无法连接)
+- `mechanical`:机械损坏
+- `electrical`:电气异常
+- `communication`:通讯异常
+- `display`:显示异常
 - `other`:其他
 
 **响应(200)**:
@@ -1461,28 +1433,25 @@ Wechatpay-Nonce: ...
 {
   "code": 0,
   "data": {
-    "report_id": 88888,
-    "report_no": "RP20260925...",
-    "status": "pending",             // "pending" / "dispatched" / "resolved" / "closed"
-    "estimated_response_hours": 24,  // 客户巡检响应 SLA(可配)
-    "created_at": "2026-09-25T14:00:00Z"
+    "submitted": true,
+    "report_id": "54321"
   }
 }
 ```
 
 **业务逻辑**:
-1. 校验 `device_id` 存在(查 `gateway_db.device`)
-2. 校验 `port_id` 属于该 `device_id`(若提供)
-3. 校验 `fault_type` 在枚举中
-4. INSERT `device_fault_report(device_id, port_id, fault_type, description, photos, status='pending', user_id=$current)`
-5. 发布 `alert_stream` 事件(`severity='low'`,路由给客户巡检 PC 后台)
-6. 推送小程序消息"报修已收到,客服将于 24 小时内联系您"
-7. 同步返回 `report_no` + `status`
+1. 校验设备编号与故障类型，并通过 gateway 内部 API 确认设备存在。
+2. 每用户滚动 24 小时最多提交 5 次；图片最多 5 个 HTTPS URL。
+3. 持久化报修信息并返回报修 ID。后台巡检队列支持派单、修复和关闭；小程序可查询本人报修编号和处理状态。图片上传本身及消息通知仍未实现。
 
 **错误码**:
 - `1001` / `1004`
-- `2021`: 同一设备 24h 内已报修过(防骚扰)
-- `2022`: 故障类型非法
+- `4291`: 超过每日报修次数
+- `1000`: 设备编号、说明、图片或故障类型无效
+
+### `GET /api/v1/user/device/fault-reports`
+
+仅返回当前 JWT 用户创建且未删除的报修记录，按提交时间倒序分页。支持 `page`（从 1 开始）和 `page_size`（1–100）；响应为 `items/total/page/page_size`，条目包含报修编号、设备、类型、说明、当前状态、提交及修复时间。`GET /api/v1/user/device/fault-reports/{id}/history` 仅允许报修人读取，按时间顺序返回 `event_id`、提交/派单/改派/修复/关闭状态及面向用户的备注，不返回后台账号 ID 或内部迁移快照。其他用户或已删除报修统一返回 404。
 
 ---
 
@@ -1503,20 +1472,20 @@ Wechatpay-Nonce: ...
 {
   "code": 0,
   "data": {
-    "agent_id": 101,                // 客服坐席 ID(前端用于展示)
     "agent_name": "客服小张",
-    "agent_avatar_url": "https://...",  // 坐席头像(可选)
-    "estimated_response_seconds": 60   // 首响 SLA(从 customer_service_config 读)
+    "agent_wechat": "cs_xiaozhang",
+    "entry_url": "https://work.weixin.qq.com/...",
+    "corp_id": "ww...",
+    "available": true,
+    "scene": "general"
   }
 }
 ```
 
 **业务逻辑**:
-1. 查 `customer_service_config WHERE status='online' AND current_chat_count < max_concurrent_chats`,按 `current_chat_count ASC` 选第一个(负载最低)
-2. 选不到 → `2015`(客服繁忙,请稍后再试)
-3. UPDATE `current_chat_count += 1`(临时占用,会话结束 webhook 回调时减回)
-4. 返回坐席信息(前端**自行用 `wx.openCustomerServiceChat` 唤起客服会话**,本端点不返回 URL,因为微信客服唤起是前端 API,不走 URL scheme)
-5. 前端唤起成功后,微信客服消息转发到客户的客服坐席微信(已在 admin 后台配置)
+1. admin 从启用坐席中按优先级选择入口；未配置坐席时返回 404。
+2. `available=true` 需要同时配置 HTTPS 客服入口 URL 和 `WECHAT_CUSTOMER_SERVICE_CORP_ID`。小程序由用户点击后调用 `wx.openCustomerServiceChat`。
+3. 未配置企业客服入口时仍返回客服微信号供用户复制，不伪造会话已打开。
 
 **错误码**:
 - `1001` / `2015`(无在线客服)
@@ -1526,7 +1495,19 @@ Wechatpay-Nonce: ...
 
 ## 内部接口(仅服务间调用,不计入公开端点数)
 
-所有路径仅在 `:8081` 内网监听,必须携带 `Authorization: Bearer <service_token>`。调用方不能直接连接 `user_db`。
+### 评价与设备报修处理（仅 admin 服务）
+
+以下 user 内部接口要求 `X-Service-Token`，禁止小程序 JWT 调用。`GET /api/v1/internal/feedback` 和 `GET /api/v1/internal/device-fault-reports` 支持 `status/page/page_size`；admin 会先按 `feedback.read` 或 `fault.read` 检查操作人权限再代理请求。`POST /api/v1/internal/feedback/{id}/reply` 接收 `{ "actor_id": 12, "action": "reply", "reply_content": "..." }` 或 action=`close`。报修通过 `POST /api/v1/internal/device-fault-reports/{id}/dispatch` 指定有效 admin 用户 ID，再由被指派人使用 `/resolve` 更新为 `fixed` 或 `closed`。状态变更带行锁且重放幂等；报修状态事件、操作人、备注与工单更新同事务写入 user_db 历史表，内部 history API 可读全部信息，user history API 仅返回本人可见字段。
+
+`GET /api/v1/internal/devices/{device_id}/orders` 同样要求 `X-Service-Token`，返回该设备最近 100 笔未删除订单，供 gateway 运维查询代理使用。订单字段严格解码自 `user_db.charge_order`；数据库查询失败不会被替换为空列表。
+
+`GET /api/v1/internal/charge-orders/charging` 同样要求 `X-Service-Token`，只返回最多 100 条当前充电订单的快照预热字段；worker 使用它取 user 所有的订单身份和生命周期数据，再经 gateway 查询设备遥测，不直接跨库读取 user 或 gateway 表。
+
+### 仪表盘指标
+
+`GET /api/v1/internal/dashboard/metrics` 要求 `X-Service-Token`，由 user 服务从 `charge_order` 计算当前充电订单数、今日下单用户数、今日已完成订单实结金额及近七天每日完成订单和金额。金额取订单最终 `total_cents`，按充电结束日期归属；退款尚未在该汇总中冲减。admin 同时从本地 admin_db 读取当前告警数。
+
+所有路径仅在 `:8081` 内网监听,必须携带 `X-Service-Token: <service_token>`。调用方不能直接连接 `user_db`。
 
 | 方法 | 路径 | 调用方 | 用途 |
 | --- | --- | --- | --- |
@@ -1534,6 +1515,8 @@ Wechatpay-Nonce: ...
 | GET | `/api/v1/internal/payment-orders/{payment_order_id}` | billing | 读取支付状态与实付金额,用于退款决策 |
 | POST | `/api/v1/internal/refund-records/claim` | admin | 按 `event_key` 幂等创建 / 领取退款记录 |
 | POST | `/api/v1/internal/refund-records/{refund_id}/result` | admin | 写入微信退款结果 |
+| GET | `/api/v1/internal/invoices/{invoice_id}` | admin | 按 user 发票 ID 或发票号读取待审详情 |
+| POST | `/api/v1/internal/invoices/{invoice_id}` | admin | 按审核人、决定、开票 HTTPS 链接或拒绝原因幂等更新申请状态 |
 
 ### `POST /api/v1/internal/charge-orders/{order_id}/start-result`
 
@@ -1548,6 +1531,12 @@ Wechatpay-Nonce: ...
 ### `GET /api/v1/internal/payment-orders/{payment_order_id}`
 
 返回 `{payment_order_id,order_id,status,paid_fee_cents,wechat_transaction_id}`;无记录返回 `1004`。仅供 billing 核对退款金额和支付状态。
+
+### 发票审核内部接口
+
+`GET /api/v1/internal/invoices/{invoice_id}` 返回 user 所有的发票申请资料与当前状态；invoice_id 可为数据库 ID 或业务发票号。
+
+`POST /api/v1/internal/invoices/{invoice_id}` 请求 `{decision,actor_id,invoice_url?,reason?}`，仅接受 admin Service Token。`approve` 只在 admin 已收集两名不同财务审核人后调用，要求 HTTPS invoice_url 并将申请标记为 `issued`；`reject` 需要最多 255 字的原因并将申请标记为 `rejected`。user 锁定申请并只允许 pending 状态迁移；相同操作人、决定及结果幂等，已审核申请不能改签。admin 负责校验两名审核人及实时财务角色权限并保存审核审计。
 
 ### `POST /api/v1/internal/refund-records/claim`
 
@@ -1625,3 +1614,15 @@ GET /user/wallet/balance 的 data 包含 available_cents、frozen_cents、status
 ### 钱包退款风控内部接口
 
 `GET /api/v1/internal/wallet-risks` 和 `POST /api/v1/internal/wallet-risks/{request_id}/review` 仅接受服务令牌。查询参数 page/page_size；审核请求 actor_id、approved、comment，由 admin 完成实时角色及权限校验。审核回执保存在 wallet_risk_review，成功审核复用原退款请求，不创建新的用户申请。用户 `GET /api/v1/user/wallet/refunds` 条目增加 review（approved、comment、actor_id）；拒绝申请 status 为 rejected。
+
+### 优惠券模板与运营发券内部接口
+
+以下路径只接受 `X-Service-Token`，由 admin 通过内部 HTTP 调用；优惠券模板和发放记录均由 user_db 所有：
+
+- `GET /api/v1/internal/coupons`：返回模板 `items`，包含 ID、编码、名称、折扣类型/配置、门槛、有效小时、总量/个人额度、状态和有效时间。
+- `POST /api/v1/internal/coupons`：创建模板。字段为 `code/name/discount_type/discount_value_cents/discount_percent/min_charge_cents/valid_hours/total_quota/per_user_quota/start_at/end_at`。`amount`、`percentage`、`time_free` 的金额字段互斥校验由 user 服务执行。
+- `GET|PUT|DELETE /api/v1/internal/coupons/{id}`：读取、更新名称/状态/结束时间、软删除。存在发放记录的模板不可删除，应改为停用。
+- `POST /api/v1/internal/coupons/{id}/grants`：请求 `{ "request_id":"<UUID>", "user_id":123 }`。事务内锁模板、核对用户仍有效、模板状态与生效时间、总发放量及个人额度后新增一张 `coupon_grant`。相同 UUID 和相同参数重放返回原券；UUID 被改用于其他用户或模板时返回冲突。响应含请求 ID、模板 ID、发放记录 ID、用户 ID、状态和到期时间。
+- `GET /api/v1/internal/coupons/stats?coupon_id=123`：返回总额度、已发、可用、已用、已过期数量和核销率；未清理但已过期的未使用记录计入已过期。
+
+活动事件 `coupon_grant_required_stream` 使用 `event_id` 作为同一事务的幂等键；无效 payload、模板读取失败或额度耗尽都会返回错误供消费框架重试/DLQ，不再吞掉错误或按默认 30 天发券。扫码支付优惠券抵扣和核销仍未接通，`POST /api/v1/user/coupon/preview` 只预览、不消耗优惠券。

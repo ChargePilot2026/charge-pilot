@@ -10,7 +10,8 @@
 - [ ] 服务器合规:最低 4 核 8GB 100GB SSD(见 `技术规格.md` § 10.2)
 - [ ] 公网 IP + 域名解析到位(`<customer-domain>`)
 - [ ] 80 / 443 端口可对外(Let's Encrypt ACME HTTP-01 需要)
-- [ ] 9100 / 1883 端口仅在内网 / 设备网段开放(不进公网!)
+- [ ] 9100/TCP 仅对需要接入的设备网段开放，并配置设备 IP 白名单
+- [ ] 确认 1883/MQTT 未开放：当前无 MQTT Broker 或 1883 listener
 
 ## 二、环境安装
 
@@ -54,7 +55,7 @@
   - 用 test_appid + 真桩(模拟器 / 一台真桩)扫码
   - 看到 order_id 创建 + 微信支付回调 → 设备启动 → 用户结束 → 计费快照写入
 - [ ] **Test 2:退款触发**
-  - 模拟支付成功但设备启动失败 → billing 发布 `refund_required_stream` → admin 经 user 内部接口领取退款记录并执行退款;未支付的 60 秒内取消只关单,不退款
+  - 模拟支付成功但设备启动失败 → user 保存退款记录并发布 `refund_required_stream` → admin 经 user 内部接口领取退款记录并执行退款;未支付的 60 秒内取消只关单,不退款
 - [ ] **Test 3:Webhook 推送**
   - 在 admin 后台"Webhook 订阅"创建一条 → 触发任意告警 → 看接收方日志收到 HMAC 签名请求
 - [ ] **Test 4:分账计算**

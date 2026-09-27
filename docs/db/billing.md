@@ -107,7 +107,7 @@ PARTITION BY RANGE (TO_DAYS(created_month)) (
 
 ### 业务规则
 
-- **触发**:billing 服务消费 `charge_ended_stream` 事件 → 查 `pricing_rule` + `telemetry` 实时数据 → 计费计算 → INSERT 本表(同事务)+ 触发 `refund_required_stream`(如果失败 / 超时)
+- **触发**:billing 消费 `charge_ended_stream`，经 user 内部 API 读取不可变报价和最终计量，计算并保存费用快照及待投递结果；user 接收结果后负责更新订单、登记退款并发布 `refund_required_stream`。billing 不直写 user schema。
 - **估算订单**:§ 6.5 B 方案场景下,设备无遥测数据 → 按端口历史 P50 功率估算 → `is_estimated=TRUE`
 - **审计追溯**:`pricing_rule_snapshot` 存规则完整 JSON,即使规则后来改了,本表记录也不变
 - **物理归档**:worker 每日扫表 → `calculated_at < NOW() - 3 YEAR` → `DELETE`(DROP PARTITION)

@@ -1,13 +1,15 @@
 # worker 服务任务定义与 Stream 消费约定
 
 **服务**:`worker`(`services/worker`)
-**对外地址**:**无 HTTP**(技术规格 § 3.5)
-**主入口**:
-- **Redis Stream 消费者**(`webhook_retry_stream` / `alert_stream` / `ota_schedule_stream` / `comp_tx_stream`)
-- **定时任务调度**(`tokio-cron-scheduler`,写 `worker_db.scheduled_task` 表)
-- **HTTP 回调**(调内部 HTTP API,不暴露端口)
+**对外地址**:不提供业务 HTTP API；仅监听 `/health` 运维检查端点（8085，可由 `http_bind` 配置）。
+**当前实现**:
+- HTTP 只提供 `/health`。
+- 仅 3 个 interval 循环执行真实工作：遥测快照预热、公告过期、设备会话清理；公告和会话数据分别由 admin/gateway 服务内部 API 修改。
+- worker consumer group 注册 `webhook_retry_stream`、`ota_schedule_stream`、`comp_tx_stream`。Webhook 与 OTA 业务投递未实现，处理器返回失败；公共消费框架以 2s / 4s / 8s 间隔重试三次（加首次共四次尝试），再原子写入 Redis `{stream}.dlq` 并 ACK 原消息。`comp_tx_stream` 只接收 user 发布的 `refund_completed` 并幂等写入补偿结果审计记录，不执行退款或回滚。
+- `alert_stream` 由 admin 消费；worker 的快照预热通过定时 HTTP 查询实现，不消费 `device_event_stream`。billing 当前不消费 `comp_tx_stream`。
+- `scheduled_task` 尚未驱动 cron 或手动触发。账单结算、对账、OTA、Webhook、导出、归档、DLQ 重放等任务仍未完成。
 
-> **本文件覆盖范围**:worker 服务**没有对外 HTTP API**,但承担系统所有**异步事件消费 + 定时任务调度**职责。本文件约定:
+> **本文件覆盖范围**:worker 服务不提供业务 HTTP API，但承担系统异步事件消费与定时任务职责。本文件约定:
 > 1. **Stream 消费契约**(消费哪些 Stream + 如何处理 + 发什么事件)
 > 2. **定时任务清单**(`scheduled_task` 表的所有 `task_code` + 触发时机 + 处理函数)
 > 3. **关键任务流程详述**(对账 / OTA 推送 / Webhook 重试 / 数据归档)
@@ -23,35 +25,34 @@
 | --- | --- |
 | `scheduled_task` | 定时任务状态(`task_code` UNIQUE + cron 表达式 + 最近执行状态) |
 | `task_execution_log` | 任务执行日志(每次执行一条,按月分区) |
-| `comp_tx_log` | 补偿事务日志(跨服务最终一致性,`event_id` 幂等) |
-| `dlq_log` | DLQ 处理日志(Redis Stream 失败消息,按月分区) |
-| `retry_queue` | 重试队列(支付 / Webhook 重试) |
+| `comp_tx_log` | `refund_completed` 结果审计(`event_id` + 月份幂等) |
+| `dlq_log` | 预留的 DLQ 数据库表；当前公共消费框架只写 Redis `{stream}.dlq` |
+| `retry_queue` | 计划中的重试队列；当前 Webhook 消费不会写此表 |
 
 ### 幂等保证(关键)
 
-- 所有 Stream 消费 + 定时任务都**必须幂等**:`event_id`(Stream) / `task_code + run_id`(定时任务) 作为幂等 key
-- 写入 `worker_db.comp_tx_log` 记录已处理的 event_id(UNIQUE 约束)
-- 重启 / 重消费 → 先查 `comp_tx_log` → 已处理则直接跳过
+- `comp_tx_stream` 当前处理器以 `event_id + created_month` 幂等；表唯一键为 `(tx_id, created_month)`。重复事件内容哈希或状态不同会报冲突并进入重试/DLQ。
+- 其他两个 Stream 处理器目前始终失败，直到外部投递能力配置完成；它们不会写 `comp_tx_log`。
 
 ### 错误处理与 DLQ
 
-- **Stream 消费失败**(consumer error):写入 `worker_db.dlq_log` + 发 `alert_stream` 通知(severity=critical)
+- **Stream 消费失败**:首次尝试失败后按 2s / 4s / 8s 重试三次；随后原子写入 Redis `{stream}.dlq` 并确认原消息。当前不会写 `worker_db.dlq_log`、发告警或提供人工重放 API。若 DLQ 写入失败，原消息保留在 PEL。
 - **定时任务失败**:`consecutive_fail_count` 累计 → ≥ 5 → 自动 `status='paused'` + 发 `alert_stream`
-- **DLQ 重放**:人工介入(`worker_db.dlq_log.status='replayed'` 后重新消费)
+- **DLQ 重放**:尚未接入；`worker_db.dlq_log` 是预留表，当前没有消费者、管理接口或重放流程。
 
 ### 与其他服务的关系
 
 - worker **不直接面向用户或 PC 后台**
-- worker **通过 HTTP 回调 admin / user / gateway / billing 服务**实现业务动作(详见各任务流程)
+- worker **通过 HTTP 调用 admin / gateway 服务内部端点**完成已落地的公告过期与会话清理；其余预期业务调用仍未完成
 - worker **只对自己的 schema(worker_db)有读写权限**(§ 4.2)
-- worker **对外提供 3 个内部 HTTP 端点**(详见 § 零),供 admin 等服务查询任务状态(因为任务存于 `worker_db.scheduled_task`,admin 服务不直连)
+- `GET /health` 检查 worker 数据库、Redis Cache 和 Redis Stream；依赖不可用时返回服务错误。
+- worker 当前**没有**任务触发、任务状态、导出查询或 DLQ 管理 HTTP 端点。
 
 ---
 
-## 零、内部 HTTP 端点(共 3 个)
+## 零、计划中的内部 HTTP 端点（当前未实现）
 
-> 所有路径在 worker 服务监听 `:8085`(**仅内网可达**,Docker Compose 内服务间调用);鉴权为服务间共享密钥(§ 通用约定)。
-> worker 服务以 **Stream 消费 + 定时任务** 为主,本节 HTTP 端点仅供 **任务状态查询**(因为任务数据在 `worker_db`,其他服务通过 HTTP 拉,避免跨 schema 直连)。
+> 以下为目标接口定义；目前 worker router 只注册 `/health`，这些路径尚未由 worker 提供。
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
@@ -137,18 +138,20 @@
 
 ## 一、Stream 消费约定(worker 作为消费者)
 
-worker 服务**主动消费**以下 4 个 Stream(沿用 § 5.1):
+worker 实际注册下列三个消费组。只有 `comp_tx_stream` 对当前支持的退款结果事件执行落库；Webhook / OTA 会在依赖能力未配置时失败并进入 Redis DLQ。
 
 | Stream | 来源 | 处理逻辑 | 失败时 DLQ 目标 |
 | --- | --- | --- | --- |
-| `alert_stream` | gateway | 落库到 `admin_db.alert_event`(调 admin 内部 API)+ 按 `alert_subscription` 推 Webhook | `dlq_log.alert_dlq` |
-| `ota_schedule_stream` | admin | 调 gateway `POST /firmware-push`(§ 5.1 gateway.md 已落地路径) | `dlq_log.ota_dlq` |
-| `webhook_retry_stream` | admin | 重试失败的 Webhook 投递(指数退避) | `dlq_log.webhook_dlq` |
-| `comp_tx_stream` | 各服务 | 跨服务最终一致性确认 / 失败补偿 | `dlq_log.comp_tx_dlq` |
+| `alert_stream` | gateway | 由 admin 消费并落库；worker 不重复消费 | admin 当前仅尝试发起 Webhook 事件 |
+| `ota_schedule_stream` | 当前无可用生产者（目标为 admin） | worker 消费组已注册；处理器失败重试后进入 DLQ，设备分发未实现 | Redis `ota_schedule_stream.dlq` |
+| `webhook_retry_stream` | admin（当前仅告警消费者发出缺少目标 URL 的 `alert_recorded`） | worker 无法投递，重试后进入 DLQ | Redis `webhook_retry_stream.dlq` |
+| `comp_tx_stream` | user (`refund_completed`) | worker 校验并幂等写入 `worker_db.comp_tx_log`；仅做结果审计 | Redis `comp_tx_stream.dlq` |
 
-> **不消费** `device_event_stream` / `charge_ended_stream` / `refund_required_stream` / `invoice_required_stream`(分别由 admin / billing / user 处理)。
+> **不消费** `device_event_stream` / `charge_ended_stream` / `refund_required_stream` / `invoice_required_stream`；结束计费由 billing 处理，退款与发票事件由 admin 处理。
 
-### 1.1 消费 `alert_stream`
+### 1.1 计划消费 `alert_stream`（当前仅由 admin 消费）
+
+以下是目标流程，不是当前 worker 行为。worker 没有 `alert_stream` 消费组，也没有订阅匹配、Webhook 投递或 delivery log 写入；当前仅 admin 落告警并发出未包含目标 URL 的重试事件，worker 对该事件重试后写 DLQ。
 
 **触发**:gateway 检测到设备越界 / 通信中断 / 温度异常 → 发 `alert_stream`
 **处理流程**:
@@ -164,9 +167,9 @@ worker 消费 alert_stream 事件
 
 **幂等 key**:`alert_event.event_id`(由 gateway 生成)
 
-### 1.2 消费 `ota_schedule_stream`
+### 1.2 计划消费 `ota_schedule_stream`（worker 处理器当前只将失败消息重试并写入 DLQ）
 
-**触发**:admin 创建 OTA 调度 → 发 `ota_schedule_stream`(具体时刻由 `scheduled_window.start_at` 决定)
+**目标触发**:admin 创建 OTA 调度 → 发 `ota_schedule_stream`(具体时刻由 `scheduled_window.start_at` 决定)。当前没有可用生产者，调度创建返回 503。
 **处理流程**:
 
 ```
@@ -180,9 +183,9 @@ worker 消费 ota_schedule_stream 事件
 
 **幂等 key**:`ota_schedule.schedule_id` + `device_id`
 
-### 1.3 消费 `webhook_retry_stream`
+### 1.3 计划消费 `webhook_retry_stream`（worker 处理器当前只将失败消息重试并写入 DLQ）
 
-**触发**:admin 推 Webhook 失败 → 入 `webhook_retry_queue` → 发 `webhook_retry_stream`
+**目标触发**:Webhook 首次投递失败 → 入 `retry_queue` → 发 `webhook_retry_stream`。当前没有 Webhook 首次投递器或可用的重试事件目标。
 **处理流程**:
 
 ```
@@ -193,23 +196,17 @@ worker 消费 webhook_retry_stream 事件
   → 仍失败 → UPDATE retry_queue.status='failed' + 发 alert_stream(severity=critical)
 ```
 
-### 1.4 消费 `comp_tx_stream`
+### 1.4 已接入的 `comp_tx_stream` 结果审计
 
-**触发**:跨服务事务完成 / 失败,各服务统一发 `comp_tx_stream`
-**处理流程**:
+当前唯一已确认生产事件来自 user 微信退款回调：user 在同一事务内更新本服务的退款/支付记录，并向持久化 outbox 写入 `refund_completed`。Outbox 发布到本 Stream 后，worker 校验 UUID `event_id`、RFC3339 时间、退款单号及 `success`，计算完整 envelope 的 SHA-256，并按 `tx_id + created_month` 幂等写入 `worker_db.comp_tx_log`。成功结果记为 `committed`，失败结果记为 `failed`；重放时若 stream、哈希或状态不一致则报冲突。
 
-```
-worker 消费 comp_tx_stream 事件
-  → 写入 worker_db.comp_tx_log(event_id, status, result, processed_at=NOW())
-    → 已存在 → 跳过(幂等)
-  → 若 status='failed' → 发 alert_stream(severity=mid) + 通知相关服务
-```
+该 consumer 是审计副作用，不会执行退款、回滚或通知 billing，也不能作为 Redis Stream 灾难恢复机制。billing 没有注册该 Stream 的消费者；其余服务也未接入补偿动作。
 
 ---
 
 ## 二、定时任务清单(`scheduled_task.task_code`)
 
-> 所有任务**预置**于 `worker_db.scheduled_task`,客户可禁用 / 启用,但不能修改 `handler`(`internal` 类型)。`customer_config` 类型允许新增(简单任务)。
+> 下表为需求清单，不代表已由 `worker_db.scheduled_task` 驱动。当前代码使用硬编码 interval；除本文件开头列出的三个实际 worker 循环外，其余未接入。`scheduled_task` 管理、执行日志、失败暂停与手动触发均未实现。
 
 | task_code | 类型 | cron | handler | 说明 |
 | --- | --- | --- | --- | --- |
@@ -312,14 +309,15 @@ worker 扫 retry_queue 命中:
 
 **处理流程**:
 
-```
-1. UPDATE admin_db.announcement SET deleted_at=NOW(), deleted_by=NULL
-   WHERE valid_until < NOW() AND deleted_at IS NULL
-   → 软删,保留审计
-2. 写 task_execution_log(rows_affected, duration_ms, status)
-```
+1. worker 调用 admin 内部 `POST /api/v1/internal/announcements/expire`。
+2. admin 更新 `status='expired'` 的公告；`deleted_at` 不变，公告仍可在后台查询。
+3. worker 记录受影响行数日志；持久 `task_execution_log` 尚未接入。
 
-### 3.5 数据归档(`data_retention`)
+### 3.5 设备会话清理(`device_session_clean`)
+
+每 5 分钟 worker 调 gateway 内部 `POST /api/v1/internal/device-sessions/cleanup-idle`。gateway 仅更新本服务 `gateway_db.device_session` 中 10 分钟无活动且未结束的会话，并返回 `closed_count`。worker 不直接访问 gateway schema。
+
+### 3.6 数据归档(`data_retention`)
 
 **触发场景**:每月 1 日 06:00 自动跑(沿用 § 4.6 数据保留 ≥ 3 年)
 
@@ -343,39 +341,18 @@ worker 扫 retry_queue 命中:
 
 ---
 
-## 四、DLQ 处理约定
+## 四、DLQ 处理约定（当前 Redis DLQ 尚无运维闭环）
 
-### 4.1 触发 DLQ 的场景
+### 4.1 当前行为
 
-- Stream 消费失败(连续 3 次)
-- 定时任务连续 5 次失败(自动暂停)
-- HTTP 回调下游失败 + 重试耗尽
+- consumer handler 首次调用失败后重试三次，间隔为 2s / 4s / 8s；四次总尝试仍失败时写入 Redis `{stream}.dlq`。
+- 写入 DLQ 与确认原 Stream 消息通过 Redis Lua 脚本原子执行。DLQ 写入失败时不 ACK，消息保留在 PEL，稳定 consumer 重启后恢复。
+- 当前 worker 不读 `{stream}.dlq`，不写 `worker_db.dlq_log`，也未提供 DLQ 查询、重放或关闭接口。
+- `worker_db.dlq_log` 的实际列与索引见 [`db/worker.md`](../db/worker.md#dlq_log)；它目前是预留表。
 
-### 4.2 DLQ 表结构(`worker_db.dlq_log`)
+### 4.2 尚未接入的运维流程
 
-| 字段 | 说明 |
-| --- | --- |
-| `id` | 主键 |
-| `dlq_type` | `alert_dlq` / `ota_dlq` / `webhook_dlq` / `comp_tx_dlq` / `task_dlq` |
-| `event_id` | 原始 event_id(便于追溯) |
-| `payload` | JSON(原始 Stream payload 或任务参数) |
-| `error_message` | 失败原因 |
-| `attempt_count` | 尝试次数 |
-| `first_failed_at` | 首次失败时间 |
-| `last_retry_at` | 最近重试时间 |
-| `status` | `pending` / `replayed` / `abandoned` |
-| `resolved_by` | 处理人(admin user id) |
-| `resolved_at` | 处理时间 |
-
-### 4.3 DLQ 重放流程
-
-```
-运维在 PC 后台"DLQ 管理"页(本期简化为日志查询,二期做交互):
-  → 查看 dlq_log WHERE status='pending'
-  → 人工判断:
-    - 重放:UPDATE status='replayed', re-emit 原 event 到 Stream → 重走消费
-    - 放弃:UPDATE status='abandoned' + 备注原因
-```
+DLQ 运维需要实现分页查询、权限与审计、payload/错误展示、幂等重放、关闭/放弃及积压指标。目前不能通过更新 `worker_db.dlq_log.status` 重放 Redis 中的事件。
 
 ---
 
@@ -393,8 +370,8 @@ rate(task_execution_total{status="success"}[5m])
 # 任务执行时长
 task_execution_seconds{task_name="daily_refund_reconcile", quantile=0.95}
 
-# DLQ 积压
-dlq_pending_count{dlq_type="webhook_dlq"} 0
+# DLQ 积压（目标指标；当前尚未暴露）
+redis_stream_dlq_length{stream="webhook_retry_stream"} 0
 
 # 重试队列积压
 retry_queue_pending_count 5

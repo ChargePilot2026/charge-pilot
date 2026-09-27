@@ -10,15 +10,15 @@ pub async fn announcements_active(State(st): State<AppState>) -> AppResult<Json<
     let rows = sqlx::query(
         "SELECT id, title, content, priority, start_at, end_at
          FROM announcement
-         WHERE status = 'published' AND start_at <= NOW() AND (end_at IS NULL OR end_at >= NOW())
+         WHERE status = 'published' AND deleted_at IS NULL AND start_at <= NOW() AND (end_at IS NULL OR end_at >= NOW())
          ORDER BY priority DESC, id DESC LIMIT 50"
     ).fetch_all(st.db.pool()).await?;
-    let items: Vec<Value> = rows.iter().map(|r| json!({
-        "id": sqlx::Row::try_get::<u64, _>(r, "id").unwrap_or(0),
-        "title": sqlx::Row::try_get::<String, _>(r, "title").unwrap_or_default(),
-        "content": sqlx::Row::try_get::<String, _>(r, "content").unwrap_or_default(),
-        "priority": sqlx::Row::try_get::<u8, _>(r, "priority").unwrap_or(0),
-    })).collect();
+    let items: Vec<Value> = rows.iter().map(|r| -> AppResult<Value> { Ok(json!({
+        "id": sqlx::Row::try_get::<u64, _>(r, "id")?,
+        "title": sqlx::Row::try_get::<String, _>(r, "title")?,
+        "content": sqlx::Row::try_get::<String, _>(r, "content")?,
+        "priority": sqlx::Row::try_get::<u8, _>(r, "priority")?,
+    })) }).collect::<AppResult<Vec<_>>>()?;
     Ok(Json(common_error::ApiEnvelope::ok(json!({"items": items}), common_error::current_request_id())))
 }
 
@@ -45,21 +45,21 @@ pub async fn stations_nearby(State(st): State<AppState>, axum::extract::Query(q)
     .bind(lat - 1.0).bind(lat + 1.0)
     .bind(lng - 1.0).bind(lng + 1.0)
     .fetch_all(st.db.pool()).await?;
-    let items: Vec<Value> = rows.iter().filter_map(|r| {
-        let slat = sqlx::Row::try_get::<f64, _>(r, "latitude").ok()?;
-        let slng = sqlx::Row::try_get::<f64, _>(r, "longitude").ok()?;
+    let items: Vec<Value> = rows.iter().map(|r| -> AppResult<Option<Value>> {
+        let slat = sqlx::Row::try_get::<f64, _>(r, "latitude")?;
+        let slng = sqlx::Row::try_get::<f64, _>(r, "longitude")?;
         let dist = ((slat - lat).powi(2) + (slng - lng).powi(2)).sqrt() * 111.0; // 近似 km
-        if dist > radius { return None; }
-        Some(json!({
-            "id": sqlx::Row::try_get::<u64, _>(r, "id").unwrap_or(0),
-            "code": sqlx::Row::try_get::<String, _>(r, "code").unwrap_or_default(),
-            "name": sqlx::Row::try_get::<String, _>(r, "name").unwrap_or_default(),
-            "address": sqlx::Row::try_get::<Option<String>, _>(r, "address").ok().flatten(),
+        if dist > radius { return Ok(None); }
+        Ok(Some(json!({
+            "id": sqlx::Row::try_get::<u64, _>(r, "id")?,
+            "code": sqlx::Row::try_get::<String, _>(r, "code")?,
+            "name": sqlx::Row::try_get::<String, _>(r, "name")?,
+            "address": sqlx::Row::try_get::<Option<String>, _>(r, "address")?,
             "longitude": slng,
             "latitude": slat,
             "distance_km": dist,
-        }))
-    }).collect();
+        })))
+    }).collect::<AppResult<Vec<_>>>()?.into_iter().flatten().collect();
     Ok(Json(common_error::ApiEnvelope::ok(json!({"items": items}), common_error::current_request_id())))
 }
 
@@ -90,33 +90,19 @@ pub async fn pricing_rule_get(State(st): State<AppState>, Path(id): Path<u64>) -
 
 pub async fn split_template_get(State(st): State<AppState>, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
     let r: Option<(u64, String, String, String)> = sqlx::query_as(
-        "SELECT id, code, name, mode FROM split_template WHERE id = ? AND deleted_at IS NULL"
+        "SELECT id, code, name, mode FROM split_template WHERE id = ? AND status = 'active' AND deleted_at IS NULL"
     ).bind(id).fetch_optional(st.db.pool()).await?;
     let r = r.ok_or_else(|| AppError::NotFound("split_template".into()))?;
-    let parties: Vec<Value> = sqlx::query("SELECT party_code, party_name, ratio_bp FROM split_party WHERE split_template_id = ?")
-        .bind(id).fetch_all(st.db.pool()).await
-        .ok()
-        .map(|rows| rows.iter().map(|p| json!({
-            "party_code": sqlx::Row::try_get::<String, _>(p, "party_code").unwrap_or_default(),
-            "party_name": sqlx::Row::try_get::<String, _>(p, "party_name").unwrap_or_default(),
-            "ratio_bp": sqlx::Row::try_get::<u32, _>(p, "ratio_bp").unwrap_or(0),
-        })).collect()).unwrap_or_default();
+    let party_rows = sqlx::query("SELECT id, party_code, party_name, ratio_bp FROM split_party WHERE split_template_id = ? ORDER BY id")
+        .bind(id).fetch_all(st.db.pool()).await?;
+    let parties: Vec<Value> = party_rows.iter().map(|p| -> AppResult<Value> { Ok(json!({
+        "id": sqlx::Row::try_get::<u64, _>(p, "id")?,
+        "party_code": sqlx::Row::try_get::<String, _>(p, "party_code")?,
+        "party_name": sqlx::Row::try_get::<String, _>(p, "party_name")?,
+        "ratio_bp": sqlx::Row::try_get::<u32, _>(p, "ratio_bp")?,
+    })) }).collect::<AppResult<Vec<_>>>()?;
     Ok(Json(common_error::ApiEnvelope::ok(json!({
         "id": r.0, "code": r.1, "name": r.2, "mode": r.3, "parties": parties,
-    }), common_error::current_request_id())))
-}
-
-pub async fn export_task_get(State(st): State<AppState>, Path(id): Path<String>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
-    let r = sqlx::query("SELECT task_code, name, last_run_at, next_run_at, config_json FROM scheduled_task WHERE task_code = 'export_run'")
-        .fetch_optional(st.db.pool()).await?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({
-        "task_id": id,
-        "found": r.is_some(),
-        "info": r.map(|r| json!({
-            "task_code": sqlx::Row::try_get::<String, _>(&r, "task_code").unwrap_or_default(),
-            "name": sqlx::Row::try_get::<String, _>(&r, "name").unwrap_or_default(),
-            "last_run_at": sqlx::Row::try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(&r, "last_run_at").ok().flatten().map(|t| t.to_rfc3339()),
-        })),
     }), common_error::current_request_id())))
 }
 
@@ -130,20 +116,63 @@ pub async fn alerts_active(State(st): State<AppState>, axum::extract::Query(q): 
     let mut query = sqlx::query(&sql);
     if let Some(d) = &q.device_id { query = query.bind(d); }
     let rows = query.fetch_all(st.db.pool()).await?;
-    let items: Vec<Value> = rows.iter().map(|r| json!({
-        "id": sqlx::Row::try_get::<u64, _>(r, "id").unwrap_or(0),
-        "device_id": sqlx::Row::try_get::<String, _>(r, "device_id").unwrap_or_default(),
-        "severity": sqlx::Row::try_get::<String, _>(r, "severity").unwrap_or_default(),
-        "metric": sqlx::Row::try_get::<String, _>(r, "metric").unwrap_or_default(),
-    })).collect();
+    let items: Vec<Value> = rows.iter().map(|r| -> AppResult<Value> { Ok(json!({
+        "id": sqlx::Row::try_get::<u64, _>(r, "id")?,
+        "device_id": sqlx::Row::try_get::<String, _>(r, "device_id")?,
+        "severity": sqlx::Row::try_get::<String, _>(r, "severity")?,
+        "metric": sqlx::Row::try_get::<String, _>(r, "metric")?,
+    })) }).collect::<AppResult<Vec<_>>>()?;
     Ok(Json(common_error::ApiEnvelope::ok(json!({"items": items}), common_error::current_request_id())))
 }
 
 pub async fn device_reboot(State(st): State<AppState>, Path(id): Path<String>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
     // 调 gateway 内部接口 — 类型化 client + 路径常量,禁止拼 URL
     let cli = crate::clients::ServiceClient::new(st.http.clone(), st.service_token.clone());
+    let path = api_types::paths::INTERNAL_DEVICES_REBOOT.replace(":id", &id);
     let v: Value = cli
-        .post_typed(st.cfg.service_urls.gateway.as_deref(), api_types::paths::INTERNAL_DEVICES_REBOOT, &serde_json::json!({}))
+        .post_typed(st.cfg.service_urls.gateway.as_deref(), &path, &serde_json::json!({}))
         .await?;
     Ok(Json(common_error::ApiEnvelope::ok(v, common_error::current_request_id())))
+}
+
+/// Worker calls this endpoint so only the admin service writes announcement state.
+pub async fn announcements_expire(State(st): State<AppState>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+    let result = sqlx::query(
+        "UPDATE announcement SET status = 'expired'
+         WHERE status = 'published' AND end_at IS NOT NULL AND end_at < UTC_TIMESTAMP(3) AND deleted_at IS NULL"
+    ).execute(st.db.pool()).await?;
+    Ok(Json(common_error::ApiEnvelope::ok(
+        json!({"expired_count": result.rows_affected()}),
+        common_error::current_request_id(),
+    )))
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CustomerServiceEntryQuery {
+    pub scene: String,
+}
+
+pub async fn customer_service_entry(
+    State(st): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<CustomerServiceEntryQuery>,
+) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+    if !["general", "refund", "complaint"].contains(&q.scene.as_str()) {
+        return Err(AppError::BadRequest("客服场景无效".into()));
+    }
+    let row = sqlx::query(
+        "SELECT agent_wechat, agent_name, path FROM customer_service_config
+         WHERE enabled = 1 ORDER BY priority DESC, id ASC LIMIT 1",
+    )
+    .fetch_optional(st.db.pool())
+    .await?
+    .ok_or_else(|| AppError::NotFound("当前暂无可用客服".into()))?;
+    let entry_url: Option<String> = sqlx::Row::try_get(&row, "path")?;
+    let entry_url = entry_url.filter(|url| url.starts_with("https://") && !url.chars().any(char::is_control));
+    Ok(Json(common_error::ApiEnvelope::ok(json!({
+        "agent_wechat": sqlx::Row::try_get::<String, _>(&row, "agent_wechat")?,
+        "agent_name": sqlx::Row::try_get::<Option<String>, _>(&row, "agent_name")?,
+        "entry_url": entry_url,
+        "scene": q.scene,
+    }), common_error::current_request_id())))
 }

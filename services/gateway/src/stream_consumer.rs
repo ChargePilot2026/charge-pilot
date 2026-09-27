@@ -5,10 +5,9 @@
 
 use crate::AppState;
 use async_trait::async_trait;
-use common_error::AppResult;
-use common_redis::{StreamEntry, StreamEnvelope};
+use common_error::{AppError, AppResult};
+use common_redis::StreamEntry;
 use common_stream::{ConsumerGroup, StreamHandler};
-use tracing::info;
 
 pub async fn spawn_all(state: AppState) -> AppResult<()> {
     let cg = ConsumerGroup::new(state.redis_stream.clone());
@@ -33,15 +32,9 @@ pub struct OtaScheduleHandler { pub state: AppState }
 #[async_trait]
 impl StreamHandler for OtaScheduleHandler {
     async fn handle(&self, entry: &StreamEntry) -> AppResult<()> {
-        let p = &entry.envelope.payload;
-        let action = p.get("action")
-            .cloned()
-            .unwrap_or_else(|| serde_json::Value::String(entry.envelope.event_type.clone()));
-        info!(?action, "ota_schedule event");
-        // 实际:按 schedule_id 拉取 device 列表 + 调 device_command 推送
-        Ok(())
+        let _ = entry;
+        Err(AppError::ServiceUnavailable(
+            "OTA 设备选择、固件传输与 ACK 尚未接入；保留事件供重试和 DLQ 处置".into(),
+        ))
     }
 }
-
-#[allow(dead_code)]
-fn _ev_unused(_: StreamEnvelope) {}

@@ -2,7 +2,6 @@
 //!
 //! 纯函数实现,所有 IO 通过参数显式传入,便于单测。
 
-use serde_json::Value;
 use std::collections::HashMap;
 
 /// 计费规则快照
@@ -175,6 +174,3 @@ mod tests {
         assert_eq!(r.rate_for("unknown"), 40); // fallback to off
     }
 }
-
-#[allow(dead_code)]
-pub fn placeholder_v(_: Value) {}

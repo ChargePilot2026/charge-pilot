@@ -1,7 +1,6 @@
 //! admin 视角 — 财务(分账 / 提现 / 退款审核 / 发票审核 / 对账日志)
 
 use crate::AppState;
-use crate::api_types;
 use api_contracts::paths as p;
 use axum::{extract::{Path, State}, Json};
 use common_auth::AdminClaims;
@@ -15,28 +14,29 @@ pub async fn settlements(State(st): State<AppState>, _c: AdminClaims) -> AppResu
         "SELECT id, settlement_no, split_template_id, period_start, period_end, total_cents, status, created_at
          FROM settled_record ORDER BY id DESC LIMIT 200"
     ).fetch_all(st.db.pool()).await?;
-    let items: Vec<Value> = rows.iter().map(|r| json!({
-        "id": sqlx::Row::try_get::<u64, _>(r, "id").unwrap_or(0),
-        "settlement_no": sqlx::Row::try_get::<String, _>(r, "settlement_no").unwrap_or_default(),
-        "split_template_id": sqlx::Row::try_get::<u64, _>(r, "split_template_id").unwrap_or(0),
-        "period_start": sqlx::Row::try_get::<chrono::NaiveDate, _>(r, "period_start").ok().map(|d| d.to_string()),
-        "period_end": sqlx::Row::try_get::<chrono::NaiveDate, _>(r, "period_end").ok().map(|d| d.to_string()),
-        "total_cents": sqlx::Row::try_get::<i64, _>(r, "total_cents").unwrap_or(0),
-        "status": sqlx::Row::try_get::<String, _>(r, "status").unwrap_or_default(),
-    })).collect();
+    let items: Vec<Value> = rows.iter().map(|r| -> AppResult<Value> { Ok(json!({
+        "id": sqlx::Row::try_get::<u64, _>(r, "id")?,
+        "settlement_no": sqlx::Row::try_get::<String, _>(r, "settlement_no")?,
+        "split_template_id": sqlx::Row::try_get::<u64, _>(r, "split_template_id")?,
+        "period_start": sqlx::Row::try_get::<chrono::NaiveDate, _>(r, "period_start")?.to_string(),
+        "period_end": sqlx::Row::try_get::<chrono::NaiveDate, _>(r, "period_end")?.to_string(),
+        "total_cents": sqlx::Row::try_get::<i64, _>(r, "total_cents")?,
+        "status": sqlx::Row::try_get::<String, _>(r, "status")?,
+    })) }).collect::<AppResult<Vec<_>>>()?;
     Ok(Json(common_error::ApiEnvelope::ok(json!({"items": items}), common_error::current_request_id())))
 }
 
 pub async fn withdraw_list(State(st): State<AppState>, _c: AdminClaims) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
     let rows = sqlx::query("SELECT id, withdraw_no, party_id, party_code, amount_cents, status, created_at FROM withdraw_request ORDER BY id DESC LIMIT 200")
         .fetch_all(st.db.pool()).await?;
-    let items: Vec<Value> = rows.iter().map(|r| json!({
-        "id": sqlx::Row::try_get::<u64, _>(r, "id").unwrap_or(0),
-        "withdraw_no": sqlx::Row::try_get::<String, _>(r, "withdraw_no").unwrap_or_default(),
-        "party_id": sqlx::Row::try_get::<u64, _>(r, "party_id").unwrap_or(0),
-        "amount_cents": sqlx::Row::try_get::<i64, _>(r, "amount_cents").unwrap_or(0),
-        "status": sqlx::Row::try_get::<String, _>(r, "status").unwrap_or_default(),
-    })).collect();
+    let items: Vec<Value> = rows.iter().map(|r| -> AppResult<Value> { Ok(json!({
+        "id": sqlx::Row::try_get::<u64, _>(r, "id")?,
+        "withdraw_no": sqlx::Row::try_get::<String, _>(r, "withdraw_no")?,
+        "party_id": sqlx::Row::try_get::<u64, _>(r, "party_id")?,
+        "party_code": sqlx::Row::try_get::<String, _>(r, "party_code")?,
+        "amount_cents": sqlx::Row::try_get::<i64, _>(r, "amount_cents")?,
+        "status": sqlx::Row::try_get::<String, _>(r, "status")?,
+    })) }).collect::<AppResult<Vec<_>>>()?;
     Ok(Json(common_error::ApiEnvelope::ok(json!({"items": items}), common_error::current_request_id())))
 }
 
@@ -169,59 +169,170 @@ pub async fn refund_retry(State(st): State<AppState>, c: AdminClaims, Path(no): 
     Ok(Json(common_error::ApiEnvelope::ok(json!({"queued":true,"already_queued":already_queued,"refund_no":no,"stage":stage}),common_error::current_request_id())))
 }
 
-pub async fn invoices(State(st): State<AppState>, _c: AdminClaims) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+async fn authorize_invoice_review(st: &AppState, actor: &AdminClaims) -> AppResult<()> {
+    let allowed: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM admin_user_role a
+         JOIN role r ON r.id = a.role_id
+         JOIN role_permission rp ON rp.role_id = r.id
+         JOIN permission p ON p.id = rp.permission_id
+         WHERE a.id = ? AND a.username = ? AND a.status = 'active' AND a.deleted_at IS NULL
+           AND r.code = 'customer_finance' AND r.deleted_at IS NULL AND p.code = 'invoice.review')",
+    )
+    .bind(actor.admin_user_id)
+    .bind(&actor.sub)
+    .fetch_one(st.db.pool())
+    .await?;
+    if !allowed { return Err(AppError::Forbidden("需要 customer_finance 角色和 invoice.review 权限".into())); }
+    Ok(())
+}
+
+pub async fn invoices(State(st): State<AppState>, c: AdminClaims) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+    authorize_invoice_review(&st, &c).await?;
     let rows = sqlx::query(
-        "SELECT invoice_request_id, review_status, reviewed_by, reviewed_at, reject_reason
-         FROM invoice_review ORDER BY id DESC LIMIT 200"
+        "SELECT invoice_request_id,review_status,reviewed_by,reject_reason,
+                first_reviewer_id,first_reviewed_at,second_reviewer_id,second_reviewed_at,invoice_url
+         FROM invoice_review ORDER BY id DESC LIMIT 100",
     ).fetch_all(st.db.pool()).await?;
-    let items: Vec<Value> = rows.iter().map(|r| json!({
-        "invoice_request_id": sqlx::Row::try_get::<u64, _>(r, "invoice_request_id").unwrap_or(0),
-        "review_status": sqlx::Row::try_get::<String, _>(r, "review_status").unwrap_or_default(),
-        "reject_reason": sqlx::Row::try_get::<Option<String>, _>(r, "reject_reason").ok().flatten(),
-    })).collect();
+    let client = common_http::internal::ApiClient::new(st.http.clone(), st.service_token.clone());
+    let mut items = Vec::with_capacity(rows.len());
+    for row in rows {
+        let id: u64 = sqlx::Row::try_get(&row, "invoice_request_id")?;
+        let path = p::USER_INTERNAL_INVOICE_DETAIL.replace(":invoice_id", &id.to_string());
+        let mut detail: Value = client.get(st.cfg.service_urls.user.as_deref(), &path, &()).await?;
+        detail["queue_review_status"] = json!(sqlx::Row::try_get::<String, _>(&row, "review_status")?);
+        detail["queue_reviewed_by"] = json!(sqlx::Row::try_get::<Option<u64>, _>(&row, "reviewed_by")?.map(|v| v.to_string()));
+        detail["queue_reject_reason"] = json!(sqlx::Row::try_get::<Option<String>, _>(&row, "reject_reason")?);
+        detail["first_reviewer_id"] = json!(sqlx::Row::try_get::<Option<u64>, _>(&row, "first_reviewer_id")?.map(|v| v.to_string()));
+        detail["first_reviewed_at"] = json!(sqlx::Row::try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(&row, "first_reviewed_at")?.map(|v| v.to_rfc3339()));
+        detail["second_reviewer_id"] = json!(sqlx::Row::try_get::<Option<u64>, _>(&row, "second_reviewer_id")?.map(|v| v.to_string()));
+        detail["second_reviewed_at"] = json!(sqlx::Row::try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(&row, "second_reviewed_at")?.map(|v| v.to_rfc3339()));
+        detail["invoice_url"] = json!(sqlx::Row::try_get::<Option<String>, _>(&row, "invoice_url")?);
+        items.push(detail);
+    }
     Ok(Json(common_error::ApiEnvelope::ok(json!({"items": items}), common_error::current_request_id())))
 }
 
 #[derive(Debug, Deserialize)]
-pub struct InvoiceApproveReq { pub invoice_url: Option<String> }
+#[serde(deny_unknown_fields)]
+pub struct InvoiceApproveReq { pub invoice_url: String }
 
 pub async fn invoice_approve(State(st): State<AppState>, c: AdminClaims, Path(id): Path<u64>, Json(req): Json<InvoiceApproveReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+    authorize_invoice_review(&st, &c).await?;
+    let invoice_url = req.invoice_url.trim();
+    let valid_url = invoice_url.len() <= 512 && reqwest::Url::parse(invoice_url)
+        .is_ok_and(|url| url.scheme() == "https" && url.host_str().is_some());
+    if !valid_url { return Err(AppError::BadRequest("开票后必须提供有效 HTTPS 发票链接".into())); }
     let mut tx = st.db.pool().begin().await?;
-    sqlx::query(
-        "INSERT INTO invoice_review (invoice_request_id, review_status, reviewed_by, reviewed_at)
-         VALUES (?, 'approved', ?, NOW(3))
-         ON DUPLICATE KEY UPDATE review_status='approved', reviewed_by=VALUES(reviewed_by), reviewed_at=VALUES(reviewed_at)"
-    )
-    .bind(id).bind(c.admin_user_id).execute(&mut *tx).await?;
-    // 调 user 内部接口写回 invoice_request — 类型化 client + 路径常量
-    if let Some(u) = st.cfg.service_urls.user.as_deref() {
-        let body = json!({"invoice_url": req.invoice_url});
-        let cli = crate::clients::ServiceClient::new(st.http.clone(), st.service_token.clone());
-        let _ = cli.post_typed::<_, serde_json::Value>(Some(u), p::USER_INTERNAL_INVOICE_DETAIL, &body).await;
+    sqlx::query("INSERT IGNORE INTO invoice_review (invoice_request_id,review_status) VALUES (?,'pending')")
+        .bind(id).execute(&mut *tx).await?;
+    let local = sqlx::query("SELECT review_status,first_reviewer_id,second_reviewer_id,invoice_url FROM invoice_review WHERE invoice_request_id=? FOR UPDATE")
+        .bind(id).fetch_one(&mut *tx).await?;
+    let local_status: String = sqlx::Row::try_get(&local, "review_status")?;
+    let first_reviewer: Option<u64> = sqlx::Row::try_get(&local, "first_reviewer_id")?;
+    let second_reviewer: Option<u64> = sqlx::Row::try_get(&local, "second_reviewer_id")?;
+    let saved_url: Option<String> = sqlx::Row::try_get(&local, "invoice_url")?;
+    if local_status == "approved" {
+        if second_reviewer == Some(c.admin_user_id) && saved_url.as_deref() == Some(invoice_url) {
+            tx.commit().await?;
+            return Ok(Json(common_error::ApiEnvelope::ok(json!({"reviewed":true,"review_status":"issued","already_processed":true}), common_error::current_request_id())));
+        }
+        return Err(AppError::Conflict("发票申请已完成审核".into()));
     }
+    if local_status == "rejected" { return Err(AppError::Conflict("已拒绝的发票申请不能开具".into())); }
+    let path = p::USER_INTERNAL_INVOICE_DETAIL.replace(":invoice_id", &id.to_string());
+    let client = common_http::internal::ApiClient::new(st.http.clone(), st.service_token.clone());
+    let detail: Value = client.get(st.cfg.service_urls.user.as_deref(), &path, &()).await?;
+    let user_status = detail.get("review_status").and_then(Value::as_str)
+        .ok_or_else(|| AppError::ServiceUnavailable("user 服务发票审核状态响应无效".into()))?;
+    if local_status == "pending" {
+        if user_status != "pending" { return Err(AppError::Conflict("用户发票申请已处理，不能再次审核".into())); }
+        sqlx::query("UPDATE invoice_review SET review_status='awaiting_second',first_reviewer_id=?,first_reviewed_at=UTC_TIMESTAMP(3),invoice_url=? WHERE invoice_request_id=?")
+            .bind(c.admin_user_id).bind(invoice_url).bind(id).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO audit_log(actor_id,module,action,target_type,target_id,after_json,created_month) VALUES (?,'finance','invoice.first_approve','invoice_request',?,?,DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))")
+            .bind(c.admin_user_id).bind(id.to_string()).bind(json!({"invoice_url":invoice_url})).execute(&mut *tx).await?;
+        tx.commit().await?;
+        return Ok(Json(common_error::ApiEnvelope::ok(json!({"reviewed":true,"review_status":"awaiting_second","first_reviewer_id":c.admin_user_id.to_string()}), common_error::current_request_id())));
+    }
+    if local_status != "awaiting_second" { return Err(AppError::Conflict("发票审核状态已变化".into())); }
+    if first_reviewer == Some(c.admin_user_id) {
+        if saved_url.as_deref() == Some(invoice_url) {
+            tx.commit().await?;
+            return Ok(Json(common_error::ApiEnvelope::ok(json!({"reviewed":true,"review_status":"awaiting_second","already_processed":true}), common_error::current_request_id())));
+        }
+        return Err(AppError::Forbidden("首次审核人不能完成第二次复核".into()));
+    }
+    if saved_url.as_deref() != Some(invoice_url) { return Err(AppError::Conflict("第二次复核的发票链接必须与首次审核一致".into())); }
+    if let Some(first_id) = first_reviewer {
+        let first_active: Option<u64> = sqlx::query_scalar(
+            "SELECT a.id FROM admin_user_role a
+             JOIN role r ON r.id=a.role_id AND r.deleted_at IS NULL
+             JOIN role_permission rp ON rp.role_id=r.id
+             JOIN permission p ON p.id=rp.permission_id
+             WHERE a.id=? AND a.status='active' AND a.deleted_at IS NULL
+               AND r.code='customer_finance' AND p.code='invoice.review' FOR SHARE",
+        ).bind(first_id).fetch_optional(&mut *tx).await?;
+        if first_active.is_none() { return Err(AppError::Forbidden("首次审核人账号已停用或已撤销发票审核权限".into())); }
+    }
+    let result: Value = if user_status == "issued"
+        && detail.get("reviewed_by").and_then(Value::as_u64) == Some(c.admin_user_id)
+        && detail.get("invoice_url").and_then(Value::as_str) == Some(invoice_url)
+    {
+        json!({"reviewed":true,"review_status":"issued","recovered":true})
+    } else {
+        if user_status != "pending" { return Err(AppError::Conflict("用户发票申请已处理，不能再次审核".into())); }
+        client.post(st.cfg.service_urls.user.as_deref(), &path, &json!({"decision":"approve","actor_id":c.admin_user_id,"invoice_url":invoice_url})).await?
+    };
+    sqlx::query("UPDATE invoice_review SET review_status='approved',second_reviewer_id=?,second_reviewed_at=UTC_TIMESTAMP(3),reviewed_by=?,reviewed_at=UTC_TIMESTAMP(3),reject_reason=NULL WHERE invoice_request_id=?")
+        .bind(c.admin_user_id).bind(c.admin_user_id).bind(id).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO audit_log(actor_id,module,action,target_type,target_id,after_json,created_month) VALUES (?,'finance','invoice.second_approve','invoice_request',?,?,DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))")
+        .bind(c.admin_user_id).bind(id.to_string()).bind(json!({"invoice_url":invoice_url,"first_reviewer_id":first_reviewer,"result":result})).execute(&mut *tx).await?;
     tx.commit().await?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"approved": true}), common_error::current_request_id())))
+    Ok(Json(common_error::ApiEnvelope::ok(result, common_error::current_request_id())))
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InvoiceRejectReq { pub reason: String }
 
 pub async fn invoice_reject(State(st): State<AppState>, c: AdminClaims, Path(id): Path<u64>, Json(req): Json<InvoiceRejectReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
-    let mut tx = st.db.pool().begin().await?;
-    sqlx::query(
-        "INSERT INTO invoice_review (invoice_request_id, review_status, reviewed_by, reviewed_at, reject_reason)
-         VALUES (?, 'rejected', ?, NOW(3), ?)
-         ON DUPLICATE KEY UPDATE review_status='rejected', reviewed_by=VALUES(reviewed_by), reviewed_at=VALUES(reviewed_at), reject_reason=VALUES(reject_reason)"
-    )
-    .bind(id).bind(c.admin_user_id).bind(&req.reason).execute(&mut *tx).await?;
-    let user_url = st.cfg.service_urls.user.as_deref();
-    if let Some(u) = user_url {
-        let body = json!({"reject": true, "reason": req.reason});
-        let cli = crate::clients::ServiceClient::new(st.http.clone(), st.service_token.clone());
-        let _ = cli.post_typed::<_, serde_json::Value>(Some(u), p::USER_INTERNAL_INVOICE_DETAIL, &body).await;
+    if req.reason.trim().is_empty() || req.reason.chars().count() > 255 || req.reason.chars().any(char::is_control) {
+        return Err(AppError::BadRequest("拒绝原因必须填写且最多 255 字".into()));
     }
+    authorize_invoice_review(&st, &c).await?;
+    let mut tx = st.db.pool().begin().await?;
+    sqlx::query("INSERT IGNORE INTO invoice_review (invoice_request_id,review_status) VALUES (?,'pending')")
+        .bind(id).execute(&mut *tx).await?;
+    let local = sqlx::query("SELECT review_status,reviewed_by,reject_reason FROM invoice_review WHERE invoice_request_id=? FOR UPDATE")
+        .bind(id).fetch_one(&mut *tx).await?;
+    let local_status: String = sqlx::Row::try_get(&local, "review_status")?;
+    if local_status == "rejected"
+        && sqlx::Row::try_get::<Option<u64>, _>(&local, "reviewed_by")? == Some(c.admin_user_id)
+        && sqlx::Row::try_get::<Option<String>, _>(&local, "reject_reason")?.as_deref() == Some(req.reason.trim())
+    {
+        tx.commit().await?;
+        return Ok(Json(common_error::ApiEnvelope::ok(json!({"reviewed":true,"review_status":"rejected","already_processed":true}), common_error::current_request_id())));
+    }
+    if local_status == "approved" || local_status == "rejected" { return Err(AppError::Conflict("发票申请已完成审核".into())); }
+    let path = p::USER_INTERNAL_INVOICE_DETAIL.replace(":invoice_id", &id.to_string());
+    let client = common_http::internal::ApiClient::new(st.http.clone(), st.service_token.clone());
+    let detail: Value = client.get(st.cfg.service_urls.user.as_deref(), &path, &()).await?;
+    let user_status = detail.get("review_status").and_then(Value::as_str)
+        .ok_or_else(|| AppError::ServiceUnavailable("user 服务发票审核状态响应无效".into()))?;
+    let result: Value = if user_status == "rejected"
+        && detail.get("reviewed_by").and_then(Value::as_u64) == Some(c.admin_user_id)
+        && detail.get("reject_reason").and_then(Value::as_str) == Some(req.reason.trim())
+    {
+        json!({"reviewed":true,"review_status":"rejected","recovered":true})
+    } else {
+        if user_status != "pending" { return Err(AppError::Conflict("用户发票申请已处理，不能再次拒绝".into())); }
+        client.post(st.cfg.service_urls.user.as_deref(), &path, &json!({"decision":"reject","actor_id":c.admin_user_id,"reason":req.reason.trim()})).await?
+    };
+    sqlx::query("UPDATE invoice_review SET review_status='rejected',reviewed_by=?,reviewed_at=UTC_TIMESTAMP(3),reject_reason=? WHERE invoice_request_id=?")
+        .bind(c.admin_user_id).bind(req.reason.trim()).bind(id).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO audit_log (actor_id,module,action,target_type,target_id,after_json,created_month) VALUES (?,'finance','invoice.reject','invoice_request',?,?,DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))")
+        .bind(c.admin_user_id).bind(id.to_string()).bind(json!({"reason":req.reason,"result":result})).execute(&mut *tx).await?;
     tx.commit().await?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"rejected": true}), common_error::current_request_id())))
+    Ok(Json(common_error::ApiEnvelope::ok(result, common_error::current_request_id())))
 }
 
 pub async fn reconcile_logs(State(st): State<AppState>, _c: AdminClaims) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
@@ -230,15 +341,15 @@ pub async fn reconcile_logs(State(st): State<AppState>, _c: AdminClaims) -> AppR
                 internal_cents, wechat_cents, diff_cents, resolved, created_at
          FROM finance_reconcile_log ORDER BY id DESC LIMIT 200"
     ).fetch_all(st.db.pool()).await?;
-    let items: Vec<Value> = rows.iter().map(|r| json!({
-        "id": sqlx::Row::try_get::<u64, _>(r, "id").unwrap_or(0),
-        "reconcile_type": sqlx::Row::try_get::<String, _>(r, "reconcile_type").unwrap_or_default(),
-        "reconcile_date": sqlx::Row::try_get::<chrono::NaiveDate, _>(r, "reconcile_date").ok().map(|d| d.to_string()),
-        "internal_count": sqlx::Row::try_get::<u32, _>(r, "internal_count").unwrap_or(0),
-        "wechat_count": sqlx::Row::try_get::<u32, _>(r, "wechat_count").unwrap_or(0),
-        "diff_count": sqlx::Row::try_get::<i32, _>(r, "diff_count").unwrap_or(0),
-        "resolved": sqlx::Row::try_get::<i8, _>(r, "resolved").unwrap_or(0) != 0,
-    })).collect();
+    let items: Vec<Value> = rows.iter().map(|r| -> AppResult<Value> { Ok(json!({
+        "id": sqlx::Row::try_get::<u64, _>(r, "id")?,
+        "reconcile_type": sqlx::Row::try_get::<String, _>(r, "reconcile_type")?,
+        "reconcile_date": sqlx::Row::try_get::<chrono::NaiveDate, _>(r, "reconcile_date")?.to_string(),
+        "internal_count": sqlx::Row::try_get::<u32, _>(r, "internal_count")?,
+        "wechat_count": sqlx::Row::try_get::<u32, _>(r, "wechat_count")?,
+        "diff_count": sqlx::Row::try_get::<i32, _>(r, "diff_count")?,
+        "resolved": sqlx::Row::try_get::<i8, _>(r, "resolved")? != 0,
+    })) }).collect::<AppResult<Vec<_>>>()?;
     Ok(Json(common_error::ApiEnvelope::ok(json!({"items": items}), common_error::current_request_id())))
 }
 

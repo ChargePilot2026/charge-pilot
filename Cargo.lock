@@ -3777,6 +3777,7 @@ dependencies = [
 name = "worker"
 version = "0.1.0"
 dependencies = [
+ "api-contracts",
  "async-trait",
  "axum",
  "chrono",
@@ -3789,10 +3790,12 @@ dependencies = [
  "common-stream",
  "common-telemetry",
  "dotenvy",
+ "hex",
  "redis",
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "sqlx",
  "tokio",
  "tower 0.5.3",

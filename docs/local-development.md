@@ -20,7 +20,7 @@ docker compose -f compose.dev.yaml up --build
 - 小程序接口：<http://localhost:8081/api/v1>
 - gateway / billing HTTP：`localhost:8083` / `localhost:8084`
 - worker 健康检查：<http://localhost:8085/health>
-- 设备接入：`localhost:9100`（TCP）、`localhost:1883`（MQTT）
+- 设备接入：`localhost:9100`（TCP/JSON，首帧 heartbeat）；MQTT 尚未实现，1883 不监听
 
 如果当前 PowerShell 找不到 docker，但已安装在默认目录：
 

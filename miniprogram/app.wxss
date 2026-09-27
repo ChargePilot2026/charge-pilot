@@ -47,3 +47,7 @@ page {
 .tag-red { background: #fff1f0; color: #ff4d4f; }
 .tag-grey { background: #f5f5f5; color: #999; }
 .tag-orange { background: #fff7e6; color: #fa8c16; }
+
+.field { padding: 18rpx 0; color: var(--text); }
+.error { color: var(--danger); margin: 12rpx 0; }
+.success { color: #389e0d; margin: 12rpx 0; }

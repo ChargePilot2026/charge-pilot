@@ -92,7 +92,7 @@ services:
       <<: *rust-env
       SERVICE_NAME: gateway
       DATABASE_URL: mysql://chargepilot:chargepilot_dev@mysql:3306/gateway_db
-    ports: ["127.0.0.1:8083:8083", "127.0.0.1:9100:9100", "127.0.0.1:1883:1883"]
+    ports: ["127.0.0.1:8083:8083", "127.0.0.1:9100:9100"]
 
   user:
     <<: *rust

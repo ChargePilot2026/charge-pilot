@@ -23,7 +23,7 @@ export default function LoginPage() {
     try {
       const data = await apiPost<LoginResp>('/api/v1/admin/auth/login', vals);
       localStorage.setItem('cp_token', data.token);
-      localStorage.setItem('cp_admin', JSON.stringify({ username: vals.username, role: data.role }));
+      localStorage.setItem('cp_admin', JSON.stringify({ username: vals.username, role: data.role, admin_user_id: data.admin_user_id, permissions: data.permissions }));
       message.success('登录成功');
       nav('/', { replace: true });
     } catch (e: any) {

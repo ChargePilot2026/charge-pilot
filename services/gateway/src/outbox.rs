@@ -5,6 +5,21 @@ use common_redis::StreamEnvelope;
 use sqlx::Row;
 use std::time::Duration;
 
+/// Persist gateway-owned events with the business write so a Redis outage cannot lose them.
+pub async fn enqueue(
+    tx: &mut sqlx::Transaction<'_, sqlx::MySql>,
+    stream: &str,
+    envelope: &StreamEnvelope,
+) -> AppResult<()> {
+    sqlx::query("INSERT INTO event_outbox (event_id, stream, envelope_json) VALUES (?, ?, ?)")
+        .bind(&envelope.event_id)
+        .bind(stream)
+        .bind(serde_json::to_value(envelope)?)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
 pub fn spawn(st: AppState) {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(2));

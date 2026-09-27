@@ -4,7 +4,7 @@
 
 use crate::AppState;
 use axum::{extract::State, Json};
-use common_auth::{hash_password, verify_password};
+use common_auth::verify_password;
 use common_db::IdGen;
 use common_error::{AppError, AppResult};
 use serde::{Deserialize, Serialize};
@@ -58,21 +58,17 @@ pub async fn login(
         sqlx::query_scalar("SELECT code FROM role WHERE id = ? AND deleted_at IS NULL")
             .bind(rid)
             .fetch_optional(st.db.pool())
-            .await
-            .ok()
-            .flatten()
-            .unwrap_or_else(|| "viewer".to_string())
+            .await?
+            .ok_or_else(|| AppError::ServiceUnavailable("管理员角色不存在或已停用".into()))?
     } else {
         "viewer".to_string()
     };
     let permissions: Vec<String> = if let Some(rid) = role_id {
-        sqlx::query("SELECT p.code FROM permission p JOIN role_permission rp ON rp.permission_id = p.id WHERE rp.role_id = ?")
+        let rows = sqlx::query("SELECT p.code FROM permission p JOIN role_permission rp ON rp.permission_id = p.id WHERE rp.role_id = ?")
             .bind(rid)
             .fetch_all(st.db.pool())
-            .await
-            .ok()
-            .map(|rows| rows.iter().filter_map(|r| r.try_get::<String, _>("code").ok()).collect())
-            .unwrap_or_default()
+            .await?;
+        rows.iter().map(|row| row.try_get::<String, _>("code").map_err(AppError::from)).collect::<AppResult<Vec<_>>>()?
     } else {
         vec![]
     };

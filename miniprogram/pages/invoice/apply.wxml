@@ -1,0 +1,18 @@
+<view class="container">
+  <view wx:if="{{needsLogin}}" class="card"><view>登录后申请发票</view><button type="primary" bindtap="login">微信登录</button></view>
+  <view wx:else class="card">
+    <view class="heading">申请充电订单发票</view>
+    <picker range="{{orderLabels}}" value="{{orderIndex}}" bindchange="onOrderSelect"><view class="field">{{orderIndex &gt;= 0 ? orderLabels[orderIndex] : '选择已完成的充电订单'}}</view></picker>
+    <view wx:if="{{loadingDetail}}" class="text-secondary">正在核对实付金额…</view>
+    <view wx:if="{{selected}}" class="amount">订单实付金额：¥{{selected.amountText}}</view>
+    <picker range="{{invoiceTypes}}" value="{{invoiceTypeIndex}}" bindchange="onType"><view class="field">发票类型：{{invoiceTypes[invoiceTypeIndex]}} ▾</view></picker>
+    <input placeholder="发票抬头" maxlength="255" value="{{title}}" bindinput="onTitle" />
+    <input wx:if="{{invoiceTypeIndex === 1}}" placeholder="纳税人识别号" maxlength="64" value="{{taxNo}}" bindinput="onTaxNo" />
+    <input placeholder="接收邮箱（选填）" maxlength="128" value="{{email}}" bindinput="onEmail" />
+    <button type="primary" bindtap="submit" loading="{{submitting}}" disabled="{{submitting || loadingDetail || !selected}}">提交申请</button>
+  </view>
+  <view wx:if="{{loading}}" class="card">正在读取已完成订单…</view>
+  <view wx:if="{{error}}" class="card error"><view>{{error}}</view><button bindtap="loadOrders" disabled="{{loading || submitting}}">重试</button></view>
+  <view wx:if="{{notice}}" class="card success">{{notice}}</view>
+  <view wx:if="{{!loading &amp;&amp; !needsLogin &amp;&amp; !orders.length}}" class="card">没有可申请开票的已完成订单</view>
+</view>

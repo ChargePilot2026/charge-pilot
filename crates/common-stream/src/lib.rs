@@ -3,8 +3,8 @@
 //! 提供 Consumer trait + ConsumerGroup runner,封装:
 //!   - XGROUP CREATE (幂等)
 //!   - XREADGROUP(并行多 consumer)
-//!   - 指数退避(2s / 4s / 8s / 16s / 30s)
-//!   - 首次处理 + 3 次重试失败 → 原子写完整 DLQ 并 ACK
+//!   - 指数退避(2s / 4s / 8s)
+//!   - 首次处理 + 3 次重试失败 → 原子写 DLQ 并 ACK
 //!   - 重启恢复(读 PEL)
 //!
 //! 各服务在异步启动流程中调用 `ConsumerGroup::register(...).await?`。

@@ -9,5 +9,32 @@
     <view class="card"><view>电费：{{order.electricText}}</view><view>服务费：{{order.serviceText}}</view><view>总费用：{{order.totalText}}</view><view>实付：{{order.paidText}}</view></view>
     <view class="card"><view>退款状态：{{order.refundLabel}}</view><view>已退：{{order.refundedText}}</view><view>支付单号：{{order.payment_order_no || '—'}}</view></view>
     <view wx:if="{{order.failure_reason}}" class="card">异常原因：{{order.failure_reason}}</view>
+    <view wx:if="{{order.status === 'completed'}}" class="card">
+      <button bindtap="loadCurve" loading="{{curveLoading}}" disabled="{{curveLoading}}">{{curve ? '刷新历史曲线' : '查看历史曲线'}}</button>
+      <view wx:if="{{curveError}}" class="error">{{curveError}}</view>
+      <view wx:if="{{curve}}">
+        <view wx:if="{{!curve.series.length}}" class="text-secondary">没有可显示的聚合遥测。</view>
+        <view wx:for="{{curve.series}}" wx:key="bucket_start" class="curve-row">
+          <view>{{item.bucketText}}</view>
+          <view>功率 {{item.power_w_avg || '—'}} W · 温度 {{item.temperature_c_avg || '—'}} °C</view>
+          <view>电压 {{item.voltage_v_avg || '—'}} V · 电流 {{item.current_a_avg || '—'}} A</view>
+        </view>
+        <view wx:if="{{curve.summary.total_kwh}}">总电量：{{curve.summary.total_kwh}} kWh</view>
+      </view>
+    </view>
+    <view wx:if="{{order.status === 'completed' &amp;&amp; !order.feedback_submitted}}" class="card">
+      <view>订单评价与反馈</view>
+      <picker range="{{feedbackRatings}}" value="{{feedbackRatingIndex}}" bindchange="onFeedbackRating"><view class="field">评分：{{feedbackRatings[feedbackRatingIndex]}} ▾</view></picker>
+      <picker range="{{feedbackCategories}}" value="{{feedbackCategoryIndex}}" bindchange="onFeedbackCategory"><view class="field">类型：{{feedbackCategories[feedbackCategoryIndex]}} ▾</view></picker>
+      <textarea placeholder="说说充电体验或需要跟进的问题（选填）" maxlength="2000" value="{{feedbackContent}}" bindinput="onFeedbackContent" auto-height />
+      <view wx:if="{{feedbackError}}" class="error">{{feedbackError}}</view>
+      <view wx:if="{{feedbackNotice}}" class="success">{{feedbackNotice}}</view>
+      <button type="primary" bindtap="submitFeedback" loading="{{feedbackBusy}}" disabled="{{feedbackBusy}}">提交反馈</button>
+    </view>
+    <view wx:if="{{order.feedback_submitted}}" class="card success">已收到本订单反馈，谢谢。</view>
+    <view wx:if="{{order.device_id}}" class="card">
+      <button bindtap="reportFault">设备报修</button>
+      <button bindtap="customerService">联系在线客服</button>
+    </view>
   </block>
 </view>

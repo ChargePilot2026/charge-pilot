@@ -2,7 +2,7 @@ const chargingApp=getApp();
 const {formatOrder}=require('../../utils/order');
 const display=value=>value==null ? '暂无数据' : String(value);
 Page({
- data:{snapshot:null,loading:false,error:'',needsLogin:false,stopping:false,stopNotice:''},
+ data:{snapshot:null,loading:false,error:'',needsLogin:false,stopping:false,stopNotice:'',curve:null,curveLoading:false,curveError:''},
  onLoad(query){this._orderId=query.order_id || query.order_no;this._generation=0;this._viewVersion=0;this._gone=false;},
  onShow(){this._gone=false;this.setData({stopping:!!this._stopping});return this.load();},
  onHide(){this.pause();},
@@ -25,6 +25,21 @@ Page({
   finally{if(!this._gone && generation===this._generation)this.setData({loading:false});}
  },
  onPullDownRefresh(){return this.load().finally(()=>wx.stopPullDownRefresh());},
+ async loadCurve(){
+  if(this.data.curveLoading || this.data.snapshot?.status!=='charging')return;
+  const generation=this._generation;
+  this.setData({curveLoading:true,curveError:''});
+  try{
+   const result=await chargingApp.request('GET','/user/charge/ongoing/curve',{order_id:this._orderId,window:'last_30min'});
+   if(this._gone || generation!==this._generation)return;
+   const series=Array.isArray(result.series)?result.series:[];
+   this.setData({curve:{...result,series:series.map(point=>({
+    ...point,tsText:point.ts?new Date(point.ts).toLocaleTimeString(): '—',
+    powerText:display(point.power_w),currentText:display(point.current_a),voltageText:display(point.voltage_v),temperatureText:display(point.temperature_c),
+   }))}});
+  }catch(error){if(!this._gone&&generation===this._generation)this.setData({curveError:error.message||'曲线读取失败，请重试'});}
+  finally{if(!this._gone&&generation===this._generation)this.setData({curveLoading:false});}
+ },
  async stopCharge(){
   if(this._stopping || this.data.snapshot?.status!=='charging')return;
   this._stopping=true;

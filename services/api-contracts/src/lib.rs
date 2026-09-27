@@ -46,6 +46,7 @@ pub mod paths {
     pub const GW_DEVICE_BACKFILL: &str = "/api/v1/internal/devices/:id/backfill";
     pub const GW_DEVICE_CURVE: &str = "/api/v1/internal/devices/:id/curve";
     pub const GW_DEVICE_HIST_CURVE: &str = "/api/v1/internal/devices/:id/historical-curve";
+    pub const GW_DEVICE_SESSIONS_CLEAN: &str = "/api/v1/internal/device-sessions/cleanup-idle";
     pub const GW_DEVICE_REGISTER: &str = "/api/v1/internal/device/register";
     pub const GW_CHARGE_ORDERS_STOP: &str = "/api/v1/internal/charge-orders/stop";
 
@@ -53,10 +54,15 @@ pub mod paths {
     pub const USER_INTERNAL_ORDERS: &str = "/api/v1/internal/orders";
     pub const USER_INTERNAL_ORDER_TIMELINE: &str = "/api/v1/internal/orders/:order_id/timeline";
     pub const USER_INTERNAL_ORDER_DETAIL: &str = "/api/v1/internal/orders/:order_id";
+    pub const USER_INTERNAL_DEVICE_ORDERS: &str = "/api/v1/internal/devices/:device_id/orders";
+    pub const USER_INTERNAL_CHARGING_ORDERS: &str = "/api/v1/internal/charge-orders/charging";
     pub const USER_INTERNAL_REFUND_DETAIL: &str = "/api/v1/internal/refunds/:refund_id";
     pub const USER_INTERNAL_PAYMENT_DETAIL: &str = "/api/v1/internal/payment-orders/:payment_order_id";
     pub const USER_INTERNAL_INVOICE_DETAIL: &str = "/api/v1/internal/invoices/:invoice_id";
     pub const USER_INTERNAL_COUPON_STATS: &str = "/api/v1/internal/coupons/stats";
+    pub const USER_INTERNAL_COUPONS: &str = "/api/v1/internal/coupons";
+    pub const USER_INTERNAL_COUPON_DETAIL: &str = "/api/v1/internal/coupons/:id";
+    pub const USER_INTERNAL_COUPON_GRANTS: &str = "/api/v1/internal/coupons/:id/grants";
     pub const USER_INTERNAL_REFUND_CLAIM: &str = "/api/v1/internal/refund-records/claim";
     pub const USER_INTERNAL_REFUND_RESULT: &str = "/api/v1/internal/refund-records/:refund_id/result";
     pub const USER_INTERNAL_REFUND_EXECUTION: &str = "/api/v1/internal/refund-records/execution";
@@ -64,6 +70,13 @@ pub mod paths {
     pub const USER_INTERNAL_REFUND_APPROVE: &str = "/api/v1/internal/refund-records/:refund_id/approve";
     pub const USER_INTERNAL_REFUND_REJECT: &str = "/api/v1/internal/refund-records/:refund_id/reject";
     pub const USER_INTERNAL_ORDER_REFUND_CREATE: &str = "/api/v1/internal/orders/:order_id/refunds";
+    pub const USER_INTERNAL_DASHBOARD_METRICS: &str = "/api/v1/internal/dashboard/metrics";
+    pub const USER_INTERNAL_FEEDBACK: &str = "/api/v1/internal/feedback";
+    pub const USER_INTERNAL_FEEDBACK_REPLY: &str = "/api/v1/internal/feedback/:id/reply";
+    pub const USER_INTERNAL_DEVICE_FAULT_REPORTS: &str = "/api/v1/internal/device-fault-reports";
+    pub const USER_INTERNAL_DEVICE_FAULT_HISTORY: &str = "/api/v1/internal/device-fault-reports/:id/history";
+    pub const USER_INTERNAL_DEVICE_FAULT_DISPATCH: &str = "/api/v1/internal/device-fault-reports/:id/dispatch";
+    pub const USER_INTERNAL_DEVICE_FAULT_RESOLVE: &str = "/api/v1/internal/device-fault-reports/:id/resolve";
     pub const USER_INTERNAL_START_RESULT: &str = "/api/v1/internal/charge-orders/:order_id/start-result";
     pub const USER_INTERNAL_END_RESULT: &str = "/api/v1/internal/charge-orders/:order_id/end-result";
     pub const USER_INTERNAL_METERED_ORDER: &str = "/api/v1/internal/charge-orders/:order_id/metered";
@@ -83,6 +96,8 @@ pub mod paths {
 
     // -------- admin 内部 --------
     pub const ADMIN_INTERNAL_ANNOUNCEMENTS_ACTIVE: &str = "/api/v1/internal/announcements/active";
+    pub const ADMIN_INTERNAL_ANNOUNCEMENTS_EXPIRE: &str = "/api/v1/internal/announcements/expire";
+    pub const ADMIN_INTERNAL_CUSTOMER_SERVICE_ENTRY: &str = "/api/v1/internal/customer-service/entry";
     pub const ADMIN_INTERNAL_STATIONS_NEARBY: &str = "/api/v1/internal/stations/nearby";
     pub const ADMIN_INTERNAL_STATIONS_DETAIL: &str = "/api/v1/internal/stations/:station_id";
     pub const ADMIN_INTERNAL_PRICING_RULES_GET: &str = "/api/v1/internal/pricing-rules/:id";

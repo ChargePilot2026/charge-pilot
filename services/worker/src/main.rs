@@ -1,9 +1,9 @@
-//! worker 服务 — 12 个定时任务 + Stream 消费者
+//! worker 服务 — 后台任务 + Stream 消费者
 //!
 //! 端口: 8085(仅运维 API,可选)
-//! 任务: alert_scan / billing_cycle_daily / reconcile / ota_schedule /
-//!       webhook_retry / announcement_expire / data_retention /
-//!       event_outbox_retry / snapshot_warmer / dlq_replay /
+//! 当前循环: announcement_expire / device_session_clean / snapshot_warmer
+//! 当前 Stream 组: webhook_retry / ota_schedule(失败进入 DLQ) / comp_tx(结果审计)
+//! scheduled_task cron/manual runner 与其他计划任务尚未接入
 
 mod scheduler;
 mod tasks;
@@ -53,16 +53,23 @@ async fn main() -> AppResult<()> {
         service_token: Arc::new(cfg.auth.service_token.clone()),
     };
 
-    // 12 个定时任务
+    // 后台任务
     scheduler::start_all(state.clone()).await?;
     // Stream 消费者
     streams::spawn_all(state.clone()).await?;
 
     // 健康端口(可选)
-    let app = Router::new().route("/health", get(|| async { "ok" }));
+    let app = Router::new().route("/health", get(health)).with_state(state.clone());
     let addr: SocketAddr = cfg.http_bind.parse().unwrap_or_else(|_| "0.0.0.0:8085".parse().unwrap());
     info!(%addr, "worker listening");
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app.into_make_service()).await?;
     Ok(())
+}
+
+async fn health(axum::extract::State(state): axum::extract::State<AppState>) -> AppResult<&'static str> {
+    state.db.ping().await?;
+    state.redis_cache.ping().await?;
+    state.redis_stream.ping().await?;
+    Ok("ok")
 }

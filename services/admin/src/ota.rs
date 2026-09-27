@@ -3,9 +3,7 @@
 use crate::AppState;
 use axum::{extract::{Path, State}, Json};
 use common_auth::AdminClaims;
-use common_db::IdGen;
 use common_error::{AppError, AppResult};
-use common_redis::StreamEnvelope;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -14,13 +12,16 @@ pub async fn packages_list(State(st): State<AppState>, _c: AdminClaims) -> AppRe
         "SELECT id, code, vendor_id, version, size_bytes, checksum_sha256, status, created_at
          FROM ota_package WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 200"
     ).fetch_all(st.db.pool()).await?;
-    let items: Vec<Value> = rows.iter().map(|r| json!({
-        "id": sqlx::Row::try_get::<u64, _>(r, "id").unwrap_or(0),
-        "code": sqlx::Row::try_get::<String, _>(r, "code").unwrap_or_default(),
-        "version": sqlx::Row::try_get::<String, _>(r, "version").unwrap_or_default(),
-        "size_bytes": sqlx::Row::try_get::<u64, _>(r, "size_bytes").unwrap_or(0),
-        "status": sqlx::Row::try_get::<String, _>(r, "status").unwrap_or_default(),
-    })).collect();
+    let items: Vec<Value> = rows.iter().map(|r| -> AppResult<Value> { Ok(json!({
+        "id": sqlx::Row::try_get::<u64, _>(r, "id")?,
+        "code": sqlx::Row::try_get::<String, _>(r, "code")?,
+        "vendor_id": sqlx::Row::try_get::<Option<u64>, _>(r, "vendor_id")?,
+        "version": sqlx::Row::try_get::<String, _>(r, "version")?,
+        "size_bytes": sqlx::Row::try_get::<u64, _>(r, "size_bytes")?,
+        "checksum_sha256": sqlx::Row::try_get::<String, _>(r, "checksum_sha256")?,
+        "status": sqlx::Row::try_get::<String, _>(r, "status")?,
+        "created_at": sqlx::Row::try_get::<chrono::DateTime<chrono::Utc>, _>(r, "created_at")?.to_rfc3339(),
+    })) }).collect::<AppResult<Vec<_>>>()?;
     Ok(Json(common_error::ApiEnvelope::ok(json!({"items": items}), common_error::current_request_id())))
 }
 
@@ -37,13 +38,14 @@ pub struct PackageCreateReq {
 }
 
 pub async fn packages_create(State(st): State<AppState>, _c: AdminClaims, Json(req): Json<PackageCreateReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
-    let id: u64 = sqlx::query_scalar(
+    let result = sqlx::query(
         "INSERT INTO ota_package (code, vendor_id, version, storage_url, size_bytes, checksum_sha256, sign, release_notes, status)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft')"
     )
     .bind(&req.code).bind(req.vendor_id).bind(&req.version).bind(&req.storage_url)
     .bind(req.size_bytes).bind(&req.checksum_sha256).bind(req.sign.as_deref()).bind(req.release_notes.as_deref())
-    .fetch_one(st.db.pool()).await?;
+    .execute(st.db.pool()).await?;
+    let id = result.last_insert_id();
     Ok(Json(common_error::ApiEnvelope::ok(json!({"id": id}), common_error::current_request_id())))
 }
 
@@ -69,12 +71,16 @@ pub async fn schedules_list(State(st): State<AppState>, _c: AdminClaims) -> AppR
         "SELECT id, package_id, rollout_strategy, batch_size, status, scheduled_at, started_at, completed_at, created_at
          FROM ota_schedule ORDER BY id DESC LIMIT 200"
     ).fetch_all(st.db.pool()).await?;
-    let items: Vec<Value> = rows.iter().map(|r| json!({
-        "id": sqlx::Row::try_get::<u64, _>(r, "id").unwrap_or(0),
-        "package_id": sqlx::Row::try_get::<u64, _>(r, "package_id").unwrap_or(0),
-        "rollout_strategy": sqlx::Row::try_get::<String, _>(r, "rollout_strategy").unwrap_or_default(),
-        "status": sqlx::Row::try_get::<String, _>(r, "status").unwrap_or_default(),
-    })).collect();
+    let items: Vec<Value> = rows.iter().map(|r| -> AppResult<Value> { Ok(json!({
+        "id": sqlx::Row::try_get::<u64, _>(r, "id")?,
+        "package_id": sqlx::Row::try_get::<u64, _>(r, "package_id")?,
+        "rollout_strategy": sqlx::Row::try_get::<String, _>(r, "rollout_strategy")?,
+        "batch_size": sqlx::Row::try_get::<Option<u32>, _>(r, "batch_size")?,
+        "status": sqlx::Row::try_get::<String, _>(r, "status")?,
+        "scheduled_at": sqlx::Row::try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(r, "scheduled_at")?.map(|t| t.to_rfc3339()),
+        "started_at": sqlx::Row::try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(r, "started_at")?.map(|t| t.to_rfc3339()),
+        "completed_at": sqlx::Row::try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(r, "completed_at")?.map(|t| t.to_rfc3339()),
+    })) }).collect::<AppResult<Vec<_>>>()?;
     Ok(Json(common_error::ApiEnvelope::ok(json!({"items": items}), common_error::current_request_id())))
 }
 
@@ -88,18 +94,10 @@ pub struct ScheduleCreateReq {
 }
 
 pub async fn schedules_create(State(st): State<AppState>, c: AdminClaims, Json(req): Json<ScheduleCreateReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
-    let id: u64 = sqlx::query_scalar(
-        "INSERT INTO ota_schedule (package_id, target_filter_json, rollout_strategy, batch_size, status, scheduled_at, created_by)
-         VALUES (?, ?, ?, ?, 'pending', ?, ?)"
-    )
-    .bind(req.package_id).bind(req.target_filter_json).bind(&req.rollout_strategy).bind(req.batch_size)
-    .bind(req.scheduled_at).bind(c.admin_user_id)
-    .fetch_one(st.db.pool()).await?;
-
-    // 发 ota_schedule_stream 通知 worker 调度
-    let env = StreamEnvelope::new("ota_scheduled", "admin", json!({"schedule_id": id, "package_id": req.package_id}));
-    let _ = st.redis_stream.xadd_envelope(common_redis::streams::OTA_SCHEDULE, &env).await;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"id": id}), common_error::current_request_id())))
+    let _ = (st, c, req);
+    Err(AppError::ServiceUnavailable(
+        "OTA 调度器尚未接入设备筛选、传输与 ACK 确认，未创建调度".into(),
+    ))
 }
 
 pub async fn schedules_get(State(st): State<AppState>, _c: AdminClaims, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
@@ -113,9 +111,8 @@ pub async fn schedules_get(State(st): State<AppState>, _c: AdminClaims, Path(id)
 }
 
 pub async fn schedules_trigger(State(st): State<AppState>, _c: AdminClaims, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
-    let env = StreamEnvelope::new("ota_schedule_trigger", "admin", json!({"schedule_id": id, "idempotency_key": IdGen::new("TRI").next()}));
-    let _ = st.redis_stream.xadd_envelope(common_redis::streams::OTA_SCHEDULE, &env).await;
-    sqlx::query("UPDATE ota_schedule SET status = 'running', started_at = NOW(3) WHERE id = ? AND status = 'pending'")
-        .bind(id).execute(st.db.pool()).await?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"triggered": true}), common_error::current_request_id())))
+    let _ = (st, id);
+    Err(AppError::ServiceUnavailable(
+        "OTA 调度器尚未接入设备筛选、传输与 ACK 确认，未触发升级".into(),
+    ))
 }

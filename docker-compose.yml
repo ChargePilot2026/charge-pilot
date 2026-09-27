@@ -4,7 +4,7 @@
 # P0-4 关键修正:
 #   - 容器名统一 chargepilot-* 前缀
 #   - 内部 HTTP 端口(8081 user / 8082 admin / 8083 gateway / 8084 billing)仅 expose
-#   - 仅 gateway 9100/1883(设备长连接)与 caddy 80/443(对外)走 ports
+#   - 仅 gateway 9100(TCP/JSON)与 caddy 80/443(对外)走 ports;MQTT 1883 尚未实现
 #   - Redis 拆 redis-cache + redis-stream(P0-3)
 #   - device-net 单独接入,避免设备 → MySQL/Redis 直连
 #
@@ -133,7 +133,6 @@ services:
       TOKIO_WORKER_THREADS: "2"
     ports:
       - "9100:9100"
-      - "1883:1883"
     expose:
       - "8083"
     volumes:

@@ -193,21 +193,22 @@ admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故�
 | POST | `/api/v1/admin/billing/refunds/{refund_no}/retry` | finance.refund.retry | 唤醒异常自动退款任务，保留原退款单号、阶段及请求/结果快照 |
 | POST | `/api/v1/admin/orders/{order_id}/refunds` | 客户财务 | 从终态订单创建人工退款申请并记录申请人的第一签 |
 | GET | `/api/v1/admin/billing/invoices` | 角色 | 发票审核列表(从 `invoice_review` 查) |
-| POST | `/api/v1/admin/billing/invoices/{invoice_id}/approve` | 角色 | 发票审核通过(同步通知 user 服务开票) |
+| POST | `/api/v1/admin/billing/invoices/{invoice_id}/approve` | `invoice.review` | 发票双人复核(首次审核暂存，第二个不同财务账号确认后同步 user 服务) |
 | POST | `/api/v1/admin/billing/invoices/{invoice_id}/reject` | 角色 | 发票审核拒绝(填理由 + 通知用户) |
 | GET | `/api/v1/admin/billing/reconcile-logs` | 角色 | 对账日志列表(每日 03:00 自动跑) |
 | GET | `/api/v1/admin/billing/reconcile-logs/{reconcile_id}` | 角色 | 对账详情(差异项 + 处理建议) |
 
-### G. 营销配置(6 个)— `coupon`
+### G. 营销配置(7 个)— `coupon`
 
 | 方法 | 路径 | 鉴权 | 说明 |
 | --- | --- | --- | --- |
-| GET | `/api/v1/admin/coupons` | 角色 | 优惠券模板列表(分页 + 类型筛选) |
-| POST | `/api/v1/admin/coupons` | 角色 | 创建优惠券模板(类型 / 额度 / 有效期) |
-| GET | `/api/v1/admin/coupons/{coupon_id}` | 角色 | 模板详情 |
-| PUT | `/api/v1/admin/coupons/{coupon_id}` | 角色 | 更新模板(只能改未发放的) |
-| DELETE | `/api/v1/admin/coupons/{coupon_id}` | 角色 | 软删模板(若有发放记录禁止删) |
-| GET | `/api/v1/admin/coupons/{coupon_id}/stats` | 角色 | 发放 / 使用统计(总发 / 已用 / 核销率) |
+| GET | `/api/v1/admin/coupons` | `coupon.read` | 用户服务优惠券模板列表 |
+| POST | `/api/v1/admin/coupons` | `coupon.create` | 创建优惠券模板 |
+| GET | `/api/v1/admin/coupons/{coupon_id}` | `coupon.read` | 模板详情 |
+| PUT | `/api/v1/admin/coupons/{coupon_id}` | `coupon.update` | 更新名称、状态和结束时间 |
+| DELETE | `/api/v1/admin/coupons/{coupon_id}` | `coupon.delete` | 无发放记录时软删；已有发放记录应停用 |
+| GET | `/api/v1/admin/coupons/{coupon_id}/stats` | `coupon.read` | 按用户服务的真实发放记录统计 |
+| POST | `/api/v1/admin/coupons/{coupon_id}/grants` | `coupon.grant` | 向指定有效用户发放一张券，UUID 幂等 |
 
 ### H. 公告 / 白标 / 客服配置(13 个)— `announcement` + `whitelabel_config` + `customer_service_config`
 
@@ -218,8 +219,8 @@ admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故�
 | GET | `/api/v1/admin/announcements/{ann_id}` | 角色 | 公告详情 |
 | PUT | `/api/v1/admin/announcements/{ann_id}` | 角色 | 更新公告(已过期不可改) |
 | DELETE | `/api/v1/admin/announcements/{ann_id}` | 角色 | 软删(撤回) |
-| GET | `/api/v1/admin/whitelabel` | 角色 | 白标配置查询(单例 ID=1) |
-| PUT | `/api/v1/admin/whitelabel` | 角色 | 更新白标(Logo / 主题色 / 客服电话 / 备案号) |
+| GET | `/api/v1/admin/whitelabel` | `whitelabel.read` | 白标配置查询(单例 ID=1) |
+| PUT | `/api/v1/admin/whitelabel` | `whitelabel.update` | 更新小程序/后台品牌、服务信息、协议链接与自定义域名 |
 | GET | `/api/v1/admin/customer-service` | 角色 | 客服坐席配置列表 |
 | POST | `/api/v1/admin/customer-service` | 角色 | 新增客服坐席(微信客服链接 / 分流规则) |
 | GET | `/api/v1/admin/customer-service/{cs_id}` | 角色 | 坐席详情 |
@@ -227,7 +228,9 @@ admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故�
 | DELETE | `/api/v1/admin/customer-service/{cs_id}` | 角色 | 软删坐席(若被引用禁止删) |
 | POST | `/api/v1/admin/customer-service/{cs_id}/test-entry` | 角色 | 测试坐席链接(模拟小程序调用验证可达) |
 
-### I. Webhook 订阅(7 个)— `webhook_subscription` + `webhook_delivery_log`
+### I. Webhook 订阅（当前 6 个已注册路由）
+
+> **当前实现边界**：订阅列表、增删改查会访问 `webhook_subscription`，但当前 handler 只检查登录 JWT，没有执行 Webhook 专属权限、HTTPS/SSRF 校验、密钥加密或审计；创建的密钥以明文写库。Webhook `/test` 路由未注册，实际投递与重试未实现。告警消费者会发一个不含目标 URL 的 `alert_recorded` 事件，worker 无法投递并将其重试后写入 Redis DLQ。不要在生产环境创建真实目标订阅或把当前行为当作安全的 Webhook 闭环。
 
 | 方法 | 路径 | 鉴权 | 说明 |
 | --- | --- | --- | --- |
@@ -237,22 +240,22 @@ admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故�
 | PUT | `/api/v1/admin/webhooks/{sub_id}` | 角色 | 更新订阅(URL / 事件类型 / 启停) |
 | DELETE | `/api/v1/admin/webhooks/{sub_id}` | 角色 | 软删订阅 |
 | GET | `/api/v1/admin/webhooks/{sub_id}/deliveries` | 角色 | 推送日志(分页 + 状态筛选) |
-| POST | `/api/v1/admin/webhooks/{sub_id}/test` | 角色 | 测试推送(发一条 `ping` 事件验证可达) |
+| POST | `/api/v1/admin/webhooks/{sub_id}/test` | — | 未注册 |
 
-### J. OTA 配置(10 个)— `ota_package` + `ota_schedule`
+### J. OTA 配置（8 个已注册路由；调度创建/执行不可用）
 
 | 方法 | 路径 | 鉴权 | 说明 |
 | --- | --- | --- | --- |
-| GET | `/api/v1/admin/ota/packages` | 角色 | 固件包元数据列表(分页 + 厂商筛选) |
-| POST | `/api/v1/admin/ota/packages` | 角色 | 上传固件包元数据(走 OSS 预签名直传) |
-| GET | `/api/v1/admin/ota/packages/{pkg_id}` | 角色 | 固件包详情 |
-| DELETE | `/api/v1/admin/ota/packages/{pkg_id}` | 角色 | 删除固件包元数据(若有调度引用禁止删) |
-| GET | `/api/v1/admin/ota/schedules` | 角色 | 推送调度列表(分页 + 状态筛选) |
-| POST | `/api/v1/admin/ota/schedules` | 角色 | 创建推送调度(选包 + 目标设备 + 时段) |
-| GET | `/api/v1/admin/ota/schedules/{sched_id}` | 角色 | 调度详情 |
-| PUT | `/api/v1/admin/ota/schedules/{sched_id}` | 角色 | 更新调度(改时段 / 暂停) |
-| DELETE | `/api/v1/admin/ota/schedules/{sched_id}` | 角色 | 取消调度(已开始的不可取消) |
-| POST | `/api/v1/admin/ota/schedules/{sched_id}/execute` | 角色 | 立即执行(跳过时段,用于紧急修复) |
+| GET | `/api/v1/admin/ota/packages` | JWT | 固件包元数据列表(最多 200 条) |
+| POST | `/api/v1/admin/ota/packages` | JWT | 创建元数据记录(不上传或校验固件文件) |
+| GET | `/api/v1/admin/ota/packages/{pkg_id}` | JWT | 固件包元数据详情 |
+| DELETE | `/api/v1/admin/ota/packages/{pkg_id}` | JWT | 软删除元数据(当前不检查调度引用) |
+| GET | `/api/v1/admin/ota/schedules` | JWT | 调度列表(最多 200 条) |
+| POST | `/api/v1/admin/ota/schedules` | JWT | 当前返回 503，不创建调度 |
+| GET | `/api/v1/admin/ota/schedules/{sched_id}` | JWT | 调度详情 |
+| POST | `/api/v1/admin/ota/schedules/{sched_id}` | JWT | 当前返回 503，不触发升级 |
+
+> 调度创建/触发、设备传输与 ACK 尚未接入；对应 handler 返回 503，不创建虚假的排队状态。固件包元数据写入目前不表示固件已上传、校验或签名。OTA 设置读写也因配置持久化未接入而返回 503。
 
 ### K. 计费与分账模板(15 个)— `pricing_rule` + `pricing_template` + `split_template` + `split_party`
 
@@ -290,18 +293,38 @@ admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故�
 
 ---
 
-## 内部只读接口(供 user 服务调用,不计入公开端点数)
+## 内部服务间接口(不计入公开端点数)
 
 | 方法 | 路径 | 参数 | 响应 `data` | 错误码 |
 | --- | --- | --- | --- | --- |
 | GET | `/api/v1/internal/alerts` | `device_id` 必填,`status=active` | `alerts=[{alert_id,device_id,severity,alert_type,created_at}]`,无告警返回空数组 | `1005` 参数错误 / `5003` 暂不可用 |
 | GET | `/api/v1/internal/stations/{station_id}` | 路径站点 ID | `{station_id,station_name,address,longitude,latitude,status}` | `1004` 站点不存在 / `5003` 暂不可用 |
+| GET | `/api/v1/internal/customer-service/entry` | `scene=general/refund/complaint` | `{agent_wechat,agent_name,entry_url,scene}` | `1000` 场景无效 / `1004` 无启用客服 |
+| GET | `/api/v1/internal/split-templates/{id}` | 模板 ID | `{id,code,name,mode,parties:[{id,party_code,party_name,ratio_bp}]}` | `1004` 模板不存在 / `5003` 暂不可用 |
+| POST | `/api/v1/internal/announcements/expire` | 空 JSON 对象 | `{expired_count}` | `5003` 暂不可用 |
 
-仅 `:8082` 内网监听,要求 `Authorization: Bearer <service_token>`。user 服务只读取本接口返回的 `admin_db` 数据,不直连 admin schema;设备告警按 `device_id` 过滤,仅返回当前有效记录。
+仅 `:8082` 内网监听,要求 `X-Service-Token`。调用方不直连 admin schema;告警读取按 `device_id` 过滤且仅返回当前有效记录。公告过期清理是 worker 专用写接口，按发布状态和结束时间幂等更新。客服入口从启用坐席中按优先级选取，客服 URL 必须为 HTTPS。小程序调用 `wx.openCustomerServiceChat` 还要求配置 `WECHAT_CUSTOMER_SERVICE_CORP_ID`；缺少任一项时 user 返回 `available=false`，可提供坐席微信号作为人工兜底。
+
+### 反馈与设备报修处理
+
+| 方法 | 路径 | 权限 | 说明 |
+| --- | --- | --- | --- |
+| GET | `/api/v1/admin/feedback` | `feedback.read` | 分页查看用户评价、投诉和建议，可按 `pending/processed/closed` 筛选 |
+| POST | `/api/v1/admin/feedback/{id}/reply` | `feedback.reply` | `{ "action":"reply", "reply_content":"..." }` 回复待处理反馈；`{ "action":"close" }` 关闭 |
+| GET | `/api/v1/admin/device-fault-reports` | `fault.read` | 分页查看设备报修，可按 `open/dispatched/fixed/closed` 筛选 |
+| GET | `/api/v1/admin/device-fault-reports/{id}/history` | `fault.read` | 按时间顺序查看 `event_id`、完整状态变化、操作人、指派账号和处理备注 |
+| POST | `/api/v1/admin/device-fault-reports/{id}/dispatch` | `fault.dispatch` | `{ "assigned_to": admin_user_id, "note":"..." }` 派给有效管理员，可重新指派处理中记录；备注可选 |
+| POST | `/api/v1/admin/device-fault-reports/{id}/resolve` | `fault.dispatch` | `{ "status":"fixed", "note":"..." }` 由当前被指派人标记修复并填写必需备注；之后可 `{ "status":"closed", "note":"..." }` |
+
+列表返回 `items/total/page/page_size`，page 从 1 开始、page_size 为 1–100。回复后状态变为 `processed`，保存回复人、回复时间和回复内容；仅待处理反馈可回复，待处理或已回复反馈可关闭。报修按 `open → dispatched → fixed → closed` 流转，修复/关闭只能由当前指派账号执行；修复备注必填，派单、改派和关闭备注可选，备注会展示给报修人。状态、操作人、指派账号及备注与状态变化在 user_db 同一事务保存；迁移前记录以不可见的状态快照标识，不伪造旧历史。跨服务写请求使用 `X-Service-Token`，操作人在 user 服务字段中由 admin 端填入登录账号 ID，admin 再写入审计日志。权限由迁移 `admin_db/0016_customer_casework_permissions.sql` 注册；已有 `customer_cs`/`customer_ops` 与 `customer_inspection`/`customer_ops` 角色会分别获得对应权限，新建角色需在角色管理中授权。
 
 ---
 
 ## A. 认证与账号
+
+## 仪表盘
+
+`GET /api/v1/admin/dashboard` 需要 `dashboard.read` 权限。admin 汇总 user 内部接口的 `charging_orders`、今日下单用户数、今日完成充电订单的结算金额及近七天每日完成订单/金额，再从 admin_db 读取当前 `active` 告警数。响应含 `updated_at`。结算金额为充电订单实结金额，尚未扣除后续退款，因此不能直接作为净营收。用户服务或数据库读取失败会返回错误，不会以 0 代替缺失数据。
 
 ### `POST /api/v1/admin/auth/login`
 
@@ -973,25 +996,19 @@ admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故�
 - `1003`: 双签校验失败(同账号 / 签名无效)
 - `3001`: 微信退款失败(沿用 user 服务错误码透传)
 
+### `GET /api/v1/admin/billing/invoices`
+
+需要有效 `customer_finance` 角色及 `invoice.review` 权限。队列从 user 服务读取本人订单开票申请详情，并附带 admin 审核队列状态；user 服务不可用时返回错误，不伪装为空队列。当前最多返回最近 100 条。
+
 ### `POST /api/v1/admin/billing/invoices/{invoice_id}/approve`
 
-**鉴权**:[角色] `invoice.review`(客户财务)
+需要有效 `customer_finance` 角色及 `invoice.review` 权限。请求 `{ "invoice_url": "https://..." }`；必须是已经生成并可访问的 HTTPS 发票链接。首次审核将状态设为 `awaiting_second`，保存链接和审核人，不修改 user 的发票申请。第二个不同账号必须复核同一链接；首次审核人停用或权限撤销时不能完成复核。两人签字后 admin 调 user 内部接口将申请由 pending 改为 issued，并记录两名审核人和 audit_log。首次、第二次以及 user 成功但 admin 事务未完成后的恢复请求均可幂等处理。
 
-**请求体**:
-```json
-{
-  "approve_comment": "同意,抬头正确",
-  "invoice_type": "vat_special"        // "vat_special" 增值税专票 / "vat_general" 普票 / "electronic" 电子发票
-}
-```
+拒绝由一名有效财务人员填写原因后终结申请，可在首次/第二次复核前拒绝。发票文件由财务人员在现有开票系统生成；当前不自动生成 PDF、不发送邮件，也没有真实税控/开票机构联调。
 
-**业务逻辑**:
-1. 校验 `invoice_id` 通过 HTTP 调 user 服务的发票详情查询接口(具体路径见 `docs/api/user.md`)→ 拿抬头 / 金额 / 用户提交的资料
-2. 校验 `invoice_review.status='pending'`,否则返回 `2013`
-3. **校验金额上限**:`invoice_review.amount_cents > 100000`(1000 元)→ 必须由客户财务 + 客户管理员双签(本期实现"必须双签",不区分金额)
-4. UPDATE `admin_db.invoice_review(status='approved', invoice_type=..., reviewed_by=$actor.id, reviewed_at=NOW())` + 写 `audit_log`
-5. HTTP 调 user 服务的发票审核通过回调接口(具体路径见 `docs/api/user.md`)→ user 通知用户开票(本期走邮件)
-6. 异步触发 worker 生成电子发票 PDF → 推用户
+### `POST /api/v1/admin/billing/invoices/{invoice_id}/reject`
+
+需要同一权限。请求 `{ "reason": "拒绝依据" }`；原因必填、最多 255 字符。user 服务只允许 pending 转为 rejected 并把原因返回给用户；admin 记录审核状态与 audit_log。重复相同审核人及原因幂等，已作出不同审核决定时返回冲突。
 
 ### `GET /api/v1/admin/billing/reconcile-logs`
 
@@ -1026,31 +1043,36 @@ admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故�
 
 ### `POST /api/v1/admin/coupons`
 
-**鉴权**:[角色] `coupon.create`(客户运营)
+**鉴权**:JWT + 当前有效角色权限 `coupon.create`。模板由 user 服务持有，admin 通过内部 API 代理，禁止跨 schema SQL。
 
 **请求体**:
 ```json
 {
-  "coupon_name": "新人 5 元抵扣券",
-  "coupon_name_i18n": { "zh-CN": "新人 5 元抵扣券" },   // 多语言预留
-  "coupon_type": "fixed_amount",      // "fixed_amount" 固定金额 / "percentage" 百分比 / "free_time" 免费时长
-  "discount_cents": 500,              // 5 元(单位分)
-  "min_spend_cents": 1000,            // 满 10 元可用
-  "valid_from": "2026-09-25T00:00:00Z",
-  "valid_until": "2026-12-31T23:59:59Z",
-  "total_quota": 1000,                // 总发放量
-  "per_user_limit": 1,                // 每人限领
-  "applicable_scope": "all",          // "all" 全部 / "specific_station" 指定站点 / "specific_device_type" 指定设备类型
-  "applicable_ids": [],               // 按 scope 填
-  "name_i18n_enabled": true           // 标记是否启用 i18n(本期只填 zh-CN)
+  "code": "WELCOME_5",
+  "name": "新人 5 元抵扣券",
+  "discount_type": "amount",          // amount / percentage / time_free
+  "discount_value_cents": 500,
+  "discount_percent": null,
+  "min_charge_cents": 1000,
+  "valid_hours": 720,
+  "total_quota": 1000,                  // 0 表示不限
+  "per_user_quota": 1,
+  "start_at": "2026-09-25T00:00:00Z",
+  "end_at": "2026-12-31T23:59:59Z"
 }
 ```
 
 **业务逻辑**:
-1. 校验 `coupon_type` + `discount_cents` 合理性(百分比类型校验 `1-99`)
-2. 校验 `applicable_scope` 与 `applicable_ids` 一致性
-3. INSERT `coupon` + 写 `audit_log`
-4. **缓存失效**:`DEL coupon:tpl:$coupon_id`(user 服务计费时缓存)
+1. user 服务校验折扣类型与参数互斥、额度、有效小时和生效区间并写入 user_db。
+2. admin 保存调用前后的审计快照；权限在每次请求时从 admin 数据库重新核对。
+3. `amount` 必须是正金额；`percentage` 为 0–100 的百分数；`time_free` 不带金额或百分比。
+4. 适用站点/设备范围和多语言字段尚未进入当前 schema。
+
+### `POST /api/v1/admin/coupons/{coupon_id}/grants`
+
+**请求体**:`{"request_id":"<UUID>","user_id":123}`。request_id 在网络结果不确定时必须沿用。
+
+user 服务在单库事务中锁定模板，校验用户有效、模板处于发放时间范围、总发放量及个人额度，然后创建 `coupon_grant` 和幂等回执。相同 UUID 与相同用户/模板重放会返回同一张券；改绑其他用户或模板返回冲突。成功响应包含 `coupon_grant_id`、用户、模板、状态和到期时间。每次管理员发券都写 `audit_log`。
 
 ### `GET /api/v1/admin/coupons/{coupon_id}/stats`
 
@@ -1061,17 +1083,16 @@ admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故�
   "data": {
     "coupon_id": 42,
     "total_quota": 1000,
-    "granted_count": 856,              // 已发放
-    "used_count": 423,                 // 已使用(核销)
-    "unused_count": 433,               // 未使用
-    "expired_count": 0,
-    "usage_rate": 0.494,               // 核销率
-    "total_discount_cents": 211500    // 总优惠金额(分)
+    "granted_count": 856,
+    "used_count": 423,
+    "unused_count": 430,
+    "expired_count": 3,
+    "usage_rate": 0.494
   }
 }
 ```
 
-**业务逻辑**:JOIN `coupon_grant`(user_db)通过 HTTP 调 user 服务的优惠券统计接口(具体路径见 `docs/api/user.md`)聚合统计。**禁止直连 user_db**。
+**业务逻辑**:admin 通过服务间 HTTP 调 user 服务统计，不直连 user_db。未使用但已过期的实例也计入 `expired_count`。实际扫码结算核销仍未接入。
 
 ---
 
@@ -1128,7 +1149,7 @@ admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故�
 
 **业务逻辑**:
 1. 校验 `id=1`(单例)
-2. UPDATE 全字段 + 写 `audit_log`(白标变更属高敏操作,**强制写 before / after snapshot**)
+2. 全字段幂等写入固定 `id=1`，扩展字段保存在 `config_json`；与 `audit_log` before/after snapshot 同事务提交
 3. **缓存失效**:`DEL whitelabel:config`(user 服务 TTL 30 min)
 4. **运维联动**:`custom_domain` 变更后,**人工**同步更新 Caddyfile + 微信小程序后台"request 合法域名"
 
@@ -1188,7 +1209,7 @@ admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故�
 - `2015`: Webhook URL 不合法(非 HTTPS / 内网 IP / 格式错)
 - `1005`: `event_types` 不在预置枚举
 
-### `POST /api/v1/admin/webhooks/{sub_id}/test`
+### 目标接口：`POST /api/v1/admin/webhooks/{sub_id}/test`（当前未注册）
 
 **鉴权**:[角色] `webhook.test`
 
@@ -1223,6 +1244,10 @@ admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故�
 ---
 
 ## J. OTA 配置
+
+> **当前实现边界**：固件包接口只读写 `ota_package` 元数据，不提供 OSS 预签名上传、文件校验/签名或细粒度 OTA 权限与审计；删除为软删除且当前未检查调度引用。`ota_schedule` 仅有最多 200 条列表和详情读取。创建调度、触发执行及 OTA 设置读写返回 503；调度消费者没有可用生产者，设备传输、ACK 与回滚未实现。以下详细请求示例是目标契约，不能据此认为 OTA 流程已可用。
+
+当前实际路由：`GET/POST /api/v1/admin/ota/packages`、`GET/DELETE /api/v1/admin/ota/packages/{id}`、`GET/POST /api/v1/admin/ota/schedules`、`GET/POST /api/v1/admin/ota/schedules/{id}`。调度 `POST /schedules/{id}` 返回 503；文档目标路径 `/execute`、调度更新/删除路由当前未注册。
 
 ### `POST /api/v1/admin/ota/packages`
 
@@ -1281,7 +1306,7 @@ admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故�
 4. INSERT `ota_schedule(status='pending')` + 写 `audit_log`
 5. **异步触发** worker 任务在 `scheduled_window.start_at` 启动推送(写 `ota_schedule_stream`,§ 5.1 真实 Stream 名)
 
-### `POST /api/v1/admin/ota/schedules/{sched_id}/execute`
+### 目标接口：`POST /api/v1/admin/ota/schedules/{sched_id}/execute`（当前未注册）
 
 **鉴权**:[角色] `ota.schedule.execute`(客户管理员)
 
@@ -1437,6 +1462,9 @@ admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故�
 ```
 
 **业务逻辑**:
+当前返回 `503 ServiceUnavailable`，不会创建或声称已排队的导出任务。worker 导出执行器、任务状态查询、文件生成和对象存储签名尚未实现；其余参数字段属于计划契约，待执行器可用后启用。
+
+**计划业务逻辑(尚未实现)**:
 1. 校验时间窗 ≤ 90 天(防止超大数据量导出导致 OOM)
 2. 校验参数(filter / format / fields)合法
 3. **HTTP 调 worker 服务** `POST /api/v1/internal/scheduled-tasks/export_run/trigger`(路径详见 `docs/api/worker.md` § 零),请求体携带 filter / format / fields + 触发人信息
@@ -1452,12 +1480,9 @@ admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故�
 
 **鉴权**:[角色] `export.download`
 
-**业务逻辑**:
-1. **HTTP 调 worker** `GET /api/v1/internal/export/tasks/{task_id}`(路径见 `docs/api/worker.md` § 零)
-2. 校验 `status='completed'` → 否则返回 `1005`(任务未完成)
-3. 把 worker 返回的 `file_url`(OSS 临时签名 URL,**已含签名**,30 min 过期)直接透传给前端
+当前返回 `503 ServiceUnavailable`。worker 任务状态接口、文件生成和对象存储签名尚未实现。
 
-> **设计说明**:导出任务状态全部存于 `worker_db.scheduled_task`(本期方案,沿用 cross-reference § 4.2 注释);admin 端不建 `export_task` 表,避免跨 schema 直连(§ 4.2)。
+> **计划设计**:导出任务应由 worker 持久化并通过内部 API 查询；当前不会向 `admin_db.scheduled_task` 写入，也不会从 admin 数据库跨 schema 读取任务。
 
 ---
 
@@ -1468,7 +1493,7 @@ admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故�
 - CI 检查:OpenAPI 规范与本文件端点清单必须一致(脚本 `tools/check-api-consistency.ts`)
 - **跨服务一致性**:admin 通过 HTTP 调 user / gateway / billing / worker 的内部接口命名,必须与对应服务 API 文档一致;新增 admin 端点若依赖其他服务接口,必须先在对方服务的 API 文档中落地路径
 - **审计一致性**:任何 admin 写端点必须在 `services/admin/src/audit_log.rs` 的 `audit_action!()` 宏中注册,否则 CI 拒绝合并
-- **导出任务**:统一由 worker 服务承接,详见 `docs/api/worker.md` § 零(本期新增 3 个内部 HTTP 端点)
+- **导出任务**:目标由 worker 服务承接，当前导出入口返回 503；worker 状态查询与下载端点未实现，详见 `docs/api/worker.md` § 零
 
 ### 当前站点操作权限（2026-09-26）
 
@@ -1484,8 +1509,10 @@ admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故�
 
 ### 钱包退款风控审核队列
 
-`GET /api/v1/admin/billing/wallet-risks?page=1&page_size=20` 返回待人工审核的钱包退款申请。响应 data 包含 items、total、page、page_size；条目包含 request_id、user_id、amount_cents、reason、created_at。每页最大 50 条。
+`GET /api/v1/admin/billing/wallet-risks?page=1&page_size=20&status=pending` 返回钱包退款风控记录。`status` 支持 `pending`（默认）和 `reviewed`；响应 data 包含 items、total、page、page_size。条目包含 request_id、user_id、amount_cents、reason、created_at、freeze_status、freeze_linked、can_release、review、review_created_at、release、release_created_at。审核与解冻回执仅向具备审核权限的角色返回；`can_release` 同时受当前操作者实时解冻权限、审核结果、冻结关联及冻结状态限制。
 
 `POST /api/v1/admin/billing/wallet-risks/{request_id}/review` 请求 `{ "approved": true, "comment": "核实依据" }`。两接口均实时校验有效 customer_finance/customer_cs 角色及 `finance.wallet_risk.review` 权限。意见必填，最多 255 字符；操作人来自 JWT，禁止请求体自选身份。
 
-通过审核重新核实可用余额、充值有效期和已占用退款额度，原路拆单、预留余额、执行事件与审核回执同事务提交；拒绝保存 rejected 状态及意见，不预留资金或发起支付。相同操作人、决定及意见重放返回原回执，改变已完成审核返回 409。admin 保存审计，跨服务失败可使用相同请求重试。审核不解除钱包其他冻结状态，独立解冻工作流和推送通知仍待完成。
+通过审核重新核实可用余额、充值有效期和已占用退款额度，原路拆单、预留余额、执行事件与审核回执同事务提交；拒绝保存 rejected 状态及意见，不预留资金或发起支付。相同操作人、决定及意见重放返回原回执，改变已完成审核返回 409。admin 保存审计，跨服务失败可使用相同请求重试。审核不解除钱包冻结。
+
+`POST /api/v1/admin/billing/wallet-risks/{request_id}/release` 请求 `{ "comment": "核实依据" }`，要求有效 `customer_finance` 账号及 `finance.wallet_risk.release` 权限。仅允许解除与该申请明确关联且仍处于 `frozen` 的 `wallet_refund_frequency` 冻结；必须先完成审核。解冻回执、冻结状态变化及 admin 审计持久化，余额和退款预留不变；重复相同操作返回原回执，改变意见返回 409。该操作不会解除用户冻结或其他风控原因造成的冻结。

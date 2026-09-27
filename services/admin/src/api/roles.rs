@@ -10,14 +10,14 @@ use serde_json::{json, Value};
 pub async fn list(State(st): State<AppState>, _c: AdminClaims) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
     let rows = sqlx::query("SELECT id, code, name, description, is_builtin, created_at FROM role WHERE deleted_at IS NULL ORDER BY id ASC")
         .fetch_all(st.db.pool()).await?;
-    let items: Vec<Value> = rows.iter().map(|r| json!({
-        "id": sqlx::Row::try_get::<u64, _>(r, "id").unwrap_or(0),
-        "code": sqlx::Row::try_get::<String, _>(r, "code").unwrap_or_default(),
-        "name": sqlx::Row::try_get::<String, _>(r, "name").unwrap_or_default(),
-        "description": sqlx::Row::try_get::<Option<String>, _>(r, "description").ok().flatten(),
-        "is_builtin": sqlx::Row::try_get::<i8, _>(r, "is_builtin").unwrap_or(0) != 0,
-        "created_at": sqlx::Row::try_get::<chrono::DateTime<chrono::Utc>, _>(r, "created_at").ok().map(|t| t.to_rfc3339()),
-    })).collect();
+    let items: Vec<Value> = rows.iter().map(|r| -> AppResult<Value> { Ok(json!({
+        "id": sqlx::Row::try_get::<u64, _>(r, "id")?,
+        "code": sqlx::Row::try_get::<String, _>(r, "code")?,
+        "name": sqlx::Row::try_get::<String, _>(r, "name")?,
+        "description": sqlx::Row::try_get::<Option<String>, _>(r, "description")?,
+        "is_builtin": sqlx::Row::try_get::<i8, _>(r, "is_builtin")? != 0,
+        "created_at": sqlx::Row::try_get::<chrono::DateTime<chrono::Utc>, _>(r, "created_at")?.to_rfc3339(),
+    })) }).collect::<AppResult<Vec<_>>>()?;
     Ok(Json(common_error::ApiEnvelope::ok(json!({"items": items}), common_error::current_request_id())))
 }
 
@@ -31,9 +31,10 @@ pub struct RoleCreateReq {
 
 pub async fn create(State(st): State<AppState>, _c: AdminClaims, Json(req): Json<RoleCreateReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
     let mut tx = st.db.pool().begin().await?;
-    let role_id: u64 = sqlx::query_scalar("INSERT INTO role (code, name, description) VALUES (?, ?, ?)")
+    let result = sqlx::query("INSERT INTO role (code, name, description) VALUES (?, ?, ?)")
         .bind(&req.code).bind(&req.name).bind(req.description.as_deref())
-        .fetch_one(&mut *tx).await?;
+        .execute(&mut *tx).await?;
+    let role_id = result.last_insert_id();
     if let Some(pids) = req.permission_ids {
         for pid in pids {
             sqlx::query("INSERT IGNORE INTO role_permission (role_id, permission_id) VALUES (?, ?)")
@@ -49,7 +50,7 @@ pub async fn get(State(st): State<AppState>, _c: AdminClaims, Path(id): Path<u64
         .bind(id).fetch_optional(st.db.pool()).await?;
     let (id, code, name, desc) = r.ok_or_else(|| AppError::NotFound("role".into()))?;
     let perms: Vec<u64> = sqlx::query_scalar("SELECT permission_id FROM role_permission WHERE role_id = ?")
-        .bind(id).fetch_all(st.db.pool()).await.unwrap_or_default();
+        .bind(id).fetch_all(st.db.pool()).await?;
     Ok(Json(common_error::ApiEnvelope::ok(json!({
         "id": id, "code": code, "name": name, "description": desc, "permission_ids": perms,
     }), common_error::current_request_id())))
@@ -89,12 +90,12 @@ pub async fn delete(State(st): State<AppState>, _c: AdminClaims, Path(id): Path<
 pub async fn permissions(State(st): State<AppState>, _c: AdminClaims) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
     let rows = sqlx::query("SELECT id, code, name, module, description FROM permission ORDER BY module, id")
         .fetch_all(st.db.pool()).await?;
-    let items: Vec<Value> = rows.iter().map(|r| json!({
-        "id": sqlx::Row::try_get::<u64, _>(r, "id").unwrap_or(0),
-        "code": sqlx::Row::try_get::<String, _>(r, "code").unwrap_or_default(),
-        "name": sqlx::Row::try_get::<String, _>(r, "name").unwrap_or_default(),
-        "module": sqlx::Row::try_get::<String, _>(r, "module").unwrap_or_default(),
-        "description": sqlx::Row::try_get::<Option<String>, _>(r, "description").ok().flatten(),
-    })).collect();
+    let items: Vec<Value> = rows.iter().map(|r| -> AppResult<Value> { Ok(json!({
+        "id": sqlx::Row::try_get::<u64, _>(r, "id")?,
+        "code": sqlx::Row::try_get::<String, _>(r, "code")?,
+        "name": sqlx::Row::try_get::<String, _>(r, "name")?,
+        "module": sqlx::Row::try_get::<String, _>(r, "module")?,
+        "description": sqlx::Row::try_get::<Option<String>, _>(r, "description")?,
+    })) }).collect::<AppResult<Vec<_>>>()?;
     Ok(Json(common_error::ApiEnvelope::ok(json!({"items": items}), common_error::current_request_id())))
 }

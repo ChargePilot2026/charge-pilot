@@ -19,7 +19,7 @@
 | `cancelled` | 未支付且主动取消 | 终态;迟到的成功支付单独走退款补偿 |
 | `failed` | 支付、启动或安全检查失败 | 终态;已支付时走退款补偿 |
 
-`status` ENUM 仅包含以上六个值。`finishing` 是设备断电到最后一帧遥测确认的处理阶段,不写入 `charge_order.status`。人工审核由 `refund_record.status='manual_review'` 表示,不写入充电订单状态。
+`status` ENUM 仅包含以上六个值。`finishing` 是设备断电到最后一帧遥测确认的处理阶段,不写入 `charge_order.status`。钱包风控审核保存在独立钱包退款申请/审核表,不写入 `refund_record` 或充电订单状态。
 
 ## 关键事务与幂等
 
@@ -28,7 +28,7 @@
 | `/scan/start` | `charge_order(pending_payment)` + `payment_order(initiated)` | 逻辑锁;微信 JSAPI 预下单,`out_trade_no=payment_order.order_no` |
 | 微信成功回调 | 锁定订单;幂等表 + `payment_order(success)` + `event_outbox(charge_started_stream)` 同事务 | outbox 发布器重试 XADD;gateway 消费 |
 | gateway ACK 成功 | `active_port_charge` 插入 + `charge_order(charging)` 同事务 | gateway 通过 user 内部接口报告结果;持久化确认后 ACK Stream |
-| gateway ACK 失败 | `charge_order(failed)` + `event_outbox(comp_tx_stream,charge_refund_requested)` 同事务 | billing 发布 `refund_required_stream` |
+| gateway ACK 失败 | `charge_order(failed)` + `refund_record` + `event_outbox(refund_required_stream)` 同事务 | admin 执行微信退款；完成结果由 user 发 `refund_completed` 给 worker 审计 |
 | 60 秒内取消 | 锁定充电单与支付单,要求 `pending_payment` + `initiated`,两单同事务取消 | 微信关单;按 `order_no` 比较删除逻辑锁 |
 | 设备停止 | `charge_order(finished)` + 按订单 ID 删除 `active_port_charge` | billing 独立计费;user 关闭轮询 |
 

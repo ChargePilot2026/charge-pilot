@@ -28,13 +28,14 @@ pub mod refund;
 pub mod wallet;
 pub mod wallet_reads;
 pub mod coupon;
+pub mod coupon_admin;
 pub mod invoice;
 pub mod station;
 pub mod stream_consumer;
-pub mod wechat;
-pub mod repo;
 pub mod orders;
 pub mod order_events;
+pub mod casework;
+pub mod dashboard;
 
 use common_auth::JwtCodec;
 use common_config::AppConfig;

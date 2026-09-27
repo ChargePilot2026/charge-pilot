@@ -1,12 +1,11 @@
 //! 导出任务(简化为创建一个 worker 任务)
 
 use crate::AppState;
-use axum::{extract::State, Json};
+use axum::{extract::{Path, State}, Json};
 use common_auth::AdminClaims;
-use common_db::IdGen;
-use common_error::AppResult;
+use common_error::{AppError, AppResult};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 #[derive(Debug, Deserialize)]
 pub struct ExportCreateReq {
@@ -21,22 +20,37 @@ pub async fn create(
     actor: AdminClaims,
     Json(req): Json<ExportCreateReq>,
 ) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
-    let task_code = "export_run";
-    let code = IdGen::new("EXP").next();
-    sqlx::query(
-        "INSERT INTO scheduled_task (task_code, name, cron_expr, enabled, next_run_at, config_json)
-         VALUES (?, ?, '* * * * *', 1, NOW(3), ?)
-         ON DUPLICATE KEY UPDATE config_json = VALUES(config_json)"
-    )
-    .bind(task_code).bind(format!("export_{}", req.export_type))
-    .bind(serde_json::to_value(&serde_json::json!({
-        "export_no": code,
-        "type": req.export_type,
-        "period_start": req.period_start,
-        "period_end": req.period_end,
-        "filters": req.filters_json,
-        "operator_id": actor.admin_user_id,
-    }))?)
-    .execute(st.db.pool()).await?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"export_no": code, "status": "queued"}), common_error::current_request_id())))
+    let _ = (st, actor, req);
+    Err(AppError::ServiceUnavailable(
+        "导出执行器与文件存储尚未接入，未创建导出任务".into(),
+    ))
+}
+
+pub async fn tasks(
+    State(_st): State<AppState>,
+    _actor: AdminClaims,
+) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+    unavailable()
+}
+
+pub async fn task(
+    State(_st): State<AppState>,
+    _actor: AdminClaims,
+    Path(_task_id): Path<String>,
+) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+    unavailable()
+}
+
+pub async fn download(
+    State(_st): State<AppState>,
+    _actor: AdminClaims,
+    Path(_task_id): Path<String>,
+) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+    unavailable()
+}
+
+fn unavailable() -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+    Err(AppError::ServiceUnavailable(
+        "导出执行器、任务状态和文件存储尚未接入".into(),
+    ))
 }

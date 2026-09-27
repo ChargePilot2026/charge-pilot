@@ -53,7 +53,9 @@ pub async fn approve(tx:&mut sqlx::Transaction<'_,sqlx::MySql>,no:&str,actor:u64
     let payments=sqlx::query("SELECT user_id,biz_id,biz_type,pay_method,total_cents,paid_cents,refunded_cents,status FROM payment_order WHERE id=? AND deleted_at IS NULL FOR UPDATE").bind(pid).fetch_all(&mut **tx).await?;
     if payments.len()!=1{return Err(conflict());}let pay=&payments[0];
     let refunds=sqlx::query("SELECT id,user_id,biz_id,biz_type,refund_cents,status,reason,claimed_by FROM refund_record WHERE payment_order_id=? AND deleted_at IS NULL FOR UPDATE").bind(pid).fetch_all(&mut **tx).await?;
-    let row=refunds.iter().find(|r|r.try_get::<u64,_>("id").ok()==Some(rid)).ok_or_else(conflict)?;
+    let mut matched = None;
+    for refund in &refunds { if refund.try_get::<u64,_>("id")? == rid { matched = Some(refund); break; } }
+    let row=matched.ok_or_else(conflict)?;
     if row.try_get::<String,_>("status")?=="rejected"{return Err(conflict());}
     let uid:u64=row.try_get("user_id")?;let cid:u64=row.try_get("biz_id")?;let amount:i64=row.try_get("refund_cents")?;
     if row.try_get::<String,_>("biz_type")?!="charge" || pay.try_get::<String,_>("biz_type")?!="charge" || pay.try_get::<String,_>("pay_method")?!="wechat" || pay.try_get::<u64,_>("user_id")?!=uid || pay.try_get::<u64,_>("biz_id")?!=cid {return Err(conflict());}

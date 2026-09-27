@@ -26,7 +26,7 @@
 | **`customer_id` 列** | **不带**(P1-6 单客户单部署硬约束,与 README § 核心约束一致);客户级隔离由部署边界保证(每客户独立一套 `user_db` 实例,无跨客户访问) | 无 |
 | **业务状态 vs 软删除二维关系** | `status` 字段(如 `pending` / `success` / `cancelled`)是**业务生命周期状态机**;`deleted_at` 字段是**数据可见性软删除**;**二者独立,不互斥**:被软删的订单 `status` 保持原值(如 `cancelled` 订单被软删后,`status='cancelled'` + `deleted_at NOT NULL`);查询经仓储层封装自动加 `WHERE deleted_at IS NULL`,运维查询可绕过 | 审计日志 / 幂等表 无 status 字段 |
 
-## 表清单(18 张)
+## 表清单(19 张)
 
 | 表名 | 业务说明 | 分表策略 | 估算行数(单客户 5 年) |
 | --- | --- | --- | --- |
@@ -46,10 +46,11 @@
 | `payment_callback_idempotent` | 微信支付回调幂等表 | 不分 | ~200 万 |
 | **`feedback`** | **评价 / 投诉记录**(每笔订单唯一评价) | 不分 | ~200 万 |
 | **`device_fault_report`** | **设备报修记录**(用户报修 + 巡检处理) | 不分 | ~5 万 |
+| **`device_fault_report_event`** | **报修处理状态历史与巡检备注** | 不分 | 报修数量 × 派单/处理次数 |
 | **`active_port_charge`** | **端口当前充电占用**,跨月唯一性兜底 | 不分 | ≤ 端口数 |
 | **`event_outbox`** | **user 服务待发布 Stream 事件**,与业务状态同事务落库 | 不分 | 按处理状态滚动清理 |
 
-> **本文件包含全部 18 张表**:原 16 张业务表 + 端口占用表 + 事件 outbox。
+> **本文件包含全部 19 张表**:原 16 张业务表 + 端口占用、事件 outbox 和报修处理历史表。
 > 业务场景覆盖:用户管理 / 充电 / 支付 / 退款 / 钱包 / 优惠券 / 会员 / 发票 / 找桩 / 微信支付幂等 / **评价 / 投诉 / 设备报修**。
 
 ### 容量估算假设前提
@@ -94,7 +95,7 @@
 **关键业务规则**:
 
 - 一个微信用户 = 一条记录(按 `openid` 唯一)
-- 手机号绑定为可选,绑送余额或优惠券(需求文档 § 5.3.2)
+- 手机号绑定为可选;当前实现不存手机号明文且尚未配置绑送奖励
 - 注销流程:用户主动注销 → 软删除(`deleted_at`)+ 抹除 `phone_enc` / `unionid`(`openid` 保留 30 天后物理归档)
 - 跨服务访问:仅 user 服务读写;admin 通过 HTTP 调 user 读取(§ 4.2)
 
@@ -108,7 +109,7 @@
 | `nickname` | `VARCHAR(64)` | NOT NULL | `''` | 微信昵称(脱敏后存储:emoji 转 `*` / 特殊字符过滤) |
 | `avatar_url` | `VARCHAR(512)` | NULL | NULL | 微信头像 URL(下载到 OSS 后存 OSS 路径,避免微信 URL 失效) |
 | `phone_enc` | `VARBINARY(255)` | NULL | NULL | 手机号 AES_ENCRYPT 密文(§ 9.3);未绑定时为 NULL |
-| `phone_hash` | `CHAR(64)` | UNIQUE NULL | NULL | 手机号 SHA-256 哈希(用于"该手机号是否已注册"查询,避免解密) |
+| `phone_hash` | `VARCHAR(64)` | UNIQUE NULL | NULL | 服务端对微信验证手机号计算的 SHA-256 哈希(用于唯一性检查) |
 | `status` | `ENUM('active','banned')` | NOT NULL | `'active'` | 状态:active 正常 / banned 封禁(含主动注销) |
 | `banned_reason` | `VARCHAR(128)` | NULL | NULL | 封禁原因(主动注销 / 投诉 / 风控) |
 | `banned_at` | `DATETIME(3)` | NULL | NULL | 封禁时间 |
@@ -126,13 +127,13 @@
 | `pk_user` | `id` | 主键 | — |
 | `uk_user_openid` | `openid` | 唯一 | 登录 / `code2Session` 后查表 |
 | `uk_user_unionid` | `unionid` | 唯一(可空) | 跨小程序 unionid 打通 |
-| `uk_user_phone_hash` | `phone_hash` | 唯一(可空) | "该手机号是否已注册"查询 |
+| `uk_phone_hash` | `phone_hash` | 唯一(可空) | 阻止同一手机号绑定多个有效账号(由 `user_db/0018_unique_phone_hash.sql` 增加) |
 | `idx_user_last_active` | `last_active_at` | 普通 | 找活跃用户 / 数据分析 |
 | **`idx_user_deleted_at`** | `deleted_at` | 普通 | **加速扫描已删除用户**(worker 物理归档) |
 
 ### 约束
 
-- `phone_enc` 与 `phone_hash` **至少一个为 NULL**(未绑定手机号时都为 NULL);绑定后必须两个都填
+- 当前微信手机号绑定流程仅写 `phone_hash`;不保存明文，也不要求 `phone_enc` 必须有值。未绑定时 `phone_hash` 为 NULL。
 - `banned_at` NOT NULL 时,`status` 必须为 `banned`(应用层约束)
 - `deleted_at` NOT NULL 时,`deleted_by` 可 NULL(用户主动注销)或 NOT NULL(管理员操作)
 
@@ -146,7 +147,7 @@
 ### 业务规则
 
 - **首次登录流程**:`code2Session` → 拿 `openid` → `INSERT ... ON DUPLICATE KEY UPDATE last_active_at = NOW()`(幂等)
-- **手机号绑定流程**:小程序 `getPhoneNumber` 拿明文 → 应用层 `AES_ENCRYPT` 写 `phone_enc` + `SHA256` 写 `phone_hash` → **触发绑送奖励**(发优惠券 / 余额)
+- **手机号绑定流程(当前实现)**:小程序提交 `getPhoneNumber` 一次性凭证 → user 服务调用微信 `wxa/business/getuserphonenumber` → 只在服务端对返回号码计算 SHA-256 并写 `phone_hash`。不接收客户端手机号/哈希，不保存明文，当前不发放绑送奖励。部署 `0018_unique_phone_hash.sql` 前须核查历史重复哈希；重复值会使唯一索引迁移失败，需先让相关账号重新验证后再清理重复值。
 - **注销流程**:`UPDATE user SET status='banned', banned_at=NOW(), banned_reason='user_request', phone_enc=NULL, unionid=NULL, nickname='', avatar_url=NULL, deleted_at=NOW(), deleted_by=NULL`;`openid` 保留用于 30 天审计追溯,30 天后 worker 物理归档
 - **软删除查询规范**:所有查询经仓储层封装(`UserRepository::find_by_id($id)`),仓储内自动加 `WHERE deleted_at IS NULL`;直接 `SELECT *` 仅用于后台运维查询
 
@@ -246,7 +247,7 @@ PARTITION BY RANGE (TO_DAYS(created_month)) (
 - **订单创建**(`status=pending_payment`):user 收到 `/scan/start` 请求 → 占逻辑锁 `charge:hold:port_xxx` → `INSERT charge_order(status='pending_payment', payment_order_id=NULL, started_at=NULL)` + `INSERT payment_order(status='initiated', biz_type='charge', biz_id=charge_order.id)` → `UPDATE charge_order.payment_order_id = payment_order.id` → 调微信 JSAPI 预下单 → **不启动设备**
 - **订单启动**(`pending_payment` → `charging`):微信成功回调 → user 同事务写支付状态与 `event_outbox(charge_started_stream)` → gateway 消费并下发指令 → ACK 后调用 user 内部接口 → user 同事务插入 `active_port_charge` 并更新 `charge_order.status='charging'`。
 - **订单结束**(`status=finished`):gateway 发布 `charge_ended_stream` → user 消费后写 `ended_at` / `meter_kwh` / `power_w` / `duration_seconds`,并按订单 ID 释放 `active_port_charge`。
-- **触发退款**:启动失败或取消后迟到支付时,user 同事务写 `event_outbox(comp_tx_stream,charge_refund_requested)`;billing 消费并发布 `refund_required_stream`;admin 经 user 内部接口创建/领取 `refund_record`。
+- **触发退款**:启动失败、实结差额或取消后迟到支付时,user 在自己的事务内创建 `refund_record` 并写 `refund_required_stream` outbox;admin 经 user 内部接口领取并执行退款。`comp_tx_stream` 只记录退款完成结果。
 - **估算订单提示**:`billing_mode='estimated'` 时,小程序充电结束页底部显示"本次计费基于设备离线数据,如有问题请联系客服"
 
 ---
@@ -433,225 +434,81 @@ PARTITION BY RANGE (TO_DAYS(created_month)) (
 
 ---
 
-## 表 5:`user_db.refund_record`
+## 表 5:user_db.refund_record
 
-**业务说明**:退款记录。每笔 `payment_order` 触发的退款事件 = 一条或多条 `refund_record`(支持多次部分退款)。**通过 `payment_order_id` 关联支付订单,不看 `charge_order`**。
-
-**关键业务规则**:
-
-- **触发条件**(需求文档 § 7.5):充电失败 / 充电超时 / 60s 内主动取消 / 拔出插头 / 计量异常(走人工)
-- **退款方式**:原路微信自动退款 / 钱包余额退回,实时到账
-- **幂等**:`wechat_refund_id` 唯一,防微信退款 API 重复调用
-- **状态机**:`pending` → `success` / `failed` →(必要时)`manual_review`
+**业务说明**：原路退款记录，关联 user 自有的 payment_order，可按一张支付单分多笔退款。实际 schema 与 migrations/user_db/0001_init.sql 及 0013_refund_rejection.sql 一致。
 
 ### 字段定义
 
-| 字段 | 类型 | 约束 | 默认 | 说明 |
-| --- | --- | --- | --- | --- |
-| `id` | `BIGINT UNSIGNED` | PK, AUTO_INCREMENT | — | 主键 |
-| `payment_order_id` | `BIGINT UNSIGNED` | NOT NULL | — | **关联 `payment_order.id`**(不再关联 charge_order) |
-| `payment_order_no` | `CHAR(32)` | NOT NULL | — | 冗余支付单号 |
-| `user_id` | `BIGINT UNSIGNED` | NOT NULL | — | 关联 `user.id` |
-| `refund_no` | `CHAR(32)` | NOT NULL | — | 业务退款单号,格式 `RF + YYYYMMDD + 12 位随机` |
-| `refund_cents` | `BIGINT` | NOT NULL | — | 退款金额(分) |
-| `refund_reason` | `ENUM('charge_failed','timeout','user_cancel_60s','plug_pulled','meter_abnormal','manual','recharge_refund','post_settled_reversal','start_timeout_30s','balance_insufficient','auto_poweroff')` | NOT NULL | — | 退款原因(需求 § 8.4 完整枚举) |
-| `refund_method` | `ENUM('wechat','wallet')` | NOT NULL | — | 退款方式(原路返回) |
-| `wechat_refund_id` | `VARCHAR(64)` | NULL | NULL | 微信退款单号(幂等键) |
-| `status` | `ENUM('pending','retrying','success','failed','manual_review','settled')` | NOT NULL | `'pending'` | 退款状态;`retrying` 表示微信 API 失败后指数退避重试中;`settled` 表示已线下打款(P1-6 后续统一) |
-| `settled_at` | `DATETIME(3)` | NULL | NULL | **关联 payment_order 的账单结清时间** |
-| `frozen_by_risk` | `BOOLEAN` | NOT NULL | `FALSE` | **是否被风控冻结** |
-| `risk_freeze_log_id` | `BIGINT UNSIGNED` | NULL | NULL | 关联 `risk_freeze_log.id`(被冻结时填) |
-| `fail_reason` | `VARCHAR(256)` | NULL | NULL | 失败原因 |
-| `retry_count` | `TINYINT UNSIGNED` | NOT NULL | `0` | 已重试次数(最多 3 次) |
-| `requested_at` | `DATETIME(3)` | NOT NULL | — | 退款申请时间 |
-| `completed_at` | `DATETIME(3)` | NULL | NULL | 退款完成时间 |
-| `manual_review_note` | `VARCHAR(512)` | NULL | NULL | 人工审核备注 |
-| `trigger_event_id` | `VARCHAR(128)` | NOT NULL | — | 稳定业务 `event_key`(跨 Redis 重投递保持不变),用于退款领取幂等 |
-| `created_at` | `DATETIME(3)` | NOT NULL | — | 创建时间 |
-| `created_month` | `DATE` | GENERATED ALWAYS AS (DATE_FORMAT(`requested_at`, '%Y-%m-01')) STORED | — | **P0-2 分区字段** |
-| `updated_at` | `DATETIME(3)` | NOT NULL | — | 更新时间 |
-| `deleted_at` | `DATETIME(3)` | NULL | NULL | 软删除时间 |
-| `deleted_by` | `BIGINT UNSIGNED` | NULL | NULL | 删除操作者 ID |
-
-### 索引
-
-> **P0-2 修正**:按月分区表的所有唯一 / 主键索引必须包含分区字段 `created_month`。
-
-| 索引名 | 字段 | 类型 | 用途 |
+| 字段 | 类型 | 约束 / 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `pk_refund_record` | `id`, `created_month` | 主键 | MySQL 8.4 分区约束 |
-| `uk_refund_record_no` | `refund_no`, `created_month` | 唯一 | 用户查退款(分区字段必带) |
-| `uk_refund_record_wechat` | `wechat_refund_id`, `created_month` | 唯一(可空) | 微信回调幂等 |
-| `uk_refund_record_event` | `trigger_event_id`, `created_month` | 唯一 | 同月 Stream 消费幂等;跨月重复由领取接口锁支付单并跨分区查询兜底 |
-| `idx_refund_record_payment_order` | `payment_order_id`, `requested_at` | 普通 | 查支付单的所有退款 |
-| `idx_refund_record_user_status` | `user_id`, `status`, `requested_at` | 普通 | 我的退款列表 |
-| `idx_refund_record_status_retry` | `status`, `retry_count`, `requested_at` | 普通 | worker 扫表重试 |
-| `idx_refund_record_deleted_at` | `deleted_at` | 普通 | 物理归档扫描 |
+| id | BIGINT UNSIGNED | 自增 | 分区复合主键之一 |
+| refund_no | VARCHAR(64) | 非空 | 退款业务编号 |
+| payment_order_id | BIGINT UNSIGNED | 非空 | 关联 payment_order.id |
+| user_id | BIGINT UNSIGNED | 非空 | 退款所属用户 |
+| biz_type | ENUM('charge','wallet_recharge') | 非空 | 原支付业务类型 |
+| biz_id | BIGINT UNSIGNED | 非空 | 原业务订单 ID |
+| refund_cents | BIGINT | 非空 | 退款金额，单位分 |
+| reason | VARCHAR(255) | 可空 | 申请原因 |
+| status | ENUM('pending','processing','success','failed','rejected') | 非空，默认 pending | 0013 新增 rejected |
+| retry_count | INT UNSIGNED | 非空，默认 0 | 已报告的退款失败次数 |
+| wechat_refund_id | VARCHAR(64) | 可空 | 微信退款单号 |
+| claimed_by | BIGINT UNSIGNED | 可空 | 管理员领取人 ID |
+| claimed_at | DATETIME(3) | 可空 | 领取时间 |
+| completed_at | DATETIME(3) | 可空 | 退款成功、失败或拒绝完成时间 |
+| failure_reason | VARCHAR(255) | 可空 | 失败或拒绝原因 |
+| created_month | DATE | 非空 | 显式分区键，写入时存月份首日 |
+| created_at | DATETIME(3) | 非空，当前时间 | 创建时间 |
+| updated_at | DATETIME(3) | 自动更新 | 修改时间 |
+| deleted_at / deleted_by | DATETIME(3) / BIGINT UNSIGNED | 可空 | 软删除 |
 
-### 分区策略
+### 索引与分区
 
-按 `created_month` 范围分区(滚动保留 36 个月):
+- 主键：(id, created_month)。
+- 唯一键：uk_refund_no(refund_no, created_month)。
+- 普通索引：idx_payment(payment_order_id)、idx_status(status)。
+- 按 created_month 范围分区，分区字段必须包含在所有主键/唯一键中。
+- 不声明跨表外键；订单和用户关联由业务事务校验。
 
-```sql
-PARTITION BY RANGE (TO_DAYS(created_month)) (
-  PARTITION p2026m01 VALUES LESS THAN (TO_DAYS('2026-02-01')),
-  ...
-  PARTITION pmax VALUES LESS THAN MAXVALUE
-);
-```
+### 当前状态与流程
 
-### 约束
-
-- **状态机合法迁移**(应用层校验):
-  - `pending` → `retrying`(微信 API 失败进入指数退避)
-  - `retrying` → `success` / `failed` / `manual_review`
-  - `pending` → `success` / `failed` / `manual_review`(不经过 retrying)
-  - `failed` → `manual_review`(客户财务升级处理)
-  - `manual_review` → `success`(手动补退成功)/ `failed`(手动也失败)
-  - **不允许 `success` → 其他状态**(成功即终态,避免对账混乱)
-- `status='success'` 时,`completed_at` 必须 NOT NULL
-- `status='failed'` 时,`fail_reason` 必须 NOT NULL
-- `status='manual_review'` 时,`manual_review_note` 必须 NOT NULL
-- 单笔支付订单累计退款 `SUM(refund_cents)` ≤ `payment_order.paid_fee_cents`(应用层校验)
-
-### 关系
-
-- 多对一 → `payment_order.id`(纯支付维度,不看 `charge_order`)
-- 多对一 → `user.id`
-- **不直接关联 `charge_order`**:退款链路只看支付订单;若需查充电订单,通过 `payment_order.biz_id` + `biz_type='charge'` 反查
-
-### 业务规则
-
-**核心退款流程(全自动)**:
-- **触发**:启动失败或取消后迟到支付时,user 写补偿 outbox;billing 按支付实额发布 `refund_required_stream`。仅 `payment_order.status='success'` 才能触发微信退款。
-- **执行**:admin 消费退款事件 → 调 user 内部接口幂等领取 `refund_record` → 调微信退款 API → 经 user 内部接口回写成功/失败;失败由 user 定时任务按原退款单号查询并重试,4 次全失败转客户财务人工处理。
-
-**微信 API 失败重试策略(资金安全关键)**:
-- 重试触发:admin 调微信退款 API 返回非 success,且错误码属于"可重试"类(5xx / 网络超时 / 状态未知);user 记录下次重试时间并与 admin 协同复核微信原退款单号
-- 不可重试(立即入人工):商户号异常(`MERCHANT_NOT_EXISTS`) / 余额不足(`NOT_ENOUGH`) / 已退款(`REFUND_NOT_AVAILABLE`)/ 超 1 年(`TRADE_OVER_TIME`) / 风控拦截(`RISK_CONTROL`)
-- 重试期间 `status='retrying'`,记录 `retry_count` / `next_retry_at`;由 user 服务定时任务扫描本 schema 待重试退款,经微信查询原退款单号后再决定是否重试,不依赖未登记的 Stream
-- 4 次全失败:`status='failed'`,`fail_reason` 填最后一次的错误信息 + 告警运维 + DLQ 兜底
-
-**已结算后退款(仅客户财务可发起)**:
-- **前置条件**:`payment_order.settled_at IS NOT NULL`(账单已结清)
-- **权限控制**:仅 `customer_finance` 角色可发起;普通客服 / 巡检 / 用户自身**均不可发起**
-- **流程**:客户财务在 admin PC 后台"售后管理"选 payment_order → 填金额 → 提交 → 写 `refund_record(refund_reason='post_settled_reversal', settled_at=...)` + 强制走微信原路退 + 反向冲账记账
-- **审计**:PC 后台记录"谁 / 何时 / 为什么退"的完整操作日志(不可删)
-
-**风控冻结(频次单重,金额规则本期禁用)**:
-- **频次规则**:同用户 5 min 内发起 ≥ 3 笔退款 → 自动冻结
-- **金额规则**:**本期禁用**(二轮车 1-2 元/单场景下任何金额阈值形同虚设;`risk_freeze_log.freeze_type` 枚举保留 `amount_50` 值待二期启用)
-- **触发流程**:worker 在调微信退款前先校验规则;命中 → `refund_record(status='manual_review', frozen_by_risk=TRUE, risk_freeze_log_id=$对应记录.id)`,**不调微信 API** + 推送"您的退款需要审核"小程序消息
-- **人工审核**:客户财务 / 客服坐席在 admin PC 后台"风控冻结队列"处理 → 通过:UPDATE `status='pending'` + worker 继续调微信退;拒绝:UPDATE `status='failed', fail_reason='risk_rejected'` + 推送"退款未通过审核"
-- **规则配置**:阈值(频次 N / 时间窗 / 金额)在 admin PC 后台"风控配置"中可调
-
-**每日对账(03:00)**:
-- worker 拉昨日微信退款账单(`/v3/merchant/fund/refund/out-bill-no` 接口)
-- 与 `refund_record` JOIN 对比:
-  - 微信有退 + 系统无记录 → `refund_reconcile_diff(diff_type='missing_internal')` —— 严重,**需立即人工**(钱可能漏记账)
-  - 系统有记录 + 微信无退 → `diff_type='missing_wechat'` —— 检查 `status`,可能重试中或失败
-  - 金额不一致 → `diff_type='amount_mismatch'`
-  - 状态不一致(微信 success / 系统 retrying)→ `diff_type='status_mismatch'`
-- 差异入 `refund_reconcile_diff` 表 + Webhook 告警客户财务
-- 客户财务处理后 UPDATE `resolved=TRUE, resolved_by, resolved_at, resolved_note`
-
-**其他规则**:
-- **计量异常**:billing 检测到电量异常 → 不自动退款 → `refund_record(status='manual_review', refund_reason='meter_abnormal')` + 客户 PC 后台通知运维
-- **充值退款**:`recharge_refund` 场景下,用户申请退回充值款项 → 系统校验余额与累计可退额 → 写 `refund_record(payment_order_id=$充值订单.id, refund_reason='recharge_refund')` + 走微信退款原路返回
-- **多次部分退款**:支持,但需应用层校验累计不超 `payment_order.paid_fee_cents`
-
-**退款失败 + 账单已结清的资金缺口 SOP**(需求 § 9.3 资金安全兜底):
-- **触发条件**:`refund_record.status='failed'` 且 `payment_order.settled_at IS NOT NULL`(重试 4 次全失败,且账单已结清)
-- **资金缺口定义**:用户实际支付的钱(`paid_fee_cents`)已经进入客户银行账户,但因退款失败未原路返回,形成"客户应收但用户未收到"的资金缺口
-- **客户财务 PC 后台处理流程**:
-  1. 客户财务在"售后管理 → 退款失败"看到该笔,核对微信侧交易号(`wechat_refund_id` 为空说明确实未退)
-  2. 登录微信商户平台手动发起退款(走平台自有通道)
-  3. 拿到银行流水号后,在 PC 后台补填:`UPDATE refund_record SET resolution='manual_fixed', wechat_refund_id=$手动退款流水号, status='success', completed_at=NOW(), manual_review_note='客户财务手动补退'` + INSERT `audit_log`
-  4. 系统将 `refund_reconcile_diff.resolution='manual_fixed'` 标记差异已处理
-- **平台承担场景**(极少数):如客户不愿手动补退 / 微信通道异常无法退款 → 标记 `resolution='platform_loss'` + 客户财务走内部流程(对账亏损)→ `payment_order` 标记特殊状态(`refund_status='platform_loss'`)
-- **资金安全底线**:**不允许** `status='failed'` 且 `payment_order.settled_at IS NOT NULL` 的订单长期滞留(>7 天)→ worker 每日扫表 → 滞留告警 → 客户财务必须处理
-- **追溯链**:从 `refund_record` 一路可追到 `payment_order` → `charge_order` → `device_id`,任何资金缺口都可定位到具体订单 / 设备 / 用户
-
----
-
+- 状态只包括 pending、processing、success、failed、rejected。waiting、retried、manual_review、settled 不属于当前表枚举；审核意见和拒绝凭据由 refund_review / refund_rejection 保存，自动执行阶段由 admin_db.refund_task 保存。
+- user 在单个事务内创建退款记录和 refund_required_stream outbox；启动失败、实结退款、确认收款后订单失效、钱包充值原路退款和双签通过后的退款均走此路径。
+- admin 消费退款事件并调用 user 内部领取接口，将记录从 pending 置为 processing；同一 refund_no 的微信提交、查询和回报进度由 admin 自有 refund_task 续跑。
+- user 的微信退款回调/内部结果接口在事务内校验支付和退款快照。成功时更新 refund_record、payment_order，钱包退款还会结算预留金额；失败时更新 failure_reason 和 retry_count。
+- 每次已确认的成功或失败结果同事务写 event_outbox(refund_completed)，由 worker 幂等审计至 worker_db.comp_tx_log。它不执行资金补偿，也不更新 billing。
+- 充电退款可以由两名不同财务账号分别审核；审核回执存于 refund_review。拒绝写 refund_rejection 并把退款记录置为 rejected，不会产生执行事件。
+- 钱包退款风险审核/资金预留由 wallet_refund_request 等专属表负责，不会把不存在的 manual_review 状态写入此表。
 ## 表 6:`user_db.coupon_grant`
 
-**业务说明**:**用户持有的优惠券发放记录**。一个用户可持有同一模板的多张券(在 `coupon.user_limit` 限制内)。使用时通过 `used_payment_order_id` 关联到支付订单(主单)。
+**业务说明**:用户持有的优惠券发放实例。真实表结构以 `migrations/user_db/0001_init.sql` 和后续迁移为准；当前已实现运营发券、额度核验和幂等回执。
 
-**关键业务规则**:
+### 当前字段
 
-- **不发优惠券模板给用户**,而是发**发放记录**;模板 (`coupon` 表)定义面值 / 门槛 / 有效期
-- **状态机**:`unused` → `used` / `expired` / `frozen`(风控冻结)
-- **使用与核销**:组合支付场景下,优惠券作为主单 `pay_components` 中的一个元素;核销时 UPDATE `coupon_grant.status='used'` + `used_payment_order_id=$主单.id`
-- **过期清理**:worker 周期任务扫表,过期券 `status='expired'`
-
-### 字段定义
-
-| 字段 | 类型 | 约束 | 默认 | 说明 |
-| --- | --- | --- | --- | --- |
-| `id` | `BIGINT UNSIGNED` | PK, AUTO_INCREMENT | — | 主键 |
-| `coupon_id` | `BIGINT UNSIGNED` | NOT NULL | — | 关联 `coupon.id`(模板) |
-| `user_id` | `BIGINT UNSIGNED` | NOT NULL | — | 关联 `user.id`(持有人) |
-| `grant_no` | `CHAR(32)` | UNIQUE, NOT NULL | — | 发放单号,格式 `GR + YYYYMMDD + 12 位随机` |
-| `grant_source` | `ENUM('system_event','admin_grant','phone_bind','referral','compensation')` | NOT NULL | — | 发放来源 |
-| `grant_source_id` | `VARCHAR(64)` | NULL | NULL | 来源 ID(如活动 ID / 管理员操作 ID) |
-| `discount_cents` | `BIGINT` | NULL | NULL | 实际优惠金额(分)快照 |
-| `min_spend_cents` | `BIGINT` | NULL | NULL | 最低消费(分)快照 |
-| `valid_from` | `DATETIME(3)` | NOT NULL | — | 生效时间 |
-| `valid_until` | `DATETIME(3)` | NOT NULL | — | 失效时间 |
-| `status` | `ENUM('unused','used','expired','frozen')` | NOT NULL | `'unused'` | 状态 |
-| `used_payment_order_id` | `BIGINT UNSIGNED` | NULL | NULL | **被使用的支付订单 ID**(`status='used'` 时填,指向 `payment_order.id`,即组合支付主单) |
-| `used_at` | `DATETIME(3)` | NULL | NULL | 使用时间 |
-| `frozen_reason` | `VARCHAR(128)` | NULL | NULL | 冻结原因(风控触发等) |
-| `created_at` | `DATETIME(3)` | NOT NULL | — | 发放时间 |
-| `updated_at` | `DATETIME(3)` | NOT NULL | — | 更新时间 |
-| `deleted_at` | `DATETIME(3)` | NULL | NULL | 软删除时间 |
-| `deleted_by` | `BIGINT UNSIGNED` | NULL | NULL | 删除操作者 ID |
-
-### 索引
-
-| 索引名 | 字段 | 类型 | 用途 |
+| 字段 | 类型 | 约束 | 说明 |
 | --- | --- | --- | --- |
-| `pk_coupon_grant` | `id` | 主键 | — |
-| `uk_coupon_grant_no` | `grant_no` | 唯一 | 单条发放追溯 |
-| `idx_coupon_grant_user_status` | `user_id`, `status`, `valid_until` | 普通 | 用户"我的优惠券"列表 |
-| `idx_coupon_grant_coupon_status` | `coupon_id`, `status` | 普通 | 模板维度统计发放 / 使用 |
-| `idx_coupon_grant_expire_scan` | `status`, `valid_until` | 普通 | worker 周期扫表清理过期 |
-| `idx_coupon_grant_deleted_at` | `deleted_at` | 普通 | 物理归档扫描 |
+| `id` | `BIGINT UNSIGNED` | PK, AUTO_INCREMENT | 发放记录 ID |
+| `coupon_id` | `BIGINT UNSIGNED` | NOT NULL | `coupon.id` 模板 |
+| `user_id` | `BIGINT UNSIGNED` | NOT NULL | 持有人 |
+| `grant_source` | ENUM | NOT NULL | `register/activity/invite/manual/invite_reward` |
+| `status` | ENUM | NOT NULL DEFAULT `unused` | `unused/used/expired` |
+| `used_payment_order_id` | `BIGINT UNSIGNED` | NULL | 使用时关联支付单 |
+| `used_at` | `DATETIME(3)` | NULL | 使用时间 |
+| `expired_at` | `DATETIME(3)` | NOT NULL | 发放实例到期时间 |
+| `source_event_id` | `CHAR(36)` | NULL, UNIQUE | 活动 Stream event_id 幂等键(user_db/0020) |
+| `created_at` | `DATETIME(3)` | NOT NULL | 发放时间 |
+| `deleted_at` | `DATETIME(3)` | NULL | 软删除时间 |
 
-### 约束
+现有索引为 `idx_user_status(user_id,status)`、`idx_coupon(coupon_id)`，迁移 `0020_coupon_grant_idempotency.sql` 新增唯一 `source_event_id`。
 
-- **状态机合法迁移**(应用层校验):
-  - `unused` → `used`(组合支付核销)/ `expired`(过期清理)/ `frozen`(风控冻结)
-  - `frozen` → `unused`(风控解除)/ `expired`(冻结期过期)
-  - `used` / `expired` → **终态**(不再迁移)
-  - **不允许 `used` → `unused`**(已使用不可回退,避免重复使用)
-- `status='used'` 时,`used_payment_order_id` / `used_at` 必须 NOT NULL
-- `status='expired'` 时,`valid_until < NOW()`(应用层校验)
-- `status='frozen'` 时,`frozen_reason` 必须 NOT NULL
-- 一个 `user_id` 对同一 `coupon_id` 的未使用券数量 ≤ `coupon.user_limit`(应用层校验)
+### 当前发放规则
 
-### 关系
-
-- 多对一 → `coupon.id`(模板)
-- 多对一 → `user.id`(持有人)
-- 多对一 → `payment_order.id`(使用订单,**指向组合支付主单**)
-
-### 业务规则
-
-- **发放**(系统活动):user 消费 `coupon_grant_required_stream` → 经 admin 内部接口查 `coupon` 模板 → 校验未超 `total_limit` / 用户未超 `user_limit` → INSERT `coupon_grant(status='unused')`;admin 的 `granted_count` 由发券结果回传更新
-- **发放**(手机号绑定):user 完成手机号绑定 → 查"绑定赠送"类模板 → INSERT `coupon_grant` + 推送"您获得 X 优惠券"小程序消息
-- **使用**(组合支付下单核销):user 收到组合支付请求 → 校验 `coupon_grant.status='unused'` + 在有效期 + 满足 `min_spend_cents` → 创建主单 `payment_order(pay_components 含 coupon 项)` → 事务内 UPDATE `coupon_grant(status='used', used_payment_order_id=$主单.id, used_at)`(优惠券核销与主单创建在同事务,避免券被重复使用)
-- **过期清理**:worker 每日扫表 → `status='unused'` 且 `valid_until < NOW()` → UPDATE `status='expired'`
+- 管理员发券经 admin → user 内部 API；user 在单个事务中锁优惠券模板、核对有效用户、模板状态/有效时间、总发放额度与个人额度，再插入券和 `coupon_grant_request` 回执。
+- `coupon_grant_request.request_id` 是 UUID 主键并保存模板、用户和券 ID。同请求同参数返回原券；相同 UUID 改绑不同模板或用户会冲突。
+- 活动 Stream 消费使用 envelope `event_id` 作为 request_id 和 `source_event_id`。无效事件、数据库故障或额度耗尽不 ACK 成功，由消费框架重试并进入 DLQ。
+- 当前尚未接通扫码结算核销；`used` 状态目前没有订单付款路径写入。会员/钱包/优惠券组合支付和优惠券抵扣也未实现。
 
 ---
-
-**本批次结束**
-
-> 剩余 6 张表(`wallet_txn` / `coupon` 模板 / `membership_card` / `invoice_request` / `port_view` / `payment_callback_idempotent`)将在第二批设计,沿用本文件的"通用约定"和表设计格式。
-
----
-
 ## 表 7:`user_db.refund_reconcile_diff`
 
 **业务说明**:**每日对账差异记录**(微信账单 vs 内部 `refund_record`)。每日 03:00 worker 拉微信退款账单,与 `refund_record` 对比,差异入表 + 告警。
@@ -717,80 +574,34 @@ PARTITION BY RANGE (TO_DAYS(created_month)) (
 
 ---
 
-## 表 8:`user_db.risk_freeze_log`
+## 表 8:user_db.risk_freeze_log
 
-**业务说明**:**风控冻结记录**。频次(5 min 内 ≥ 3 笔)触发退款风控时,写一条冻结记录 + 关联的 `refund_record.status='manual_review'`。**金额规则本期禁用**(freeze_type 枚举保留 `amount_50` 以备二期启用)。
-
-**关键业务规则**:
-
-- **频次 + 金额双重风控**(老杨师傅决策)
-- 触发 = 自动冻结,不调微信 API
-- 必须人工审核(客户财务 / 客服坐席)后才继续走退款
-- 软删除:审核完成后软删,保留审计
+**业务说明**：钱包退款申请达到频次门槛时记录冻结原因。字段对应 migrations/user_db/0001_init.sql；它不关联 refund_record，也不保存审核决定。
 
 ### 字段定义
 
-| 字段 | 类型 | 约束 | 默认 | 说明 |
-| --- | --- | --- | --- | --- |
-| `id` | `BIGINT UNSIGNED` | PK, AUTO_INCREMENT | — | 主键 |
-| `user_id` | `BIGINT UNSIGNED` | NOT NULL | — | 触发用户 |
-| `freeze_type` | `ENUM('frequency_5min_3','amount_50')` | NOT NULL | — | **冻结类型**:`frequency_5min_3` 频次规则(5 min 内 ≥ 3 笔退款)/ `amount_50` 金额规则(单笔 ≥ 50 元) |
-| `trigger_refund_id` | `BIGINT UNSIGNED` | NOT NULL | — | 触发的 `refund_record.id`(被冻结的那笔退款) |
-| `trigger_amount_cents` | `BIGINT` | NOT NULL | — | 触发金额(分) |
-| `trigger_count_5min` | `TINYINT UNSIGNED` | NULL | NULL | 频次规则触发时:5 min 内的退款笔数 |
-| `threshold_snapshot` | `JSON` | NULL | NULL | 触发当时的阈值快照(`{frequency_count:3, frequency_window_seconds:300, amount_cents:50000}`),便于审计 |
-| `status` | `ENUM('frozen','approved','rejected')` | NOT NULL | `'frozen'` | 状态:frozen 待审 / approved 通过(继续退款)/ rejected 拒绝(不退款) |
-| `reviewed_by` | `BIGINT UNSIGNED` | NULL | NULL | 审核人(客户财务 / 客服坐席 user_id) |
-| `reviewed_at` | `DATETIME(3)` | NULL | NULL | 审核时间 |
-| `review_note` | `VARCHAR(512)` | NULL | NULL | 审核备注 |
-| `push_notified` | `BOOLEAN` | NOT NULL | `FALSE` | 是否已推送"您的退款需要审核"小程序消息 |
-| `created_at` | `DATETIME(3)` | NOT NULL | — | 创建时间 |
-| `updated_at` | `DATETIME(3)` | NOT NULL | — | 更新时间 |
-| `deleted_at` | `DATETIME(3)` | NULL | NULL | 软删除时间 |
-| `deleted_by` | `BIGINT UNSIGNED` | NULL | NULL | 删除操作者 ID |
-
-### 索引
-
-| 索引名 | 字段 | 类型 | 用途 |
+| 字段 | 类型 | 约束 / 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `pk_risk_freeze_log` | `id` | 主键 | — |
-| `idx_risk_freeze_log_user_status` | `user_id`, `status`, `created_at` | 普通 | 查某用户的所有冻结记录 |
-| `idx_risk_freeze_log_status_created` | `status`, `created_at` | 普通 | 客户财务查待审队列 |
-| `idx_risk_freeze_log_trigger_refund` | `trigger_refund_id` | 唯一 | 1 笔退款 = 最多 1 条冻结记录 |
-| `idx_risk_freeze_log_deleted_at` | `deleted_at` | 普通 | 物理归档扫描 |
+| id | BIGINT UNSIGNED | 主键、自增 | 冻结记录 ID |
+| user_id | BIGINT UNSIGNED | 非空 | 被冻结用户 |
+| trigger_rule | VARCHAR(64) | 非空 | 当前规则值为 wallet_refund_frequency |
+| frozen_action | VARCHAR(64) | 非空 | 当前动作为 wallet_refund |
+| reason | VARCHAR(255) | 可空 | 冻结原因 |
+| window_minutes | INT UNSIGNED | 可空 | 统计窗口分钟数 |
+| threshold_value | INT UNSIGNED | 可空 | 触发阈值 |
+| actual_value | INT UNSIGNED | 可空 | 实际触发值；当前写入未提供 |
+| unfreeze_at | DATETIME(3) | 可空 | 解冻时间 |
+| status | ENUM('frozen','unfrozen') | 非空，默认 frozen | 此冻结原因是否仍有效 |
+| created_at | DATETIME(3) | 非空，当前时间 | 创建时间 |
 
-### 约束
+索引：主键 id；idx_user_status(user_id, status)。无软删除字段、无 freeze_type/refund_record_id，也没有金额阈值规则。
 
-- `freeze_type='frequency_5min_3'` 时,`trigger_count_5min` NOT NULL(≥ 3)
-- `freeze_type='amount_50'` 时,`trigger_amount_cents >= 5000`(分)
-- `status='approved'` 时,`reviewed_by` / `reviewed_at` NOT NULL;审核后对应的 `refund_record.status` 更新为 `'pending'`,worker 继续调微信退
-- `status='rejected'` 时,`reviewed_by` / `reviewed_at` / `review_note` NOT NULL;对应的 `refund_record.status` 更新为 `'failed', fail_reason='risk_rejected'`
-- `status='frozen'` 时,`reviewed_by` / `reviewed_at` NULL
+### 当前钱包退款风控流程
 
-### 关系
-
-- 多对一 → `user.id`(触发用户)
-- 一对一 → `refund_record.id`(触发的退款记录,`trigger_refund_id` 唯一索引保证)
-
-### 业务规则
-
-- **触发 - 频次**:worker 在调微信退款前查 `refund_record` 近 5 min 内同 user_id 的笔数(不含已 rejected) → ≥ 3 → INSERT `risk_freeze_log(freeze_type='frequency_5min_3')` + UPDATE 触发的 `refund_record(status='manual_review', frozen_by_risk=TRUE, risk_freeze_log_id=$id)`
-- **触发 - 金额**:**本期禁用**(`amount_rule_enabled=FALSE`);worker 跳过金额检查。`risk_freeze_log.freeze_type='amount_50'` 枚举值保留以备二期
-- **不调微信 API**:冻结后**直接跳过**微信退款调用,等人工审核
-- **推送通知**:`push_notified=TRUE` 后发小程序消息"您的退款正在审核中,预计 2 小时内完成"
-- **人工审核**:客户财务 / 客服坐席在 admin PC 后台"风控冻结队列" → 通过:`status='approved'` + 触发 `refund_record.status='pending'` + worker 重新调度;拒绝:`status='rejected'` + 触发 `refund_record.status='failed'` + 推送"退款审核未通过"消息
-- **阈值可配**:客户在 admin PC 后台"风控配置"调整阈值(`frequency_count` / `frequency_window_seconds` / `amount_cents`),调整时 UPDATE `threshold_snapshot` 字段记录历史
-
----
-
-**本批次结束(8 张核心表)**
-
-> 剩余 6 张表(`wallet_txn` / `coupon` 模板 / `membership_card` / `invoice_request` / `port_view` / `payment_callback_idempotent`)将在第二批设计,沿用本文件的"通用约定"和表设计格式。
-
----
-
-# 第二批:6 张支撑型表
-
+- wallet_refund_request 保存幂等申请与响应；5 分钟窗口内第三次申请触发 wallet 状态冻结，同时创建 risk_freeze_log 与 wallet_risk_freeze_link。
+- 待审核状态存储在 wallet_refund_request.response_json；审核意见和决定保存在 wallet_risk_review。审核通过会按原充值支付记录拆分退款并写 refund_required_stream；拒绝则记录终态，不新建退款执行事件。
+- 解冻单独由 wallet_risk_release 记录操作者、原因和响应；user 只解除与此申请关联的冻结记录，并保留其他仍有效的冻结原因。
+- 该风控流程针对钱包退款申请；它不把 refund_record.status 写成 manual_review。refund_record 当前有效状态见表 5。
 ## 表 9:`user_db.wallet_txn`
 
 **业务说明**:**余额流水**。每次 `wallet_account` 余额变动都同步写一条流水,用于对账、审计、查询"我的余额明细"。
@@ -876,73 +687,37 @@ PARTITION BY RANGE (TO_DAYS(created_month)) (
 
 ## 表 10:`user_db.coupon`
 
-**业务说明**:**优惠券模板**(维度:面值 / 类型 / 门槛 / 有效期 / 适用范围 / 发放限制)。客户运营在 admin PC 后台配置。**不发优惠券模板给用户**——发的是 `coupon_grant` 发放记录(表 6)。
+**业务说明**:用户服务拥有的优惠券模板。admin 页面不得直接查询或修改本表，必须通过 user 内部 API。
 
-**关键业务规则**:
+### 当前字段
 
-- 模板与发放记录分离:模板 = 配置(可改),发放记录 = 实例(不可改)
-- 单客户单部署:配置类元数据按部署边界隔离,无 customer_id 列(见 README § 核心约束)
-- 适用场景:系统活动 / 拉新促活 / 投诉补偿
-- **不软删除**(模板是配置数据,删除走"停用"流程 → `status='disabled'`,不物理删除)
-
-### 字段定义
-
-| 字段 | 类型 | 约束 | 默认 | 说明 |
-| --- | --- | --- | --- | --- |
-| `id` | `BIGINT UNSIGNED` | PK, AUTO_INCREMENT | — | 主键 |
-
-| `name` | `VARCHAR(64)` | NOT NULL | — | 优惠券名称(用户可见,如"新人 5 元抵扣券") |
-| `coupon_type` | `ENUM('fixed_amount','percentage','full_reduction')` | NOT NULL | — | 类型:固定金额 / 百分比折扣 / 满减 |
-| `discount_cents` | `BIGINT` | NULL | NULL | 优惠金额(分);`fixed_amount` / `full_reduction` 时填 |
-| `discount_percent` | `DECIMAL(5,2)` | NULL | NULL | 折扣百分比(0-100,精度 0.01);`percentage` 时填(如 80 = 8 折) |
-| `max_discount_cents` | `BIGINT` | NULL | NULL | 折扣上限(分);`percentage` 时填(如"最高减 10 元") |
-| `min_spend_cents` | `BIGINT` | NULL | NULL | 最低消费(分);`full_reduction` 时必填(如"满 30 减 5"),其他类型可空 |
-| `valid_days` | `SMALLINT UNSIGNED` | NULL | NULL | 领取后有效天数(如 30 天);`valid_from`/`valid_until` 二选一 |
-| `valid_from` | `DATETIME(3)` | NULL | NULL | 固定生效时间(模板级,不用 `valid_days` 时填) |
-| `valid_until` | `DATETIME(3)` | NULL | NULL | 固定失效时间(模板级) |
-| `total_limit` | `INT UNSIGNED` | NULL | NULL | 总发放数量上限(NULL = 无上限) |
-| `granted_count` | `INT UNSIGNED` | NOT NULL | `0` | 已发放数量(发券时 +1,作废时不减) |
-| `user_limit` | `INT UNSIGNED` | NOT NULL | `1` | 单用户最多持有数量(默认 1) |
-| `scope` | `ENUM('all','specific_station','specific_device')` | NOT NULL | `'all'` | 适用范围:全部 / 指定站点 / 指定设备 |
-| `scope_ids` | `JSON` | NULL | NULL | 适用范围 ID 列表(根据 `scope` 填站点或设备 ID 数组) |
-| `status` | `ENUM('enabled','disabled','archived')` | NOT NULL | `'enabled'` | 状态:启用 / 停用 / 归档 |
-| `created_by` | `BIGINT UNSIGNED` | NOT NULL | — | 创建人(客户运营 user_id) |
-| `created_at` | `DATETIME(3)` | NOT NULL | — | 创建时间 |
-| `updated_at` | `DATETIME(3)` | NOT NULL | — | 更新时间 |
-
-### 索引
-
-| 索引名 | 字段 | 类型 | 用途 |
+| 字段 | 类型 | 默认/约束 | 说明 |
 | --- | --- | --- | --- |
-| `pk_coupon` | `id` | 主键 | — |
+| `id` | `BIGINT UNSIGNED` | PK, AUTO_INCREMENT | 模板 ID |
+| `code` | `VARCHAR(64)` | NOT NULL, UNIQUE WITH `deleted_at` | 业务编码 |
+| `name` | `VARCHAR(128)` | NOT NULL | 用户可见名称 |
+| `name_i18n` | JSON | NULL | 多语言预留 |
+| `discount_type` | ENUM | NOT NULL | `amount/percentage/time_free` |
+| `discount_value_cents` | BIGINT | NULL | 固定金额折扣(分) |
+| `discount_percent` | DECIMAL(5,2) | NULL | 百分比折扣(0–100) |
+| `min_charge_cents` | BIGINT | NOT NULL DEFAULT 0 | 最低消费门槛 |
+| `valid_hours` | `INT UNSIGNED` | NOT NULL DEFAULT 24 | 领取后的最长有效小时数 |
+| `total_quota` | `INT UNSIGNED` | NOT NULL DEFAULT 0 | 总发放量，0 表示不限 |
+| `per_user_quota` | `INT UNSIGNED` | NOT NULL DEFAULT 1 | 每用户最多发放数 |
+| `status` | ENUM | NOT NULL DEFAULT `active` | `active/disabled` |
+| `start_at/end_at` | `DATETIME(3)` | NULL | 可选模板发放时间边界 |
+| `created_at/updated_at` | `DATETIME(3)` | NOT NULL | 创建/更新时间 |
+| `deleted_at/deleted_by` | DATETIME/BIGINT | NULL | 软删除信息 |
 
-| `idx_coupon_status_valid` | `status`, `valid_until` | 普通 | 查可发放的有效模板(发券时用) |
+唯一键为 `uk_code(code,deleted_at)`。模板折扣字段按 `discount_type` 互斥校验。创建时 valid_hours 为 1–8760，额度不可为负；删除已有发放实例的模板会拒绝，运营应停用。
 
-### 约束
+### 当前操作与未完成项
 
-- **类型字段对应**:
-  - `coupon_type='fixed_amount'` → `discount_cents` NOT NULL,`discount_percent` / `min_spend_cents` NULL
-  - `coupon_type='percentage'` → `discount_percent` NOT NULL,`discount_cents` / `min_spend_cents` NULL,`max_discount_cents` 可空
-  - `coupon_type='full_reduction'` → `discount_cents` NOT NULL,`min_spend_cents` NOT NULL,`discount_percent` NULL
-- **有效期字段对应**:`valid_days` 与 `valid_from`+`valid_until` 二选一(应用层校验)
-- `scope IN ('specific_station','specific_device')` 时,`scope_ids` NOT NULL
-- `granted_count <= total_limit`(应用层校验,超限不发)
-
-### 关系
-
-
-- 一对多 → `coupon_grant.coupon_id`(每个发券实例关联模板)
-
-### 业务规则
-
-- **创建模板**:客户运营在 admin PC 后台"营销管理 → 优惠券模板"新建 → 填写类型/面值/门槛/有效期/范围 → INSERT `coupon(status='enabled')`
-- **发放**(系统活动):worker 消费活动事件 → 查 `coupon` 模板 → 校验 `status='enabled'` + `granted_count < total_limit` + 用户未超 `user_limit` → INSERT `coupon_grant` + UPDATE `coupon.granted_count += 1`
-- **停用**:客户运营手动 `UPDATE coupon SET status='disabled'`,已发放的 `coupon_grant` 不受影响(继续可用直到过期)
-- **归档**:长期停用的模板 `status='archived'`,从列表隐藏但保留审计
-- **过期**:模板的 `valid_until` 过期后,**已发放的 coupon_grant 仍按各自 valid_until 生效**(模板级过期 ≠ 发券实例过期)
+- admin 的模板列表、创建、详情、名称/状态/结束时间更新、软删除及统计都经 user 内部 API，不跨 schema 访问。
+- `coupon.grant` 权限保护的人工发券端点会校验模板状态/时窗和总量/个人额度。统计从 user_db 实例实时汇总，过期但尚未清理的券计入 expired。
+- 当前没有扫码付款抵扣、会员卡组合付款、指定站点/设备适用范围或自动活动规则引擎；`time_free` 仅存模板/可预览，未作用于结算。
 
 ---
-
 ## 表 11:`user_db.membership_card`
 
 **业务说明**:**会员卡**(本期预留,数据可能为空)。二期扩展场景:用户购买月度 / 年度会员,享折扣 + 优先客服。
@@ -1279,6 +1054,8 @@ PARTITION BY RANGE (TO_DAYS(created_month)) (
 
 ## 表 16:`user_db.device_fault_report`
 
+> 当前代码已接入巡检处理：`status` 按 `open → dispatched → fixed → closed` 更新，`assigned_to` 保存 admin 用户 ID，`resolved_at` 在标记修复时写入。`device_fault_report_event` 同事务记录提交、派单/改派、修复和关闭状态，包含操作人、指派账号及处理备注。user_db/0019_device_fault_casework_history.sql 为旧报修写入明确的迁移状态快照；旧历史缺失不会伪造。
+
 **业务说明**:**设备报修记录**。用户在小程序"站点详情"上报修充电桩故障(限每设备 24h 一次,防骚扰)。
 
 **关键业务规则**:
@@ -1343,9 +1120,25 @@ PARTITION BY RANGE (TO_DAYS(created_month)) (
 - **关闭**:客户运营确认 → UPDATE `status='closed', closed_by`
 - **限频**:同设备 24h 内只能 1 条未删除报修(防骚扰;紧急情况由巡检员直接录入)
 
+## 表 17:`user_db.device_fault_report_event`
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | `BIGINT UNSIGNED` | 主键及同时间排序键 |
+| `report_id` | `BIGINT UNSIGNED` | `device_fault_report.id`，不使用外键以兼容软删除和分批清理 |
+| `actor_id` | `BIGINT UNSIGNED NULL` | 用户报修人或后台操作人；系统迁移快照为空 |
+| `event_type` | ENUM | `reported/dispatched/reassigned/fixed/closed/migration_baseline` |
+| `from_status` / `to_status` | `VARCHAR(24) NULL` | 变化前后状态 |
+| `assigned_to` | `BIGINT UNSIGNED NULL` | 本次事件后的指派账号 |
+| `note` | `VARCHAR(2000) NULL` | 处理备注；后台队列可读，公开 history 只读 user_visible=1 内容 |
+| `user_visible` | `TINYINT(1)` | 是否可展示给报修人 |
+| `created_at` | `DATETIME(3)` | UTC 事件时间 |
+
+索引 `idx_fault_event_report_time(report_id,created_at,id)` 支持单报修顺序查询；`idx_fault_event_actor_time(actor_id,created_at)` 支持操作审计分析。报修行锁、状态更新、事件插入在同一事务内提交。迁移 `0019_device_fault_casework_history.sql` 对已有记录只写当前状态快照且设 `user_visible=0`。
+
 ---
 
-## 表 17:`user_db.active_port_charge`
+## 表 18:`user_db.active_port_charge`
 
 **业务说明**:端口当前充电占用的数据库兜底表,不分区。Redis 逻辑锁和物理锁只负责短期协调;跨月唯一性由本表的 `port_id` 主键保证。
 
@@ -1360,7 +1153,7 @@ user 服务收到 gateway 的启动成功结果后,**在同一 `user_db` 事务�
 
 ---
 
-## 表 18:`user_db.event_outbox`
+## 表 19:`user_db.event_outbox`
 
 **业务说明**:支付回调等事务需要可靠发布的 Stream 事件。写业务状态与写 outbox 在同一 `user_db` 事务内完成;事务外的 user 发布器按 `next_retry_at` 扫描并重试,收到 Redis `XADD` 确认后才标记 `published`。
 
@@ -1380,4 +1173,4 @@ user 服务收到 gateway 的启动成功结果后,**在同一 `user_db` 事务�
 
 ---
 
-**user_db 全部 18 张表设计完成**
+**user_db 全部 19 张表设计完成**

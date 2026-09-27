@@ -215,7 +215,7 @@
    - `tiered` 模式 → 按功率分档累加
 5. **事务**:
    - INSERT `fee_calculation(charge_order_id, ...)` + 写 `pricing_rule_snapshot`
-   - 发 `comp_tx_stream` 事件(消费者 user 更新 `charge_order.fee_status`)
+   - 当前不会发布 `comp_tx_stream`；收费结果经持久化 `fee_delivery` 投递到 user 内部接口
 6. **金额守门**:校验 `total_fee_cents == electric_fee_cents + service_fee_cents`(不等则拒绝写入 + 告警)
 
 **错误码**:
@@ -234,6 +234,8 @@
 ## 三、分账类(关键端点展开)
 
 ### `POST /api/v1/internal/split`
+
+实现状态补充：当前请求字段为 `fee_calculation_id` 与 `split_template_id`。billing 先对 fee calculation 行加锁，然后通过 admin 内部 API 读取模板和参与方（不直读 `admin_db`）；mode_a 对实结总额分账，mode_b 按比例分服务费并将电费并入 `party_code='operator'`。比例必须合计 10000，尾差归最后一位参与方。按计费记录锁串行化后，同一计费记录及模板的重放返回原 settlement 与原分配金额。
 
 **鉴权**:服务间共享密钥
 **触发场景**:billing 在 `calculate` 完成后,**按分账模板计算每个参与方的金额**
@@ -297,7 +299,7 @@
 6. **事务**:
    - INSERT `settlement(charge_order_id, split_template_id, total_fee_cents, split_mode, calculated_at=NOW())`
    - INSERT `settlement_party_amount(settlement_id, party_type, party_name, ratio_bp, amount_cents) × N`
-7. 发 `comp_tx_stream` 事件(用户端 / 财务端可用)
+7. 当前不发布 `comp_tx_stream`；分账结果保存于 billing schema，由授权内部 API 查询
 
 **错误码**:
 - `2003`: 分账模板比例之和不等于 10000
@@ -335,6 +337,8 @@
 
 ### `POST /api/v1/internal/withdraw-requests`
 
+当前实现明确返回 503：数据库仅有预留提现表，缺少可核对的分账余额预留、提现明细关联和财务双签流程；不能创建未锁定来源金额的提现单。
+
 **鉴权**:服务间共享密钥
 **触发场景**:分账参与方(物业 / 加盟商)在 PC 后台"我的分账"页提交提现申请(实际是 admin 服务代发起,调本端点)
 **业务目标**:把已结算的分账金额 → 申请提现到指定账户
@@ -367,7 +371,7 @@
 1. 校验 `amount_cents` ≤ 未提现的分账总额(查 `settlement_party_amount` 已提现 vs 未提现)
 2. 校验 `settlement_id_range` 中每笔都是该 `party_type` / `party_name` 持有
 3. INSERT `withdraw_request(status='pending')` + 写审计
-4. 发 `comp_tx_stream` 通知 admin 服务
+4. 当前不发布 `comp_tx_stream`；提现审批/实际打款通知闭环未接入
 
 ### `POST /api/v1/internal/withdraw-requests/{withdraw_id}/approve`
 
@@ -391,14 +395,14 @@
 
 ## 六、Stream 消费约定(billing 作为消费者)
 
-billing 服务**主动消费**以下 Stream(沿用 § 5.1):
+billing 当前代码实际消费 `charge_ended_stream`。以下表格中的 `comp_tx_stream` 行是旧目标设计，未由 billing 注册或实现；退款结果由 user 服务写入自身数据库，worker 仅审计事件。
 
 | Stream | 来源 | 处理流程 | 产出 |
 | --- | --- | --- | --- |
-| `charge_ended_stream` | gateway | 1. 调 `POST /calculate` → 写 `fee_calculation`<br>2. 调 `POST /split` → 写 `settlement` + `settlement_party_amount`<br>3. 若需退款 → 发 `refund_required_stream`<br>4. 若需发票 → 发 `invoice_required_stream` | `fee_calculation` / `settlement` 落库 + 发 `refund_required_stream` / `invoice_required_stream` |
-| `comp_tx_stream` | 各服务 | 对 `type='charge_refund_requested'` 的启动失败 / 取消后支付事件,按 `event_key` 幂等确认支付金额(经 user 内部接口读取),发布 `refund_required_stream`;不得直写 `user_db` | 退款事件 |
+| `charge_ended_stream` | gateway | 读取 user 的最终计量和不可变报价，写费用/规则快照，并持久化 `fee_delivery` 待投递结果；user 接收并确认后再更新订单、创建退款记录或发票申请 | billing 费用记录 + `fee_delivery`；user 处理业务状态及退款/发票事件 |
+| `comp_tx_stream` | user → worker | billing 不消费；当前仅有 user 的 `refund_completed` 结果事件，由 worker 审计写入 `worker_db.comp_tx_log` | 无 billing 产出 |
 
-> **幂等保证**:消费方按 payload 的稳定 `event_key` 去重;只有 `refund_required_stream` 发布得到确认后才 ACK 上游 `comp_tx_stream`,失败保持 pending 并重试。退款事件使用同一 `event_key`,admin / user 消费端据此防重复退款。billing 不直写 `user_db` 或 `worker_db`。
+> **实际退款完成路径**:user 的微信退款回调通过 user 内部事务更新 `refund_record` 与 `payment_order`，并写入 `event_outbox`。worker 对发布后的 `refund_completed` 结果做审计落库。自动退款请求编排、失败重试和对账能力按实现状态表另行跟踪；此审计事件不代表 billing 状态同步或资金补偿已经实现。
 
 ---
 

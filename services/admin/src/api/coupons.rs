@@ -1,35 +1,33 @@
-//! 优惠券后台视角 CRUD
-
+//! Admin coupon routes proxy user-owned coupon data through the user service.
 use crate::AppState;
-use crate::api_types;
-use api_contracts::paths as p;
 use axum::{extract::{Path, State}, Json};
 use common_auth::AdminClaims;
-use common_db::IdGen;
-use common_error::{AppError, AppResult};
-use serde::Deserialize;
+use common_error::{ApiEnvelope, AppError, AppResult};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-pub async fn list(State(st): State<AppState>, _c: AdminClaims) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
-    let rows = sqlx::query(
-        "SELECT id, code, name, discount_type, discount_value_cents, discount_percent,
-                min_charge_cents, valid_hours, total_quota, per_user_quota, status, start_at, end_at
-         FROM coupon WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 200"
-    ).fetch_all(st.db.pool()).await?;
-    let items: Vec<Value> = rows.iter().map(|r| json!({
-        "id": sqlx::Row::try_get::<u64, _>(r, "id").unwrap_or(0),
-        "code": sqlx::Row::try_get::<String, _>(r, "code").unwrap_or_default(),
-        "name": sqlx::Row::try_get::<String, _>(r, "name").unwrap_or_default(),
-        "discount_type": sqlx::Row::try_get::<String, _>(r, "discount_type").unwrap_or_default(),
-        "discount_value_cents": sqlx::Row::try_get::<Option<i64>, _>(r, "discount_value_cents").ok().flatten(),
-        "discount_percent": sqlx::Row::try_get::<Option<f64>, _>(r, "discount_percent").ok().flatten(),
-        "min_charge_cents": sqlx::Row::try_get::<i64, _>(r, "min_charge_cents").unwrap_or(0),
-        "status": sqlx::Row::try_get::<String, _>(r, "status").unwrap_or_default(),
-    })).collect();
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"items": items}), common_error::current_request_id())))
+async fn require_permission(st: &AppState, c: &AdminClaims, permission: &str) -> AppResult<()> {
+    let allowed: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM admin_user_role a JOIN role r ON r.id=a.role_id AND r.deleted_at IS NULL
+         JOIN role_permission rp ON rp.role_id=r.id JOIN permission p ON p.id=rp.permission_id
+         WHERE a.id=? AND a.username=? AND a.status='active' AND a.deleted_at IS NULL AND p.code=?)",
+    ).bind(c.admin_user_id).bind(&c.sub).bind(permission).fetch_one(st.db.pool()).await?;
+    if !allowed { return Err(AppError::Forbidden(format!("缺少 {permission} 权限"))); }
+    Ok(())
 }
 
-#[derive(Debug, Deserialize)]
+fn user_client(st: &AppState) -> common_http::internal::ApiClient {
+    common_http::internal::ApiClient::new(st.http.clone(), st.service_token.clone())
+}
+
+async fn audit(st: &AppState, c: &AdminClaims, action: &str, target: &str, before: Option<Value>, after: Value, request_id: Option<&str>) -> AppResult<()> {
+    sqlx::query("INSERT INTO audit_log(actor_id,module,action,target_type,target_id,request_id,before_json,after_json,created_month) VALUES (?,'coupon',?,'coupon',?,?,?, ?,DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))")
+        .bind(c.admin_user_id).bind(action).bind(target).bind(request_id).bind(before).bind(after).execute(st.db.pool()).await?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CouponCreateReq {
     pub code: String,
     pub name: String,
@@ -38,69 +36,75 @@ pub struct CouponCreateReq {
     pub discount_percent: Option<f64>,
     pub min_charge_cents: Option<i64>,
     pub valid_hours: Option<i64>,
-    pub total_quota: Option<i32>,
-    pub per_user_quota: Option<i32>,
+    pub total_quota: Option<i64>,
+    pub per_user_quota: Option<i64>,
     pub start_at: Option<chrono::DateTime<chrono::Utc>>,
     pub end_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-pub async fn create(State(st): State<AppState>, _c: AdminClaims, Json(req): Json<CouponCreateReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
-    let id: u64 = sqlx::query_scalar(
-        "INSERT INTO coupon (code, name, discount_type, discount_value_cents, discount_percent,
-                             min_charge_cents, valid_hours, total_quota, per_user_quota, start_at, end_at)
-         VALUES (?, ?, ?, ?, ?, COALESCE(?, 0), COALESCE(?, 24), COALESCE(?, 0), COALESCE(?, 1), ?, ?)"
-    )
-    .bind(&req.code).bind(&req.name).bind(&req.discount_type)
-    .bind(req.discount_value_cents).bind(req.discount_percent)
-    .bind(req.min_charge_cents).bind(req.valid_hours).bind(req.total_quota).bind(req.per_user_quota)
-    .bind(req.start_at).bind(req.end_at)
-    .fetch_one(st.db.pool()).await?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"id": id}), common_error::current_request_id())))
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CouponUpdateReq { pub name: Option<String>, pub status: Option<String>, pub end_at: Option<chrono::DateTime<chrono::Utc>> }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CouponGrantReq { pub request_id: String, pub user_id: u64 }
+
+pub async fn list(State(st): State<AppState>, c: AdminClaims) -> AppResult<Json<ApiEnvelope<Value>>> {
+    require_permission(&st, &c, "coupon.read").await?;
+    let result: Value = user_client(&st).get(st.cfg.service_urls.user.as_deref(), api_contracts::paths::USER_INTERNAL_COUPONS, &()).await?;
+    Ok(Json(ApiEnvelope::ok(result, common_error::current_request_id())))
 }
 
-pub async fn get(State(st): State<AppState>, _c: AdminClaims, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
-    let r = sqlx::query("SELECT * FROM coupon WHERE id = ? AND deleted_at IS NULL")
-        .bind(id).fetch_optional(st.db.pool()).await?;
-    let r = r.ok_or_else(|| AppError::NotFound("coupon".into()))?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({
-        "id": sqlx::Row::try_get::<u64, _>(&r, "id")?,
-        "code": sqlx::Row::try_get::<String, _>(&r, "code")?,
-        "name": sqlx::Row::try_get::<String, _>(&r, "name")?,
-        "discount_type": sqlx::Row::try_get::<String, _>(&r, "discount_type")?,
-    }), common_error::current_request_id())))
+pub async fn create(State(st): State<AppState>, c: AdminClaims, Json(req): Json<CouponCreateReq>) -> AppResult<Json<ApiEnvelope<Value>>> {
+    require_permission(&st, &c, "coupon.create").await?;
+    let created: Value = user_client(&st).post(st.cfg.service_urls.user.as_deref(), api_contracts::paths::USER_INTERNAL_COUPONS, &req).await?;
+    let id = created.get("id").and_then(Value::as_u64).ok_or_else(|| AppError::ServiceUnavailable("用户服务未返回优惠券编号".into()))?;
+    audit(&st, &c, "coupon.create", &id.to_string(), None, json!({"request":req,"result":created}), None).await?;
+    Ok(Json(ApiEnvelope::ok(created, common_error::current_request_id())))
 }
 
-#[derive(Debug, Deserialize)]
-pub struct CouponUpdateReq {
-    pub name: Option<String>,
-    pub status: Option<String>,
-    pub end_at: Option<chrono::DateTime<chrono::Utc>>,
+pub async fn get(State(st): State<AppState>, c: AdminClaims, Path(id): Path<u64>) -> AppResult<Json<ApiEnvelope<Value>>> {
+    require_permission(&st, &c, "coupon.read").await?;
+    let result: Value = user_client(&st).get(st.cfg.service_urls.user.as_deref(), &api_contracts::paths::USER_INTERNAL_COUPON_DETAIL.replace(":id", &id.to_string()), &()).await?;
+    Ok(Json(ApiEnvelope::ok(result, common_error::current_request_id())))
 }
 
-pub async fn update(State(st): State<AppState>, _c: AdminClaims, Path(id): Path<u64>, Json(req): Json<CouponUpdateReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
-    let n = sqlx::query(
-        "UPDATE coupon SET name = COALESCE(?, name), status = COALESCE(?, status), end_at = COALESCE(?, end_at)
-         WHERE id = ? AND deleted_at IS NULL"
-    )
-    .bind(req.name.as_deref()).bind(req.status.as_deref()).bind(req.end_at).bind(id)
-    .execute(st.db.pool()).await?;
-    if n.rows_affected() == 0 { return Err(AppError::NotFound("coupon".into())); }
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"updated": true}), common_error::current_request_id())))
+pub async fn update(State(st): State<AppState>, c: AdminClaims, Path(id): Path<u64>, Json(req): Json<CouponUpdateReq>) -> AppResult<Json<ApiEnvelope<Value>>> {
+    require_permission(&st, &c, "coupon.update").await?;
+    let path = api_contracts::paths::USER_INTERNAL_COUPON_DETAIL.replace(":id", &id.to_string());
+    let before: Value = user_client(&st).get(st.cfg.service_urls.user.as_deref(), &path, &()).await?;
+    let result: Value = user_client(&st).put(st.cfg.service_urls.user.as_deref(), &path, &req).await?;
+    audit(&st, &c, "coupon.update", &id.to_string(), Some(before), json!({"request":req,"result":result}), None).await?;
+    Ok(Json(ApiEnvelope::ok(result, common_error::current_request_id())))
 }
 
-pub async fn delete(State(st): State<AppState>, _c: AdminClaims, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
-    let n = sqlx::query("UPDATE coupon SET deleted_at = NOW(3) WHERE id = ? AND deleted_at IS NULL")
-        .bind(id).execute(st.db.pool()).await?;
-    if n.rows_affected() == 0 { return Err(AppError::NotFound("coupon".into())); }
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"deleted": true}), common_error::current_request_id())))
+pub async fn delete(State(st): State<AppState>, c: AdminClaims, Path(id): Path<u64>) -> AppResult<Json<ApiEnvelope<Value>>> {
+    require_permission(&st, &c, "coupon.delete").await?;
+    let path = api_contracts::paths::USER_INTERNAL_COUPON_DETAIL.replace(":id", &id.to_string());
+    let before: Value = user_client(&st).get(st.cfg.service_urls.user.as_deref(), &path, &()).await?;
+    let result: Value = user_client(&st).delete(st.cfg.service_urls.user.as_deref(), &path, &()).await?;
+    audit(&st, &c, "coupon.delete", &id.to_string(), Some(before), result.clone(), None).await?;
+    Ok(Json(ApiEnvelope::ok(result, common_error::current_request_id())))
 }
 
-pub async fn stats(State(st): State<AppState>, _c: AdminClaims, Path(_id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
-    // 调 user 内部接口 — 类型化 client + 路径常量(本期固定路由;具体 id 通过 query 改 header)
-    let cli = crate::clients::ServiceClient::new(st.http.clone(), st.service_token.clone());
-    let v: Value = cli
-        .get_typed(st.cfg.service_urls.user.as_deref(), p::USER_INTERNAL_COUPON_STATS)
-        .await
-        .unwrap_or_else(|_| json!({}));
-    Ok(Json(common_error::ApiEnvelope::ok(v, common_error::current_request_id())))
+pub async fn grant(State(st): State<AppState>, c: AdminClaims, Path(id): Path<u64>, Json(req): Json<CouponGrantReq>) -> AppResult<Json<ApiEnvelope<Value>>> {
+    require_permission(&st, &c, "coupon.grant").await?;
+    if uuid::Uuid::parse_str(&req.request_id).is_err() || req.user_id == 0 {
+        return Err(AppError::BadRequest("发券请求标识或用户编号无效".into()));
+    }
+    let path = api_contracts::paths::USER_INTERNAL_COUPON_GRANTS.replace(":id", &id.to_string());
+    let result: Value = user_client(&st).post(st.cfg.service_urls.user.as_deref(), &path, &req).await?;
+    audit(&st, &c, "coupon.grant", &id.to_string(), None, json!({"request":req,"result":result}), Some(&req.request_id)).await?;
+    Ok(Json(ApiEnvelope::ok(result, common_error::current_request_id())))
+}
+
+#[derive(Debug, Serialize)]
+struct CouponStatsQuery { coupon_id: u64 }
+
+pub async fn stats(State(st): State<AppState>, c: AdminClaims, Path(id): Path<u64>) -> AppResult<Json<ApiEnvelope<Value>>> {
+    require_permission(&st, &c, "coupon.read").await?;
+    let query = CouponStatsQuery { coupon_id: id };
+    let result: Value = user_client(&st).get(st.cfg.service_urls.user.as_deref(), api_contracts::paths::USER_INTERNAL_COUPON_STATS, &query).await?;
+    Ok(Json(ApiEnvelope::ok(result, common_error::current_request_id())))
 }

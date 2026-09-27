@@ -28,10 +28,11 @@ pub async fn prepare(
     }
     let pay = &pays[0];
     let refunds=sqlx::query("SELECT id,user_id,biz_id,biz_type,refund_cents,status,reason,claimed_by,wechat_refund_id FROM refund_record WHERE payment_order_id=? AND deleted_at IS NULL FOR UPDATE").bind(pid).fetch_all(&mut *tx).await?;
-    let row = refunds
-        .iter()
-        .find(|r| r.try_get::<u64, _>("id").ok() == Some(rid))
-        .ok_or_else(conflict)?;
+    let mut matched = None;
+    for refund in &refunds {
+        if refund.try_get::<u64, _>("id")? == rid { matched = Some(refund); break; }
+    }
+    let row = matched.ok_or_else(conflict)?;
     let uid: u64 = pay.try_get("user_id")?;
     let cid: u64 = pay.try_get("biz_id")?;
     let biz_type = pay.try_get::<String, _>("biz_type")?;

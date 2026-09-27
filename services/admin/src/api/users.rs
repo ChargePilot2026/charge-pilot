@@ -26,15 +26,15 @@ pub async fn list(State(st): State<AppState>, _c: AdminClaims) -> AppResult<Json
          FROM admin_user_role WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 200"
     )
     .fetch_all(st.db.pool()).await?;
-    let items: Vec<Value> = rows.iter().map(|r| json!({
-        "id": sqlx::Row::try_get::<u64, _>(r, "id").unwrap_or(0),
-        "username": sqlx::Row::try_get::<String, _>(r, "username").unwrap_or_default(),
-        "display_name": sqlx::Row::try_get::<Option<String>, _>(r, "display_name").ok().flatten(),
-        "role_id": sqlx::Row::try_get::<Option<u64>, _>(r, "role_id").ok().flatten(),
-        "status": sqlx::Row::try_get::<String, _>(r, "status").unwrap_or_default(),
-        "last_login_at": sqlx::Row::try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(r, "last_login_at").ok().flatten().map(|t| t.to_rfc3339()),
-        "created_at": sqlx::Row::try_get::<chrono::DateTime<chrono::Utc>, _>(r, "created_at").ok().map(|t| t.to_rfc3339()),
-    })).collect();
+    let items: Vec<Value> = rows.iter().map(|r| -> AppResult<Value> { Ok(json!({
+        "id": sqlx::Row::try_get::<u64, _>(r, "id")?,
+        "username": sqlx::Row::try_get::<String, _>(r, "username")?,
+        "display_name": sqlx::Row::try_get::<Option<String>, _>(r, "display_name")?,
+        "role_id": sqlx::Row::try_get::<Option<u64>, _>(r, "role_id")?,
+        "status": sqlx::Row::try_get::<String, _>(r, "status")?,
+        "last_login_at": sqlx::Row::try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(r, "last_login_at")?.map(|t| t.to_rfc3339()),
+        "created_at": sqlx::Row::try_get::<chrono::DateTime<chrono::Utc>, _>(r, "created_at")?.to_rfc3339(),
+    })) }).collect::<AppResult<Vec<_>>>()?;
     Ok(Json(common_error::ApiEnvelope::ok(json!({"items": items}), common_error::current_request_id())))
 }
 

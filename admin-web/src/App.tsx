@@ -13,6 +13,8 @@ import SettingsPage from './pages/Settings';
 import WebhooksPage from './pages/Webhooks';
 import OTAPage from './pages/OTA';
 import AnnouncementsPage from './pages/Announcements';
+import CustomerServicePage from './pages/CustomerService';
+import CaseworkPage from './pages/Casework';
 
 function RequireAuth({ children }: { children: JSX.Element }) {
   const token = localStorage.getItem('cp_token');
@@ -38,6 +40,8 @@ export default function App() {
         <Route path="webhooks" element={<WebhooksPage />} />
         <Route path="ota" element={<OTAPage />} />
         <Route path="announcements" element={<AnnouncementsPage />} />
+        <Route path="customer-service" element={<CustomerServicePage />} />
+        <Route path="casework" element={<CaseworkPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>

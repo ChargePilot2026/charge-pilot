@@ -72,7 +72,7 @@ docker exec -it caddy caddy adapt --config /etc/caddy/Caddyfile \
 
 > **P1-10 状态说明**:仓库代码尚未实现,以下项目为**计划提供**;代码动工后按文档落地。
 
-- 在 admin PC 后台"Webhook 订阅"加 `cert_renew_failed` 告警 → 写入 `alert_event` 表(表结构见 `db/admin.md`,**本期未接入 Caddy ACME 失败回调**,代码动工后通过 `alert.dlq` 写入)
+- 证书失败告警的 Webhook 自动上报尚未实现；可在运维流程中人工记录并通知。当前没有 `alert.dlq` 或 worker 告警扫描器。
 - T-7 天通过 Webhook + 邮件双通道告警(详见 `docs/技术规格.md` § 9.1,本期未启用邮件通道,仅 Webhook)
 - 客户运维每月例行检查:`docker exec chargepilot-caddy caddy tls list`(容器名以 P0-4 修正版为准),确认全部证书 ≥ 60 天有效期
 - 演练:每季度一次模拟证书过期 → 验证 Runbook 路径

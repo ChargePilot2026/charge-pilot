@@ -26,11 +26,10 @@ mod refund;
 mod wallet;
 mod wallet_reads;
 mod coupon;
+mod coupon_admin;
 mod invoice;
 mod station;
 mod stream_consumer;
-mod wechat;
-mod repo;
 mod orders;
 mod order_events;
 
@@ -128,10 +127,22 @@ pub fn build_router(state: AppState) -> Router {
         .route(api_types::paths::INTERNAL_REFUND_DETAIL, get(refund::detail))
         .route(api_types::paths::INTERNAL_PAYMENT_DETAIL, get(payment::detail))
         .route(api_contracts::paths::USER_INTERNAL_ORDERS, get(orders::list))
+        .route(api_contracts::paths::USER_INTERNAL_CHARGING_ORDERS, get(orders::charging_orders_for_snapshots))
         .route(api_contracts::paths::USER_INTERNAL_ORDER_TIMELINE, get(order_events::timeline))
+        .route(api_contracts::paths::USER_INTERNAL_DEVICE_ORDERS, get(orders::device_orders))
         .route(api_types::paths::INTERNAL_ORDER_DETAIL, get(orders::detail))
-        .route(api_types::paths::INTERNAL_INVOICE_DETAIL, get(invoice::internal_detail))
-        .route(api_types::paths::INTERNAL_COUPON_STATS, get(coupon::stats))
+        .route(api_types::paths::INTERNAL_INVOICE_DETAIL, get(invoice::internal_detail).post(invoice::internal_review))
+        .route(api_contracts::paths::USER_INTERNAL_FEEDBACK, get(casework::feedback_list))
+        .route(api_contracts::paths::USER_INTERNAL_FEEDBACK_REPLY, post(casework::feedback_reply))
+        .route(api_contracts::paths::USER_INTERNAL_DEVICE_FAULT_REPORTS, get(casework::fault_list))
+        .route(api_contracts::paths::USER_INTERNAL_DEVICE_FAULT_HISTORY, get(casework::fault_history))
+        .route(api_contracts::paths::USER_INTERNAL_DEVICE_FAULT_DISPATCH, post(casework::fault_dispatch))
+        .route(api_contracts::paths::USER_INTERNAL_DEVICE_FAULT_RESOLVE, post(casework::fault_resolve))
+        .route(api_types::paths::INTERNAL_COUPON_STATS, get(coupon_admin::stats))
+        .route(api_contracts::paths::USER_INTERNAL_COUPONS, get(coupon_admin::list).post(coupon_admin::create))
+        .route(api_contracts::paths::USER_INTERNAL_COUPON_DETAIL, get(coupon_admin::get).put(coupon_admin::update).delete(coupon_admin::delete))
+        .route(api_contracts::paths::USER_INTERNAL_COUPON_GRANTS, post(coupon_admin::grant))
+        .route(api_types::paths::INTERNAL_DASHBOARD_METRICS, get(dashboard::metrics))
         .layer(middleware::from_fn_with_state(svc_token.clone(), common_auth::refs::internal_token_mw));
 
     let user_routes = Router::new()
@@ -161,6 +172,8 @@ pub fn build_router(state: AppState) -> Router {
         .route(api_types::paths::USER_STATION_NEARBY, get(station::nearby))
         .route(api_types::paths::USER_STATION_DETAIL, get(station::detail))
         .route(api_types::paths::USER_DEVICE_REPORT_FAULT, post(station::report_fault))
+        .route(api_types::paths::USER_DEVICE_FAULT_REPORTS, get(station::my_fault_reports))
+        .route(api_types::paths::USER_DEVICE_FAULT_HISTORY, get(station::my_fault_history))
         .route(api_types::paths::USER_COUPON_MY, get(coupon::my))
         .route(api_types::paths::USER_COUPON_PREVIEW, post(coupon::preview))
         .route(api_types::paths::USER_INVOICE_APPLY, post(invoice::apply))
@@ -182,3 +195,5 @@ pub fn build_router(state: AppState) -> Router {
 mod wallet_recharge;
 
 mod wallet_risk_release;
+mod casework;
+mod dashboard;

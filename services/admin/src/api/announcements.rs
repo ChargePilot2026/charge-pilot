@@ -12,16 +12,16 @@ pub async fn list(State(st): State<AppState>, _c: AdminClaims) -> AppResult<Json
         "SELECT id, title, content, scope, priority, start_at, end_at, status, created_at
          FROM announcement WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 200"
     ).fetch_all(st.db.pool()).await?;
-    let items: Vec<Value> = rows.iter().map(|r| json!({
-        "id": sqlx::Row::try_get::<u64, _>(r, "id").unwrap_or(0),
-        "title": sqlx::Row::try_get::<String, _>(r, "title").unwrap_or_default(),
-        "content": sqlx::Row::try_get::<String, _>(r, "content").unwrap_or_default(),
-        "scope": sqlx::Row::try_get::<String, _>(r, "scope").unwrap_or_default(),
-        "priority": sqlx::Row::try_get::<u8, _>(r, "priority").unwrap_or(0),
-        "start_at": sqlx::Row::try_get::<chrono::DateTime<chrono::Utc>, _>(r, "start_at").ok().map(|t| t.to_rfc3339()),
-        "end_at": sqlx::Row::try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(r, "end_at").ok().flatten().map(|t| t.to_rfc3339()),
-        "status": sqlx::Row::try_get::<String, _>(r, "status").unwrap_or_default(),
-    })).collect();
+    let items: Vec<Value> = rows.iter().map(|r| -> AppResult<Value> { Ok(json!({
+        "id": sqlx::Row::try_get::<u64, _>(r, "id")?,
+        "title": sqlx::Row::try_get::<String, _>(r, "title")?,
+        "content": sqlx::Row::try_get::<String, _>(r, "content")?,
+        "scope": sqlx::Row::try_get::<String, _>(r, "scope")?,
+        "priority": sqlx::Row::try_get::<u8, _>(r, "priority")?,
+        "start_at": sqlx::Row::try_get::<chrono::DateTime<chrono::Utc>, _>(r, "start_at")?.to_rfc3339(),
+        "end_at": sqlx::Row::try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(r, "end_at")?.map(|t| t.to_rfc3339()),
+        "status": sqlx::Row::try_get::<String, _>(r, "status")?,
+    })) }).collect::<AppResult<Vec<_>>>()?;
     Ok(Json(common_error::ApiEnvelope::ok(json!({"items": items}), common_error::current_request_id())))
 }
 
@@ -36,13 +36,14 @@ pub struct AnnouncementCreateReq {
 }
 
 pub async fn create(State(st): State<AppState>, c: AdminClaims, Json(req): Json<AnnouncementCreateReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
-    let id: u64 = sqlx::query_scalar(
+    let result = sqlx::query(
         "INSERT INTO announcement (title, content, scope, priority, start_at, end_at, status, created_by)
          VALUES (?, ?, ?, COALESCE(?, 0), ?, ?, 'draft', ?)"
     )
     .bind(&req.title).bind(&req.content).bind(&req.scope).bind(req.priority)
     .bind(req.start_at).bind(req.end_at).bind(c.admin_user_id)
-    .fetch_one(st.db.pool()).await?;
+    .execute(st.db.pool()).await?;
+    let id = result.last_insert_id();
     Ok(Json(common_error::ApiEnvelope::ok(json!({"id": id}), common_error::current_request_id())))
 }
 
@@ -55,7 +56,7 @@ pub async fn get(State(st): State<AppState>, _c: AdminClaims, Path(id): Path<u64
         "title": sqlx::Row::try_get::<String, _>(&r, "title")?,
         "content": sqlx::Row::try_get::<String, _>(&r, "content")?,
         "scope": sqlx::Row::try_get::<String, _>(&r, "scope")?,
-        "priority": sqlx::Row::try_get::<u8, _>(&r, "priority").unwrap_or(0),
+        "priority": sqlx::Row::try_get::<u8, _>(&r, "priority")?,
         "status": sqlx::Row::try_get::<String, _>(&r, "status")?,
     }), common_error::current_request_id())))
 }

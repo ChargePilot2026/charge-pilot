@@ -3,16 +3,27 @@
 
 use crate::AppState;
 use std::time::Duration;
-use tracing::info;
+use serde::Deserialize;
+use serde_json::json;
+use tracing::{info, warn};
 
 pub async fn run(state: AppState) {
     let mut iv = tokio::time::interval(Duration::from_secs(300));
     loop {
         iv.tick().await;
-        let n = sqlx::query(
-            "UPDATE device_session SET ended_at = NOW(3), close_reason = 'idle_timeout'
-             WHERE ended_at IS NULL AND last_active_at < NOW() - INTERVAL 10 MINUTE"
-        ).execute(state.db.pool()).await;
-        info!(?n, "device_session_clean tick");
+        let result: common_error::AppResult<ClosedCount> = common_http::internal::ApiClient::new(
+            state.http.clone(), state.service_token.clone(),
+        ).post(
+            state.cfg.service_urls.gateway.as_deref(),
+            api_contracts::paths::GW_DEVICE_SESSIONS_CLEAN,
+            &json!({}),
+        ).await;
+        match result {
+            Ok(data) => info!(closed_count = data.closed_count, "device_session_clean tick"),
+            Err(error) => warn!(error = %error, "device_session_clean failed; will retry next interval"),
+        }
     }
 }
+
+#[derive(Deserialize)]
+struct ClosedCount { closed_count: u64 }

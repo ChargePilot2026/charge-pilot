@@ -1,8 +1,7 @@
-//! gateway 服务 — 设备长连接接入(TCP/MQTT)+ 内部 HTTP API
+//! gateway 服务 — 9100 TCP/JSON 设备接入 + 内部 HTTP API
 //!
 //! 端口分配(技术规格 § 2.1):
 //!   - 9100: TCP 设备长连接
-//!   - 1883: MQTT 设备长连接
 //!   - 8083: 内部 HTTP(经 device-net/docker network)
 
 mod api;
@@ -11,10 +10,7 @@ mod provision;
 mod registration;
 mod clients;
 mod protocol;
-mod device;
 mod telemetry_obs;
-mod alert;
-mod ota;
 mod stream_consumer;
 mod charge_command;
 mod charge_stop;
@@ -90,15 +86,6 @@ async fn main() -> AppResult<()> {
         }
     });
 
-    // ===== 启动 MQTT 监听(1883)— 本期简化 =====
-    let mqtt_state = state.clone();
-    let mqtt_bind = std::env::var("GATEWAY_MQTT_BIND").unwrap_or_else(|_| "0.0.0.0:1883".into());
-    tokio::spawn(async move {
-        if let Err(e) = protocol::mqtt::run_mqtt_listener(&mqtt_bind, mqtt_state).await {
-            tracing::error!(error=%e, "mqtt listener exited");
-        }
-    });
-
     // ===== HTTP API(8083)=====
     let app = build_router(state);
     let addr: SocketAddr = cfg.http_bind.parse().expect("bind addr");
@@ -113,6 +100,7 @@ pub fn build_router(state: AppState) -> Router {
 
     let internal_routes = Router::new()
         .route(api_contracts::paths::GATEWAY_DEVICE_PROVISION, post(provision::provision))
+        .route(api_contracts::paths::GW_DEVICE_SESSIONS_CLEAN, post(api::cleanup_idle_device_sessions))
         // 扫码解析
         .route("/api/v1/internal/scan/resolve", post(api::scan_resolve))
         .route("/api/v1/internal/scan/port", post(api::scan_port))

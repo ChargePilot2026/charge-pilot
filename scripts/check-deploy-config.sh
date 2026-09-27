@@ -36,11 +36,11 @@ if [[ -f docker-compose.yml ]]; then
     else
         ok "内部端口未直接暴露"
     fi
-    # 9100/1883 应走 ports (gateway 设备长连接)
-    if grep -qE '"9100:9100"' docker-compose.yml && grep -qE '"1883:1883"' docker-compose.yml; then
-        ok "设备长连接端口 9100/1883 已映射"
+    # 已实现的 9100 TCP/JSON 设备入口应走 ports；生产 MQTT 尚未接入
+    if grep -qE '"9100:9100"' docker-compose.yml; then
+        ok "设备 TCP/JSON 端口 9100 已映射"
     else
-        warn "9100 或 1883 端口映射未配置"
+        warn "设备 TCP/JSON 端口 9100 未配置"
     fi
 fi
 

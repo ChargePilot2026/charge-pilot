@@ -4,7 +4,7 @@ import {
   DashboardOutlined, ShoppingOutlined, DesktopOutlined, EnvironmentOutlined,
   TeamOutlined, AlertOutlined, GiftOutlined, AccountBookOutlined,
   SettingOutlined, ApiOutlined, CloudUploadOutlined, NotificationOutlined,
-  UserOutlined, LogoutOutlined,
+  UserOutlined, LogoutOutlined, MessageOutlined, ToolOutlined,
 } from '@ant-design/icons';
 import { useState } from 'react';
 
@@ -23,6 +23,8 @@ const items = [
   { key: '/webhooks', icon: <ApiOutlined />, label: 'Webhook' },
   { key: '/ota', icon: <CloudUploadOutlined />, label: 'OTA' },
   { key: '/announcements', icon: <NotificationOutlined />, label: '公告' },
+  { key: '/customer-service', icon: <MessageOutlined />, label: '客服坐席' },
+  { key: '/casework', icon: <ToolOutlined />, label: '反馈与报修' },
   { key: '/settings', icon: <SettingOutlined />, label: '设置' },
 ];
 

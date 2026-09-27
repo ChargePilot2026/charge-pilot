@@ -25,7 +25,7 @@ ENV SERVICE_NAME=gateway \
     RUST_LOG=info,sqlx=warn \
     TOKIO_WORKER_THREADS=2
 
-EXPOSE 8083 9100 1883
+EXPOSE 8083 9100
 
 HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=5 \
     CMD curl -fsS http://localhost:8083/api/v1/health || exit 1

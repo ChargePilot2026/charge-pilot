@@ -1,43 +1,166 @@
-//! 白标配置
+//! 单例白标配置：字段名与 API 文档一致，写入总是更新 id=1。
 
 use crate::AppState;
 use axum::{extract::State, Json};
 use common_auth::AdminClaims;
-use common_error::AppResult;
+use common_error::{AppError, AppResult};
+use serde::Deserialize;
 use serde_json::{json, Value};
+use sqlx::Row;
 
-pub async fn get(State(st): State<AppState>, _c: AdminClaims) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
-    let r = sqlx::query("SELECT id, name, logo_url, mini_program_name, mini_program_appid, theme_color, contact_phone, about_text, config_json FROM whitelabel_config ORDER BY id DESC LIMIT 1")
-        .fetch_optional(st.db.pool()).await?;
-    let v: Value = match r {
-        None => json!({}),
-        Some(r) => json!({
-            "id": sqlx::Row::try_get::<u64, _>(&r, "id")?,
-            "name": sqlx::Row::try_get::<String, _>(&r, "name")?,
-            "logo_url": sqlx::Row::try_get::<Option<String>, _>(&r, "logo_url")?,
-            "mini_program_name": sqlx::Row::try_get::<Option<String>, _>(&r, "mini_program_name")?,
-            "mini_program_appid": sqlx::Row::try_get::<Option<String>, _>(&r, "mini_program_appid")?,
-            "theme_color": sqlx::Row::try_get::<Option<String>, _>(&r, "theme_color")?,
-            "contact_phone": sqlx::Row::try_get::<Option<String>, _>(&r, "contact_phone")?,
-            "about_text": sqlx::Row::try_get::<Option<String>, _>(&r, "about_text")?,
-        }),
-    };
-    Ok(Json(common_error::ApiEnvelope::ok(v, common_error::current_request_id())))
+async fn require_permission(st: &AppState, c: &AdminClaims, permission: &str) -> AppResult<()> {
+    let allowed: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM admin_user_role a JOIN role r ON r.id=a.role_id AND r.deleted_at IS NULL
+         JOIN role_permission rp ON rp.role_id=r.id JOIN permission p ON p.id=rp.permission_id
+         WHERE a.id=? AND a.username=? AND a.status='active' AND a.deleted_at IS NULL AND p.code=?)",
+    ).bind(c.admin_user_id).bind(&c.sub).bind(permission).fetch_one(st.db.pool()).await?;
+    if !allowed { return Err(AppError::Forbidden(format!("缺少 {permission} 权限"))); }
+    Ok(())
 }
 
-pub async fn put(State(st): State<AppState>, _c: AdminClaims, Json(req): Json<Value>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
-    let id: u64 = sqlx::query_scalar(
-        "INSERT INTO whitelabel_config (name, logo_url, mini_program_name, mini_program_appid, theme_color, contact_phone, about_text)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON DUPLICATE KEY UPDATE name = VALUES(name), logo_url = VALUES(logo_url), theme_color = VALUES(theme_color)"
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WhitelabelUpdate {
+    pub miniprogram_name: String,
+    pub miniprogram_logo_url: Option<String>,
+    pub admin_logo_url: Option<String>,
+    pub theme_color: String,
+    pub service_phone: Option<String>,
+    pub service_wechat_id: Option<String>,
+    pub icp_record_no: Option<String>,
+    pub custom_domain: Option<String>,
+    pub agreement_url: Option<String>,
+    pub privacy_url: Option<String>,
+    pub about_us: Option<String>,
+}
+
+fn valid_https(value: &Option<String>) -> bool {
+    value.as_deref().is_none_or(|s| {
+        s.trim().is_empty() || (s.len() <= 512 && !s.chars().any(char::is_control)
+            && reqwest::Url::parse(s).is_ok_and(|url| url.scheme() == "https" && url.host_str().is_some()))
+    })
+}
+
+fn clean_optional(value: &mut Option<String>) {
+    *value = value.take().map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
+}
+
+fn validate(req: &WhitelabelUpdate) -> AppResult<()> {
+    let name = req.miniprogram_name.trim();
+    if name.is_empty() || name.chars().count() > 64 || name.chars().any(char::is_control) {
+        return Err(AppError::BadRequest("小程序名称不能为空且最多 64 字".into()));
+    }
+    if !(req.theme_color.len() == 7 || req.theme_color.len() == 9)
+        || !req.theme_color.starts_with('#')
+        || !req.theme_color[1..].bytes().all(|b| b.is_ascii_hexdigit())
+    {
+        return Err(AppError::BadRequest("主题色必须为 #RRGGBB 或 #RRGGBBAA".into()));
+    }
+    if !valid_https(&req.miniprogram_logo_url) || !valid_https(&req.admin_logo_url)
+        || !valid_https(&req.agreement_url) || !valid_https(&req.privacy_url)
+    {
+        return Err(AppError::BadRequest("Logo、协议和隐私链接必须使用 HTTPS".into()));
+    }
+    if req.service_phone.as_deref().is_some_and(|s| s.len() > 32 || s.chars().any(char::is_control))
+        || req.service_wechat_id.as_deref().is_some_and(|s| s.trim().is_empty() || s.len() > 64 || s.chars().any(char::is_control))
+        || req.icp_record_no.as_deref().is_some_and(|s| s.len() > 128 || s.chars().any(char::is_control))
+        || req.about_us.as_deref().is_some_and(|s| s.chars().count() > 20_000 || s.chars().any(|c| c.is_control() && c != '\n' && c != '\r' && c != '\t'))
+    {
+        return Err(AppError::BadRequest("白标联系方式、备案信息或介绍内容无效".into()));
+    }
+    if req.custom_domain.as_deref().is_some_and(|domain| {
+        domain.is_empty() || domain.len() > 253 || !domain.contains('.')
+            || !domain.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+            || domain.split('.').any(|part| part.is_empty() || part.starts_with('-') || part.ends_with('-'))
+    }) {
+        return Err(AppError::BadRequest("自定义域名格式无效".into()));
+    }
+    Ok(())
+}
+
+fn public_config(row: &sqlx::mysql::MySqlRow) -> AppResult<Value> {
+    let extra: Option<Value> = row.try_get("config_json")?;
+    let extra = extra.unwrap_or_else(|| json!({}));
+    Ok(json!({
+        "id": row.try_get::<u64, _>("id")?,
+        "miniprogram_name": row.try_get::<String, _>("mini_program_name")?,
+        "miniprogram_logo_url": row.try_get::<Option<String>, _>("logo_url")?,
+        "admin_logo_url": extra.get("admin_logo_url").cloned().unwrap_or(Value::Null),
+        "theme_color": row.try_get::<Option<String>, _>("theme_color")?,
+        "service_phone": row.try_get::<Option<String>, _>("contact_phone")?,
+        "service_wechat_id": extra.get("service_wechat_id").cloned().unwrap_or(Value::Null),
+        "icp_record_no": extra.get("icp_record_no").cloned().unwrap_or(Value::Null),
+        "custom_domain": extra.get("custom_domain").cloned().unwrap_or(Value::Null),
+        "agreement_url": extra.get("agreement_url").cloned().unwrap_or(Value::Null),
+        "privacy_url": extra.get("privacy_url").cloned().unwrap_or(Value::Null),
+        "about_us": row.try_get::<Option<String>, _>("about_text")?,
+    }))
+}
+
+pub async fn get(State(st): State<AppState>, c: AdminClaims) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+    require_permission(&st, &c, "whitelabel.read").await?;
+    let row = sqlx::query("SELECT id, mini_program_name, logo_url, theme_color, contact_phone, about_text, config_json FROM whitelabel_config WHERE id=1")
+        .fetch_optional(st.db.pool()).await?;
+    let row = match row {
+        Some(row) => public_config(&row)?,
+        None => {
+            let latest = sqlx::query("SELECT id, mini_program_name, logo_url, theme_color, contact_phone, about_text, config_json FROM whitelabel_config ORDER BY id DESC LIMIT 1")
+                .fetch_optional(st.db.pool()).await?;
+            match latest { Some(row) => public_config(&row)?, None => json!({}) }
+        },
+    };
+    Ok(Json(common_error::ApiEnvelope::ok(row, common_error::current_request_id())))
+}
+
+pub async fn put(
+    State(st): State<AppState>, c: AdminClaims, Json(mut req): Json<WhitelabelUpdate>,
+) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+    clean_optional(&mut req.miniprogram_logo_url);
+    clean_optional(&mut req.admin_logo_url);
+    clean_optional(&mut req.service_phone);
+    clean_optional(&mut req.service_wechat_id);
+    clean_optional(&mut req.icp_record_no);
+    clean_optional(&mut req.custom_domain);
+    clean_optional(&mut req.agreement_url);
+    clean_optional(&mut req.privacy_url);
+    require_permission(&st, &c, "whitelabel.update").await?;
+    validate(&req)?;
+    let mut tx = st.db.pool().begin().await?;
+    let old = sqlx::query("SELECT id, mini_program_name, logo_url, theme_color, contact_phone, about_text, config_json FROM whitelabel_config WHERE id=1 FOR UPDATE")
+        .fetch_optional(&mut *tx).await?;
+    let before = match old { Some(row) => public_config(&row)?, None => Value::Null };
+    let config_json = json!({
+        "admin_logo_url": req.admin_logo_url.clone(),
+        "service_wechat_id": req.service_wechat_id.clone(),
+        "icp_record_no": req.icp_record_no.clone(),
+        "custom_domain": req.custom_domain.clone(),
+        "agreement_url": req.agreement_url.clone(),
+        "privacy_url": req.privacy_url.clone(),
+    });
+    sqlx::query(
+        "INSERT INTO whitelabel_config (id,name,logo_url,mini_program_name,theme_color,contact_phone,about_text,config_json)
+         VALUES (1,'Default',?,?,?,?,?,?)
+         ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id), logo_url=VALUES(logo_url),
+         mini_program_name=VALUES(mini_program_name), theme_color=VALUES(theme_color),
+         contact_phone=VALUES(contact_phone), about_text=VALUES(about_text), config_json=VALUES(config_json)",
     )
-    .bind(req.get("name").and_then(|v| v.as_str()).unwrap_or("Default"))
-    .bind(req.get("logo_url").and_then(|v| v.as_str()))
-    .bind(req.get("mini_program_name").and_then(|v| v.as_str()))
-    .bind(req.get("mini_program_appid").and_then(|v| v.as_str()))
-    .bind(req.get("theme_color").and_then(|v| v.as_str()))
-    .bind(req.get("contact_phone").and_then(|v| v.as_str()))
-    .bind(req.get("about_text").and_then(|v| v.as_str()))
-    .fetch_one(st.db.pool()).await?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"id": id}), common_error::current_request_id())))
+    .bind(req.miniprogram_logo_url.as_deref())
+    .bind(req.miniprogram_name.trim())
+    .bind(&req.theme_color)
+    .bind(req.service_phone.as_deref())
+    .bind(req.about_us.as_deref())
+    .bind(config_json.clone())
+    .execute(&mut *tx).await?;
+    let after = json!({
+        "id":1,"miniprogram_name":req.miniprogram_name.trim(),"miniprogram_logo_url":req.miniprogram_logo_url,
+        "admin_logo_url":config_json["admin_logo_url"],"theme_color":req.theme_color,"service_phone":req.service_phone,
+        "service_wechat_id":config_json["service_wechat_id"],"icp_record_no":config_json["icp_record_no"],
+        "custom_domain":config_json["custom_domain"],"agreement_url":config_json["agreement_url"],
+        "privacy_url":config_json["privacy_url"],"about_us":req.about_us,
+    });
+    sqlx::query("INSERT INTO audit_log(actor_id,module,action,target_type,target_id,before_json,after_json,created_month) VALUES (?,'settings','whitelabel.update','whitelabel_config','1',?,?,DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))")
+        .bind(c.admin_user_id).bind(before).bind(after.clone()).execute(&mut *tx).await?;
+    tx.commit().await?;
+    st.redis_cache.del("whitelabel:config").await?;
+    Ok(Json(common_error::ApiEnvelope::ok(json!({"id":1,"config":after}), common_error::current_request_id())))
 }

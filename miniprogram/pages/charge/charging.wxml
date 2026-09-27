@@ -11,6 +11,15 @@
   <view class="card" wx:if="{{snapshot.status === 'charging'}}">
    <view wx:if="{{!snapshot.telemetry_available}}" class="text-secondary">暂未收到实时遥测数据。</view>
    <view>功率：{{snapshot.powerText}} W</view><view>电压：{{snapshot.voltageText}} V</view><view>温度：{{snapshot.temperatureText}} °C</view>
+   <button bindtap="loadCurve" loading="{{curveLoading}}" disabled="{{curveLoading}}">{{curve ? '刷新近 30 分钟曲线' : '查看近 30 分钟曲线'}}</button>
+  </view>
+  <view wx:if="{{curveError}}" class="card"><view>{{curveError}}</view><button bindtap="loadCurve" disabled="{{curveLoading}}">重试</button></view>
+  <view wx:if="{{curve}}" class="card">
+   <view>遥测曲线（采样间隔 {{curve.sample_interval_seconds}} 秒）</view>
+   <view wx:if="{{!curve.series.length}}" class="text-secondary">该时间段没有设备遥测。</view>
+   <view wx:for="{{curve.series}}" wx:key="ts" class="curve-row">
+    <view>{{item.tsText}} · {{item.powerText}} W · {{item.currentText}} A · {{item.voltageText}} V · {{item.temperatureText}} °C</view>
+   </view>
   </view>
   <view class="card"><view>累计电量：{{snapshot.energyText}} kWh</view><view>充电时长：{{snapshot.durationText}}</view><view>费用：{{snapshot.feeText}}</view></view>
   <button bindtap="detail">查看订单详情</button>

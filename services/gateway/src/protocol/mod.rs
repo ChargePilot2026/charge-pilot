@@ -1,8 +1,7 @@
-//! 协议层(TCP / MQTT 适配)
+//! 已实现的 TCP/JSON 协议层；厂商协议与 MQTT 适配尚未接入。
 
 pub mod tcp;
 pub mod connections;
-pub mod mqtt;
 
 /// 设备帧通用结构(由 adapter 标准化)
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

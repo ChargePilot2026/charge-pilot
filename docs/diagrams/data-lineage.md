@@ -36,21 +36,24 @@
   │
   ▼ (stream 消费)
 [gateway] 消费 charge_started_stream
-  │   → MQTT 下发 charge/{vendor}/{device}/cmd 启动指令到设备
+  │   → 经 9100 TCP JSON 会话下发 START command frame 到设备
   │   设备 ACK 后 → 写:gateway_db.device_session(started_at)
   │   → POST user /api/v1/internal/charge-orders/{order_id}/start-result
   │   → user 同事务写:active_port_charge + charge_order(status=charging)
   │
   ▼ (设备上报)
-[gateway] MQTT 上行 charge/{vendor}/{device}/telemetry
+[gateway] TCP JSON telemetry frame 上行
   │   写:gateway_db.telemetry(hash 16 表) ← 每秒
   │   写:gateway_db.telemetry_aggregate_15min / _hourly
-  │   状态变更(charging) → 发:device_event_stream
-  │   越界 → 发:alert_stream
+  │   status 帧 → 发:device_event_stream
+  │   alert 帧 → 发:alert_stream(阈值规则自动扫描未实现)
   │
   ▼ (stream 消费)
-[user] 消费 device_event_stream
-  │   → 写 Redis: snapshot:{order_id}(TTL=10s) 充电中快照缓存
+[admin] 消费 device_event_stream
+  │   → 更新 admin_db.device_meta.last_seen_at
+  │
+[user / worker] 通过内部 HTTP 查询 user 当前订单与 gateway 实测遥测
+  │   → user 快照接口读取真实遥测；worker 快照预热仅缓存有真实测量的数据
   │
   ▼ (用户小程序 5s 轮询)
 [user] GET /api/v1/user/charge/ongoing/snapshot?order_id=xxx
@@ -66,27 +69,29 @@
   │   → 关闭快照缓存(下次轮询 → poll_continue: false → 跳结束页)
   │
 [billing] 消费 charge_ended_stream
-  │   读:user_db.charge_order(从 Redis payload 或 HTTP 调 user)
-  │   读:admin_db.pricing_rule / pricing_template(经 cache,TTL=10min)
+  │   读:user_db.charge_order(经 user 内部 HTTP)
+  │   读:admin_db.pricing_rule / pricing_template
   │   写:billing_db.fee_calculation(每订单一行快照,价费分离)
   │   写:billing_db.pricing_tier_snapshot(冻结当时电价)
   │   写:billing_db.settlement(分账单头)
   │   写:billing_db.settlement_party_amount(每个参与方一行)
-  │   判断是否退款:
-  │     是 → 发:refund_required_stream
-  │     否 → 直接推账单通知给 user
+  │   同一 billing_db 事务保存 fee_calculation / 分账 / fee_delivery
+  │
+[user] 消费 fee_delivery 并在 user_db 事务更新实结费用
+  │   若需退款 → 创建退款记录并写 user 自有 event_outbox(refund_required_stream)
   │
   ▼ (退款流程)
 [admin] 消费 refund_required_stream
   │   经 user 内部接口领取:user_db.refund_record(status=processing)
   │   RPC: 微信 POST /v3/refund/...
-  │   微信回调 → 经 user 内部接口写:user_db.refund_record(status=success)
-  │   发:comp_tx_stream(refund_id)
+  │   微信回调 → user 在事务内更新 user_db.refund_record 与 payment_order
+  │   同事务写 event_outbox(refund_completed)
   │
-[billing] 消费 comp_tx_stream
-  │   → 写:billing_db.settlement(status=refunded)
+[worker] 消费 comp_tx_stream
+  │   校验 envelope → 按 event_id + 月份幂等写 worker_db.comp_tx_log
+  │   仅审计完成结果，不执行退款/回滚，不更新 billing_db
   │
-[user] 通过小城程序消息订阅推送退款通知给用户
+[billing] 当前不消费 comp_tx_stream
   │
   ▼
 订单生命周期结束,数据长期保留
@@ -121,21 +126,21 @@
 ## 3. Stream 触发表写入矩阵(P0-3:每消费方独立消费者组)
 
 > **消费者组命名**:`{stream}.{consumer}-cg`(详见 `docs/技术规格.md` § 5.3)
-> 例如 `charge_ended_stream` 同时被 billing / user / admin 消费,各自独立组 `billing-cg` / `user-cg` / `admin-cg`。
+> `charge_ended_stream` 当前由 billing 与 user 分别消费，各自独立使用 `billing-cg` / `user-cg`。
 
 | Stream | 消费方(每方独立 -cg) | 写入表 / 副作用 |
 | --- | --- | --- |
-| `device_event_stream` | `worker-cg`(快照填充)、`admin-cg`(可选:状态推送) | Redis `snapshot:{order_id}` + admin_db.alert_event |
-| `alert_stream` | `admin-cg`(落库 + Webhook)、`worker-cg`(可选:周期复核) | admin_db.alert_event + (Webhook 推送) |
+| `device_event_stream` | `admin-cg` | admin_db.device_meta.last_seen_at |
+| `alert_stream` | `admin-cg` | admin_db.alert_event + 尝试写 `webhook_retry_stream` |
 | `charge_started_stream` | `gateway-cg` | gateway 启动设备 + 经 user 内部接口更新 `charge_order`;user 事务写 `active_port_charge` |
-| `charge_ended_stream` | `billing-cg`(计费)、`user-cg`(关轮询)、`admin-cg`(可选:订单快照) | billing_db.fee_calculation + settlement / user 关闭 Redis snapshot |
-| `refund_required_stream` | `admin-cg` | 经 user 内部接口领取 `refund_record` → admin 调微信退款 → 经 user 回写结果 |
-| `invoice_required_stream` | `admin-cg` | admin_db.invoice_review(status=pending) |
-| `webhook_retry_stream` | `worker-cg` | worker_db.retry_queue + admin_db.webhook_delivery_log |
-| `ota_schedule_stream` | `worker-cg`(调度)、`gateway-cg`(下发指令) | gateway_db.ota_command(经 gateway API) |
-| `comp_tx_stream` | 各服务各自的消费者组 | worker 将自身补偿记录写 `worker_db.comp_tx_log`;billing 等其他服务按 `event_key` 在本服务处理,不直写 `worker_db` |
-| `coupon_grant_required_stream` | `user-cg` | user 校验活动规则后写 `user_db.coupon_grant`,再回传 admin 更新发放计数 |
-| `pricing_rule_changed_stream` | `billing-cg` | billing 更新本 schema 的计费规则快照 |
+| `charge_ended_stream` | `billing-cg`(计费)、`user-cg`(更新结束订单并关轮询) | billing_db.fee_calculation + settlement + fee_delivery / user 更新 user_db.charge_order 并关闭 Redis snapshot |
+| `refund_required_stream` | user → `admin-cg` | admin 经 user 内部接口领取 `refund_record` → 调微信退款 → 经 user 回写结果 |
+| `invoice_required_stream` | user → `admin-cg` | admin_db.invoice_review(status=pending) |
+| `webhook_retry_stream` | `worker-cg` | 当前投递未配置；重试失败后进入 Redis DLQ |
+| `ota_schedule_stream` | `worker-cg`、`gateway-cg` | 当前 OTA 下发未配置；重试失败后分别进入 Redis DLQ |
+| `comp_tx_stream` | 当前 user 的 `refund_completed` → worker `worker-cg` | `worker_db.comp_tx_log` 仅审计退款结果；其他补偿消费者与 billing 状态同步未实现 |
+| `coupon_grant_required_stream` | `user-cg` | user 校验模板状态、发放时间、总/个人额度后按 event_id 写 `user_db.coupon_grant`;运营人工发券由 admin 走 user 内部 API |
+| `pricing_rule_changed_stream` | `billing-cg`、`user-cg` | billing 校验并记录事件；后续报价读取最新规则，user 记录缓存失效通知 |
 
 ---
 

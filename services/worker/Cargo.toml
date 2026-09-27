@@ -17,6 +17,7 @@ common-redis = { path = "../../crates/common-redis" }
 common-auth = { path = "../../crates/common-auth" }
 common-stream = { path = "../../crates/common-stream" }
 common-http = { path = "../../crates/common-http" }
+api-contracts = { path = "../api-contracts" }
 common-telemetry = { path = "../../crates/common-telemetry" }
 
 tokio.workspace = true
@@ -32,3 +33,5 @@ tracing.workspace = true
 reqwest.workspace = true
 async-trait.workspace = true
 dotenvy.workspace = true
+sha2.workspace = true
+hex.workspace = true

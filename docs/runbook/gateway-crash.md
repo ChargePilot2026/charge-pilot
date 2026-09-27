@@ -1,7 +1,7 @@
 # Runbook:gateway 进程崩溃 / 设备全离线
 
 > **引用**:`技术规格.md` § 3.1(TCP / MQTT 接入层) + § 10.2(资源基线)
-> **触发场景**:gateway 容器崩溃 / OOM / 端口冲突 → 全部设备 TCP/MQTT 离线 → 充电业务暂停
+> **触发场景**:gateway 容器崩溃 / OOM / 端口冲突 → TCP/JSON 设备连接断开，依赖 gateway 的充电业务暂停；生产 MQTT Broker 当前未接入
 
 ---
 
@@ -44,7 +44,7 @@ curl -s http://localhost:9100/metrics | grep -E 'tcp_connections_active|mqtt_cli
 | 日志报 `out of memory` | OOM,通常是消息洪峰或内存泄漏 | 短期重启;长期需要复现 + 加限流 |
 | 日志报 `mysql: connection refused` | MySQL 健康但 gateway 无法连 | 检查 `DATABASE_URL` / MySQL 容器状态 |
 | 日志无错误但容器反复重启 | `healthcheck` 配置不当 | 看 docker-compose healthcheck 配置 |
-| 端口冲突(9100 / 1883 被别的进程占) | `netstat -tnlp \| grep 9100` 看占用 PID | 杀掉占用进程 |
+| 9100 端口冲突 | `netstat -tnlp \| grep 9100` 看占用 PID | 核实端口归属后处理占用进程;gateway 当前不监听 MQTT 1883 |
 
 ---
 

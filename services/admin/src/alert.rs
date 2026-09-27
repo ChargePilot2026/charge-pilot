@@ -12,17 +12,17 @@ pub async fn list(State(st): State<AppState>, _c: AdminClaims) -> AppResult<Json
         "SELECT id, device_id, rule_id, severity, metric, value, threshold, status, acked_by, acked_at, created_at
          FROM alert_event ORDER BY id DESC LIMIT 200"
     ).fetch_all(st.db.pool()).await?;
-    let items: Vec<Value> = rows.iter().map(|r| json!({
-        "id": sqlx::Row::try_get::<u64, _>(r, "id").unwrap_or(0),
-        "device_id": sqlx::Row::try_get::<String, _>(r, "device_id").unwrap_or_default(),
-        "rule_id": sqlx::Row::try_get::<Option<u64>, _>(r, "rule_id").ok().flatten(),
-        "severity": sqlx::Row::try_get::<String, _>(r, "severity").unwrap_or_default(),
-        "metric": sqlx::Row::try_get::<String, _>(r, "metric").unwrap_or_default(),
-        "value": sqlx::Row::try_get::<Option<f64>, _>(r, "value").ok().flatten(),
-        "status": sqlx::Row::try_get::<String, _>(r, "status").unwrap_or_default(),
-        "acked_by": sqlx::Row::try_get::<Option<u64>, _>(r, "acked_by").ok().flatten(),
-        "created_at": sqlx::Row::try_get::<chrono::DateTime<chrono::Utc>, _>(r, "created_at").ok().map(|t| t.to_rfc3339()),
-    })).collect();
+    let items: Vec<Value> = rows.iter().map(|r| -> AppResult<Value> { Ok(json!({
+        "id": sqlx::Row::try_get::<u64, _>(r, "id")?,
+        "device_id": sqlx::Row::try_get::<String, _>(r, "device_id")?,
+        "rule_id": sqlx::Row::try_get::<Option<u64>, _>(r, "rule_id")?,
+        "severity": sqlx::Row::try_get::<String, _>(r, "severity")?,
+        "metric": sqlx::Row::try_get::<String, _>(r, "metric")?,
+        "value": sqlx::Row::try_get::<Option<f64>, _>(r, "value")?,
+        "status": sqlx::Row::try_get::<String, _>(r, "status")?,
+        "acked_by": sqlx::Row::try_get::<Option<u64>, _>(r, "acked_by")?,
+        "created_at": sqlx::Row::try_get::<chrono::DateTime<chrono::Utc>, _>(r, "created_at")?.to_rfc3339(),
+    })) }).collect::<AppResult<Vec<_>>>()?;
     Ok(Json(common_error::ApiEnvelope::ok(json!({"items": items}), common_error::current_request_id())))
 }
 
@@ -36,14 +36,14 @@ pub async fn ack(State(st): State<AppState>, c: AdminClaims, Path(id): Path<u64>
 pub async fn rules_list(State(st): State<AppState>, _c: AdminClaims) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
     let rows = sqlx::query("SELECT id, name, device_id_pattern, metric, op, threshold, window_seconds, severity, enabled FROM alert_rule WHERE deleted_at IS NULL")
         .fetch_all(st.db.pool()).await?;
-    let items: Vec<Value> = rows.iter().map(|r| json!({
-        "id": sqlx::Row::try_get::<u64, _>(r, "id").unwrap_or(0),
-        "name": sqlx::Row::try_get::<String, _>(r, "name").unwrap_or_default(),
-        "metric": sqlx::Row::try_get::<String, _>(r, "metric").unwrap_or_default(),
-        "op": sqlx::Row::try_get::<String, _>(r, "op").unwrap_or_default(),
-        "severity": sqlx::Row::try_get::<String, _>(r, "severity").unwrap_or_default(),
-        "enabled": sqlx::Row::try_get::<i8, _>(r, "enabled").unwrap_or(1) != 0,
-    })).collect();
+    let items: Vec<Value> = rows.iter().map(|r| -> AppResult<Value> { Ok(json!({
+        "id": sqlx::Row::try_get::<u64, _>(r, "id")?,
+        "name": sqlx::Row::try_get::<String, _>(r, "name")?,
+        "metric": sqlx::Row::try_get::<String, _>(r, "metric")?,
+        "op": sqlx::Row::try_get::<String, _>(r, "op")?,
+        "severity": sqlx::Row::try_get::<String, _>(r, "severity")?,
+        "enabled": sqlx::Row::try_get::<i8, _>(r, "enabled")? != 0,
+    })) }).collect::<AppResult<Vec<_>>>()?;
     Ok(Json(common_error::ApiEnvelope::ok(json!({"items": items}), common_error::current_request_id())))
 }
 
@@ -59,13 +59,14 @@ pub struct AlertRuleCreateReq {
 }
 
 pub async fn rules_create(State(st): State<AppState>, _c: AdminClaims, Json(req): Json<AlertRuleCreateReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
-    let id: u64 = sqlx::query_scalar(
+    let result = sqlx::query(
         "INSERT INTO alert_rule (name, device_id_pattern, metric, op, threshold, window_seconds, severity, enabled)
          VALUES (?, COALESCE(?, '*'), ?, ?, ?, COALESCE(?, 60), ?, 1)"
     )
     .bind(&req.name).bind(req.device_id_pattern.as_deref()).bind(&req.metric).bind(&req.op)
     .bind(req.threshold).bind(req.window_seconds).bind(&req.severity)
-    .fetch_one(st.db.pool()).await?;
+    .execute(st.db.pool()).await?;
+    let id = result.last_insert_id();
     Ok(Json(common_error::ApiEnvelope::ok(json!({"id": id}), common_error::current_request_id())))
 }
 
@@ -110,13 +111,13 @@ pub async fn rules_delete(State(st): State<AppState>, _c: AdminClaims, Path(id):
 pub async fn subs_list(State(st): State<AppState>, _c: AdminClaims) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
     let rows = sqlx::query("SELECT id, rule_id, severity, webhook_subscription_id, admin_user_id, enabled FROM alert_subscription")
         .fetch_all(st.db.pool()).await?;
-    let items: Vec<Value> = rows.iter().map(|r| json!({
-        "id": sqlx::Row::try_get::<u64, _>(r, "id").unwrap_or(0),
-        "rule_id": sqlx::Row::try_get::<Option<u64>, _>(r, "rule_id").ok().flatten(),
-        "severity": sqlx::Row::try_get::<Option<String>, _>(r, "severity").ok().flatten(),
-        "webhook_subscription_id": sqlx::Row::try_get::<Option<u64>, _>(r, "webhook_subscription_id").ok().flatten(),
-        "admin_user_id": sqlx::Row::try_get::<Option<u64>, _>(r, "admin_user_id").ok().flatten(),
-    })).collect();
+    let items: Vec<Value> = rows.iter().map(|r| -> AppResult<Value> { Ok(json!({
+        "id": sqlx::Row::try_get::<u64, _>(r, "id")?,
+        "rule_id": sqlx::Row::try_get::<Option<u64>, _>(r, "rule_id")?,
+        "severity": sqlx::Row::try_get::<Option<String>, _>(r, "severity")?,
+        "webhook_subscription_id": sqlx::Row::try_get::<Option<u64>, _>(r, "webhook_subscription_id")?,
+        "admin_user_id": sqlx::Row::try_get::<Option<u64>, _>(r, "admin_user_id")?,
+    })) }).collect::<AppResult<Vec<_>>>()?;
     Ok(Json(common_error::ApiEnvelope::ok(json!({"items": items}), common_error::current_request_id())))
 }
 
@@ -129,21 +130,22 @@ pub struct SubCreateReq {
 }
 
 pub async fn subs_create(State(st): State<AppState>, _c: AdminClaims, Json(req): Json<SubCreateReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
-    let id: u64 = sqlx::query_scalar(
+    let result = sqlx::query(
         "INSERT INTO alert_subscription (rule_id, severity, webhook_subscription_id, admin_user_id, enabled) VALUES (?, ?, ?, ?, 1)"
     )
     .bind(req.rule_id).bind(req.severity.as_deref()).bind(req.webhook_subscription_id).bind(req.admin_user_id)
-    .fetch_one(st.db.pool()).await?;
+    .execute(st.db.pool()).await?;
+    let id = result.last_insert_id();
     Ok(Json(common_error::ApiEnvelope::ok(json!({"id": id}), common_error::current_request_id())))
 }
 
 pub async fn risk_config_get(State(st): State<AppState>, _c: AdminClaims) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
     let rows = sqlx::query("SELECT `key`, value, description FROM risk_config").fetch_all(st.db.pool()).await?;
-    let items: Vec<Value> = rows.iter().map(|r| json!({
-        "key": sqlx::Row::try_get::<String, _>(r, "key").unwrap_or_default(),
-        "value": sqlx::Row::try_get::<serde_json::Value, _>(r, "value").ok(),
-        "description": sqlx::Row::try_get::<Option<String>, _>(r, "description").ok().flatten(),
-    })).collect();
+    let items: Vec<Value> = rows.iter().map(|r| -> AppResult<Value> { Ok(json!({
+        "key": sqlx::Row::try_get::<String, _>(r, "key")?,
+        "value": sqlx::Row::try_get::<serde_json::Value, _>(r, "value")?,
+        "description": sqlx::Row::try_get::<Option<String>, _>(r, "description")?,
+    })) }).collect::<AppResult<Vec<_>>>()?;
     Ok(Json(common_error::ApiEnvelope::ok(json!({"items": items}), common_error::current_request_id())))
 }
 

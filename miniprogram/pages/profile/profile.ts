@@ -48,11 +48,6 @@ Page({
   goCoupons() { wx.navigateTo({ url: '/pages/coupons/my' }); },
   goInvoices() { wx.navigateTo({ url: '/pages/invoice/my' }); },
   goCustomerService() {
-    wx.openCustomerServiceChat({
-      extInfo: { url: '' },
-      corpId: '', // 从白标配置读取
-      success: () => {},
-      fail: (e: any) => wx.showToast({ title: '客服暂不可用', icon: 'none' }),
-    });
+    wx.navigateTo({ url: '/pages/cs/chat' });
   },
 });

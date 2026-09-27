@@ -252,6 +252,8 @@
 
 ## 表 4:`admin_db.whitelabel_config`
 
+> 应用固定使用 `id=1` 作为单例。迁移 `0017_whitelabel_singleton.sql` 将迁移前最新一份配置复制到该 ID，但保留旧行以便恢复。文档字段中 Logo、微信号、ICP备案号、域名和协议链接保存在 `config_json`；基础名称、Logo、主题色、电话和介绍映射到主列。每次 PUT 在同一事务内写 before/after 审计快照并在提交后删除 `whitelabel:config` 缓存键。
+
 **业务说明**:**白标配置**(单例表,单客户只有一份配置)。客户在 PC 后台"白标配置"上传 Logo / 主题色 / 域名,用于小程序与 PC 后台的品牌定制。
 
 **关键业务规则**:
@@ -378,6 +380,12 @@
 - 坐席配置:每个客服绑定一个微信 openid / 微信号
 - 软删除启用:员工离职 → 软删
 - **首次响应 SLA**:客户自配(可空)
+
+> 当前迁移定义与下方完整设计模型尚不相同：实际 `admin_db/0001_init.sql` 仅有 `agent_wechat`、`agent_name`、`path`、`priority`、`enabled`、`working_hours_json` 和时间戳；`admin_db/0014_customer_service_url.sql` 将 `path` 扩为 512 字符，用作 HTTPS 客服入口。当前没有 `role_id`、会话计数、SLA、评分或软删除列。PC 删除操作将坐席设为 `enabled=0`，不会删除记录；user 服务返回优先级最高的启用坐席。坐席授权、负载分配、SLA 和会话状态仍未实现。
+
+`admin_db/0016_customer_casework_permissions.sql` 注册 `feedback.read`、`feedback.reply`、`fault.read` 和 `fault.dispatch` 权限，并为迁移时已存在的客服/运营/巡检角色分配对应权限。后台处理反馈和报修时，会检查管理员与权限当前仍有效，并在 `audit_log` 留操作记录。
+
+`admin_db/0018_dashboard_permission.sql` 注册 `dashboard.read`，并分配给迁移时已存在的 `customer_admin`、`customer_ops` 和 `dev_admin` 角色。仪表盘告警数取本表 `alert_event`；充电订单数和金额由 user 服务从订单所有者表汇总。
 
 ### 字段定义
 
@@ -1423,6 +1431,8 @@
 ---
 
 ## 表 24:`admin_db.invoice_review`
+
+> 当前实际 schema 以迁移为准：`0015_invoice_review_workflow.sql` 添加按申请唯一的队列状态，重复旧行先把原审核信息写入 `audit_log` 再收敛；`0019_invoice_dual_review.sql` 增加 `awaiting_second`、首审/复核人时间及 `invoice_url`。拒绝原因、单个最终审核人和最终时间仍使用主表字段。没有独立发票审核动作历史表；所有首审、复核和拒绝动作另写 `audit_log`。
 
 **业务说明**:**发票审核记录**(客户财务审核 user_db.invoice_request 的过程)。user_db 存申请,admin_db 存审核过程;两者配合形成完整审计链。
 

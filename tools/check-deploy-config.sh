@@ -71,9 +71,9 @@ for port in "${INTERNAL_PORTS[@]}"; do
   fi
 done
 
-# ---------- 5. 端口映射白名单(9100/1883/80/443 允许)----------
+# ---------- 5. 端口映射白名单(9100/80/443 允许)----------
 section "5. 端口映射白名单"
-WHITELIST_PORTS=(80 443 9100 1883)
+WHITELIST_PORTS=(80 443 9100)
 ALLOWED=$(awk '/^[[:space:]]*ports:/{p=1; next} p && /^[[:space:]]*-/{print} p && /^[[:space:]]*[a-z]/{p=0}' "$COMPOSE" \
   | grep -oE '"[0-9]+:[0-9]+"' || true)
 UNEXPECTED=""
@@ -84,7 +84,7 @@ for entry in $ALLOWED; do
   fi
 done
 if [ -z "$UNEXPECTED" ]; then
-  ok "所有暴露端口在白名单内(80/443/9100/1883)"
+  ok "所有暴露端口在白名单内(80/443/9100)"
 else
   err "未在白名单的暴露端口:$UNEXPECTED"
 fi

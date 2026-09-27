@@ -19,7 +19,7 @@ pub struct Profile {
 
 pub async fn get(State(st): State<AppState>, claims: UserClaims) -> AppResult<Json<ApiEnvelope<Profile>>> {
     let mut tx=st.db.pool().begin().await?;
-    let user=sqlx::query("SELECT nickname,avatar_url,gender,(phone_enc IS NOT NULL) AS phone_bound,first_seen_at FROM `user` WHERE id=? AND deleted_at IS NULL AND status='active'")
+    let user=sqlx::query("SELECT nickname,avatar_url,gender,(phone_hash IS NOT NULL) AS phone_bound,first_seen_at FROM `user` WHERE id=? AND deleted_at IS NULL AND status='active'")
         .bind(claims.user_id).fetch_optional(&mut *tx).await?.ok_or_else(|| AppError::NotFound("用户不存在".into()))?;
     let wallets: Vec<(i64,i64,String)>=sqlx::query_as("SELECT balance_cents,frozen_cents,status FROM wallet_account WHERE user_id=? AND deleted_at IS NULL")
         .bind(claims.user_id).fetch_all(&mut *tx).await?;

@@ -297,6 +297,6 @@ echo "[$(date)] binlog integrity OK"
 ## 十、跨服务数据一致性注意
 
 - 备份只覆盖 MySQL 5 个 schema
-- **Redis Stream 不备份**:Stream 是事件总线,丢消息可通过 `comp_tx_stream` 幂等补偿(详见 `docs/技术规格.md` § 5.6)
+- **Redis Stream 不备份**:恢复 Redis Stream 数据需依赖各生产者的持久化 outbox 和人工核对。`comp_tx_stream` 的 worker consumer 只审计 user 已提交的退款结果，不能恢复丢失的 Stream 或执行资金补偿；发布状态为已发送但 Stream 丢失的事件目前没有自动重建流程。
 - **Redis cache 不备份**:缓存丢失后用户首次访问会 cache miss → 回填,对业务透明
 - 业务缓存(`snapshot:{order_id}`)丢失 → 小程序下次轮询会 1 次 cache miss → 不影响最终结果

@@ -20,11 +20,18 @@ pub mod customer_service;
 pub mod whitelabel;
 pub mod export;
 pub mod internal;
+pub mod casework;
+pub mod dashboard;
 
-use axum::Json;
+use axum::{extract::State, Json};
 use common_error::AppResult;
 
-pub async fn health() -> &'static str { "ok" }
+pub async fn health(State(st): State<crate::AppState>) -> AppResult<&'static str> {
+    st.db.ping().await?;
+    st.redis_cache.ping().await?;
+    st.redis_stream.ping().await?;
+    Ok("ok")
+}
 
 #[allow(dead_code)]
 pub fn ok_envelope<T: serde::Serialize>(data: T) -> Json<common_error::ApiEnvelope<T>> {

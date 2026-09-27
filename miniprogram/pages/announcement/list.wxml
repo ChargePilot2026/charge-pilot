@@ -1,0 +1,9 @@
+<view class="container">
+  <view wx:if="{{needsLogin}}" class="card"><view>登录后查看当前公告</view><button type="primary" bindtap="login">微信登录</button></view>
+  <view wx:for="{{items}}" wx:key="id" class="card">
+    <view class="title">{{item.title}}</view><view class="text-secondary">{{item.timeText}}</view><view class="content">{{item.content}}</view>
+  </view>
+  <view wx:if="{{loading}}" class="card">正在读取公告…</view>
+  <view wx:if="{{error}}" class="card error"><view>{{error}}</view><button bindtap="load" disabled="{{loading}}">重试</button></view>
+  <view wx:if="{{!loading &amp;&amp; !error &amp;&amp; !items.length &amp;&amp; !needsLogin}}" class="card">暂无生效公告</view>
+</view>

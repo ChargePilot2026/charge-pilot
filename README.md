@@ -52,7 +52,7 @@ bash scripts/start.sh          # Linux/macOS
 | `http://<host>/admin/` | PC 后台(React SPA) |
 | `http://<host>/api/v1/health` | 全栈健康检查 |
 | `9100/TCP` | 设备长连接(直连,不经过 Caddy) |
-| `1883/MQTT` | MQTT 设备长连接 |
+| `1883/MQTT` | 未实现；无 Broker、未监听、Compose 不开放 |
 
 ---
 
@@ -79,7 +79,7 @@ charge-pilot/
 │   └── common-telemetry/          # tracing + OpenTelemetry 初始化
 │
 ├── services/                      # 5 个独立 Rust 服务(每个都是独立 cargo package)
-│   ├── gateway/                   # 设备长连接(TCP 9100 / MQTT 1883)+ 17 个内部 HTTP API
+│   ├── gateway/                   # 9100 TCP/JSON 设备接入(MQTT 尚未接入)+ 内部 HTTP API
 │   ├── user/                      # 小程序 API(8081)+ 30 个端点 + 微信支付回调
 │   ├── admin/                     # PC 后台 API(8082)+ 112 个端点 + SPA 静态托管
 │   ├── billing/                   # 计费引擎 + 多方分账(8084)
@@ -127,11 +127,11 @@ charge-pilot/
 
 | 服务 | 端口 | 数据库 | 关键职责 |
 | --- | --- | --- | --- |
-| **gateway** | 9100/1883/8083 | gateway_db(8 表) | 设备长连接(TCP/MQTT)+ 遥测落库 + 告警发布 + 启动指令下发 |
+| **gateway** | 9100/8083 | gateway_db | 已建档设备的 TCP/JSON 会话、遥测/聚合、告警及充电指令；厂商协议与 MQTT 未接入 |
 | **user** | 8081 | user_db(18 表) | 小程序 API + 微信支付 + 退款编排 + 个人中心 + 钱包 |
-| **admin** | 8082 | admin_db(25 表) | PC 后台 API(设备/订单/告警/角色/财务/Webhook/OTA/白标)+ SPA 托管 |
-| **billing** | 8084 | billing_db(5 表) | 计费引擎 + 价费分离 + 多方分账 + 提现 |
-| **worker** | 8085 | worker_db(5 表) | 12 个定时任务 + Stream 消费(告警/计费/对账/OTA/退款等) |
+| **admin** | 8082 | admin_db(25 表) | PC 后台 API 与 SPA；Webhook 投递、OTA 下发、数据范围权限等仍有缺口 |
+| **billing** | 8084 | billing_db(5 表) | 实测计费、价费分离、多方分账；提现申请尚未接入 |
+| **worker** | 8085 | worker_db | 3 个 interval 循环及 Webhook/OTA/退款结果审计 Stream 消费；Webhook/OTA 投递与数据库调度任务未接入 |
 
 ### 11 个 Redis Stream 事件总线
 
@@ -217,7 +217,7 @@ cd admin-web && npm install && npm run dev
 curl -fsSL https://get.docker.com | sh
 
 # 2. 准备域名 A 记录(charge.example.com → 服务器公网 IP)
-# 3. 开放 80/443 + 9100/1883 端口
+# 3. 开放 80/443；仅向设备网段开放 9100/TCP，1883 未实现且不得开放
 # 4. 配置 .env(尤其 JWT_SECRET / SERVICE_TOKEN / WECHAT_* / DB_PASSWORD)
 # 5. 启动
 bash scripts/start.sh

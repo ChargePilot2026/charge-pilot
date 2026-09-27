@@ -12,8 +12,8 @@
 | 网络 | 加入者 | 暴露端口 | 说明 |
 | --- | --- | --- | --- |
 | **`internal`** | mysql / redis-cache / redis-stream / user / admin / billing / worker / caddy | **无**(`expose:` 仅 docker network 内可达) | 5 服务 + 2 Redis + Caddy 互通;**无端口映射到宿主机** |
-| **`device-net`** | gateway | **9100 / 1883**(公网设备入网) | 设备长连接专用;**仅 gateway 加入**,避免设备 → MySQL / Redis 直连 |
-| **`public`** | caddy / gateway(9100 / 1883) | **80 / 443**(公网 HTTPS) | Caddy TLS 终止 + gateway 设备长连接端口 |
+| **`device-net`** | gateway | **9100**(设备 TCP/JSON 接入) | 设备长连接专用;**仅 gateway 加入**,避免设备 → MySQL / Redis 直连 |
+| **`public`** | caddy / gateway(9100) | **80 / 443**(公网 HTTPS) | Caddy TLS 终止 + gateway 设备长连接端口 |
 
 ---
 
@@ -38,9 +38,8 @@ iptables -A INPUT -p tcp --dport 80 -m state --state NEW -j ACCEPT
 iptables -A INPUT -p tcp --dport 443 -m state --state NEW -j ACCEPT
 
 # 4. 允许设备长连接端口(gateway)
-#    客户场景:通常是物业 / 园区内网 → 公网设备 IP 白名单
+#    只开放当前已实现的 9100 TCP/JSON，并限制到设备 IP 白名单
 iptables -A INPUT -p tcp --dport 9100 -s <设备IP段> -m state --state NEW -j ACCEPT
-iptables -A INPUT -p tcp --dport 1883 -s <设备IP段> -m state --state NEW -j ACCEPT
 
 # 5. 关键:**不允许**暴露 3306 / 6379 / 8081 / 8082 / 8083 / 8084
 #    这些端口在 docker-compose.yml 中只 `expose:`,不 `ports:`
@@ -56,7 +55,8 @@ iptables -A INPUT -p tcp --dport 1883 -s <设备IP段> -m state --state NEW -j A
 | **MySQL 3306** | 不暴露公网;docker-compose 仅 `expose: 3306`(仅 internal 网络可达) |
 | **Redis 6379** | 不暴露公网;两个 Redis 容器(缓存 + Stream)均仅 `expose:` |
 | **内部 HTTP**(user:8081 / admin:8082 / gateway:8083 / billing:8084) | 不暴露公网;仅 `expose:`,经 Caddy 反代 |
-| **设备长连接 9100 / 1883** | gateway 加入 `device-net`,允许公网设备 → gateway(设备 IP 白名单) |
+| **设备长连接 9100** | gateway 加入 `device-net`,允许已建档设备 → gateway(建议限制设备 IP 白名单);当前为 TCP/JSON |
+| **MQTT 1883** | 未实现且未监听;防火墙与 Docker 均不得开放 |
 | **Caddy 80 / 443** | 唯一对外 HTTPS 入口;`public` 网络 |
 | **微信支付回调** | 走 Caddy:443 → user:8081;需在微信商户平台"支付回调 URL"配置 `https://<customer-domain>/api/v1/public/payment/wechat/callback` |
 
@@ -71,9 +71,9 @@ iptables -A INPUT -p tcp --dport 1883 -s <设备IP段> -m state --state NEW -j A
                               ↓
                             Redis:6379(redis-stream,charge_started_stream)
                               ↓
-                            gateway:8083(charge_ended_stream 消费)
+                            gateway:9100(设备 TCP/JSON 会话)
                               ↓
-                            gateway:9100(TCP/MQTT → 设备)
+                            设备 ACK(JSON Frame)
                               ↓
                             Redis:6379(redis-cache,snapshot:{order_id})
                               ↓
@@ -83,21 +83,22 @@ iptables -A INPUT -p tcp --dport 1883 -s <设备IP段> -m state --state NEW -j A
 ### 4.2 设备上报遥测 → 告警推送
 
 ```
-[设备] → gateway:9100(TCP)或 1883(MQTT)
-       → gateway_db.telemetry
-       → 越界则 XADD alert_stream → redis-stream
-       → worker 消费 → admin 写 alert_event → Webhook 推送
+[设备] → gateway:9100(TCP/JSON;首帧 heartbeat 身份校验)
+       → gateway_db.telemetry / 聚合
+设备主动上报 alert 帧 → event_outbox → alert_stream
+       → admin 消费并写 alert_event
+       → webhook_retry_stream 缺少目标 URL，worker 投递失败后进入 Redis DLQ
 ```
 
 ### 4.3 充电结束 → 计费 / 退款
 
 ```
-[设备] → gateway:9100
-       → charge_state 变化 → XADD charge_ended_stream → redis-stream
-       → billing 消费(charge_ended_stream.billing-cg) → 写 billing_db
-       → user 消费(charge_ended_stream.user-cg) → 关轮询
-       → 条件触发 → XADD refund_required_stream → redis-stream
-       → admin 消费 → 调微信退款 → 通知用户
+[设备] → gateway:9100(TCP/JSON status/停止确认)
+       → gateway 持久化停止确认 → charge_ended_stream
+       → billing 消费 → 写费用/分账并向 user 投递 fee_delivery
+       → user 消费结束事件及 fee_delivery，写实结费用
+       → 满足条件时 user 事务创建退款记录并发布 refund_required_stream
+       → admin 持久化退款任务并尝试执行；真实商户资金联调尚未验证
 ```
 
 ---
@@ -109,9 +110,9 @@ iptables -A INPUT -p tcp --dport 1883 -s <设备IP段> -m state --state NEW -j A
 | 小程序 | Caddy:443 → user:8081 | MySQL / Redis / billing:8084 / gateway:8083 | JWT(openid) |
 | PC 后台 | Caddy:443 → admin:8082 | MySQL / Redis / user:8081 / gateway:8083 | JWT(角色)+ 双因素(待二期) |
 | 微信支付回调 | Caddy:443 → user:8081 `/api/v1/public/payment/wechat/callback` | MySQL / Redis Stream | 微信签名(RSA) |
-| 充电桩 | gateway:9100 / 1883(直连,**不过 Caddy**) | gateway_db / redis-stream | device_id(无 TLS) |
-| 监管平台 Webhook 推送 | admin 主动推送(出站) | 客户配置的 Webhook URL | HMAC-SHA256(`X-Signature`) |
-| OTA 固件下载 | 客户 OSS / 对象存储 → 设备(由 admin 调度,gateway 中转 URL) | — | URL 签名(SHA-256 + 厂商私钥) |
+| 充电桩 | gateway:9100(TCP/JSON,直连,**不过 Caddy**) | gateway_db / redis-stream | 已启用的 device_id 与 vendor(无 TLS) |
+| 监管平台 Webhook 推送 | 当前未接通投递 | 目标为客户配置的 Webhook URL | 目标为 HMAC-SHA256(`X-Signature`) |
+| OTA 固件下载 | 当前未实现；目标为客户 OSS / 对象存储与设备下载 | — | 目标为 URL 签名 |
 
 ---
 
@@ -126,9 +127,9 @@ internal:        mysql ←→ redis-cache ←→ redis-stream ←→ user ←→
 
 device-net:      gateway ←→ MySQL(经 internal 互通,设备不可直接访问)
                               ↓
-                              设备(公网,9100/1883)
+                              设备(9100/TCP JSON;1883 未监听)
 
-public:          caddy(80/443) + gateway(9100/1883)
+public:          caddy(80/443) + gateway(9100)
 ```
 
 ---
@@ -160,6 +161,6 @@ docker network inspect chargepilot_public
 | --- | --- | --- |
 | 等保三级 — 网络架构 | 3 网络隔离 + 最小暴露 | 见 `docs/checklists/equal-protection-l3.md` § 四 |
 | 等保三级 — 边界防护 | 宿主机防火墙规则 | § 二 |
-| 等保三级 — 入侵防范 | gateway 9100/1883 鉴权(device_id) | `docs/技术规格.md` § 6.2 |
+| 等保三级 — 入侵防范 | gateway:9100 校验已启用 device_id 与 vendor;当前无 TLS | `docs/技术规格.md` § 6.2 |
 | 等保三级 — 通信完整性 | TLS 1.3 + HSTS | `docs/技术规格.md` § 9.1 |
 | 个保法 — 数据本地化 | 单客户单部署,数据不出客户机房 | `docs/需求分析.md` § 1.2 |

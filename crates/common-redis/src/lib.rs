@@ -115,6 +115,15 @@ impl RedisStream {
         Ok(Self { conn })
     }
 
+    pub async fn ping(&self) -> AppResult<()> {
+        let mut c = self.conn.clone();
+        let s: String = redis::cmd("PING").query_async(&mut c).await?;
+        if s != "PONG" {
+            return Err(AppError::Internal(format!("redis stream ping: {s}")));
+        }
+        Ok(())
+    }
+
     pub fn conn(&self) -> ConnectionManager {
         self.conn.clone()
     }

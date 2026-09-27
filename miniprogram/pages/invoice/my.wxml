@@ -1,0 +1,15 @@
+<view class="container">
+  <button wx:if="{{needsLogin}}" type="primary" bindtap="login">登录查看发票</button>
+  <button wx:elif="{{!needsLogin}}" type="primary" bindtap="apply">申请发票</button>
+  <view wx:for="{{items}}" wx:key="invoice_no" class="card">
+    <view class="row"><view class="title">{{item.title}}</view><view class="tag">{{item.statusText}}</view></view>
+    <view>金额 ¥{{item.amountText}} · {{item.biz_type === 'charge' ? '充电订单' : item.biz_type}}</view>
+    <view class="text-secondary">{{item.invoice_no}} · {{item.createdText}}</view>
+    <view wx:if="{{item.reject_reason}}" class="error">拒绝原因：{{item.reject_reason}}</view>
+    <button wx:if="{{item.invoice_url}}" size="mini" data-url="{{item.invoice_url}}" bindtap="openInvoice">查看发票</button>
+  </view>
+  <view wx:if="{{loading}}" class="card">正在读取发票记录…</view>
+  <view wx:if="{{error}}" class="card error"><view>{{error}}</view><button bindtap="load" disabled="{{loading}}">重试</button></view>
+  <view wx:if="{{!loading &amp;&amp; !items.length &amp;&amp; !needsLogin &amp;&amp; !error}}" class="card">暂无发票申请记录</view>
+  <button wx:if="{{items.length &gt; 0 &amp;&amp; items.length === page * pageSize &amp;&amp; !loading}}" bindtap="onReachBottom">加载更多</button>
+</view>

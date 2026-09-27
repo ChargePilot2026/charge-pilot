@@ -13,8 +13,8 @@
 #   4. Caddy 续期由 ACME HTTP-01 自动完成(每 60 天)
 #
 # 注意:
-#   - Caddy **不代理** TCP :9100 / MQTT :1883 — 这两个端口由 gateway 服务
-#     直接监听(Docker Compose 暴露 9100/1883 公网)
+#   - Caddy **不代理** TCP :9100 — 该端口由 gateway 服务直接监听
+#   - MQTT :1883 尚未实现、未监听，也不会由 Docker Compose 暴露
 #   - 内部 HTTP 端口(8081 user / 8082 admin / 8083 gateway / 8084 billing)
 #     **不直接暴露公网**,只通过本 Caddyfile 反代
 
