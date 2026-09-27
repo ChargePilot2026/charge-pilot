@@ -955,6 +955,7 @@ dependencies = [
  "async-trait",
  "axum",
  "chrono",
+ "common-app",
  "common-auth",
  "common-config",
  "common-db",

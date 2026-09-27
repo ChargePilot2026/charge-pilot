@@ -16,17 +16,17 @@ pub async fn provision(
     batch
         .devices
         .sort_by_key(|d| d.device_id.to_ascii_lowercase());
-    let mut tx = state.db.pool().begin().await?;
+    let mut tx = state.device.begin_provision().await?;
     let mut items = Vec::with_capacity(batch.devices.len());
     for device in &batch.devices {
         let request = serde_json::to_value(device)?;
         sqlx::query("INSERT INTO device_provision (device_id,request_json) VALUES (?,?) ON DUPLICATE KEY UPDATE device_id=device_provision.device_id")
-            .bind(&device.device_id).bind(&request).execute(&mut *tx).await?;
+            .bind(&device.device_id).bind(&request).execute(tx.executor()).await?;
         let stored: serde_json::Value = sqlx::query_scalar(
             "SELECT request_json FROM device_provision WHERE device_id=? FOR UPDATE",
         )
         .bind(&device.device_id)
-        .fetch_one(&mut *tx)
+        .fetch_one(tx.executor())
         .await?;
         if stored != request {
             return Err(AppError::Conflict(format!(
@@ -38,7 +38,7 @@ pub async fn provision(
             "SELECT id FROM vendor WHERE id=? AND status='enabled' AND deleted_at IS NULL",
         )
         .bind(device.vendor_id)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(tx.executor())
         .await?;
         if vendor.is_none() {
             return Err(AppError::BadRequest(format!(
@@ -47,7 +47,7 @@ pub async fn provision(
             )));
         }
         let rows = sqlx::query("SELECT vendor_id,station_id,port_count,model,status,deleted_at FROM device WHERE device_id=? FOR UPDATE")
-            .bind(&device.device_id).fetch_all(&mut *tx).await?;
+            .bind(&device.device_id).fetch_all(tx.executor()).await?;
         let created = rows.is_empty();
         if !created {
             if rows.len() != 1 {
@@ -74,14 +74,14 @@ pub async fn provision(
         } else {
             sqlx::query("INSERT INTO device (device_id,vendor_id,station_id,port_count,model) VALUES (?,?,?,?,?)")
                 .bind(&device.device_id).bind(device.vendor_id).bind(device.station_id).bind(device.port_count).bind(&device.model)
-                .execute(&mut *tx).await?;
+                .execute(tx.executor()).await?;
             for port_no in 1..=device.port_count {
                 let port_code = format!("{}:{port_no}", device.device_id);
                 let existing: i64 = sqlx::query_scalar(
                     "SELECT COUNT(*) FROM device_port WHERE port_code=? AND deleted_at IS NULL",
                 )
                 .bind(&port_code)
-                .fetch_one(&mut *tx)
+                .fetch_one(tx.executor())
                 .await?;
                 if existing > 0 {
                     return Err(AppError::Conflict(format!("端口码 {port_code} 已存在")));
@@ -90,12 +90,12 @@ pub async fn provision(
                     .bind(&device.device_id)
                     .bind(port_no)
                     .bind(port_code)
-                    .execute(&mut *tx)
+                    .execute(tx.executor())
                     .await?;
             }
         }
         let rows = sqlx::query("SELECT id,port_no,port_code FROM device_port WHERE device_id=? AND deleted_at IS NULL ORDER BY port_no,id")
-            .bind(&device.device_id).fetch_all(&mut *tx).await?;
+            .bind(&device.device_id).fetch_all(tx.executor()).await?;
         if rows.len() != usize::from(device.port_count) {
             return Err(AppError::Conflict(format!(
                 "设备 {} 的端口记录不完整",

@@ -69,8 +69,7 @@ async fn handle_conn(
             if let Some((device,_))=&identity {
                 if device!=&frame.device_id {writer.lock().await.write_all(b"{\"error\":\"device_identity_mismatch\"}\n").await?;return Ok(());}
             } else {
-                let enabled:Vec<bool>=sqlx::query_scalar("SELECT d.status='enabled' AND v.status='enabled' FROM device d JOIN vendor v ON v.id=d.vendor_id AND v.deleted_at IS NULL WHERE d.device_id=? AND d.deleted_at IS NULL")
-                    .bind(&frame.device_id).fetch_all(state.db.pool()).await?;
+                let enabled=state.device.device_vendor_enabled(&frame.device_id).await?;
                 if enabled!=vec![true] || frame.msg_type!="heartbeat" {
                     writer.lock().await.write_all(b"{\"error\":\"unknown_device_or_missing_heartbeat\"}\n").await?;return Ok(());
                 }
@@ -80,8 +79,10 @@ async fn handle_conn(
             let session=&identity.as_ref().unwrap().1;
             // A replacement connection invalidates the old reader as well as its writer.
             if state.connections.get(&frame.device_id).await.map_or(true, |current| current.id != *session) {break;}
-            sqlx::query("UPDATE device SET last_seen_at=UTC_TIMESTAMP(3),last_ip=? WHERE device_id=? AND deleted_at IS NULL")
-                .bind(peer.parse::<std::net::SocketAddr>().map(|addr|addr.ip().to_string()).unwrap_or_else(|_|peer.clone())).bind(&frame.device_id).execute(state.db.pool()).await?;
+            state.device.touch_device(
+                &frame.device_id,
+                &peer.parse::<std::net::SocketAddr>().map(|addr|addr.ip().to_string()).unwrap_or_else(|_|peer.clone()),
+            ).await?;
             if let Err(e)=handle_frame(&frame,&state,session).await {
                 error!(peer=%peer,error=%e,"frame handling failed");
                 writer.lock().await.write_all(b"{\"error\":\"frame_processing_failed\"}\n").await?;continue;
@@ -112,18 +113,13 @@ async fn handle_frame(frame: &Frame, state: &AppState, session: &str) -> AppResu
                 measurements.push((metric, value));
             }
             if measurements.is_empty() { return Err(common_error::AppError::BadRequest("遥测帧不含有效测量值".into())); }
-            let mut tx = state.db.pool().begin().await?;
-            for (metric, value) in measurements {
-                sqlx::query(
-                    "INSERT INTO telemetry (device_id, port_no, metric, value_num, ts) VALUES (?, ?, ?, ?, ?)",
-                )
-                .bind(&frame.device_id).bind(port_no).bind(metric).bind(value).bind(frame.ts)
-                .execute(&mut *tx).await?;
-                crate::telemetry_obs::aggregate_measurement(
-                    &mut tx, &frame.device_id, port_no, metric, value, frame.ts,
-                ).await?;
-            }
-            tx.commit().await?;
+            let rows: Vec<crate::services::device::Measurement<'_>> = measurements
+                .iter()
+                .map(|(metric, value)| crate::services::device::Measurement {
+                    device_id: &frame.device_id, port_no, metric, value: *value, ts: frame.ts,
+                })
+                .collect();
+            state.device.record_measurements(&rows).await?;
         }
         "status" => {
             let status = frame.payload.get("status").and_then(|v| v.as_str())
@@ -138,9 +134,7 @@ async fn handle_frame(frame: &Frame, state: &AppState, session: &str) -> AppResu
                     "status": status,
                 }),
             );
-            let mut tx = state.db.pool().begin().await?;
-            crate::outbox::enqueue(&mut tx, common_redis::streams::DEVICE_EVENT, &env).await?;
-            tx.commit().await?;
+            state.device.enqueue_event(common_redis::streams::DEVICE_EVENT, &env).await?;
         }
         "ack" => {
             crate::charge_command::acknowledge(state, session, frame).await?;
@@ -163,9 +157,7 @@ async fn handle_frame(frame: &Frame, state: &AppState, session: &str) -> AppResu
                     "value": frame.payload.get("value"),
                 }),
             );
-            let mut tx = state.db.pool().begin().await?;
-            crate::outbox::enqueue(&mut tx, common_redis::streams::ALERT, &env).await?;
-            tx.commit().await?;
+            state.device.enqueue_event(common_redis::streams::ALERT, &env).await?;
         }
         _ => {
             warn!(msg_type = %frame.msg_type, "unknown frame type");

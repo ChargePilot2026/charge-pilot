@@ -74,9 +74,9 @@ pub async fn register(
     Json(req): Json<RegisterRequest>,
 ) -> AppResult<Json<ApiEnvelope<RegisterResponse>>> {
     req.validate()?;
-    let mut tx = state.db.pool().begin().await?;
+    let mut tx = state.device.begin_registration().await?;
     let rows = sqlx::query("SELECT id,vendor_id,station_id,port_count,model,status FROM device WHERE device_id=? AND deleted_at IS NULL FOR UPDATE")
-        .bind(&req.device_id).fetch_all(&mut *tx).await?;
+        .bind(&req.device_id).fetch_all(tx.executor()).await?;
     if rows.is_empty() {
         return Err(AppError::business(2001, "设备未建档"));
     }
@@ -99,7 +99,7 @@ pub async fn register(
         "SELECT status,protocol FROM vendor WHERE id=? AND deleted_at IS NULL FOR SHARE",
     )
     .bind(req.vendor_id)
-    .fetch_optional(&mut *tx)
+    .fetch_optional(tx.executor())
     .await?;
     let (status, protocol) = vendor.ok_or_else(|| AppError::BadRequest("厂商不存在".into()))?;
     if status != "enabled" {
@@ -109,12 +109,12 @@ pub async fn register(
         return Err(AppError::BadRequest("连接协议与厂商配置不符".into()));
     }
     sqlx::query("UPDATE device_session SET ended_at=UTC_TIMESTAMP(3),close_reason='re_register' WHERE device_id=? AND ended_at IS NULL")
-        .bind(&req.device_id).execute(&mut *tx).await?;
+        .bind(&req.device_id).execute(tx.executor()).await?;
     let session_uuid = uuid::Uuid::new_v4().to_string();
     let session_id = sqlx::query("INSERT INTO device_session (session_id,device_id,protocol,remote_addr,started_at,last_active_at,created_month) VALUES (?,?,?,?,UTC_TIMESTAMP(3),UTC_TIMESTAMP(3),DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))")
-        .bind(&session_uuid).bind(&req.device_id).bind(&req.connect_type).bind(&req.client_ip).execute(&mut *tx).await?.last_insert_id();
+        .bind(&session_uuid).bind(&req.device_id).bind(&req.connect_type).bind(&req.client_ip).execute(tx.executor()).await?.last_insert_id();
     sqlx::query("UPDATE device SET registered_at=UTC_TIMESTAMP(3),last_seen_at=UTC_TIMESTAMP(3),last_ip=?,firmware_version=COALESCE(?,firmware_version),mac_addr=COALESCE(?,mac_addr) WHERE id=?")
-        .bind(&req.client_ip).bind(&req.firmware_version).bind(&req.mac_addr).bind(device.try_get::<u64,_>("id")?).execute(&mut *tx).await?;
+        .bind(&req.client_ip).bind(&req.firmware_version).bind(&req.mac_addr).bind(device.try_get::<u64,_>("id")?).execute(tx.executor()).await?;
     tx.commit().await?;
     // Database is authoritative. A cache failure must not undo registration.
     if let Err(error) = state

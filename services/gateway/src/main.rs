@@ -8,6 +8,7 @@ mod api;
 mod scan;
 mod provision;
 mod registration;
+pub mod services;
 mod clients;
 mod protocol;
 mod telemetry_obs;
@@ -33,11 +34,17 @@ use tokio::net::TcpListener;
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
+/// ⚠️ P3:**没有 `pub db`**。handler 只能拿到 `device` / `command` 两个
+/// 能力域服务对象,它们的 `db` 字段私有 —— 绕过事务与分层直写 SQL 的入口
+/// 在类型层面被封死。
 #[derive(Clone)]
 pub struct AppState {
     pub connections: protocol::connections::Connections,
     pub cfg: Arc<AppConfig>,
-    pub db: Db,
+    pub device: services::DeviceService,
+    pub command: services::ChargeCommandService,
+    pub stop: services::ChargeStopService,
+    pub outbox: services::OutboxService,
     pub redis_cache: RedisCache,
     pub redis_stream: RedisStream,
     pub jwt: Arc<JwtCodec>,
@@ -61,10 +68,15 @@ async fn main() -> AppResult<()> {
         .build()
         .expect("reqwest");
 
+    let services::GatewayServices { device, command, stop, outbox } =
+        services::build(db, http.clone(), Arc::new(cfg.auth.service_token.clone()), cfg.clone(), redis_cache.clone(), redis_stream.clone());
     let state = AppState {
         connections: protocol::connections::Connections::default(),
         cfg: cfg.clone(),
-        db: db.clone(),
+        device,
+        command,
+        stop,
+        outbox,
         redis_cache: redis_cache.clone(),
         redis_stream: redis_stream.clone(),
         jwt: jwt.clone(),

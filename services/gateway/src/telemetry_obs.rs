@@ -2,12 +2,12 @@
 
 use chrono::{DateTime, Datelike, Utc};
 use common_error::{AppError, AppResult};
-use sqlx::{MySql, Transaction};
+use common_db::Tx;
 
 /// Insert one actual reading into both aggregate resolutions in the same transaction
 /// as its raw telemetry row. Replayed/backfilled readings are counted as observations.
 pub async fn aggregate_measurement(
-    tx: &mut Transaction<'_, MySql>,
+    tx: &mut Tx<'_>,
     device_id: &str,
     port_no: u8,
     metric: &str,
@@ -45,7 +45,7 @@ pub async fn aggregate_measurement(
             .bind(value)
             .bind(value)
             .bind(value)
-            .execute(&mut **tx)
+            .execute(tx.executor())
             .await?;
     }
     Ok(())

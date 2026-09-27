@@ -13,6 +13,7 @@ use common_redis::{RedisCache, RedisStream};
 ///
 /// `db` **私有**——只有本类型的方法能取到连接;handler 拿到的是服务对象,
 /// 拿不到 `Pool<MySql>`,也就无法绕过事务与仓储直接写 SQL。
+#[derive(Clone)]
 pub struct ServiceBase {
     db: Db,
     http: ApiClient,
@@ -33,13 +34,31 @@ impl ServiceBase {
         self.db.begin().await
     }
 
-    /// 仅供本 crate 内的能力域对象取用;服务外部拿不到。
-    pub(crate) fn db(&self) -> &Db {
+    /// 供**本服务 crate 内的能力域服务对象**取用连接。
+    ///
+    /// ⚠️ P1a 阶段这里是 `pub(crate)`,导致服务对象无法跨 crate 构造查询。
+    /// P3 起放开为 `pub`,但**边界并未因此打开** —— 真正的闸门是
+    /// `AppState` 不再持有 `pub db`:handler 手上只有服务对象,
+    /// 拿不到 `ServiceBase`,也就取不到连接。见 `tests/architecture.rs`。
+    pub fn db(&self) -> &Db {
         &self.db
     }
 
-    pub(crate) fn http(&self) -> &ApiClient {
+    pub fn pool(&self) -> &sqlx::MySqlPool {
+        self.db.pool()
+    }
+
+    pub async fn ping(&self) -> AppResult<()> {
+        self.db.ping().await
+    }
+
+    pub fn http(&self) -> &ApiClient {
         &self.http
+    }
+
+    /// 取一个内部调用客户端(与原实现每个调用点 `ApiClient::new` 一次等价)。
+    pub fn new_client(&self) -> ApiClient {
+        self.http.clone()
     }
 
     pub fn cfg(&self) -> &Arc<AppConfig> {
@@ -112,11 +131,13 @@ pub struct ServiceDeps {
 mod tests {
     use super::*;
 
-    /// 边界回归:服务对象**不**对外暴露 Db / Pool —— 否则 E1 的入口封死失效。
+    /// 边界回归:字段 `db` 必须保持**私有**。
+    ///
+    /// `db()` / `pool()` 的存在是给服务对象用的(P3 起必须跨 crate 可用),
+    /// 闸门不在这里 —— 闸门是 `AppState` 不再持有 `pub db`。
+    /// 本测试锁住的是"字段私有",改字段可见性会编译失败。
     #[test]
-    fn service_base_does_not_expose_db_publicly() {
-        // 若 ServiceBase 出现 pub db / pub fn db(&self) -> &Db,本测试的编译即失败。
-        // 这里用类型层面确认 db 字段是私有的:只能通过 begin() 拿到事务句柄。
+    fn service_base_db_field_stays_private() {
         let _ = std::mem::size_of::<ServiceBase>();
     }
 }

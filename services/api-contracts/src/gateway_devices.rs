@@ -312,3 +312,22 @@ mod historical_tests {
         assert_eq!(v.as_object().unwrap().len(), 1);
     }
 }
+
+/// 原始遥测采样行(内部,不直接对外;对外由快照/曲线聚合成别的形状)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TelemetrySample {
+    pub metric: String,
+    pub value_num: Option<f64>,
+    pub ts: String,
+}
+
+/// 历史聚合表的原始行。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoricalSampleRow {
+    pub metric: String,
+    pub avg_v: Option<f64>,
+    pub min_v: Option<f64>,
+    pub max_v: Option<f64>,
+    pub sample_count: u64,
+    pub bucket_start: String,
+}

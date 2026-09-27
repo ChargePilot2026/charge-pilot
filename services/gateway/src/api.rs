@@ -11,7 +11,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 pub async fn health(State(st): State<AppState>) -> AppResult<&'static str> {
-    st.db.ping().await?;
+    st.device.ping().await?;
     st.redis_cache.ping().await?;
     st.redis_stream.ping().await?;
     Ok("ok")
@@ -21,12 +21,9 @@ pub async fn health(State(st): State<AppState>) -> AppResult<&'static str> {
 pub async fn cleanup_idle_device_sessions(
     State(st): State<AppState>,
 ) -> AppResult<Json<common_error::ApiEnvelope<gd::CleanupSessionsResponse>>> {
-    let result = sqlx::query(
-        "UPDATE device_session SET ended_at = UTC_TIMESTAMP(3), close_reason = 'idle_timeout'
-         WHERE ended_at IS NULL AND last_active_at < UTC_TIMESTAMP(3) - INTERVAL 10 MINUTE"
-    ).execute(st.db.pool()).await?;
+    let closed_count = st.device.close_idle_sessions().await?;
     Ok(Json(common_error::ApiEnvelope::ok(
-        gd::CleanupSessionsResponse { closed_count: result.rows_affected() },
+        gd::CleanupSessionsResponse { closed_count },
         common_error::current_request_id(),
     )))
 }
@@ -39,14 +36,8 @@ pub async fn device_get(
     State(st): State<AppState>,
     Path(id): Path<String>,
 ) -> AppResult<Json<common_error::ApiEnvelope<gd::DeviceSummary>>> {
-    let r: Option<(String, u64, u8, String, Option<String>)> = sqlx::query_as(
-        "SELECT device_id, vendor_id, port_count, status, firmware_version FROM device WHERE device_id = ? AND deleted_at IS NULL"
-    ).bind(&id).fetch_optional(st.db.pool()).await?;
-    let r = r.ok_or_else(|| AppError::NotFound("device".into()))?;
     Ok(Json(common_error::ApiEnvelope::ok(
-        gd::DeviceSummary {
-            device_id: r.0, vendor_id: r.1, port_count: r.2, status: r.3, firmware_version: r.4,
-        },
+        st.device.device_summary(&id).await?,
         common_error::current_request_id(),
     )))
 }
@@ -65,24 +56,16 @@ pub async fn device_snapshot(
     let order_id = q.order_id.as_deref().filter(|value| !value.is_empty())
         .ok_or_else(|| AppError::BadRequest("order_id 必填".into()))?;
     let port_no = q.port_no.ok_or_else(|| AppError::BadRequest("port_no 必填".into()))?;
-    let rows = sqlx::query(
-        "SELECT metric, value_num, ts FROM telemetry
-         WHERE device_id = ? AND port_no = ? AND ts >= NOW() - INTERVAL 2 MINUTE
-         ORDER BY ts DESC LIMIT 100",
-    )
-    .bind(&id).bind(port_no).fetch_all(st.db.pool()).await?;
+    let samples = st.device.recent_samples(&id, port_no).await?;
     let mut snap = gd::TelemetrySnapshot::default();
     let mut seen = std::collections::HashSet::new();
-    for row in &rows {
-        let metric: String = sqlx::Row::try_get(row, "metric")?;
-        let Some(field) = metric_field(&metric) else { continue; };
+    for row in &samples {
+        let Some(field) = metric_field(&row.metric) else { continue; };
         if !seen.insert(field) { continue; }
-        let value: Option<f64> = sqlx::Row::try_get(row, "value_num")?;
-        if let Some(value) = value.filter(|value| value.is_finite()) {
+        if let Some(value) = row.value_num.filter(|value| value.is_finite()) {
             snap.set(field, value);
         }
-        let ts: chrono::DateTime<chrono::Utc> = sqlx::Row::try_get(row, "ts")?;
-        if snap.ts.is_none() { snap.ts = Some(ts.to_rfc3339()); }
+        if snap.ts.is_none() { snap.ts = Some(row.ts.clone()); }
     }
     Ok(Json(common_error::ApiEnvelope::ok(
         gd::DeviceSnapshotResponse { device_id: id, order_id: order_id.to_string(), snapshot: snap },
@@ -94,14 +77,7 @@ pub async fn device_ports(
     State(st): State<AppState>,
     Path(id): Path<String>,
 ) -> AppResult<Json<common_error::ApiEnvelope<gd::DevicePortsResponse>>> {
-    let rows = sqlx::query("SELECT id, port_no, port_code, status FROM device_port WHERE device_id = ? AND deleted_at IS NULL")
-        .bind(&id).fetch_all(st.db.pool()).await?;
-    let items = rows.iter().map(|r| -> AppResult<gd::DevicePort> { Ok(gd::DevicePort {
-        id: sqlx::Row::try_get::<u64, _>(r, "id")?,
-        port_no: sqlx::Row::try_get::<u8, _>(r, "port_no")?,
-        port_code: sqlx::Row::try_get::<String, _>(r, "port_code")?,
-        status: sqlx::Row::try_get::<String, _>(r, "status")?,
-    }) }).collect::<AppResult<Vec<_>>>()?;
+    let items = st.device.device_ports(&id).await?;
     Ok(Json(common_error::ApiEnvelope::ok(
         gd::DevicePortsResponse { items },
         common_error::current_request_id(),
@@ -155,22 +131,12 @@ pub async fn device_curve(
         _ => return Err(AppError::BadRequest("window 无效".into())),
     };
     if let Some(started_at) = started_at { from = from.max(started_at); }
-    let rows = sqlx::query("SELECT metric, AVG(value_num) AS value_num, FROM_UNIXTIME(bucket * ?) AS ts
-         FROM (
-           SELECT metric, value_num, FLOOR(UNIX_TIMESTAMP(ts) / ?) AS bucket
-           FROM telemetry WHERE device_id = ? AND port_no = ? AND ts >= ? AND ts <= ?
-         ) AS samples
-         GROUP BY metric, bucket ORDER BY bucket ASC, metric ASC LIMIT 5000")
-        .bind(sample_interval_seconds).bind(sample_interval_seconds)
-        .bind(&id).bind(port_no).bind(from).bind(now)
-        .fetch_all(st.db.pool()).await?;
+    let rows = st.device.curve_samples(&id, port_no, from, now, sample_interval_seconds).await?;
     let mut points: std::collections::BTreeMap<i64, gd::CurvePoint> = std::collections::BTreeMap::new();
-    for row in &rows {
-        let metric: String = sqlx::Row::try_get(row, "metric")?;
-        let Some(field) = metric_field(&metric) else { continue; };
-        let value: Option<f64> = sqlx::Row::try_get(row, "value_num")?;
-        let Some(value) = value.filter(|value| value.is_finite()) else { continue; };
-        let ts: chrono::DateTime<chrono::Utc> = sqlx::Row::try_get(row, "ts")?;
+    for (metric, value_num, ts) in &rows {
+        let Some(field) = metric_field(metric) else { continue; };
+        let Some(value) = value_num.filter(|value| value.is_finite()) else { continue; };
+        let ts = *ts;
         let bucket = ts.timestamp();
         let point = points.entry(bucket).or_insert_with(|| gd::CurvePoint {
             ts: chrono::DateTime::<chrono::Utc>::from_timestamp(bucket, 0).unwrap_or(ts).to_rfc3339(),
@@ -226,41 +192,33 @@ pub async fn device_historical_curve(
         "15min" => "telemetry_aggregate_15min",
         _ => return Err(AppError::BadRequest("granularity 无效".into())),
     };
-    let sql = format!(
-        "SELECT metric, avg_value avg_v, min_value min_v, max_value max_v, `count` sample_count, bucket_start
-         FROM {} WHERE device_id = ? AND port_no = ? AND bucket_start >= ? AND bucket_start <= ?
-         ORDER BY bucket_start ASC, metric ASC LIMIT 200",
-        table
-    );
-    let rows = sqlx::query(&sql).bind(&id).bind(port_no).bind(started_at).bind(ended_at).fetch_all(st.db.pool()).await?;
+    let rows = st.device.historical_samples(table, &id, port_no, started_at, ended_at).await?;
     let mut series: std::collections::BTreeMap<String, gd::HistoricalCurvePoint> = std::collections::BTreeMap::new();
     let mut max_power_w: Option<f64> = None;
     let mut max_temperature_c: Option<f64> = None;
     let mut power_weighted_sum = 0.0;
     let mut power_sample_count = 0u64;
     for row in &rows {
-        let metric: String = sqlx::Row::try_get(row, "metric")?;
-        let Some(field) = metric_field(&metric) else { continue; };
-        let avg: Option<f64> = sqlx::Row::try_get(row, "avg_v")?;
-        let min: Option<f64> = sqlx::Row::try_get(row, "min_v")?;
-        let max: Option<f64> = sqlx::Row::try_get(row, "max_v")?;
-        let sample_count: u64 = sqlx::Row::try_get(row, "sample_count")?;
-        let ts: chrono::DateTime<chrono::Utc> = sqlx::Row::try_get(row, "bucket_start")?;
-        let ts = ts.to_rfc3339();
+        let Some(field) = metric_field(&row.metric) else { continue; };
+        let avg = row.avg_v;
+        let min = row.min_v;
+        let max = row.max_v;
+        let sample_count = row.sample_count;
+        let ts = row.bucket_start.clone();
         let point = series.entry(ts.clone()).or_insert_with(|| gd::HistoricalCurvePoint {
             bucket_start: ts,
             ..Default::default()
         });
         // 电池取 avg、 电量取 max,其余 avg/min/max 三值——与旧实现逐项一致
         point.set_stat(field, avg, min, max);
-        if metric == "power_w" {
+        if row.metric == "power_w" {
             if let Some(value) = avg {
                 power_weighted_sum += value * sample_count as f64;
                 power_sample_count = power_sample_count.saturating_add(sample_count);
             }
             if let Some(value) = max { max_power_w = Some(max_power_w.map_or(value, |current| current.max(value))); }
         }
-        if metric == "temperature_c" {
+        if row.metric == "temperature_c" {
             if let Some(value) = max { max_temperature_c = Some(max_temperature_c.map_or(value, |current| current.max(value))); }
         }
     }
@@ -335,20 +293,12 @@ pub async fn device_backfill(
             if metric == "battery_soc" && !(0.0..=100.0).contains(&value) {
                 return Err(AppError::BadRequest("SOC 遥测值必须在 0–100 之间".into()));
             }
-            measurements.push((f.device_id.as_str(), port_no, metric, value, f.ts));
+            measurements.push(crate::services::device::Measurement { device_id: f.device_id.as_str(), port_no, metric, value, ts: f.ts });
             inserted += 1;
         }
         if inserted == 0 { return Err(AppError::BadRequest("补传帧不含有效遥测值".into())); }
     }
-    let mut tx = st.db.pool().begin().await?;
-    for (device_id, port_no, metric, value, ts) in &measurements {
-        sqlx::query("INSERT INTO telemetry (device_id, port_no, metric, value_num, ts) VALUES (?, ?, ?, ?, ?)")
-            .bind(*device_id).bind(*port_no).bind(*metric).bind(*value).bind(*ts)
-            .execute(&mut *tx).await?;
-        crate::telemetry_obs::aggregate_measurement(&mut tx, device_id, *port_no, metric, *value, *ts).await?;
-    }
-    tx.commit().await?;
-    let n = measurements.len();
+    let n = st.device.record_measurements(&measurements).await?;
     Ok(Json(common_error::ApiEnvelope::ok(
         gd::BackfillResponse { inserted: n },
         common_error::current_request_id(),
