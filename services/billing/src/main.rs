@@ -13,6 +13,7 @@ mod quote_pricing;
 mod metered_pricing;
 mod split;
 mod stream_consumer;
+pub mod services;
 
 use axum::{
     middleware as ax_middleware,
@@ -30,10 +31,15 @@ use std::sync::Arc;
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
+/// ⚠️ P3:**不再有裸 `db` 字段**。handler 只能拿到 `fee` / `settlement` / `invoice`
+/// 三个能力域服务对象,它们的 `base` 字段私有 —— 绕过事务与分层直写 SQL 的入口
+/// 在类型层面被封死。
 #[derive(Clone)]
 pub struct AppState {
     pub cfg: Arc<AppConfig>,
-    pub db: Db,
+    pub fee: services::FeeService,
+    pub settlement: services::SettlementService,
+    pub invoice: services::InvoiceService,
     pub redis_cache: RedisCache,
     pub redis_stream: RedisStream,
     pub jwt: Arc<JwtCodec>,
@@ -56,8 +62,15 @@ async fn main() -> AppResult<()> {
         .timeout(std::time::Duration::from_secs(10))
         .build().expect("reqwest");
 
+    let services::BillingServices { fee, settlement, invoice } = services::build(
+        db,
+        http.clone(),
+        Arc::new(cfg.auth.service_token.clone()),
+        cfg.clone(),
+    );
+
     let state = AppState {
-        cfg: cfg.clone(), db: db.clone(),
+        cfg: cfg.clone(), fee, settlement, invoice,
         redis_cache: redis_cache.clone(), redis_stream: redis_stream.clone(),
         jwt: jwt.clone(), http: http.clone(),
         service_token: Arc::new(cfg.auth.service_token.clone()),

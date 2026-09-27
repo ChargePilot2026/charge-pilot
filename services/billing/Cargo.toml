@@ -23,6 +23,7 @@ common-auth = { path = "../../crates/common-auth" }
 common-stream = { path = "../../crates/common-stream" }
 common-http = { path = "../../crates/common-http" }
 common-telemetry = { path = "../../crates/common-telemetry" }
+common-app = { path = "../../crates/common-app" }
 
 tokio.workspace = true
 axum.workspace = true

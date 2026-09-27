@@ -34,7 +34,7 @@ impl StreamHandler for ChargeEndedHandler {
         let charge_id = p.get("charge_order_id").and_then(|v| v.as_u64())
             .filter(|id| *id > 0)
             .ok_or_else(|| common_error::AppError::BadRequest("结束事件缺少有效充电订单 ID".into()))?;
-        crate::charge_fee::calculate(&self.state,charge_id,&order_no).await?;
+        self.state.fee.calculate(charge_id,&order_no).await?;
         Ok(())
     }
 }

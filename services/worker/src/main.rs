@@ -8,6 +8,7 @@
 mod scheduler;
 mod tasks;
 mod streams;
+pub mod services;
 
 use axum::{routing::get, Router};
 use common_auth::JwtCodec;
@@ -20,10 +21,14 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing::info;
 
+/// ⚠️ P3:**不再有裸 `db` 字段**。handler / 任务循环只能拿到 `event` / `retry`
+/// 两个能力域服务对象,它们的 `base` 字段私有 —— 绕过事务与分层直写 SQL 的
+/// 入口在类型层面被封死。
 #[derive(Clone)]
 pub struct AppState {
     pub cfg: Arc<AppConfig>,
-    pub db: Db,
+    pub event: services::EventService,
+    pub retry: services::RetryService,
     pub redis_cache: RedisCache,
     pub redis_stream: RedisStream,
     pub jwt: Arc<JwtCodec>,
@@ -46,8 +51,16 @@ async fn main() -> AppResult<()> {
         .timeout(std::time::Duration::from_secs(15))
         .build().expect("reqwest");
 
+    let services::WorkerServices { event, retry } = services::build(
+        db,
+        http.clone(),
+        Arc::new(cfg.auth.service_token.clone()),
+        cfg.clone(),
+        redis_stream.clone(),
+    );
+
     let state = AppState {
-        cfg: cfg.clone(), db: db.clone(),
+        cfg: cfg.clone(), event, retry,
         redis_cache: redis_cache.clone(), redis_stream: redis_stream.clone(),
         jwt: jwt.clone(), http: http.clone(),
         service_token: Arc::new(cfg.auth.service_token.clone()),
@@ -68,7 +81,7 @@ async fn main() -> AppResult<()> {
 }
 
 async fn health(axum::extract::State(state): axum::extract::State<AppState>) -> AppResult<&'static str> {
-    state.db.ping().await?;
+    state.event.ping().await?;
     state.redis_cache.ping().await?;
     state.redis_stream.ping().await?;
     Ok("ok")

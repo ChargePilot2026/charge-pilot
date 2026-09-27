@@ -1,9 +1,12 @@
-//! Calculate once from the user-owned immutable pricing and meter receipts.
-use crate::{api_types::CalculateResponse, AppState};
-use api_contracts::{pricing::{DevicePricing, MeteredOrder}, ChargeEndMeter, QuoteResponse};
+//! 计费判定规则(纯函数层)。
+//!
+//! P3:`calculate` 的 IO / SQL / 事务已下沉到 [`crate::services::FeeService`],
+//! 本文件只留**纯规则** —— 退款资格判定与 D10 的三步计价顺序,便于单测。
+//! `resolve_fee` 供服务层调用,规则与顺序未变。
+
+use api_contracts::{pricing::DevicePricing, ChargeEndMeter, QuoteResponse};
 use chrono::{DateTime, Utc};
-use common_error::{AppError, AppResult};
-use sqlx::Row;
+use common_error::AppResult;
 
 /// 技术规格 §8.4:60 秒内停止,或充电超过 10 小时,全额退款。
 fn is_full_refund_eligible(started_at: DateTime<Utc>, ended_at: DateTime<Utc>, seconds: u32) -> bool {
@@ -17,7 +20,7 @@ fn is_full_refund_eligible(started_at: DateTime<Utc>, ended_at: DateTime<Utc>, s
 /// 1. 校验计量是否合法(与电价无关,失败即拒);
 /// 2. 符合全额退款条件 → **直接归零,不依赖分段计价成功**;
 /// 3. 其余情况才计价(跨电价等无法计价的场景仍按原样报错,属 D16 待决策项)。
-fn resolve_fee(
+pub fn resolve_fee(
     rule: &DevicePricing,
     started_at: DateTime<Utc>,
     meter: &ChargeEndMeter,
@@ -39,82 +42,6 @@ fn resolve_fee(
     )
 }
 
-pub async fn calculate(st: &AppState, cid: u64, order_no: &str) -> AppResult<CalculateResponse> {
-    if cid == 0 || order_no.is_empty() {
-        return Err(AppError::BadRequest("缺少充电订单标识".into()));
-    }
-    let client = common_http::internal::ApiClient::new(st.http.clone(), st.service_token.clone());
-    let source: MeteredOrder = client
-        .get(
-            st.cfg.service_urls.user.as_deref(),
-            &api_contracts::paths::USER_INTERNAL_METERED_ORDER
-                .replace(":order_id", &cid.to_string()),
-            &(),
-        )
-        .await?;
-    if source.charge_order_id != cid || source.order_no != order_no {
-        return Err(AppError::Conflict("计费订单身份不匹配".into()));
-    }
-    let meter = &source.meter;
-    let fee = resolve_fee(&source.quote.pricing, source.started_at, meter)?;
-    let snapshot = serde_json::to_value(&source)?;
-    let mut tx = st.db.pool().begin().await?;
-    sqlx::query("INSERT IGNORE INTO fee_receipt (charge_order_id,source_json) VALUES (?,?)")
-        .bind(cid)
-        .bind(&snapshot)
-        .execute(&mut *tx)
-        .await?;
-    let receipt=sqlx::query("SELECT source_json,calculation_id,calculation_no FROM fee_receipt WHERE charge_order_id=? FOR UPDATE").bind(cid).fetch_one(&mut *tx).await?;
-    if receipt.try_get::<serde_json::Value, _>("source_json")? != snapshot {
-        return Err(AppError::Conflict("已计费订单的原始快照发生变化".into()));
-    }
-    if let Some(id) = receipt.try_get::<Option<u64>, _>("calculation_id")? {
-        let no = receipt.try_get::<String, _>("calculation_no")?;
-        let row=sqlx::query("SELECT electric_cents,service_cents,total_cents FROM fee_calculation WHERE id=? AND calculation_no=? AND charge_order_id=?").bind(id).bind(&no).bind(cid).fetch_one(&mut *tx).await?;
-        let result = CalculateResponse {
-            calculation_id: id,
-            calculation_no: no,
-            electric_cents: row.try_get("electric_cents")?,
-            service_cents: row.try_get("service_cents")?,
-            total_cents: row.try_get("total_cents")?,
-        };
-        tx.commit().await?;
-        return Ok(result);
-    }
-    let no = common_db::IdGen::new("FEE").next();
-    let rule = &source.quote.pricing;
-    let kwh = format!("{}.{:03}", meter.charged_wh / 1000, meter.charged_wh % 1000);
-    let id=sqlx::query("INSERT INTO fee_calculation (calculation_no,order_no,charge_order_id,user_id,station_id,pricing_rule_id,pricing_rule_version,charged_kwh,charged_seconds,electric_cents,service_cents,total_cents,breakdown_json,created_month) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
-        .bind(&no).bind(order_no).bind(cid).bind(source.user_id).bind(rule.station_id).bind(rule.rule_id).bind(rule.version).bind(kwh).bind(meter.charged_seconds)
-        .bind(fee.electric_cents).bind(fee.service_cents).bind(fee.total_cents).bind(&snapshot).bind(chrono::Utc::now().format("%Y-%m-01").to_string())
-        .execute(&mut *tx).await?.last_insert_id();
-    sqlx::query("UPDATE fee_receipt SET calculation_id=?,calculation_no=? WHERE charge_order_id=?")
-        .bind(id)
-        .bind(&no)
-        .bind(cid)
-        .execute(&mut *tx)
-        .await?;
-    let delivery = api_contracts::pricing::FeeResult {
-        calculation_no: no.clone(),
-        source,
-        electric_cents: fee.electric_cents,
-        service_cents: fee.service_cents,
-        total_cents: fee.total_cents,
-    };
-    sqlx::query("INSERT INTO fee_delivery (charge_order_id,payload_json) VALUES (?,?)")
-        .bind(cid)
-        .bind(serde_json::to_value(delivery)?)
-        .execute(&mut *tx)
-        .await?;
-    tx.commit().await?;
-    Ok(CalculateResponse {
-        calculation_id: id,
-        calculation_no: no,
-        electric_cents: fee.electric_cents,
-        service_cents: fee.service_cents,
-        total_cents: fee.total_cents,
-    })
-}
 
 #[cfg(test)]
 mod tests {
