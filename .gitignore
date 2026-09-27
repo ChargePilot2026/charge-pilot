@@ -4,3 +4,6 @@ target/
 .env.dev
 node_modules/
 admin-web/dist/
+
+# macOS
+.DS_Store

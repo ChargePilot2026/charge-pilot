@@ -4,7 +4,18 @@ use axum::{
     extract::{Path, State},
     Json,
 };
-use common_auth::AdminClaims;
+use crate::auth::ActiveAdmin;
+
+/// 设备导入权限:统一走 auth::require_permission(旧实现只按 actor_id 查,
+/// 未带 username 复核,此处补齐与其它端点一致的口径)。
+async fn authorize(state: &AppState, actor: &ActiveAdmin) -> AppResult<()> {
+    crate::auth::require_permission(state, actor, "device.import").await
+}
+
+/// 后台恢复路径只有 admin_user_id,按 id 解析后走同一段鉴权 SQL。
+async fn authorize_by_id(state: &AppState, actor_id: u64) -> AppResult<()> {
+    crate::auth::require_permission_by_id(state, actor_id, "device.import").await
+}
 use common_error::{ApiEnvelope, AppError, AppResult};
 use common_http::internal::ApiClient;
 use serde::{Deserialize, Serialize};
@@ -23,20 +34,12 @@ pub struct ImportJob {
     last_error: Option<String>,
 }
 
-async fn authorize(state: &AppState, actor_id: u64) -> AppResult<()> {
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM admin_user_role a JOIN role r ON r.id=a.role_id JOIN role_permission rp ON rp.role_id=r.id JOIN permission p ON p.id=rp.permission_id WHERE a.id=? AND a.status='active' AND a.deleted_at IS NULL AND r.deleted_at IS NULL AND p.code='device.import'")
-        .bind(actor_id).fetch_one(state.db.pool()).await?;
-    if count == 0 {
-        return Err(AppError::Forbidden("缺少 device.import 权限".into()));
-    }
-    Ok(())
-}
 
 pub async fn list(
     State(state): State<AppState>,
-    claims: AdminClaims,
+    claims: ActiveAdmin,
 ) -> AppResult<Json<ApiEnvelope<Vec<ImportJob>>>> {
-    authorize(&state, claims.admin_user_id).await?;
+    authorize(&state, &claims).await?;
     let rows = sqlx::query("SELECT import_id,status,last_error FROM device_import WHERE actor_id=? ORDER BY created_at DESC,import_id LIMIT 50")
         .bind(claims.admin_user_id).fetch_all(state.db.pool()).await?;
     let mut jobs = vec![];
@@ -55,10 +58,10 @@ pub async fn list(
 
 pub async fn create(
     State(state): State<AppState>,
-    claims: AdminClaims,
+    claims: ActiveAdmin,
     Json(req): Json<ImportRequest>,
 ) -> AppResult<Json<ApiEnvelope<ImportJob>>> {
-    authorize(&state, claims.admin_user_id).await?;
+    authorize(&state, &claims).await?;
     let mut batch = DeviceProvisionBatch {
         devices: req.devices,
     };
@@ -87,10 +90,10 @@ pub async fn create(
 
 pub async fn retry(
     State(state): State<AppState>,
-    claims: AdminClaims,
+    claims: ActiveAdmin,
     Path(id): Path<uuid::Uuid>,
 ) -> AppResult<Json<ApiEnvelope<ImportJob>>> {
-    authorize(&state, claims.admin_user_id).await?;
+    authorize(&state, &claims).await?;
     finish(state, claims.admin_user_id, id.to_string(), false).await
 }
 
@@ -139,7 +142,7 @@ async fn finish(
     (&mut *tx).execute("SAVEPOINT import_attempt").await?;
     let result: AppResult<()> = async {
         // Recheck live permissions for every manual or automatic attempt.
-        authorize(&state, actor_id).await?;
+        authorize_by_id(&state, actor_id).await?;
         batch.validate().map_err(AppError::BadRequest)?;
         for device in &batch.devices {
             let station: Option<u64> = sqlx::query_scalar("SELECT id FROM station WHERE id=? AND deleted_at IS NULL FOR SHARE")

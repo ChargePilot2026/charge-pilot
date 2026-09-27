@@ -22,7 +22,7 @@ impl ApiClient {
             .http
             .post(format!("{}{}", base.trim_end_matches('/'), path))
             .header("x-service-token", self.token.as_str())
-            .header("x-request-id", uuid::Uuid::new_v4().to_string())
+            .header("x-request-id", common_error::current_request_id())
             .json(body)
             .timeout(Duration::from_secs(15))
             .send()
@@ -132,7 +132,7 @@ impl ApiClient {
         let base = base.ok_or_else(|| AppError::ServiceUnavailable("下游服务未配置".into()))?;
         let response = self.http.put(format!("{}{}", base.trim_end_matches('/'), path))
             .header("x-service-token", self.token.as_str())
-            .header("x-request-id", uuid::Uuid::new_v4().to_string())
+            .header("x-request-id", common_error::current_request_id())
             .json(body).timeout(Duration::from_secs(15)).send().await
             .map_err(|_| AppError::ServiceUnavailable("下游服务连接失败，可重试同步".into()))?;
         Self::decode(response).await
@@ -145,7 +145,7 @@ impl ApiClient {
         let base = base.ok_or_else(|| AppError::ServiceUnavailable("下游服务未配置".into()))?;
         let response = self.http.delete(format!("{}{}", base.trim_end_matches('/'), path))
             .header("x-service-token", self.token.as_str())
-            .header("x-request-id", uuid::Uuid::new_v4().to_string())
+            .header("x-request-id", common_error::current_request_id())
             .query(query).timeout(Duration::from_secs(15)).send().await
             .map_err(|_| AppError::ServiceUnavailable("下游服务连接失败，可重试同步".into()))?;
         Self::decode(response).await

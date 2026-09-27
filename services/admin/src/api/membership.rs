@@ -2,7 +2,7 @@
 
 use crate::AppState;
 use axum::{extract::State, Json};
-use common_auth::AdminClaims;
+use crate::auth::ActiveAdmin;
 use common_error::{AppError, AppResult};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -15,7 +15,7 @@ pub struct MembershipCreateReq {
     pub valid_days: i32,
 }
 
-pub async fn list(State(st): State<AppState>, _c: AdminClaims) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn list(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
     // 会员卡模板仍属于预留功能；这里只展示已存在的用户会员卡记录。
     let rows = sqlx::query("SELECT id, user_id, card_type, status, start_at, end_at, price_cents FROM membership_card WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 200")
         .fetch_all(st.db.pool()).await?;
@@ -31,7 +31,8 @@ pub async fn list(State(st): State<AppState>, _c: AdminClaims) -> AppResult<Json
     Ok(Json(common_error::ApiEnvelope::ok(json!({"items": items}), common_error::current_request_id())))
 }
 
-pub async fn create(State(_st): State<AppState>, _c: AdminClaims, Json(_req): Json<MembershipCreateReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn create(State(st): State<AppState>, c: ActiveAdmin, Json(_req): Json<MembershipCreateReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+    crate::auth::require_permission(&st,&c,"membership.create").await?;
     // membership_card is explicitly reserved for a later phase; do not report a fake creation success.
     Err(AppError::ServiceUnavailable("会员卡模板功能尚未开放".into()))
 }

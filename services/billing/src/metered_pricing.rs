@@ -3,13 +3,17 @@ use api_contracts::{pricing::DevicePricing, QuoteResponse};
 use chrono::{DateTime, Utc};
 use common_error::{AppError, AppResult};
 
-pub fn calculate(
-    rule: &DevicePricing,
+/// 计量合法性校验——**只依赖时间与电量,与电价配置无关**。
+///
+/// D10:原先这段校验内联在 `calculate` 里,导致"计价失败"会连带吞掉调用方
+/// (如 charge_fee 的全额退款归零判定)对"计量是否合法"的独立判断。
+/// 抽出后调用方可先校验计量、再决定是否需要计价。
+pub fn validate_meter(
     started_at: DateTime<Utc>,
     ended_at: DateTime<Utc>,
     wh: u64,
     seconds: u32,
-) -> AppResult<QuoteResponse> {
+) -> AppResult<()> {
     let invalid = || AppError::BadRequest("最终计量或充电时间无效".into());
     let elapsed = (ended_at - started_at).num_seconds();
     if elapsed < 0
@@ -21,6 +25,18 @@ pub fn calculate(
     {
         return Err(invalid());
     }
+    Ok(())
+}
+
+pub fn calculate(
+    rule: &DevicePricing,
+    started_at: DateTime<Utc>,
+    ended_at: DateTime<Utc>,
+    wh: u64,
+    seconds: u32,
+) -> AppResult<QuoteResponse> {
+    validate_meter(started_at, ended_at, wh, seconds)?;
+    let invalid = || AppError::BadRequest("最终计量或充电时间无效".into());
     let rates = crate::quote_pricing::daily_rates(rule)?;
     let mut selected = None;
     // The final timestamp is exclusive: ending exactly at a boundary adds no next-period energy.

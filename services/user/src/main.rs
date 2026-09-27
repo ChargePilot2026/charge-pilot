@@ -187,7 +187,16 @@ pub fn build_router(state: AppState) -> Router {
         .merge(internal_routes)
         .merge(user_routes)
         .route(api_types::paths::HEALTH, get(api::health))
-        .layer(TraceLayer::new_for_http())
+        .layer(
+            TraceLayer::new_for_http().make_span_with(|req: &axum::http::Request<axum::body::Body>| {
+                let id = req
+                    .headers()
+                    .get("x-request-id")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("-");
+                tracing::info_span!("http", method = %req.method(), uri = %req.uri(), trace_id = %id)
+            }),
+        )
         .layer(middleware::from_fn(common_http::request_id_layer))
         .with_state(state)
 }

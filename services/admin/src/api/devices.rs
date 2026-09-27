@@ -1,22 +1,20 @@
 //! Admin-owned device metadata; runtime telemetry belongs to gateway.
 use crate::AppState;
 use axum::{extract::{Path, Query, State}, Json};
-use common_auth::AdminClaims;
+use crate::auth::ActiveAdmin;
 use common_error::{ApiEnvelope, AppError, AppResult};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sqlx::{MySql, QueryBuilder, Row};
 
-async fn authorize(st: &AppState, actor: &AdminClaims) -> AppResult<Vec<String>> {
+/// 返回调用者在设备域的实际权限(供列表过滤),不是布尔校验。
+async fn authorize(st: &AppState, actor: &ActiveAdmin) -> AppResult<Vec<String>> {
     let permissions: Vec<String> = sqlx::query_scalar(
         "SELECT p.code FROM admin_user_role a JOIN role r ON r.id=a.role_id
          JOIN role_permission rp ON rp.role_id=r.id JOIN permission p ON p.id=rp.permission_id
          WHERE a.id=? AND a.username=? AND a.status='active' AND a.deleted_at IS NULL
          AND r.deleted_at IS NULL AND p.code IN ('device.read','device.import')"
     ).bind(actor.admin_user_id).bind(&actor.sub).fetch_all(st.db.pool()).await?;
-    if !permissions.iter().any(|p| p == "device.read") {
-        return Err(AppError::Forbidden("缺少 device.read 权限".into()));
-    }
     Ok(permissions)
 }
 
@@ -62,7 +60,7 @@ fn device(r: &sqlx::mysql::MySqlRow) -> AppResult<Value> {
         "install_at":r.try_get::<Option<chrono::DateTime<chrono::Utc>>,_>("install_at")?.map(|t|t.to_rfc3339()),
     }))
 }
-pub async fn list(State(st): State<AppState>, actor: AdminClaims, Query(q): Query<DeviceQuery>) -> AppResult<Json<ApiEnvelope<Value>>> {
+pub async fn list(State(st): State<AppState>, actor: ActiveAdmin, Query(q): Query<DeviceQuery>) -> AppResult<Json<ApiEnvelope<Value>>> {
     let permissions=authorize(&st,&actor).await?;
     let (page,size)=q.validate()?;
     let mut tx=st.db.pool().begin().await?;
@@ -75,13 +73,13 @@ pub async fn list(State(st): State<AppState>, actor: AdminClaims, Query(q): Quer
     tx.commit().await?;
     Ok(Json(ApiEnvelope::ok(json!({"items":items,"total":total,"page":page,"page_size":size,"permissions":permissions}),common_error::current_request_id())))
 }
-pub async fn get(State(st): State<AppState>, actor: AdminClaims, Path(id): Path<String>) -> AppResult<Json<ApiEnvelope<Value>>> {
+pub async fn get(State(st): State<AppState>, actor: ActiveAdmin, Path(id): Path<String>) -> AppResult<Json<ApiEnvelope<Value>>> {
     authorize(&st,&actor).await?;
     let row=sqlx::query(&format!("{COLUMNS}{FROM} WHERE d.device_id=? AND d.deleted_at IS NULL"))
         .bind(id).fetch_optional(st.db.pool()).await?.ok_or_else(||AppError::NotFound("device".into()))?;
     Ok(Json(ApiEnvelope::ok(device(&row)?,common_error::current_request_id())))
 }
-pub async fn orders(State(st): State<AppState>, actor: AdminClaims, Path(id): Path<String>, Query(mut q): Query<api_contracts::orders::OrderQuery>) -> AppResult<Json<ApiEnvelope<api_contracts::orders::OrderPage>>> {
+pub async fn orders(State(st): State<AppState>, actor: ActiveAdmin, Path(id): Path<String>, Query(mut q): Query<api_contracts::orders::OrderQuery>) -> AppResult<Json<ApiEnvelope<api_contracts::orders::OrderPage>>> {
     authorize(&st,&actor).await?;
     let exists:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM device_meta WHERE device_id=? AND deleted_at IS NULL)")
         .bind(&id).fetch_one(st.db.pool()).await?;

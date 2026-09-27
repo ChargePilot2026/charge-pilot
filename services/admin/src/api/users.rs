@@ -5,7 +5,8 @@ use axum::{
     extract::{Path, State},
     Json,
 };
-use common_auth::{hash_password, AdminClaims};
+use common_auth::hash_password;
+use crate::auth::ActiveAdmin;
 use common_error::{AppError, AppResult};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -20,7 +21,7 @@ pub struct UserCreateReq {
     pub role_id: Option<u64>,
 }
 
-pub async fn list(State(st): State<AppState>, _c: AdminClaims) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn list(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
     let rows = sqlx::query(
         "SELECT id, username, display_name, role_id, status, last_login_at, created_at
          FROM admin_user_role WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 200"
@@ -38,7 +39,8 @@ pub async fn list(State(st): State<AppState>, _c: AdminClaims) -> AppResult<Json
     Ok(Json(common_error::ApiEnvelope::ok(json!({"items": items}), common_error::current_request_id())))
 }
 
-pub async fn create(State(st): State<AppState>, _c: AdminClaims, Json(req): Json<UserCreateReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn create(State(st): State<AppState>, _c: ActiveAdmin, Json(req): Json<UserCreateReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+    crate::auth::require_permission(&st,&_c,"admin_user.create").await?;
     let hash = hash_password(&req.password)?;
     sqlx::query(
         "INSERT INTO admin_user_role (username, display_name, password_hash, phone, email, role_id, status)
@@ -50,7 +52,7 @@ pub async fn create(State(st): State<AppState>, _c: AdminClaims, Json(req): Json
     Ok(Json(common_error::ApiEnvelope::ok(json!({"created": true}), common_error::current_request_id())))
 }
 
-pub async fn get(State(st): State<AppState>, _c: AdminClaims, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn get(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
     let r = sqlx::query("SELECT id, username, display_name, role_id, status, phone, email, last_login_at, created_at FROM admin_user_role WHERE id = ? AND deleted_at IS NULL")
         .bind(id).fetch_optional(st.db.pool()).await?;
     let r = r.ok_or_else(|| AppError::NotFound("user".into()))?;
@@ -76,7 +78,8 @@ pub struct UserUpdateReq {
     pub email: Option<String>,
 }
 
-pub async fn update(State(st): State<AppState>, _c: AdminClaims, Path(id): Path<u64>, Json(req): Json<UserUpdateReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn update(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>, Json(req): Json<UserUpdateReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+    crate::auth::require_permission(&st,&_c,"admin_user.update").await?;
     let n = sqlx::query(
         "UPDATE admin_user_role
          SET display_name = COALESCE(?, display_name),
@@ -99,7 +102,8 @@ pub async fn update(State(st): State<AppState>, _c: AdminClaims, Path(id): Path<
     Ok(Json(common_error::ApiEnvelope::ok(json!({"updated": true}), common_error::current_request_id())))
 }
 
-pub async fn delete(State(st): State<AppState>, actor: AdminClaims, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn delete(State(st): State<AppState>, actor: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+    crate::auth::require_permission(&st,&actor,"admin_user.delete").await?;
     let n = sqlx::query("UPDATE admin_user_role SET deleted_at = NOW(3), deleted_by = ? WHERE id = ? AND deleted_at IS NULL")
         .bind(actor.admin_user_id).bind(id).execute(st.db.pool()).await?;
     if n.rows_affected() == 0 {
@@ -111,7 +115,8 @@ pub async fn delete(State(st): State<AppState>, actor: AdminClaims, Path(id): Pa
 #[derive(Debug, Deserialize)]
 pub struct ResetPasswordReq { pub new_password: String }
 
-pub async fn reset_password(State(st): State<AppState>, _c: AdminClaims, Path(id): Path<u64>, Json(req): Json<ResetPasswordReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn reset_password(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>, Json(req): Json<ResetPasswordReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+    crate::auth::require_permission(&st,&_c,"admin_user.reset_password").await?;
     let hash = hash_password(&req.new_password)?;
     let n = sqlx::query("UPDATE admin_user_role SET password_hash = ?, failed_login_count = 0 WHERE id = ? AND deleted_at IS NULL")
         .bind(&hash).bind(id).execute(st.db.pool()).await?;

@@ -1,0 +1,25 @@
+# Clippy 强制配置
+#
+# 放置位置说明(实测):lint **配置**只能放本文件;lint **级别**写在各 crate 的
+# `#![deny(...)]`。三种直觉写法都无效:
+#   - `cfg_attr(not(test), clippy::disallowed_macros = [...])` → attribute value must be a literal
+#   - 源码内 `#![clippy::disallowed_macros = [...]]`          → custom inner attributes are unstable
+#   - Cargo.toml `[lints.clippy] disallowed_macros = [...]`   → invalid type: sequence
+#
+# 当前为 `allow` 级别(见各服务 lib.rs),随 P3 逐服务迁移完成后转 `deny`。
+
+disallowed-macros = [
+  "serde_json::json",
+]
+
+disallowed-types = [
+  "serde_json::Value",
+  "sqlx::QueryBuilder",
+]
+
+disallowed-methods = [
+  { path = "sqlx::query",        reason = "SQL 只允许出现在 repository_sql.rs" },
+  { path = "sqlx::query_as",     reason = "SQL 只允许出现在 repository_sql.rs" },
+  { path = "sqlx::query_scalar", reason = "SQL 只允许出现在 repository_sql.rs" },
+  { path = "sqlx::QueryBuilder", reason = "这是类型;应登记到 disallowed-types 而非 methods" },
+]

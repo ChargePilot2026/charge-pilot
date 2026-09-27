@@ -9,6 +9,14 @@
 //!   - `RedisStream`: 封装 XADD/XREADGROUP/XACK,封装 11 个业务 Stream 常量名
 //!   - `PortLock`: 三层防护中的逻辑锁 / 物理锁(见技术规格 § 5.5)
 
+
+// 分层与序列化约束(P1a 建立;随 P3 逐服务迁移完成转 deny)
+// 说明:配置在仓库根 clippy.toml,级别在这里。测试模块豁免。
+#![allow(
+    clippy::disallowed_macros,
+    clippy::disallowed_types,
+    clippy::disallowed_methods,
+)]
 use common_config::RedisConfig;
 use common_error::{AppError, AppResult};
 use redis::{aio::ConnectionManager, AsyncCommands, Client, RedisResult, Value};
@@ -75,14 +83,73 @@ impl RedisCache {
         Ok(())
     }
 
-    /// 简单限流(令牌桶近似):窗口期内计数,超出即返回 false
+    /// 简单限流(窗口计数):窗口期内计数,超出即返回 false。
+    ///
+    /// **D17 修复**:`INCR` 与首次 `EXPIRE` 原先是两次独立 await。若 `INCR` 已执行
+    /// 而 `EXPIRE` 因断连/任务取消未执行,且后续 `v > 1`,则该键**永不再设 TTL**,
+    /// 计数永久残留——调用方(如每用户 24 小时 5 次报修限制)将失去窗口自动恢复的保证。
+    ///
+    /// 现在合并为**单条 Lua**,`INCR` 与首次 `EXPIRE` 原子执行,不存在中间态。
     pub async fn rate_limit(&self, key: &str, limit: u32, window_secs: u32) -> AppResult<bool> {
+        // ARGV[1]=窗口秒数
+        // 计数为 1 时才设 TTL;若键已存在但无 TTL(历史脏数据),顺带补上。
+        let script = r#"
+            local v = redis.call('INCR', KEYS[1])
+            if v == 1 or redis.call('TTL', KEYS[1]) < 0 then
+                redis.call('EXPIRE', KEYS[1], ARGV[1])
+            end
+            return v
+        "#;
         let mut c = self.conn.clone();
-        let v: i64 = c.incr(key, 1).await?;
-        if v == 1 {
-            let _: () = c.expire(key, window_secs as i64).await?;
-        }
+        let v: i64 = redis::Script::new(script)
+            .key(key)
+            .arg(window_secs)
+            .invoke_async(&mut c)
+            .await?;
         Ok(v <= limit as i64)
+    }
+
+    /// 修复存量脏键:返回当前存在但**无 TTL** 的限流键数量。
+    ///
+    /// D17 的历史脏数据在窗口到期后不会自行消失,需要显式清理(见 `fix_ttl_less_keys`)。
+    pub async fn count_ttl_less_keys(&self, pattern: &str) -> AppResult<i64> {
+        let mut c = self.conn.clone();
+        let mut cursor = 0u64;
+        let mut total = 0i64;
+        loop {
+            let (next, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+                .arg(cursor).arg("MATCH").arg(pattern).arg("COUNT").arg(200)
+                .query_async(&mut c).await?;
+            for key in keys {
+                let ttl: i64 = c.ttl(&key).await?;
+                if ttl < 0 { total += 1; }
+            }
+            cursor = next;
+            if cursor == 0 { break; }
+        }
+        Ok(total)
+    }
+
+    /// 给无 TTL 的限流键补一个窗口(用 `key_ttl` 指定的时长),使其能自行过期。
+    pub async fn fix_ttl_less_keys(&self, pattern: &str, window_secs: u32) -> AppResult<usize> {
+        let mut c = self.conn.clone();
+        let mut cursor = 0u64;
+        let mut fixed = 0usize;
+        loop {
+            let (next, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+                .arg(cursor).arg("MATCH").arg(pattern).arg("COUNT").arg(200)
+                .query_async(&mut c).await?;
+            for key in keys {
+                let ttl: i64 = c.ttl(&key).await?;
+                if ttl < 0 {
+                    let _: () = c.expire(&key, window_secs as i64).await?;
+                    fixed += 1;
+                }
+            }
+            cursor = next;
+            if cursor == 0 { break; }
+        }
+        Ok(fixed)
     }
 
     pub async fn ping(&self) -> AppResult<()> {
@@ -99,6 +166,12 @@ impl RedisCache {
 #[derive(Clone)]
 pub struct RedisStream {
     conn: ConnectionManager,
+    /// **D15**:阻塞读专用的**独立底层连接**。
+    ///
+    /// `ConnectionManager` 的 `clone()` 共享底层连接,阻塞命令(XREADGROUP BLOCK)
+    /// 会挡住该连接上的其它命令——gateway 的 OTA 消费组 BLOCK 5000ms,而 outbox
+    /// 发布超时仅 3 秒,发布排在阻塞读之后就会超时并重复投递;健康检查同样受影响。
+    blocking_conn: ConnectionManager,
 }
 
 impl RedisStream {
@@ -110,9 +183,13 @@ impl RedisStream {
         }
         let client = Client::open(cfg.url.as_str())
             .map_err(|e| AppError::Config(format!("redis stream url: {e}")))?;
-        let conn = ConnectionManager::new(client).await?;
-        tracing::info!("RedisStream connected");
-        Ok(Self { conn })
+        let conn = ConnectionManager::new(client.clone()).await?;
+        // 阻塞读走独立 Client/连接,与发布、ACK、探活彻底隔离(D15)
+        let blocking_client = Client::open(cfg.url.as_str())
+            .map_err(|e| AppError::Config(format!("redis stream url: {e}")))?;
+        let blocking_conn = ConnectionManager::new(blocking_client).await?;
+        tracing::info!("RedisStream connected(阻塞读使用独立连接)");
+        Ok(Self { conn, blocking_conn })
     }
 
     pub async fn ping(&self) -> AppResult<()> {
@@ -122,6 +199,96 @@ impl RedisStream {
             return Err(AppError::Internal(format!("redis stream ping: {s}")));
         }
         Ok(())
+    }
+
+    /// **D4**:按流的分级保留上限。
+    ///
+    /// 原先全量 `MAXLEN ~ 100000` 一刀切。`~` 与精确裁剪**都不保护 PEL 中
+    /// 尚未 ACK 的消息正文**——Redis 只按长度裁剪,不看消费状态。因此对可靠流
+    /// 不能只靠长度:改用 `trim_by_ack_watermark` 按消费确认水位裁剪。
+    fn maxlen_for(&self, stream: &str) -> i64 {
+        match stream {
+            // 可靠流:高水位,实际裁剪由消费确认水位决定
+            s if s == streams::CHARGE_ENDED
+                || s == streams::REFUND_REQUIRED
+                || s == streams::INVOICE_REQUIRED
+                || s == streams::COMP_TX
+                || s == streams::PRICING_RULE_CHANGED
+                || s == streams::COUPON_GRANT_REQUIRED =>
+            {
+                1_000_000
+            }
+            // 可丢流:维持较小上限
+            _ => 100_000,
+        }
+    }
+
+    /// **D4 ②**:按**消费确认水位**裁剪。
+    ///
+    /// 上界取所有必要消费组中"最小未确认 entry id"——越过它就会删掉尚未被任一
+    /// 消费组处理的正文。**必要消费组尚未创建时不裁剪**(消息在组建立前被删,
+    /// 就再无人可读)。某组 PEL 为空(已全部 ACK)时同样保守跳过。
+    ///
+    /// 水位用 Lua 一次算出,避免多次往返之间状态漂移。
+    /// 返回实际删除的条数;无法确定水位时返回 0 且不改动。
+    pub async fn trim_by_ack_watermark(
+        &self,
+        stream: &str,
+        required_groups: &[&str],
+    ) -> AppResult<i64> {
+        if required_groups.is_empty() {
+            return Ok(0);
+        }
+        let mut c = self.conn.clone();
+        // ARGV[1..] = 必要消费组;返回 {状态, 水位}
+        //   状态 1 = 可裁剪(返回最小未确认 id)
+        //   状态 0 = 不可裁剪(组不存在 / 全部已 ACK)
+        let script = r#"
+            local best = nil
+            for i = 1, #ARGV do
+                local groups = redis.call('XINFO', 'GROUPS', KEYS[1])
+                local found = false
+                for g = 1, #groups do
+                    if groups[g][1] == ARGV[i] then found = true; break end
+                end
+                if not found then return {0, ''} end
+                local pend = redis.call('XPENDING', KEYS[1], ARGV[i], '-', '+', 1)
+                if #pend == 0 then return {0, ''} end
+                local id = pend[1][1]
+                if best == nil or id < best then best = id end
+            end
+            if best == nil then return {0, ''} end
+            return {1, best}
+        "#;
+        // Script::key/arg 需要 &mut ScriptInvocation,故先用 prepare_invoke 取可变的
+        let script = redis::Script::new(script);
+        let mut invocation = script.prepare_invoke();
+        invocation.key(stream);
+        for g in required_groups {
+            invocation.arg(*g);
+        }
+        let (status, bound): (i64, String) = invocation.invoke_async(&mut c).await
+            .map_err(|e| AppError::Internal(format!("求消费确认水位 {stream}: {e}")))?;
+
+        if status != 1 || bound.is_empty() {
+            tracing::info!(
+                stream,
+                groups = required_groups.len(),
+                "未能确定安全裁剪水位(消费组缺失或均已 ACK),本次不裁剪"
+            );
+            return Ok(0);
+        }
+
+        // XTRIM MINID: 只裁掉严格早于水位的整个前缀
+        let removed: i64 = redis::cmd("XTRIM")
+            .arg(stream)
+            .arg("MINID")
+            .arg(&bound)
+            .query_async(&mut c)
+            .await
+            .map_err(|e| AppError::Internal(format!("XTRIM {stream}: {e}")))?;
+        tracing::info!(stream, %bound, removed, "按消费确认水位裁剪完成");
+        Ok(removed)
     }
 
     pub fn conn(&self) -> ConnectionManager {
@@ -134,7 +301,9 @@ impl RedisStream {
         let mut c = self.conn.clone();
         let id: String = redis::cmd("XADD")
             .arg(stream)
-            .arg("MAXLEN").arg("~").arg(100_000_i64)
+            .arg("MAXLEN")
+            .arg("~")
+            .arg(self.maxlen_for(stream))
             .arg("*")
             .arg("data")
             .arg(s)
@@ -148,7 +317,9 @@ impl RedisStream {
         let mut c = self.conn.clone();
         let id: String = redis::cmd("XADD")
             .arg(stream)
-            .arg("MAXLEN").arg("~").arg(100_000_i64)
+            .arg("MAXLEN")
+            .arg("~")
+            .arg(self.maxlen_for(stream))
             .arg("*")
             .arg("event_id").arg(&envelope.event_id)
             .arg("event_type").arg(&envelope.event_type)
@@ -190,7 +361,8 @@ impl RedisStream {
         count: usize,
         block_ms: usize,
     ) -> AppResult<Vec<StreamEntry>> {
-        let mut c = self.conn.clone();
+        // D15:BLOCK 命令必须独占一条连接,否则会挡住同连接上的发布/ACK/探活
+        let mut c = self.blocking_conn.clone();
         let v: redis::Value = redis::cmd("XREADGROUP")
             .arg("GROUP").arg(group).arg(consumer)
             .arg("COUNT").arg(count as i64)

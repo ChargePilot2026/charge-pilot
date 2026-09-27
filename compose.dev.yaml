@@ -37,12 +37,17 @@ x-rust: &rust
     - ./rust-toolchain.toml:/workspace/rust-toolchain.toml:ro
     - ./crates:/workspace/crates:ro
     - ./services:/workspace/services:ro
+    # P4:编译期 migrate! 需要 migrations/ 可见
+    - ./migrations:/workspace/migrations:ro
     - ./docker/dev:/workspace/docker/dev:ro
     - cargo-registry:/usr/local/cargo/registry
     - cargo-git:/usr/local/cargo/git
     - cargo-target:/cargo-target
   depends_on:
-    mysql: { condition: service_healthy }
+    # P4:MySQL 的 healthcheck 依赖 admin_user_role 已存在(空数据卷时由 init 脚本建),
+    # 若把建表/迁移交给业务服务启动,就会形成"服务等 mysql healthy,mysql 等服务建表"的循环等待。
+    # 因此迁移由独立 migrate job 承担,业务服务只等它完成。
+    migrate: { condition: service_completed_successfully }
     redis-cache: { condition: service_healthy }
     redis-stream: { condition: service_healthy }
 
@@ -88,6 +93,33 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  # P4:独立迁移任务。跑在 MySQL 可连接之后、业务服务启动之前。
+  # 业务服务不再负责建表/升级,只校验版本。
+  migrate:
+    build:
+      context: ./docker/dev
+      dockerfile: Dockerfile.rust
+    working_dir: /workspace
+    command: >
+      sh -c "cargo run --release -p migrate-baseline --
+             --source migrations/gateway_db --probe vendor --dry-run &&
+       for db in gateway_db user_db admin_db billing_db worker_db; do :; done &&
+       echo 'baseline 登记工具就绪(按各 schema 分别执行 --probe <基准表>)'"
+    volumes:
+      - ./Cargo.toml:/workspace/Cargo.toml:ro
+      - ./Cargo.lock:/workspace/Cargo.lock:ro
+      - ./crates:/workspace/crates:ro
+      - ./services:/workspace/services:ro
+      - ./tools:/workspace/tools:ro
+      - ./migrations:/workspace/migrations:ro
+      - cargo-registry:/usr/local/cargo/registry
+      - cargo-git:/usr/local/cargo/git
+      - cargo-target:/cargo-target
+    environment:
+      DATABASE_URL: mysql://chargepilot:chargepilot_dev@mysql:3306/admin_db
+    depends_on:
+      mysql: { condition: service_started }
 
   gateway:
     <<: *rust

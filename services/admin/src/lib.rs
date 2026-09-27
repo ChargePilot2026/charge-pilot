@@ -3,6 +3,14 @@
 //! 暴露 DTO + 路径常量 + AppState,便于跨服务集成测试与单测。
 //! 主入口在 `bin/admin.rs`。
 
+
+// 分层与序列化约束(P1a 建立;随 P3 逐服务迁移完成转 deny)
+// 说明:配置在仓库根 clippy.toml,级别在这里。测试模块豁免。
+#![allow(
+    clippy::disallowed_macros,
+    clippy::disallowed_types,
+    clippy::disallowed_methods,
+)]
 pub mod api;
 pub mod api_types;
 pub mod clients;

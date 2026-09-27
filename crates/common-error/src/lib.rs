@@ -8,6 +8,14 @@
 //!   4xxx = 限流
 //!   5xxx = 服务器内部错误
 
+
+// 分层与序列化约束(P1a 建立;随 P3 逐服务迁移完成转 deny)
+// 说明:配置在仓库根 clippy.toml,级别在这里。测试模块豁免。
+#![allow(
+    clippy::disallowed_macros,
+    clippy::disallowed_types,
+    clippy::disallowed_methods,
+)]
 use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
@@ -185,7 +193,8 @@ impl IntoResponse for AppError {
         let status = self.http_status();
         let code = self.code();
         let message = self.message();
-        let request_id = Uuid::new_v4().to_string();
+        // D8:与成功响应、日志共用同一个 trace id,不再自造
+        let request_id = current_request_id();
 
         // 5xx 始终写 error 日志
         if status.is_server_error() {
@@ -231,9 +240,31 @@ impl From<dotenvy::Error> for AppError {
 
 pub type AppResult<T> = std::result::Result<T, AppError>;
 
-/// 提取当前请求的 trace/request id(若可用)
+tokio::task_local! {
+    /// 当前请求的 trace id。由 `common_http::request_id_layer` 在请求作用域内设置。
+    static TRACE_ID: String;
+}
+
+/// 在请求作用域内设置 trace id(由中间件调用)
+pub fn scope_trace_id<F: std::future::Future>(trace_id: String, fut: F) -> impl std::future::Future<Output = F::Output> {
+    TRACE_ID.scope(trace_id, fut)
+}
+
+/// 提取当前请求的 trace id。
+///
+/// **D8 修复**:原实现每次调用都 `Uuid::new_v4()` 现生成一个随机值,并不读取任何
+/// 请求作用域——于是成功响应体的 id ≠ `X-Request-Id` 响应头,错误响应的 ≠ 后端
+/// 日志里的,跨服务调用还会各自再生成一次。线上报错无法关联日志。
+///
+/// 后台任务(`tokio::spawn`)不会继承 task-local,读取会失败;此时**回落到新生成
+/// 的 id 而不是 panic**(后台任务本就没有 HTTP 请求作用域)。
 pub fn current_request_id() -> String {
-    Uuid::new_v4().to_string()
+    try_current_request_id().unwrap_or_else(|| Uuid::new_v4().to_string())
+}
+
+/// 与 [`current_request_id`] 相同,但在无请求作用域时返回 `None`,供日志/追踪区分。
+pub fn try_current_request_id() -> Option<String> {
+    TRACE_ID.try_with(|id| id.clone()).ok()
 }
 
 /// 在日志/响应里展示代码段位的便利宏

@@ -7,17 +7,13 @@
     for service in gateway user admin billing worker; do
         mysql --user=root --default-character-set=utf8mb4 <<SQL
 CREATE DATABASE IF NOT EXISTS ${service}_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+-- 收紧到本服务自己的 schema：原实现对全部 5 个 schema 授 ALL PRIVILEGES，
+-- "数据隔离"只是自觉而非机制（技术规格 §2.4）。
+-- 需要跨库的服务改用本库视图，且视图只读。
 GRANT ALL PRIVILEGES ON ${service}_db.* TO 'chargepilot'@'%';
 SQL
         for migration in /migrations/${service}_db/*.sql; do
             mysql --user=root --default-character-set=utf8mb4 "${service}_db" < "$migration"
         done
     done
-
-# Cross-database views required by admin handlers that read tables owned by
-# billing_db (withdraw_request) and user_db (membership_card). Must run after
-# all *_db migrations so the source tables exist. The SQL file lives at the
-# migrations/ root (not under any admin_db/) so it isn't picked up by the
-# per-schema loop above.
-mysql --user=root --default-character-set=utf8mb4 admin_db < /migrations/admin_db_views.sql
 )

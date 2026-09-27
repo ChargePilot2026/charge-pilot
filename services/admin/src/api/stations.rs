@@ -2,25 +2,18 @@
 
 use crate::AppState;
 use axum::{extract::{Path, Query, State}, Json};
-use common_auth::AdminClaims;
+use crate::auth::ActiveAdmin;
 use common_error::{AppError, AppResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-async fn authorize(st:&AppState, actor:&AdminClaims, permission:&str)->AppResult<()> {
-    let allowed: bool=sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM admin_user_role a JOIN role r ON r.id=a.role_id          JOIN role_permission rp ON rp.role_id=r.id JOIN permission p ON p.id=rp.permission_id          WHERE a.id=? AND a.username=? AND a.status='active' AND a.deleted_at IS NULL          AND r.deleted_at IS NULL AND p.code=?)"
-    ).bind(actor.admin_user_id).bind(&actor.sub).bind(permission).fetch_one(st.db.pool()).await?;
-    if !allowed {return Err(AppError::Forbidden(format!("缺少 {permission} 权限")));}
-    Ok(())
-}
 
 #[derive(Debug,Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StationQuery { page:Option<u32>,page_size:Option<u32>,keyword:Option<String>,status:Option<String> }
 
-pub async fn list(State(st): State<AppState>, actor: AdminClaims, Query(q):Query<StationQuery>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
-    authorize(&st,&actor,"station.read").await?;
+pub async fn list(State(st): State<AppState>, actor: ActiveAdmin, Query(q):Query<StationQuery>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+    crate::auth::require_permission(&st,&actor, "station.read").await?;
     let page=q.page.unwrap_or(1);let page_size=q.page_size.unwrap_or(20);
     if page==0 || !(1..=100).contains(&page_size){return Err(AppError::BadRequest("分页参数无效".into()));}
     let keyword=q.keyword.as_deref().map(str::trim).filter(|v|!v.is_empty());
@@ -70,8 +63,8 @@ pub struct StationCreateReq {
     pub split_template_id: Option<u64>,
 }
 
-pub async fn create(State(st): State<AppState>, actor: AdminClaims, Json(req): Json<StationCreateReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
-    authorize(&st,&actor,"station.create").await?;
+pub async fn create(State(st): State<AppState>, actor: ActiveAdmin, Json(req): Json<StationCreateReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+    crate::auth::require_permission(&st,&actor, "station.create").await?;
     validate_text(Some(&req.code),64,true)?; validate_text(Some(&req.name),128,true)?;
     validate_fields(req.longitude.into(),req.latitude.into(),req.status.as_deref(),req.address.as_deref(),req.open_hours.as_deref(),req.contact_phone.as_deref())?;
     let mut tx=st.db.pool().begin().await?;
@@ -93,8 +86,8 @@ pub async fn create(State(st): State<AppState>, actor: AdminClaims, Json(req): J
     Ok(Json(common_error::ApiEnvelope::ok(json!({"id": id}), common_error::current_request_id())))
 }
 
-pub async fn get(State(st): State<AppState>, actor: AdminClaims, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
-    authorize(&st,&actor,"station.read").await?;
+pub async fn get(State(st): State<AppState>, actor: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+    crate::auth::require_permission(&st,&actor, "station.read").await?;
     let r: Option<(u64, String, String, Option<String>, f64, f64, String)> = sqlx::query_as(
         "SELECT id, code, name, address, longitude+0e0, latitude+0e0, status FROM station WHERE id = ? AND deleted_at IS NULL"
     ).bind(id).fetch_optional(st.db.pool()).await?;
@@ -119,8 +112,8 @@ pub struct StationUpdateReq {
     pub split_template_id: Option<u64>,
 }
 
-pub async fn update(State(st): State<AppState>, actor: AdminClaims, Path(id): Path<u64>, Json(req): Json<StationUpdateReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
-    authorize(&st,&actor,"station.update").await?;
+pub async fn update(State(st): State<AppState>, actor: ActiveAdmin, Path(id): Path<u64>, Json(req): Json<StationUpdateReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+    crate::auth::require_permission(&st,&actor, "station.update").await?;
     validate_text(req.name.as_deref(),128,true)?;
     validate_fields(req.longitude,req.latitude,req.status.as_deref(),req.address.as_deref(),req.open_hours.as_deref(),req.contact_phone.as_deref())?;
     let mut tx=st.db.pool().begin().await?;
@@ -149,8 +142,8 @@ pub async fn update(State(st): State<AppState>, actor: AdminClaims, Path(id): Pa
     Ok(Json(common_error::ApiEnvelope::ok(json!({"updated": true}), common_error::current_request_id())))
 }
 
-pub async fn delete(State(st): State<AppState>, actor: AdminClaims, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
-    authorize(&st,&actor,"station.delete").await?;
+pub async fn delete(State(st): State<AppState>, actor: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+    crate::auth::require_permission(&st,&actor, "station.delete").await?;
     let n = sqlx::query("UPDATE station SET deleted_at = NOW(3), deleted_by = ? WHERE id = ? AND deleted_at IS NULL")
         .bind(actor.admin_user_id).bind(id).execute(st.db.pool()).await?;
     if n.rows_affected() == 0 { return Err(AppError::NotFound("station".into())); }

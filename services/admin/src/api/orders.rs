@@ -8,32 +8,21 @@ use axum::{
     extract::{Path, Query, State},
     Json,
 };
-use common_auth::AdminClaims;
+use crate::auth::ActiveAdmin;
 use common_error::{ApiEnvelope, AppError, AppResult};
 use common_http::internal::ApiClient;
 use sqlx::{MySql, QueryBuilder};
 use std::collections::HashMap;
 
-async fn authorize(state: &AppState, claims: &AdminClaims) -> AppResult<()> {
-    // Read current grants so revoked permissions do not remain valid until JWT expiry.
-    let allowed: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM admin_user_role a JOIN role r ON r.id = a.role_id
-         JOIN role_permission rp ON rp.role_id = r.id JOIN permission p ON p.id = rp.permission_id
-         WHERE a.id = ? AND a.status = 'active' AND a.deleted_at IS NULL
-         AND r.deleted_at IS NULL AND p.code = 'order.read'",
-    )
-    .bind(claims.admin_user_id)
-    .fetch_one(state.db.pool())
-    .await?;
-    if allowed == 0 {
-        return Err(AppError::Forbidden("缺少 order.read 权限".into()));
-    }
-    Ok(())
+/// 订单读权限:查当前授权,使被撤销的权限在 JWT 过期前即失效。
+async fn authorize(state: &AppState, claims: &ActiveAdmin) -> AppResult<()> {
+    crate::auth::require_permission(state, claims, "order.read").await
 }
+
 
 pub async fn timeline(
     State(state): State<AppState>,
-    claims: AdminClaims,
+    claims: ActiveAdmin,
     Path(id): Path<u64>,
 ) -> AppResult<Json<ApiEnvelope<api_contracts::orders::OrderTimeline>>> {
     authorize(&state, &claims).await?;
@@ -81,7 +70,7 @@ async fn stations(state: &AppState, items: &mut [OrderSummary]) -> AppResult<()>
 
 pub async fn list(
     State(state): State<AppState>,
-    claims: AdminClaims,
+    claims: ActiveAdmin,
     Query(mut query): Query<OrderQuery>,
 ) -> AppResult<Json<ApiEnvelope<OrderPage>>> {
     authorize(&state, &claims).await?;
@@ -114,7 +103,7 @@ pub async fn list(
 
 pub async fn get(
     State(state): State<AppState>,
-    claims: AdminClaims,
+    claims: ActiveAdmin,
     Path(id): Path<u64>,
 ) -> AppResult<Json<ApiEnvelope<OrderDetail>>> {
     authorize(&state, &claims).await?;

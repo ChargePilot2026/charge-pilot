@@ -2,12 +2,12 @@
 
 use crate::AppState;
 use axum::{extract::{Path, State}, Json};
-use common_auth::AdminClaims;
+use crate::auth::ActiveAdmin;
 use common_error::{AppError, AppResult};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-pub async fn list(State(st): State<AppState>, _c: AdminClaims) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn list(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
     let rows = sqlx::query("SELECT id, agent_wechat, agent_name, path, priority, enabled FROM customer_service_config ORDER BY priority DESC, id ASC")
         .fetch_all(st.db.pool()).await?;
     let items: Vec<Value> = rows.iter().map(|r| -> AppResult<Value> { Ok(json!({
@@ -44,7 +44,8 @@ fn validate(req: &CSCreateReq) -> AppResult<()> {
     Ok(())
 }
 
-pub async fn create(State(st): State<AppState>, _c: AdminClaims, Json(req): Json<CSCreateReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn create(State(st): State<AppState>, _c: ActiveAdmin, Json(req): Json<CSCreateReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+    crate::auth::require_permission(&st,&_c,"customer_service.create").await?;
     validate(&req)?;
     let result = sqlx::query(
         "INSERT INTO customer_service_config (agent_wechat, agent_name, path, priority, enabled, working_hours_json)
@@ -57,7 +58,7 @@ pub async fn create(State(st): State<AppState>, _c: AdminClaims, Json(req): Json
     Ok(Json(common_error::ApiEnvelope::ok(json!({"id": id}), common_error::current_request_id())))
 }
 
-pub async fn get(State(st): State<AppState>, _c: AdminClaims, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn get(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
     let r = sqlx::query("SELECT id, agent_wechat, agent_name, path, priority, enabled, working_hours_json FROM customer_service_config WHERE id = ?")
         .bind(id).fetch_optional(st.db.pool()).await?;
     let r = r.ok_or_else(|| AppError::NotFound("cs".into()))?;
@@ -72,7 +73,8 @@ pub async fn get(State(st): State<AppState>, _c: AdminClaims, Path(id): Path<u64
     }), common_error::current_request_id())))
 }
 
-pub async fn update(State(st): State<AppState>, _c: AdminClaims, Path(id): Path<u64>, Json(req): Json<CSCreateReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn update(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>, Json(req): Json<CSCreateReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+    crate::auth::require_permission(&st,&_c,"customer_service.update").await?;
     validate(&req)?;
     let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM customer_service_config WHERE id = ?)")
         .bind(id).fetch_one(st.db.pool()).await?;
@@ -88,7 +90,8 @@ pub async fn update(State(st): State<AppState>, _c: AdminClaims, Path(id): Path<
     Ok(Json(common_error::ApiEnvelope::ok(json!({"updated": true}), common_error::current_request_id())))
 }
 
-pub async fn delete(State(st): State<AppState>, _c: AdminClaims, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn delete(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+    crate::auth::require_permission(&st,&_c,"customer_service.delete").await?;
     let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM customer_service_config WHERE id = ?)")
         .bind(id).fetch_one(st.db.pool()).await?;
     if !exists { return Err(AppError::NotFound("cs".into())); }

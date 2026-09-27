@@ -4,14 +4,26 @@
 //! - `request_id_layer`: 给每次响应加 `X-Request-Id`
 //! - `tracing_layer`: tracing tower 中间件
 
+
+// 分层与序列化约束(P1a 建立;随 P3 逐服务迁移完成转 deny)
+// 说明:配置在仓库根 clippy.toml,级别在这里。测试模块豁免。
+#![allow(
+    clippy::disallowed_macros,
+    clippy::disallowed_types,
+    clippy::disallowed_methods,
+)]
 use axum::{body::Body, http::Request, middleware::Next, response::Response};
 use common_auth::constant_time_eq;
 use common_error::{AppError, AppResult};
+use tracing::Instrument;
 use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
 
 pub mod internal;
+pub mod routes;
+pub mod contract_baseline;
+pub mod contract_baseline_data;
 
 /// 服务间 HTTP 客户端
 #[derive(Clone)]
@@ -113,23 +125,35 @@ impl ServiceClient {
     }
 }
 
-/// Middleware: 每个响应加 X-Request-Id
-pub async fn request_id_layer(mut req: Request<Body>, next: Next) -> Response {
+/// Middleware:建立请求作用域 + 写回 X-Request-Id 响应头。
+///
+/// **D8**:此前只改 header、不进作用域也不进 body,而 `current_request_id()` 又每次
+/// 现生成随机值,导致响应体/响应头/日志三处 id 互不相干。
+///
+/// **中间件不得改响应 body**:本层覆盖全部路由,其中包括
+/// `/api/v1/health`(纯文本)、admin 的 `fallback`(静态资源)、微信支付回调(可能 204 空响应)。
+/// 只有 `ApiEnvelope` 构造器与 `IntoResponse for AppError` 读作用域,其余响应体原样透传。
+pub async fn request_id_layer(req: Request<Body>, next: Next) -> Response {
     let req_id = req
         .headers()
         .get("x-request-id")
         .and_then(|v| v.to_str().ok())
+        .filter(|v| !v.is_empty())
         .map(|s| s.to_string())
         .unwrap_or_else(|| Uuid::new_v4().to_string());
-    req.headers_mut().insert(
-        "x-request-id",
-        req_id.parse().unwrap_or_else(|_| "invalid".parse().unwrap()),
-    );
-    let mut resp = next.run(req).await;
-    resp.headers_mut().insert(
-        "x-request-id",
-        req_id.parse().unwrap_or_else(|_| "invalid".parse().unwrap()),
-    );
+
+    // 日志关联:task-local 不会自动给 tracing 附加字段,这里显式建 span
+    let span = tracing::info_span!("request", trace_id = %req_id);
+
+    let mut req = req;
+    if let Ok(value) = req_id.parse() {
+        req.headers_mut().insert("x-request-id", value);
+    }
+
+    let mut resp = common_error::scope_trace_id(req_id.clone(), next.run(req)).instrument(span).await;
+    if let Ok(value) = req_id.parse() {
+        resp.headers_mut().insert("x-request-id", value);
+    }
     resp
 }
 

@@ -1,4 +1,6 @@
 [toolchain]
-channel = "stable"
+# 锁定具体版本：声明的 rust-version 必须与实际工具链一致。
+# 1.88 = 传递依赖 time 0.3.55 的 MSRV（common-auth → jsonwebtoken → simple_asn1 → time）
+channel = "1.88.0"
 components = ["rustfmt", "clippy"]
 profile = "minimal"

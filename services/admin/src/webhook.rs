@@ -2,13 +2,13 @@
 
 use crate::AppState;
 use axum::{extract::{Path, State}, Json};
-use common_auth::AdminClaims;
+use crate::auth::ActiveAdmin;
 use common_error::{AppError, AppResult};
 use common_redis::StreamEnvelope;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-pub async fn list(State(st): State<AppState>, _c: AdminClaims) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn list(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
     let rows = sqlx::query(
         "SELECT id, name, url, secret, event_types, enabled, created_at FROM webhook_subscription WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 200"
     ).fetch_all(st.db.pool()).await?;
@@ -31,7 +31,8 @@ pub struct WebhookCreateReq {
     pub headers_json: Option<Value>,
 }
 
-pub async fn create(State(st): State<AppState>, _c: AdminClaims, Json(req): Json<WebhookCreateReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn create(State(st): State<AppState>, _c: ActiveAdmin, Json(req): Json<WebhookCreateReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+    crate::auth::require_permission(&st,&_c,"webhook.create").await?;
     let secret = format!("whsec_{}", uuid::Uuid::new_v4().simple());
     let event_types = serde_json::to_value(&req.event_types)?;
     let result = sqlx::query(
@@ -43,7 +44,7 @@ pub async fn create(State(st): State<AppState>, _c: AdminClaims, Json(req): Json
     Ok(Json(common_error::ApiEnvelope::ok(json!({"id": id, "secret": secret}), common_error::current_request_id())))
 }
 
-pub async fn get(State(st): State<AppState>, _c: AdminClaims, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn get(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
     let r: Option<(u64, String, String, String, serde_json::Value)> = sqlx::query_as(
         "SELECT id, name, url, secret, event_types FROM webhook_subscription WHERE id = ? AND deleted_at IS NULL"
     ).bind(id).fetch_optional(st.db.pool()).await?;
@@ -62,7 +63,8 @@ pub struct WebhookUpdateReq {
     pub enabled: Option<bool>,
 }
 
-pub async fn update(State(st): State<AppState>, _c: AdminClaims, Path(id): Path<u64>, Json(req): Json<WebhookUpdateReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn update(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>, Json(req): Json<WebhookUpdateReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+    crate::auth::require_permission(&st,&_c,"webhook.update").await?;
     let event_types = req.event_types.as_ref().map(serde_json::to_value).transpose()?;
     let n = sqlx::query(
         "UPDATE webhook_subscription
@@ -76,14 +78,15 @@ pub async fn update(State(st): State<AppState>, _c: AdminClaims, Path(id): Path<
     Ok(Json(common_error::ApiEnvelope::ok(json!({"updated": true}), common_error::current_request_id())))
 }
 
-pub async fn delete(State(st): State<AppState>, _c: AdminClaims, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn delete(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+    crate::auth::require_permission(&st,&_c,"webhook.delete").await?;
     let n = sqlx::query("UPDATE webhook_subscription SET deleted_at = NOW(3) WHERE id = ? AND deleted_at IS NULL")
         .bind(id).execute(st.db.pool()).await?;
     if n.rows_affected() == 0 { return Err(AppError::NotFound("webhook".into())); }
     Ok(Json(common_error::ApiEnvelope::ok(json!({"deleted": true}), common_error::current_request_id())))
 }
 
-pub async fn deliveries(State(st): State<AppState>, _c: AdminClaims, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn deliveries(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
     let rows = sqlx::query(
         "SELECT id, event_type, response_status, attempt_count, duration_ms, delivered_at
          FROM webhook_delivery_log WHERE subscription_id = ? ORDER BY id DESC LIMIT 100"

@@ -4,6 +4,7 @@ members = [
     "crates/common-error",
     "crates/common-config",
     "crates/common-db",
+    "crates/common-app",
     "crates/common-redis",
     "crates/common-auth",
     "crates/common-stream",
@@ -16,12 +17,13 @@ members = [
     "services/admin",
     "services/billing",
     "services/worker",
+    "tools/migrate-baseline",
 ]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.80"
+rust-version = "1.88"
 license = "AGPL-3.0-or-later"
 authors = ["ChargePilot <dev@chargepilot.example>"]
 repository = "https://github.com/ChargePilot2026/charge-pilot"

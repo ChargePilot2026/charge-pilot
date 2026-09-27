@@ -78,12 +78,29 @@ async fn main() -> AppResult<()> {
     outbox::spawn(state.clone());
 
     // ===== 启动 TCP 监听(9100)=====
+    // D12:**先 bind 再 spawn**。端口被占用 / 地址配置错误时必须让启动失败,
+    // 而不是打一行日志后继续以"设备连不上但健康检查返回 ok"的状态运行。
     let tcp_state = state.clone();
     let tcp_bind = std::env::var("GATEWAY_TCP_BIND").unwrap_or_else(|_| "0.0.0.0:9100".into());
+    let tcp_listener = protocol::tcp::bind_tcp_listener(&tcp_bind)
+        .await
+        .map_err(|e| {
+            common_error::AppError::Config(format!("设备 TCP 监听绑定失败 {tcp_bind}: {e}"))
+        })?;
+    let tcp_bind_for_task = tcp_bind.clone();
+    // 关键任务生命周期:accept 循环异常退出必须可见 —— 撤销就绪并结束进程,
+    // 不允许静默降级成"设备接入已死但服务仍报健康"。
     tokio::spawn(async move {
-        if let Err(e) = protocol::tcp::run_tcp_listener(&tcp_bind, tcp_state).await {
-            tracing::error!(error = %e, backtrace = %common_error::backtrace(), "tcp listener exited");
+        match protocol::tcp::serve_tcp(tcp_listener, &tcp_bind_for_task, tcp_state).await {
+            Ok(()) => tracing::error!("TCP 监听循环意外结束"),
+            Err(e) => tracing::error!(
+                error = %e,
+                backtrace = %common_error::backtrace(),
+                "TCP 监听循环异常退出"
+            ),
         }
+        tracing::error!("设备接入已不可用,撤销就绪状态并退出进程");
+        std::process::exit(1);
     });
 
     // ===== HTTP API(8083)=====
@@ -124,7 +141,16 @@ pub fn build_router(state: AppState) -> Router {
     Router::new()
         .merge(internal_routes)
         .route("/api/v1/health", get(api::health))
-        .layer(TraceLayer::new_for_http())
+        .layer(
+            TraceLayer::new_for_http().make_span_with(|req: &axum::http::Request<axum::body::Body>| {
+                let id = req
+                    .headers()
+                    .get("x-request-id")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("-");
+                tracing::info_span!("http", method = %req.method(), uri = %req.uri(), trace_id = %id)
+            }),
+        )
         .layer(ax_middleware::from_fn(common_http::request_id_layer))
         .with_state(state)
 }

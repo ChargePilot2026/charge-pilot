@@ -87,13 +87,21 @@ pub fn build_router(state: AppState) -> Router {
         .route(crate::api_types::paths::SETTLEMENT_DETAIL, get(api::settlement_detail))
         .route(crate::api_types::paths::INVOICE_SETTLE_DETAIL, get(api::invoice_settle_detail))
         .route(crate::api_types::paths::REFUND_CALC, post(api::refund_calc))
-        .route(crate::api_types::paths::WITHDRAW_REQUESTS, post(api::withdraw_create))
         .layer(ax_middleware::from_fn_with_state(svc_token.clone(), common_auth::refs::internal_token_mw));
 
     Router::new()
         .merge(internal)
         .route(crate::api_types::paths::HEALTH, get(api::health))
-        .layer(TraceLayer::new_for_http())
+        .layer(
+            TraceLayer::new_for_http().make_span_with(|req: &axum::http::Request<axum::body::Body>| {
+                let id = req
+                    .headers()
+                    .get("x-request-id")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("-");
+                tracing::info_span!("http", method = %req.method(), uri = %req.uri(), trace_id = %id)
+            }),
+        )
         .layer(ax_middleware::from_fn(common_http::request_id_layer))
         .with_state(state)
 }

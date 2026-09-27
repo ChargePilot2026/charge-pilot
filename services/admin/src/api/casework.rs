@@ -2,12 +2,12 @@
 
 use crate::AppState;
 use axum::{extract::{Path, Query, State}, Json};
-use common_auth::AdminClaims;
+use crate::auth::ActiveAdmin;
 use common_error::{AppError, AppResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-async fn require_permission(st: &AppState, c: &AdminClaims, code: &str) -> AppResult<()> {
+async fn require_permission(st: &AppState, c: &ActiveAdmin, code: &str) -> AppResult<()> {
     let allowed: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM admin_user_role a
          JOIN role r ON r.id=a.role_id AND r.deleted_at IS NULL
@@ -30,7 +30,7 @@ pub struct QueueQuery {
 }
 
 pub async fn feedback_list(
-    State(st): State<AppState>, c: AdminClaims, Query(q): Query<QueueQuery>,
+    State(st): State<AppState>, c: ActiveAdmin, Query(q): Query<QueueQuery>,
 ) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
     require_permission(&st, &c, "feedback.read").await?;
     let result: Value = common_http::internal::ApiClient::new(st.http.clone(), st.service_token.clone())
@@ -43,7 +43,7 @@ pub async fn feedback_list(
 pub struct FeedbackReply { pub action: String, pub reply_content: Option<String> }
 
 pub async fn feedback_reply(
-    State(st): State<AppState>, c: AdminClaims, Path(id): Path<String>, Json(req): Json<FeedbackReply>,
+    State(st): State<AppState>, c: ActiveAdmin, Path(id): Path<String>, Json(req): Json<FeedbackReply>,
 ) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
     require_permission(&st, &c, "feedback.reply").await?;
     if id.parse::<u64>().is_err() { return Err(AppError::BadRequest("反馈编号无效".into())); }
@@ -59,7 +59,7 @@ pub async fn feedback_reply(
 }
 
 pub async fn fault_list(
-    State(st): State<AppState>, c: AdminClaims, Query(q): Query<QueueQuery>,
+    State(st): State<AppState>, c: ActiveAdmin, Query(q): Query<QueueQuery>,
 ) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
     require_permission(&st, &c, "fault.read").await?;
     let result: Value = common_http::internal::ApiClient::new(st.http.clone(), st.service_token.clone())
@@ -68,7 +68,7 @@ pub async fn fault_list(
 }
 
 pub async fn fault_history(
-    State(st): State<AppState>, c: AdminClaims, Path(id): Path<String>, Query(q): Query<QueueQuery>,
+    State(st): State<AppState>, c: ActiveAdmin, Path(id): Path<String>, Query(q): Query<QueueQuery>,
 ) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
     require_permission(&st, &c, "fault.read").await?;
     if id.parse::<u64>().is_err() { return Err(AppError::BadRequest("报修编号无效".into())); }
@@ -87,7 +87,7 @@ pub struct FaultDispatch {
 }
 
 pub async fn fault_dispatch(
-    State(st): State<AppState>, c: AdminClaims, Path(id): Path<String>, Json(req): Json<FaultDispatch>,
+    State(st): State<AppState>, c: ActiveAdmin, Path(id): Path<String>, Json(req): Json<FaultDispatch>,
 ) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
     require_permission(&st, &c, "fault.dispatch").await?;
     if id.parse::<u64>().is_err() || req.assigned_to == 0 { return Err(AppError::BadRequest("报修编号或指派账号无效".into())); }
@@ -113,8 +113,9 @@ pub struct FaultResolve {
 }
 
 pub async fn fault_resolve(
-    State(st): State<AppState>, c: AdminClaims, Path(id): Path<String>, Json(req): Json<FaultResolve>,
+    State(st): State<AppState>, c: ActiveAdmin, Path(id): Path<String>, Json(req): Json<FaultResolve>,
 ) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+    crate::auth::require_permission(&st,&c,"fault.resolve").await?;
     require_permission(&st, &c, "fault.dispatch").await?;
     if id.parse::<u64>().is_err() || !["fixed", "closed"].contains(&req.status.as_str()) {
         return Err(AppError::BadRequest("报修编号或处理状态无效".into()));

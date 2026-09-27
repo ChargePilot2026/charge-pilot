@@ -1,9 +1,11 @@
-FROM rust:1.80-bookworm AS builder
+FROM rust:1.88-bookworm AS builder
 WORKDIR /build
 
 COPY Cargo.toml Cargo.lock ./
 COPY crates crates
 COPY services services
+# P4:sqlx::migrate! 是编译期宏,migrations/ 必须在构建期就位
+COPY migrations migrations
 COPY rust-toolchain.toml ./
 
 RUN apt-get update && apt-get install -y --no-install-recommends \

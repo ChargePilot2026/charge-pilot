@@ -1,0 +1,21 @@
+[package]
+name = "migrate-baseline"
+version = "0.1.0"
+edition = "2021"
+
+# P4 migration 接管工具。
+# 用途:把**存量库**已执行的历史迁移登记进 `_sqlx_migrations`,使后续
+# `sqlx::migrate!` / `migrate run` 不会从版本 1 重放(重放会导致重复加列)。
+#
+# ⚠️ `sqlx migrate add -r` 只生成迁移文件,不读 schema、也不标记已应用;
+# ⚠️ `sqlx migrate run` 在 0.8.6 **没有** `--baseline` 参数;
+# ⚠️ 不能用"`_sqlx_migrations` 是否为空"判断存量/全新——全新空库同样为空。
+# 因此这里用 information_schema 探测基准表来区分,并**逐条登记**。
+[dependencies]
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "mysql", "macros", "migrate"] }
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+
+[[bin]]
+name = "migrate-baseline"
+path = "src/main.rs"

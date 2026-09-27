@@ -2,11 +2,11 @@
 
 use crate::AppState;
 use axum::{extract::State, Json};
-use common_auth::AdminClaims;
+use crate::auth::ActiveAdmin;
 use common_error::{AppError, AppResult};
 use serde_json::{json, Value};
 
-pub async fn get(State(st): State<AppState>, c: AdminClaims) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn get(State(st): State<AppState>, c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
     let allowed: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM admin_user_role a JOIN role r ON r.id=a.role_id AND r.deleted_at IS NULL
          JOIN role_permission rp ON rp.role_id=r.id JOIN permission p ON p.id=rp.permission_id

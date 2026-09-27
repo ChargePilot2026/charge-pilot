@@ -3,13 +3,13 @@
 use crate::AppState;
 use api_contracts::paths as p;
 use axum::{extract::{Path, State}, Json};
-use common_auth::AdminClaims;
+use crate::auth::ActiveAdmin;
 use common_db::IdGen;
 use common_error::{AppError, AppResult};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-pub async fn settlements(State(st): State<AppState>, _c: AdminClaims) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn settlements(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
     let rows = sqlx::query(
         "SELECT id, settlement_no, split_template_id, period_start, period_end, total_cents, status, created_at
          FROM settled_record ORDER BY id DESC LIMIT 200"
@@ -26,7 +26,7 @@ pub async fn settlements(State(st): State<AppState>, _c: AdminClaims) -> AppResu
     Ok(Json(common_error::ApiEnvelope::ok(json!({"items": items}), common_error::current_request_id())))
 }
 
-pub async fn withdraw_list(State(st): State<AppState>, _c: AdminClaims) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn withdraw_list(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
     let rows = sqlx::query("SELECT id, withdraw_no, party_id, party_code, amount_cents, status, created_at FROM withdraw_request ORDER BY id DESC LIMIT 200")
         .fetch_all(st.db.pool()).await?;
     let items: Vec<Value> = rows.iter().map(|r| -> AppResult<Value> { Ok(json!({
@@ -46,7 +46,8 @@ pub struct WithdrawCreateReq {
     pub amount_cents: i64,
 }
 
-pub async fn withdraw_create(State(st): State<AppState>, _c: AdminClaims, Json(req): Json<WithdrawCreateReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn withdraw_create(State(st): State<AppState>, _c: ActiveAdmin, Json(req): Json<WithdrawCreateReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+    crate::auth::require_permission(&st,&_c,"finance.withdraw.create").await?;
     let no = IdGen::new("WDR").next();
     sqlx::query(
         "INSERT INTO withdraw_request (withdraw_no, party_id, party_code, amount_cents, status)
@@ -63,7 +64,8 @@ pub struct WithdrawReviewReq {
     pub note: Option<String>,
 }
 
-pub async fn withdraw_review(State(st): State<AppState>, c: AdminClaims, Path(id): Path<u64>, Json(req): Json<WithdrawReviewReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn withdraw_review(State(st): State<AppState>, c: ActiveAdmin, Path(id): Path<u64>, Json(req): Json<WithdrawReviewReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+    crate::auth::require_permission(&st,&c,"finance.withdraw.review").await?;
     let status = if req.approved { "approved" } else { "rejected" };
     let n = sqlx::query("UPDATE withdraw_request SET status = ?, reviewed_by = ?, reviewed_at = NOW(3), note = ? WHERE id = ? AND status = 'pending'")
         .bind(status).bind(c.admin_user_id).bind(req.note.as_deref()).bind(id)
@@ -72,7 +74,7 @@ pub async fn withdraw_review(State(st): State<AppState>, c: AdminClaims, Path(id
     Ok(Json(common_error::ApiEnvelope::ok(json!({"reviewed": true}), common_error::current_request_id())))
 }
 
-pub async fn refunds(State(st): State<AppState>, c: AdminClaims, axum::extract::Query(q):axum::extract::Query<api_contracts::refunds::RefundQuery>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn refunds(State(st): State<AppState>, c: ActiveAdmin, axum::extract::Query(q):axum::extract::Query<api_contracts::refunds::RefundQuery>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
     let allowed:i64=sqlx::query_scalar("SELECT COUNT(*) FROM admin_user_role a JOIN role r ON r.id=a.role_id JOIN role_permission rp ON rp.role_id=r.id JOIN permission p ON p.id=rp.permission_id WHERE a.id=? AND a.status='active' AND a.deleted_at IS NULL AND r.deleted_at IS NULL AND p.code='finance.refund.read'").bind(c.admin_user_id).fetch_one(st.db.pool()).await?;
     if allowed==0{return Err(AppError::Forbidden("缺少 finance.refund.read 权限".into()));}
     if !q.valid(){return Err(AppError::BadRequest("退款筛选参数无效".into()));}
@@ -104,13 +106,15 @@ pub struct RefundRetryReq { pub reason: String }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RefundApprovalReq { pub approve_comment:String }
-pub async fn refund_approve(State(st):State<AppState>,c:AdminClaims,Path(no):Path<String>,Json(req):Json<RefundApprovalReq>)->AppResult<Json<common_error::ApiEnvelope<Value>>>{
+pub async fn refund_approve(State(st):State<AppState>,c:ActiveAdmin,Path(no):Path<String>,Json(req):Json<RefundApprovalReq>)->AppResult<Json<common_error::ApiEnvelope<Value>>>{
+    crate::auth::require_permission(&st,&c,"order.refund.review").await?;
     review_decision(st,c,no,req,false).await
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RefundRejectReq {pub reason:String}
-pub async fn refund_create(State(st):State<AppState>,c:AdminClaims,Path(id):Path<u64>,Json(req):Json<api_contracts::refunds::ManualRefundRequest>)->AppResult<Json<common_error::ApiEnvelope<Value>>>{
+pub async fn refund_create(State(st):State<AppState>,c:ActiveAdmin,Path(id):Path<u64>,Json(req):Json<api_contracts::refunds::ManualRefundRequest>)->AppResult<Json<common_error::ApiEnvelope<Value>>>{
+    crate::auth::require_permission(&st,&c,"order.refund.create").await?;
     let mut tx=st.db.pool().begin().await?;
     let grants:Vec<String>=sqlx::query_scalar("SELECT p.code FROM admin_user_role a JOIN role r ON r.id=a.role_id JOIN role_permission rp ON rp.role_id=r.id JOIN permission p ON p.id=rp.permission_id WHERE a.id=? AND a.status='active' AND a.deleted_at IS NULL AND r.deleted_at IS NULL AND r.code='customer_finance' AND p.code IN ('order.read','order.refund.create','order.refund.review') FOR SHARE").bind(c.admin_user_id).fetch_all(&mut *tx).await?;
     if grants.len()!=3{return Err(AppError::Forbidden("发起退款需客户财务角色及订单查看、退款申请、退款审核权限".into()));}
@@ -119,10 +123,11 @@ pub async fn refund_create(State(st):State<AppState>,c:AdminClaims,Path(id):Path
     tx.commit().await?;
     Ok(Json(common_error::ApiEnvelope::ok(result,common_error::current_request_id())))
 }
-pub async fn refund_reject(State(st):State<AppState>,c:AdminClaims,Path(no):Path<String>,Json(req):Json<RefundRejectReq>)->AppResult<Json<common_error::ApiEnvelope<Value>>>{
+pub async fn refund_reject(State(st):State<AppState>,c:ActiveAdmin,Path(no):Path<String>,Json(req):Json<RefundRejectReq>)->AppResult<Json<common_error::ApiEnvelope<Value>>>{
+    crate::auth::require_permission(&st,&c,"order.refund.review").await?;
     review_decision(st,c,no,RefundApprovalReq{approve_comment:req.reason},true).await
 }
-async fn review_decision(st:AppState,c:AdminClaims,no:String,req:RefundApprovalReq,reject:bool)->AppResult<Json<common_error::ApiEnvelope<Value>>>{
+async fn review_decision(st:AppState,c:ActiveAdmin,no:String,req:RefundApprovalReq,reject:bool)->AppResult<Json<common_error::ApiEnvelope<Value>>>{
     if no.is_empty() || no.len()>64 || !no.bytes().all(|b|b.is_ascii_alphanumeric() || b"_-|*@".contains(&b)) || req.approve_comment.trim().is_empty() || req.approve_comment.chars().count()>255 || req.approve_comment.chars().any(char::is_control){return Err(AppError::BadRequest("退款单号或审核意见无效".into()));}
     let mut tx=st.db.pool().begin().await?;
     // Lock the actual account and grant rows until this approval has been sent.
@@ -144,7 +149,8 @@ async fn review_decision(st:AppState,c:AdminClaims,no:String,req:RefundApprovalR
     tx.commit().await?;
     Ok(Json(common_error::ApiEnvelope::ok(result,common_error::current_request_id())))
 }
-pub async fn refund_retry(State(st): State<AppState>, c: AdminClaims, Path(no): Path<String>, Json(req):Json<RefundRetryReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn refund_retry(State(st): State<AppState>, c: ActiveAdmin, Path(no): Path<String>, Json(req):Json<RefundRetryReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+    crate::auth::require_permission(&st,&c,"finance.refund.retry").await?;
     use sqlx::Row;
     let reason=req.reason.trim();
     if reason.is_empty() || reason.chars().count()>255 || reason.chars().any(char::is_control) || no.is_empty() || no.len()>64 || !no.bytes().all(|b|b.is_ascii_alphanumeric() || b"_-|*@".contains(&b)) {
@@ -169,7 +175,7 @@ pub async fn refund_retry(State(st): State<AppState>, c: AdminClaims, Path(no): 
     Ok(Json(common_error::ApiEnvelope::ok(json!({"queued":true,"already_queued":already_queued,"refund_no":no,"stage":stage}),common_error::current_request_id())))
 }
 
-async fn authorize_invoice_review(st: &AppState, actor: &AdminClaims) -> AppResult<()> {
+async fn authorize_invoice_review(st: &AppState, actor: &ActiveAdmin) -> AppResult<()> {
     let allowed: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM admin_user_role a
          JOIN role r ON r.id = a.role_id
@@ -186,7 +192,7 @@ async fn authorize_invoice_review(st: &AppState, actor: &AdminClaims) -> AppResu
     Ok(())
 }
 
-pub async fn invoices(State(st): State<AppState>, c: AdminClaims) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn invoices(State(st): State<AppState>, c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
     authorize_invoice_review(&st, &c).await?;
     let rows = sqlx::query(
         "SELECT invoice_request_id,review_status,reviewed_by,reject_reason,
@@ -216,7 +222,7 @@ pub async fn invoices(State(st): State<AppState>, c: AdminClaims) -> AppResult<J
 #[serde(deny_unknown_fields)]
 pub struct InvoiceApproveReq { pub invoice_url: String }
 
-pub async fn invoice_approve(State(st): State<AppState>, c: AdminClaims, Path(id): Path<u64>, Json(req): Json<InvoiceApproveReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn invoice_approve(State(st): State<AppState>, c: ActiveAdmin, Path(id): Path<u64>, Json(req): Json<InvoiceApproveReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
     authorize_invoice_review(&st, &c).await?;
     let invoice_url = req.invoice_url.trim();
     let valid_url = invoice_url.len() <= 512 && reqwest::Url::parse(invoice_url)
@@ -294,7 +300,7 @@ pub async fn invoice_approve(State(st): State<AppState>, c: AdminClaims, Path(id
 #[serde(deny_unknown_fields)]
 pub struct InvoiceRejectReq { pub reason: String }
 
-pub async fn invoice_reject(State(st): State<AppState>, c: AdminClaims, Path(id): Path<u64>, Json(req): Json<InvoiceRejectReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn invoice_reject(State(st): State<AppState>, c: ActiveAdmin, Path(id): Path<u64>, Json(req): Json<InvoiceRejectReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
     if req.reason.trim().is_empty() || req.reason.chars().count() > 255 || req.reason.chars().any(char::is_control) {
         return Err(AppError::BadRequest("拒绝原因必须填写且最多 255 字".into()));
     }
@@ -335,7 +341,7 @@ pub async fn invoice_reject(State(st): State<AppState>, c: AdminClaims, Path(id)
     Ok(Json(common_error::ApiEnvelope::ok(result, common_error::current_request_id())))
 }
 
-pub async fn reconcile_logs(State(st): State<AppState>, _c: AdminClaims) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn reconcile_logs(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
     let rows = sqlx::query(
         "SELECT id, reconcile_type, reconcile_date, internal_count, wechat_count, diff_count,
                 internal_cents, wechat_cents, diff_cents, resolved, created_at
@@ -362,14 +368,14 @@ async fn wallet_risk_authorize(tx:&mut sqlx::Transaction<'_,sqlx::MySql>,actor:u
  let permission=if release{"finance.wallet_risk.release"}else{"finance.wallet_risk.review"};
  let rows:Vec<u64>=sqlx::query_scalar("SELECT a.id FROM admin_user_role a JOIN role r ON r.id=a.role_id JOIN role_permission rp ON rp.role_id=r.id JOIN permission p ON p.id=rp.permission_id WHERE a.id=? AND a.status='active' AND a.deleted_at IS NULL AND r.deleted_at IS NULL AND r.code IN ('customer_finance','customer_cs') AND p.code=? AND (?=FALSE OR r.code='customer_finance') FOR SHARE").bind(actor).bind(permission).bind(release).fetch_all(&mut **tx).await?;
  if rows.is_empty(){return Err(AppError::Forbidden(format!("角色或权限不足，需要 {permission}")));}Ok(())
-}pub async fn wallet_risks(State(st):State<AppState>,c:AdminClaims,axum::extract::Query(q):axum::extract::Query<WalletRiskQuery>)->AppResult<Json<common_error::ApiEnvelope<Value>>>{
+}pub async fn wallet_risks(State(st):State<AppState>,c:ActiveAdmin,axum::extract::Query(q):axum::extract::Query<WalletRiskQuery>)->AppResult<Json<common_error::ApiEnvelope<Value>>>{
  let mut tx=st.db.pool().begin().await?;wallet_risk_authorize(&mut tx,c.admin_user_id,false).await?;
  let mut result:Value=common_http::internal::ApiClient::new(st.http.clone(),st.service_token.clone()).get(st.cfg.service_urls.user.as_deref(),p::USER_INTERNAL_WALLET_RISKS,&q).await?;
  let can_release=match wallet_risk_authorize(&mut tx,c.admin_user_id,true).await {Ok(())=>true,Err(AppError::Forbidden(_))=>false,Err(e)=>return Err(e)};
  if let Some(items)=result["items"].as_array_mut(){for item in items{item["can_release"]=json!(can_release && item["can_release"]==true);}}
  tx.commit().await?;Ok(Json(common_error::ApiEnvelope::ok(result,common_error::current_request_id())))
 }
-pub async fn wallet_risk_review(State(st):State<AppState>,c:AdminClaims,Path(id):Path<String>,Json(req):Json<WalletRiskDecision>)->AppResult<Json<common_error::ApiEnvelope<Value>>>{
+pub async fn wallet_risk_review(State(st):State<AppState>,c:ActiveAdmin,Path(id):Path<String>,Json(req):Json<WalletRiskDecision>)->AppResult<Json<common_error::ApiEnvelope<Value>>>{
  let id=uuid::Uuid::parse_str(&id).map_err(|_|AppError::BadRequest("申请编号无效".into()))?.to_string();
  let mut tx=st.db.pool().begin().await?;wallet_risk_authorize(&mut tx,c.admin_user_id,false).await?;
  let result:Value=common_http::internal::ApiClient::new(st.http.clone(),st.service_token.clone()).post(st.cfg.service_urls.user.as_deref(),&p::USER_INTERNAL_WALLET_RISK_REVIEW.replace(":request_id",&id),&json!({"actor_id":c.admin_user_id,"approved":req.approved,"comment":req.comment})).await?;
@@ -380,7 +386,7 @@ pub async fn wallet_risk_review(State(st):State<AppState>,c:AdminClaims,Path(id)
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WalletRiskRelease {pub comment:String}
-pub async fn wallet_risk_release(State(st):State<AppState>,c:AdminClaims,Path(id):Path<String>,Json(req):Json<WalletRiskRelease>)->AppResult<Json<common_error::ApiEnvelope<Value>>>{
+pub async fn wallet_risk_release(State(st):State<AppState>,c:ActiveAdmin,Path(id):Path<String>,Json(req):Json<WalletRiskRelease>)->AppResult<Json<common_error::ApiEnvelope<Value>>>{
  let id=uuid::Uuid::parse_str(&id).map_err(|_|AppError::BadRequest("申请编号无效".into()))?.to_string();
  let mut tx=st.db.pool().begin().await?;wallet_risk_authorize(&mut tx,c.admin_user_id,true).await?;
  let result:Value=common_http::internal::ApiClient::new(st.http.clone(),st.service_token.clone()).post(st.cfg.service_urls.user.as_deref(),&p::USER_INTERNAL_WALLET_RISK_RELEASE.replace(":request_id",&id),&json!({"actor_id":c.admin_user_id,"comment":req.comment})).await?;

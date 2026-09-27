@@ -189,18 +189,37 @@ pub async fn settlement_detail(
     })))
 }
 
+/// **D6 修复**:原先直接查 `invoice_request` —— 该表只在 `user_db` 建,本服务连接
+/// 指向 `billing_db`,且 billing_db 内无对应视图,该端点运行时必然报
+/// `Table 'billing_db.invoice_request' doesn't exist`。
+///
+/// `invoice_request` 归 user 服务所有,改经其内部端点获取。
 pub async fn invoice_settle_detail(
     State(st): State<AppState>,
     Path(invoice_id): Path<u64>,
 ) -> AppResult<Json<ApiEnvelope<t::InvoiceSettleDetailResponse>>> {
-    let r: Option<(i64, String)> = sqlx::query_as(
-        "SELECT total_cents, review_status FROM invoice_request WHERE id = ?"
-    ).bind(invoice_id).fetch_optional(st.db.pool()).await?;
-    Ok(Json(ok_envelope(t::InvoiceSettleDetailResponse {
-        invoice_id,
-        found: r.is_some(),
-        total_cents: r.map(|x| x.0),
-    })))
+    let cli = common_http::internal::ApiClient::new(st.http.clone(), st.service_token.clone());
+    let result: AppResult<api_contracts::InvoiceDetailResponse> = cli
+        .get(
+            st.cfg.service_urls.user.as_deref(),
+            &api_contracts::paths::USER_INTERNAL_INVOICE_DETAIL.replace(":invoice_id", &invoice_id.to_string()),
+            &(),
+        )
+        .await;
+    match result {
+        Ok(detail) => Ok(Json(ok_envelope(t::InvoiceSettleDetailResponse {
+            invoice_id,
+            found: true,
+            total_cents: Some(detail.total_cents),
+        }))),
+        // 发票不存在不是错误,保持原 `found: false` 语义
+        Err(AppError::NotFound(_)) => Ok(Json(ok_envelope(t::InvoiceSettleDetailResponse {
+            invoice_id,
+            found: false,
+            total_cents: None,
+        }))),
+        Err(e) => Err(e),
+    }
 }
 
 pub async fn refund_calc(

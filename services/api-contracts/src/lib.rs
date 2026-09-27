@@ -8,6 +8,14 @@
 //! 禁止各 service 在 handler 里 `format!("/api/v1/...")` 拼 URL,
 //! 必须从本 crate 引用路径常量。
 
+
+// 分层与序列化约束(P1a 建立;随 P3 逐服务迁移完成转 deny)
+// 说明:配置在仓库根 clippy.toml,级别在这里。测试模块豁免。
+#![allow(
+    clippy::disallowed_macros,
+    clippy::disallowed_types,
+    clippy::disallowed_methods,
+)]
 use serde::{Deserialize, Serialize};
 
 pub mod orders;
@@ -111,6 +119,20 @@ pub mod paths {
 }
 
 // ===================== 跨服务 DTO =====================
+
+/// user 服务内部发票详情(billing 消费;`invoice_request` 归 user_db 所有)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InvoiceDetailResponse {
+    pub invoice_request_id: u64,
+    pub invoice_no: String,
+    pub user_id: u64,
+    pub biz_type: String,
+    pub biz_id: u64,
+    pub total_cents: i64,
+    pub invoice_type: String,
+    pub review_status: String,
+    pub created_at: String,
+}
 
 // ---- gateway <-> user/device ----
 

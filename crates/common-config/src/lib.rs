@@ -3,6 +3,14 @@
 //! 从环境变量统一读取,服务启动时一次性构建 `AppConfig`,
 //! 后续业务模块通过 `AppConfig` 访问,避免散落 `env::*` 调用。
 
+
+// 分层与序列化约束(P1a 建立;随 P3 逐服务迁移完成转 deny)
+// 说明:配置在仓库根 clippy.toml,级别在这里。测试模块豁免。
+#![allow(
+    clippy::disallowed_macros,
+    clippy::disallowed_types,
+    clippy::disallowed_methods,
+)]
 use common_error::{AppError, AppResult};
 use serde::{Deserialize, Serialize};
 use std::env;

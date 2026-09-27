@@ -2,7 +2,7 @@
 
 use crate::AppState;
 use axum::{extract::{Path, State}, Json};
-use common_auth::AdminClaims;
+use crate::auth::ActiveAdmin;
 use common_error::{AppError, AppResult};
 use serde::Deserialize;
 use serde_json::Value;
@@ -17,9 +17,10 @@ pub struct ExportCreateReq {
 
 pub async fn create(
     State(st): State<AppState>,
-    actor: AdminClaims,
+    actor: ActiveAdmin,
     Json(req): Json<ExportCreateReq>,
 ) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+    crate::auth::require_permission(&st,&actor,"export.create").await?;
     let _ = (st, actor, req);
     Err(AppError::ServiceUnavailable(
         "导出执行器与文件存储尚未接入，未创建导出任务".into(),
@@ -28,14 +29,14 @@ pub async fn create(
 
 pub async fn tasks(
     State(_st): State<AppState>,
-    _actor: AdminClaims,
+    _actor: ActiveAdmin,
 ) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
     unavailable()
 }
 
 pub async fn task(
     State(_st): State<AppState>,
-    _actor: AdminClaims,
+    _actor: ActiveAdmin,
     Path(_task_id): Path<String>,
 ) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
     unavailable()
@@ -43,7 +44,7 @@ pub async fn task(
 
 pub async fn download(
     State(_st): State<AppState>,
-    _actor: AdminClaims,
+    _actor: ActiveAdmin,
     Path(_task_id): Path<String>,
 ) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
     unavailable()

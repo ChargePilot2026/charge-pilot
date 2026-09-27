@@ -3,3 +3,5 @@
 pub mod announcement_expire;
 pub mod snapshot_warmer;
 pub mod device_session_clean;
+// D4 ③b:必须注册 —— 未注册时失败事件永久滞留 DLQ
+pub mod dlq_replay;

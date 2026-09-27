@@ -2,12 +2,12 @@
 
 use crate::AppState;
 use axum::{extract::{Path, State}, Json};
-use common_auth::AdminClaims;
+use crate::auth::ActiveAdmin;
 use common_error::{AppError, AppResult};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-pub async fn list(State(st): State<AppState>, _c: AdminClaims) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn list(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
     let rows = sqlx::query(
         "SELECT id, title, content, scope, priority, start_at, end_at, status, created_at
          FROM announcement WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 200"
@@ -35,7 +35,8 @@ pub struct AnnouncementCreateReq {
     pub end_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-pub async fn create(State(st): State<AppState>, c: AdminClaims, Json(req): Json<AnnouncementCreateReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn create(State(st): State<AppState>, c: ActiveAdmin, Json(req): Json<AnnouncementCreateReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+    crate::auth::require_permission(&st,&c,"announcement.create").await?;
     let result = sqlx::query(
         "INSERT INTO announcement (title, content, scope, priority, start_at, end_at, status, created_by)
          VALUES (?, ?, ?, COALESCE(?, 0), ?, ?, 'draft', ?)"
@@ -47,7 +48,7 @@ pub async fn create(State(st): State<AppState>, c: AdminClaims, Json(req): Json<
     Ok(Json(common_error::ApiEnvelope::ok(json!({"id": id}), common_error::current_request_id())))
 }
 
-pub async fn get(State(st): State<AppState>, _c: AdminClaims, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn get(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
     let r = sqlx::query("SELECT id, title, content, scope, priority, start_at, end_at, status FROM announcement WHERE id = ? AND deleted_at IS NULL")
         .bind(id).fetch_optional(st.db.pool()).await?;
     let r = r.ok_or_else(|| AppError::NotFound("announcement".into()))?;
@@ -69,7 +70,8 @@ pub struct AnnouncementUpdateReq {
     pub end_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-pub async fn update(State(st): State<AppState>, _c: AdminClaims, Path(id): Path<u64>, Json(req): Json<AnnouncementUpdateReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn update(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>, Json(req): Json<AnnouncementUpdateReq>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+    crate::auth::require_permission(&st,&_c,"announcement.update").await?;
     let n = sqlx::query(
         "UPDATE announcement SET title = COALESCE(?, title), content = COALESCE(?, content),
                                 status = COALESCE(?, status), end_at = COALESCE(?, end_at)
@@ -81,7 +83,8 @@ pub async fn update(State(st): State<AppState>, _c: AdminClaims, Path(id): Path<
     Ok(Json(common_error::ApiEnvelope::ok(json!({"updated": true}), common_error::current_request_id())))
 }
 
-pub async fn delete(State(st): State<AppState>, _c: AdminClaims, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn delete(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+    crate::auth::require_permission(&st,&_c,"announcement.delete").await?;
     let n = sqlx::query("UPDATE announcement SET deleted_at = NOW(3) WHERE id = ? AND deleted_at IS NULL")
         .bind(id).execute(st.db.pool()).await?;
     if n.rows_affected() == 0 { return Err(AppError::NotFound("announcement".into())); }

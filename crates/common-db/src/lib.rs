@@ -6,10 +6,19 @@
 //!   - 提供 `with_tx` 事务封装,所有写操作走显式事务
 //!   - 提供 `IdGen` / `TimeOf` 等公用工具
 
+
+// 分层与序列化约束(P1a 建立;随 P3 逐服务迁移完成转 deny)
+// 说明:配置在仓库根 clippy.toml,级别在这里。测试模块豁免。
+#![allow(
+    clippy::disallowed_macros,
+    clippy::disallowed_types,
+    clippy::disallowed_methods,
+)]
 use async_trait::async_trait;
 use common_config::MysqlConfig;
 use common_error::{AppError, AppResult};
 use serde::{Deserialize, Serialize};
+use sqlx::MySqlConnection;
 use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions};
 use sqlx::{ConnectOptions, MySql, Pool, Transaction};
 use std::str::FromStr;
@@ -85,6 +94,46 @@ where
     };
     tx.commit().await?;
     Ok(out)
+}
+
+/// 显式事务句柄——仓储方法的连接入参。
+///
+/// 选它而不是让仓储方法各自取连接:usecase 连续多次仓储调用必须落在**同一条连接**
+/// 的同一事务里,否则资金链路的原子性就没了。具体类型(`&mut MySqlConnection`)保持
+/// dyn-safe,mock 仓储写起来也最省事。
+///
+/// `rollback` 必须显式提供:sqlx 的 `Transaction` 析构会启动回滚,但那是
+/// fire-and-forget,替代不了"等待回滚完成并处理错误"。`charge_start.rs` 的重试
+/// 语义就依赖这一点。
+pub struct Tx<'a> {
+    tx: Transaction<'a, MySql>,
+}
+
+impl<'a> Tx<'a> {
+    /// 交给仓储方法执行 SQL
+    pub fn executor(&mut self) -> &mut MySqlConnection {
+        &mut *self.tx
+    }
+
+    pub async fn commit(self) -> AppResult<()> {
+        self.tx.commit().await?;
+        Ok(())
+    }
+
+    /// 显式回滚并等待完成。内部 `Transaction` 析构仍作为提前 return /
+    /// task 被 cancel 时的兜底。
+    pub async fn rollback(self) -> AppResult<()> {
+        self.tx.rollback().await?;
+        Ok(())
+    }
+}
+
+impl<'a> Db {
+    /// 开启一个显式事务
+    pub async fn begin(&self) -> AppResult<Tx<'_>> {
+        let tx = self.pool.begin().await?;
+        Ok(Tx { tx })
+    }
 }
 
 pub type BoxFuture<'c, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'c>>;

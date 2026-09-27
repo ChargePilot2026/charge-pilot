@@ -2,13 +2,13 @@
 
 use crate::AppState;
 use axum::{extract::State, Json};
-use common_auth::AdminClaims;
+use crate::auth::ActiveAdmin;
 use common_error::{AppError, AppResult};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sqlx::Row;
 
-async fn require_permission(st: &AppState, c: &AdminClaims, permission: &str) -> AppResult<()> {
+async fn require_permission(st: &AppState, c: &ActiveAdmin, permission: &str) -> AppResult<()> {
     let allowed: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM admin_user_role a JOIN role r ON r.id=a.role_id AND r.deleted_at IS NULL
          JOIN role_permission rp ON rp.role_id=r.id JOIN permission p ON p.id=rp.permission_id
@@ -97,7 +97,7 @@ fn public_config(row: &sqlx::mysql::MySqlRow) -> AppResult<Value> {
     }))
 }
 
-pub async fn get(State(st): State<AppState>, c: AdminClaims) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn get(State(st): State<AppState>, c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
     require_permission(&st, &c, "whitelabel.read").await?;
     let row = sqlx::query("SELECT id, mini_program_name, logo_url, theme_color, contact_phone, about_text, config_json FROM whitelabel_config WHERE id=1")
         .fetch_optional(st.db.pool()).await?;
@@ -113,8 +113,9 @@ pub async fn get(State(st): State<AppState>, c: AdminClaims) -> AppResult<Json<c
 }
 
 pub async fn put(
-    State(st): State<AppState>, c: AdminClaims, Json(mut req): Json<WhitelabelUpdate>,
+    State(st): State<AppState>, c: ActiveAdmin, Json(mut req): Json<WhitelabelUpdate>,
 ) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+    crate::auth::require_permission(&st, &c, "whitelabel.update").await?;
     clean_optional(&mut req.miniprogram_logo_url);
     clean_optional(&mut req.admin_logo_url);
     clean_optional(&mut req.service_phone);

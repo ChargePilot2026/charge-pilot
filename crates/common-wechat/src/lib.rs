@@ -4,6 +4,14 @@
 //! - pay_jsapi: 下单 + 签名 + 回调验签
 //! - refund: 调微信退款 V3 API + 重试(1s/5s/30s/2min,见技术规格 § 7.6)
 
+
+// 分层与序列化约束(P1a 建立;随 P3 逐服务迁移完成转 deny)
+// 说明:配置在仓库根 clippy.toml,级别在这里。测试模块豁免。
+#![allow(
+    clippy::disallowed_macros,
+    clippy::disallowed_types,
+    clippy::disallowed_methods,
+)]
 use base64::Engine;
 use common_auth::constant_time_eq;
 use common_config::WechatConfig;

@@ -9,6 +9,14 @@
 //!
 //! 各服务在异步启动流程中调用 `ConsumerGroup::register(...).await?`。
 
+
+// 分层与序列化约束(P1a 建立;随 P3 逐服务迁移完成转 deny)
+// 说明:配置在仓库根 clippy.toml,级别在这里。测试模块豁免。
+#![allow(
+    clippy::disallowed_macros,
+    clippy::disallowed_types,
+    clippy::disallowed_methods,
+)]
 use async_trait::async_trait;
 use common_error::{AppError, AppResult};
 use common_redis::{RedisStream, StreamEntry, StreamEnvelope};

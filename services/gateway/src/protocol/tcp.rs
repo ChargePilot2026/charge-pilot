@@ -13,8 +13,20 @@ use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
-pub async fn run_tcp_listener(bind: &str, state: AppState) -> AppResult<()> {
+/// **D12**:把 bind 与 accept 循环拆开。
+///
+/// 原先 `run_tcp_listener` 自己在内部 bind,并被放进 `tokio::spawn` 且丢弃
+/// `JoinHandle` —— 端口被占用或地址配置错误时只打一行日志就结束,HTTP 仍正常启动,
+/// 健康检查只探 DB/Redis 因而照样返回 `ok`。设备连不上但服务看起来健康。
+///
+/// 现在由 `main` 在**就绪前**同步 bind,失败即启动失败;accept 循环单独运行。
+pub async fn bind_tcp_listener(bind: &str) -> AppResult<TcpListener> {
     let listener = TcpListener::bind(bind).await?;
+    info!(bind, "TCP device listener bound");
+    Ok(listener)
+}
+
+pub async fn serve_tcp(listener: TcpListener, bind: &str, state: AppState) -> AppResult<()> {
     info!(bind, "TCP device listener ready");
     loop {
         let (socket, addr) = match listener.accept().await {

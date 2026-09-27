@@ -3,6 +3,14 @@
 //! 默认输出 JSON 到 stdout(便于 Loki/Promtail 收集);
 //! 如设置了 OTEL_EXPORTER_OTLP_ENDPOINT,启用 OTLP 导出(Tempo/Jaeger)。
 
+
+// 分层与序列化约束(P1a 建立;随 P3 逐服务迁移完成转 deny)
+// 说明:配置在仓库根 clippy.toml,级别在这里。测试模块豁免。
+#![allow(
+    clippy::disallowed_macros,
+    clippy::disallowed_types,
+    clippy::disallowed_methods,
+)]
 use common_config::AppConfig;
 use common_error::AppResult;
 use once_cell::sync::OnceCell;

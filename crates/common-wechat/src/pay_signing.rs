@@ -173,6 +173,7 @@ mod tests {
                     pay_base_url: "https://api.mch.weixin.qq.com".into(),
                     refund_url: "https://api.mch.weixin.qq.com/v3/refund/domestic/refunds".into(),
                     refund_notify_url:None,
+                    customer_service_corp_id: None,
                     cert_path: None,
                     private_key_path: Some(private.to_string_lossy().into()),
                     merchant_serial_no: Some("AB12".into()),

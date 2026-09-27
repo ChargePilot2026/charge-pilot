@@ -124,8 +124,6 @@ pub fn build_router(state: AppState) -> Router {
         .route(api_types::paths::ADMIN_ORDER_DETAIL, get(api::orders::get))
         .route(api_types::paths::ADMIN_ORDER_TIMELINE, get(api::orders::timeline))
         .route(api_types::paths::ADMIN_BILLING_SETTLEMENTS, get(billing::settlements))
-        .route(api_types::paths::ADMIN_BILLING_WITHDRAW, get(billing::withdraw_list).post(billing::withdraw_create))
-        .route(api_types::paths::ADMIN_BILLING_WITHDRAW_REVIEW, post(billing::withdraw_review))
         .route("/api/v1/admin/billing/wallet-risks/:request_id/release",post(billing::wallet_risk_release))
         .route("/api/v1/admin/billing/wallet-risks",get(billing::wallet_risks))
         .route("/api/v1/admin/billing/wallet-risks/:request_id/review",post(billing::wallet_risk_review))
@@ -148,7 +146,6 @@ pub fn build_router(state: AppState) -> Router {
         .route(api_types::paths::ADMIN_COUPON_DETAIL, get(api::coupons::get).put(api::coupons::update).delete(api::coupons::delete))
         .route(api_types::paths::ADMIN_COUPON_STATS, get(api::coupons::stats))
         .route(api_types::paths::ADMIN_COUPON_GRANTS, post(api::coupons::grant))
-        .route(api_types::paths::ADMIN_MEMBERSHIP, get(api::membership::list).post(api::membership::create))
         .route(api_types::paths::ADMIN_CHARGE_RULES, get(api::settings::charge_rules).post(api::settings::charge_rule_create))
         .route(api_types::paths::ADMIN_PRICING_TEMPLATES, get(api::settings::pricing_templates).post(api::settings::pricing_template_create))
         .route(api_types::paths::ADMIN_SPLIT_TEMPLATES, get(api::settings::split_templates).post(api::settings::split_template_create))
@@ -185,7 +182,16 @@ pub fn build_router(state: AppState) -> Router {
         .route(api_types::paths::HEALTH, get(api::health))
         // PC 后台静态资源(SPA)
         .fallback(static_serve::serve_spa)
-        .layer(TraceLayer::new_for_http())
+        .layer(
+            TraceLayer::new_for_http().make_span_with(|req: &axum::http::Request<axum::body::Body>| {
+                let id = req
+                    .headers()
+                    .get("x-request-id")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("-");
+                tracing::info_span!("http", method = %req.method(), uri = %req.uri(), trace_id = %id)
+            }),
+        )
         .layer(middleware::from_fn(common_http::request_id_layer))
         .with_state(state)
 }
