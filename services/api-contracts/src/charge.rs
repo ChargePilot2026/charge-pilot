@@ -638,3 +638,79 @@ mod invoice_tests {
         assert!(v["invoice_url"].is_null());
     }
 }
+
+// ===== 用户侧优惠券 =====
+
+/// 用户持有的优惠券。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MyCoupon {
+    pub grant_id: u64,
+    pub name: String,
+    pub discount_type: String,
+    pub discount_value_cents: Option<i64>,
+    pub discount_percent: Option<f64>,
+    pub min_charge_cents: i64,
+    /// 到期时间。⚠️ 实现里是**必有的时间戳**(非 null)——券必有有效期。
+    pub expired_at: String,
+    /// `unused` / `used` / `expired`
+    pub status: String,
+}
+
+/// 优惠券抵扣试算结果。
+///
+/// ⚠️ `discount_cents` 是**抵扣额**(可负,表示优惠让利),
+/// `final_cents` 是抵扣后的实付额。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CouponPreview {
+    pub coupon_id: u64,
+    pub discount_type: String,
+    pub discount_cents: i64,
+    pub final_cents: i64,
+}
+
+/// 用户券使用统计。⚠️ 字段名是 `used`/`unused`/`expired`(**无 `_count` 后缀**)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MyCouponStats {
+    pub coupon_id: u64,
+    pub used: i64,
+    pub unused: i64,
+    pub expired: i64,
+}
+
+#[cfg(test)]
+mod my_coupon_tests {
+    use super::*;
+
+    /// 回归护栏:试算的 `discount_cents` 可为**负**(优惠让利),不能当无符号
+    #[test]
+    fn discount_cents_can_be_negative() {
+        let p = CouponPreview {
+            coupon_id: 1, discount_type: "amount".into(),
+            discount_cents: -500, final_cents: 1500,
+        };
+        let v = serde_json::to_value(&p).unwrap();
+        assert_eq!(v["discount_cents"], -500);
+    }
+
+    /// 回归护栏:`expired_at` 必为字符串(券必有有效期),不是 null
+    #[test]
+    fn my_coupon_expired_at_is_required() {
+        let c = MyCoupon {
+            grant_id: 1, name: "n".into(), discount_type: "amount".into(),
+            discount_value_cents: Some(500), discount_percent: None,
+            min_charge_cents: 0, expired_at: "2026-10-01T00:00:00Z".into(),
+            status: "unused".into(),
+        };
+        let v = serde_json::to_value(&c).unwrap();
+        assert!(v["expired_at"].is_string());
+    }
+
+    /// 统计字段名无 `_count` 后缀
+    #[test]
+    fn stats_fields_have_no_count_suffix() {
+        let s = MyCouponStats { coupon_id: 1, used: 2, unused: 3, expired: 1 };
+        let v = serde_json::to_value(&s).unwrap();
+        assert_eq!(v["used"], 2);
+        assert!(v.get("used_count").is_none());
+    }
+}

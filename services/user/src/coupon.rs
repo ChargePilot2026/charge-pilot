@@ -14,7 +14,7 @@ pub async fn my(
     State(st): State<AppState>,
     claims: common_auth::UserClaims,
     Query(q): Query<CouponQuery>,
-) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::PagedResponse<api_contracts::charge::MyCoupon>>>> {
     let status = q.status.as_deref().unwrap_or("unused");
     let page = q.page.unwrap_or(1);
     let page_size = q.page_size.unwrap_or(20);
@@ -41,22 +41,25 @@ pub async fn my(
     .bind(u64::from(page - 1) * u64::from(page_size))
     .fetch_all(st.db.pool())
     .await?;
-    let items: Vec<Value> = rows
+    let items = rows
         .iter()
-        .map(|r| -> AppResult<Value> {
-            Ok(json!({
-                "grant_id": sqlx::Row::try_get::<u64, _>(r, "id")?,
-                "name": sqlx::Row::try_get::<String, _>(r, "name")?,
-                "discount_type": sqlx::Row::try_get::<String, _>(r, "discount_type")?,
-                "discount_value_cents": sqlx::Row::try_get::<Option<i64>, _>(r, "discount_value_cents")?,
-                "discount_percent": sqlx::Row::try_get::<Option<f64>, _>(r, "discount_percent")?,
-                "min_charge_cents": sqlx::Row::try_get::<i64, _>(r, "min_charge_cents")?,
-                "expired_at": sqlx::Row::try_get::<chrono::DateTime<chrono::Utc>, _>(r, "expired_at")?.to_rfc3339(),
-                "status": sqlx::Row::try_get::<String, _>(r, "status")?,
-            }))
+        .map(|r| -> AppResult<api_contracts::charge::MyCoupon> {
+            Ok(api_contracts::charge::MyCoupon {
+                grant_id: sqlx::Row::try_get::<u64, _>(r, "id")?,
+                name: sqlx::Row::try_get::<String, _>(r, "name")?,
+                discount_type: sqlx::Row::try_get::<String, _>(r, "discount_type")?,
+                discount_value_cents: sqlx::Row::try_get::<Option<i64>, _>(r, "discount_value_cents")?,
+                discount_percent: sqlx::Row::try_get::<Option<f64>, _>(r, "discount_percent")?,
+                min_charge_cents: sqlx::Row::try_get::<i64, _>(r, "min_charge_cents")?,
+                expired_at: sqlx::Row::try_get::<chrono::DateTime<chrono::Utc>, _>(r, "expired_at")?.to_rfc3339(),
+                status: sqlx::Row::try_get::<String, _>(r, "status")?,
+            })
         })
         .collect::<AppResult<Vec<_>>>()?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"items": items,"total":total,"page":page,"page_size":page_size}), common_error::current_request_id())))
+    Ok(Json(common_error::ApiEnvelope::ok(
+        api_contracts::common::PagedResponse { items, total, page, page_size, permissions: vec![] },
+        common_error::current_request_id(),
+    )))
 }
 
 #[derive(Debug, Deserialize)]
@@ -69,7 +72,7 @@ pub async fn preview(
     State(st): State<AppState>,
     claims: common_auth::UserClaims,
     Json(req): Json<CouponPreviewReq>,
-) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::charge::CouponPreview>>> {
     if req.coupon_grant_id == 0 || req.estimated_total_cents <= 0 || req.estimated_total_cents > 100_000_000 {
         return Err(AppError::BadRequest("优惠券预览金额无效".into()));
     }
@@ -106,19 +109,17 @@ pub async fn preview(
         _ => 0,
     };
     let final_cents = (req.estimated_total_cents - discount_cents).max(0);
-    Ok(Json(common_error::ApiEnvelope::ok(json!({
-        "coupon_id": cid,
-        "discount_type": dtype,
-        "discount_cents": discount_cents,
-        "final_cents": final_cents,
-    }), common_error::current_request_id())))
+    Ok(Json(common_error::ApiEnvelope::ok(
+        api_contracts::charge::CouponPreview { coupon_id: cid, discount_type: dtype, discount_cents, final_cents },
+        common_error::current_request_id(),
+    )))
 }
 
 /// admin 调用: 优惠券统计
 pub async fn stats(
     State(st): State<AppState>,
     axum::extract::Query(q): axum::extract::Query<StatsQuery>,
-) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::charge::MyCouponStats>>> {
     let rows = sqlx::query(
         "SELECT status, COUNT(*) cnt FROM coupon_grant WHERE coupon_id = ? GROUP BY status"
     )
@@ -138,12 +139,10 @@ pub async fn stats(
             _ => {}
         }
     }
-    Ok(Json(common_error::ApiEnvelope::ok(json!({
-        "coupon_id": q.coupon_id,
-        "used": used,
-        "unused": unused,
-        "expired": expired,
-    }), common_error::current_request_id())))
+    Ok(Json(common_error::ApiEnvelope::ok(
+        api_contracts::charge::MyCouponStats { coupon_id: q.coupon_id, used, unused, expired },
+        common_error::current_request_id(),
+    )))
 }
 
 #[derive(Debug, Deserialize)]
