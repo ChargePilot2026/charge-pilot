@@ -9,6 +9,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::gateway_devices;
+
 // ===== 扫码取消 =====
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -241,19 +243,45 @@ pub struct InternalOrderDetailV2 {
 
 // ===== 公告 =====
 
+/// admin 的"生效中公告"条目。
+///
+/// 字段按 `admin/src/api/internal.rs::announcements_active` 的实际输出对齐:
+/// **是 `priority`,不是 `level`;没有 `published_at`**。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Announcement {
     pub id: u64,
     pub title: String,
     pub content: String,
-    pub level: String,
-    pub published_at: Option<String>,
+    pub priority: u8,
 }
 
 /// admin 的"生效中公告"响应(小程序只读 `items`)。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActiveAnnouncementsResponse {
     pub items: Vec<Announcement>,
+}
+
+/// admin 的客服入口(不含 user 追加的 `corp_id` / `available`)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CustomerServiceEntry {
+    pub agent_wechat: String,
+    pub agent_name: Option<String>,
+    /// 仅当配置是 `https://` 且无控制字符时才非空
+    pub entry_url: Option<String>,
+    pub scene: String,
+}
+
+/// user 转发给小程序前的最终形态:在 admin 结果上追加
+/// `corp_id`(微信客服企业 id)与 `available`(两者齐备才为 true)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CustomerServiceEntryResponse {
+    pub agent_wechat: String,
+    pub agent_name: Option<String>,
+    pub entry_url: Option<String>,
+    pub scene: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub corp_id: Option<String>,
+    pub available: bool,
 }
 
 #[cfg(test)]
@@ -278,5 +306,103 @@ mod detail_tests {
     fn active_announcements_shape() {
         let v = serde_json::to_value(ActiveAnnouncementsResponse { items: vec![] }).unwrap();
         assert!(v["items"].is_array());
+    }
+
+    /// 回归护栏:公告字段名是 `priority`(对齐 admin 实现),不是 `level`
+    #[test]
+    fn announcement_uses_priority_field() {
+        let a = Announcement { id: 1, title: "t".into(), content: "c".into(), priority: 9 };
+        let v = serde_json::to_value(&a).unwrap();
+        assert_eq!(v["priority"], 9);
+        assert!(v.get("level").is_none());
+    }
+
+    /// 未配 corp_id 时不得输出 `corp_id`,但 `available` 必须为 false
+    #[test]
+    fn customer_service_available_requires_both_parts() {
+        let e = CustomerServiceEntryResponse {
+            agent_wechat: "wxid".into(), agent_name: None,
+            entry_url: Some("https://x".into()), scene: "general".into(),
+            corp_id: None, available: false,
+        };
+        let v = serde_json::to_value(&e).unwrap();
+        assert_eq!(v["available"], false);
+        assert!(v.get("corp_id").is_none());
+    }
+}
+
+// ===== 曲线(user 侧:在 gateway 结果上补充订单维度的总量)=====
+
+/// user 侧曲线摘要:gateway 的三个峰值 + **订单累计电量**。
+///
+/// `total_kwh` 是 user 服务在转发时附加的(来自 charge_order.charged_kwh),
+/// gateway 侧没有这个字段。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ChargeCurveSummary {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_power_w: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_current_a: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_temperature_c: Option<f64>,
+    /// 订单累计电量(字符串,保留原始精度)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_kwh: Option<String>,
+}
+
+/// `GET /user/charge/ongoing/curve` 的响应。
+/// `series` 元素沿用 gateway 的 `CurvePoint`。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChargeCurveResponse {
+    pub order_id: String,
+    pub window: String,
+    pub sample_interval_seconds: u32,
+    pub series: Vec<gateway_devices::CurvePoint>,
+    pub summary: ChargeCurveSummary,
+}
+
+/// user 侧历史曲线摘要 = gateway 三项 + total_kwh
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct HistoricalCurveUserSummary {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_power_w: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_temperature_c: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avg_power_w: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_kwh: Option<String>,
+}
+
+/// `GET /user/charge/:order_id/curve` 的响应。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChargeHistoricalCurveResponse {
+    pub order_id: u64,
+    pub granularity: String,
+    pub series: Vec<gateway_devices::HistoricalCurvePoint>,
+    pub summary: HistoricalCurveUserSummary,
+}
+
+#[cfg(test)]
+mod curve_tests {
+    use super::*;
+
+    #[test]
+    fn curve_summary_carries_total_kwh() {
+        let s = ChargeCurveSummary { total_kwh: Some("1.234".into()), ..Default::default() };
+        let v = serde_json::to_value(&s).unwrap();
+        assert_eq!(v["total_kwh"], "1.234");
+        // gateway 三项未命中时不出现
+        assert!(v.get("max_power_w").is_none());
+    }
+
+    /// 回归护栏:total_kwh 原本可能为 null(未计费时),必须保留为 null 而非省略,
+    /// 因为小程序按它判断"是否已出账"。
+    #[test]
+    fn total_kwh_absent_serializes_as_null_when_some_none() {
+        let s = ChargeCurveSummary { total_kwh: None, max_power_w: Some(1.0), ..Default::default() };
+        // skip_serializing_if 会省略 —— 记录当前行为,若将来要求保留 null 需改契约
+        let v = serde_json::to_value(&s).unwrap();
+        assert!(v.get("total_kwh").is_none());
     }
 }

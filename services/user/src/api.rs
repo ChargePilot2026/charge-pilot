@@ -374,7 +374,7 @@ pub async fn charge_curve(
     State(st): State<AppState>,
     claims: UserClaims,
     Query(q): Query<CurveQuery>,
-) -> AppResult<Json<crate::api_envelope::Envelope<serde_json::Value>>> {
+) -> AppResult<Json<crate::api_envelope::Envelope<api_contracts::charge::ChargeCurveResponse>>> {
     if q.order_id.is_empty() || q.order_id.len() > 64 { return Err(AppError::BadRequest("订单标识无效".into())); }
     let window = q.window.as_deref().unwrap_or("last_30min");
     if !["last_5min", "last_30min", "last_2h", "since_start"].contains(&window) {
@@ -404,14 +404,25 @@ pub async fn charge_curve(
         window: window.to_string(),
         started_at: started_at.map(|time| time.to_rfc3339()),
     };
-    let mut data: serde_json::Value = common_http::internal::ApiClient::new(st.http.clone(), st.service_token.clone())
-        .get(st.cfg.service_urls.gateway.as_deref(), &path, &device_query).await?;
-    if let Some(summary) = data.get_mut("summary") {
-        if let Some(total_kwh) = row.try_get::<Option<String>, _>("charged_kwh")? {
-            summary["total_kwh"] = json!(total_kwh);
-        }
-    }
-    Ok(Json(crate::api_envelope::Envelope::ok(data, common_error::current_request_id())))
+    let curve: api_contracts::gateway_devices::DeviceCurveResponse =
+        common_http::internal::ApiClient::new(st.http.clone(), st.service_token.clone())
+            .get(st.cfg.service_urls.gateway.as_deref(), &path, &device_query).await?;
+    let total_kwh = row.try_get::<Option<String>, _>("charged_kwh")?;
+    Ok(Json(crate::api_envelope::Envelope::ok(
+        api_contracts::charge::ChargeCurveResponse {
+            order_id: curve.order_id,
+            window: curve.window,
+            sample_interval_seconds: curve.sample_interval_seconds,
+            series: curve.series,
+            summary: api_contracts::charge::ChargeCurveSummary {
+                max_power_w: curve.summary.max_power_w,
+                max_current_a: curve.summary.max_current_a,
+                max_temperature_c: curve.summary.max_temperature_c,
+                total_kwh,
+            },
+        },
+        common_error::current_request_id(),
+    )))
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -495,7 +506,7 @@ pub async fn charge_historical_curve(
     claims: UserClaims,
     Path(order_id): Path<String>,
     Query(q): Query<HistoricalCurveQuery>,
-) -> AppResult<Json<crate::api_envelope::Envelope<serde_json::Value>>> {
+) -> AppResult<Json<crate::api_envelope::Envelope<api_contracts::charge::ChargeHistoricalCurveResponse>>> {
     if order_id.is_empty() || order_id.len() > 64 { return Err(AppError::BadRequest("订单标识无效".into())); }
     let granularity = q.granularity.as_deref().unwrap_or("15min");
     if !["15min", "hourly"].contains(&granularity) { return Err(AppError::BadRequest("granularity 无效".into())); }
@@ -524,18 +535,24 @@ pub async fn charge_historical_curve(
         started_at: started_at.to_rfc3339(),
         ended_at: ended_at.to_rfc3339(),
     };
-    let data: serde_json::Value = common_http::internal::ApiClient::new(st.http.clone(), st.service_token.clone())
-        .get(st.cfg.service_urls.gateway.as_deref(), &path, &device_query).await?;
-    let series = data.get("series").cloned().unwrap_or_else(|| json!([]));
-    let mut summary = data.get("summary").cloned().unwrap_or_else(|| json!({}));
-    summary["total_kwh"] = row.try_get::<Option<String>, _>("charged_kwh")?
-        .map_or(serde_json::Value::Null, |amount| json!(amount));
-    Ok(Json(crate::api_envelope::Envelope::ok(json!({
-        "order_id": row.try_get::<u64, _>("id")?,
-        "granularity": granularity,
-        "series": series,
-        "summary": summary
-    }), common_error::current_request_id())))
+    let curve: api_contracts::gateway_devices::DeviceHistoricalCurveResponse =
+        common_http::internal::ApiClient::new(st.http.clone(), st.service_token.clone())
+            .get(st.cfg.service_urls.gateway.as_deref(), &path, &device_query).await?;
+    let total_kwh = row.try_get::<Option<String>, _>("charged_kwh")?;
+    Ok(Json(crate::api_envelope::Envelope::ok(
+        api_contracts::charge::ChargeHistoricalCurveResponse {
+            order_id: row.try_get::<u64, _>("id")?,
+            granularity: granularity.to_string(),
+            series: curve.series,
+            summary: api_contracts::charge::HistoricalCurveUserSummary {
+                max_power_w: curve.summary.max_power_w,
+                max_temperature_c: curve.summary.max_temperature_c,
+                avg_power_w: curve.summary.avg_power_w,
+                total_kwh,
+            },
+        },
+        common_error::current_request_id(),
+    )))
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -767,10 +784,11 @@ pub async fn phone_unbind(
 pub async fn announcement_list(
     State(st): State<AppState>,
     _claims: UserClaims,
-) -> AppResult<Json<crate::api_envelope::Envelope<serde_json::Value>>> {
-    let items: serde_json::Value = common_http::internal::ApiClient::new(st.http.clone(), st.service_token.clone())
-        .get(st.cfg.service_urls.admin.as_deref(), p::ADMIN_INTERNAL_ANNOUNCEMENTS_ACTIVE, &())
-        .await?;
+) -> AppResult<Json<crate::api_envelope::Envelope<api_contracts::charge::ActiveAnnouncementsResponse>>> {
+    let items: api_contracts::charge::ActiveAnnouncementsResponse =
+        common_http::internal::ApiClient::new(st.http.clone(), st.service_token.clone())
+            .get(st.cfg.service_urls.admin.as_deref(), p::ADMIN_INTERNAL_ANNOUNCEMENTS_ACTIVE, &())
+            .await?;
     Ok(Json(crate::api_envelope::Envelope::ok(items, common_error::current_request_id())))
 }
 
@@ -784,17 +802,27 @@ pub async fn customer_service_entry(
     State(st): State<AppState>,
     _claims: UserClaims,
     Json(req): Json<CustomerServiceRequest>,
-) -> AppResult<Json<crate::api_envelope::Envelope<serde_json::Value>>> {
+) -> AppResult<Json<crate::api_envelope::Envelope<api_contracts::charge::CustomerServiceEntryResponse>>> {
     if !["general", "refund", "complaint"].contains(&req.scene.as_str()) {
         return Err(AppError::BadRequest("客服场景无效".into()));
     }
-    let mut entry: serde_json::Value = common_http::internal::ApiClient::new(st.http.clone(), st.service_token.clone())
-        .get(st.cfg.service_urls.admin.as_deref(), p::ADMIN_INTERNAL_CUSTOMER_SERVICE_ENTRY, &req)
-        .await?;
-    let corp_id = st.cfg.wechat.as_ref().and_then(|config| config.customer_service_corp_id.as_deref());
-    let entry_url = entry.get("entry_url").and_then(serde_json::Value::as_str).filter(|url| url.starts_with("https://"));
+    let entry: api_contracts::charge::CustomerServiceEntry =
+        common_http::internal::ApiClient::new(st.http.clone(), st.service_token.clone())
+            .get(st.cfg.service_urls.admin.as_deref(), p::ADMIN_INTERNAL_CUSTOMER_SERVICE_ENTRY, &req)
+            .await?;
+    let corp_id = st.cfg.wechat.as_ref().and_then(|config| config.customer_service_corp_id.as_deref()).map(|v| v.to_string());
+    // corp_id 与 https 入口齐备才算可用
+    let entry_url = entry.entry_url.filter(|url| url.starts_with("https://"));
     let available = corp_id.is_some() && entry_url.is_some();
-    entry["corp_id"] = corp_id.map_or(serde_json::Value::Null, |value| json!(value));
-    entry["available"] = json!(available);
-    Ok(Json(crate::api_envelope::Envelope::ok(entry, common_error::current_request_id())))
+    Ok(Json(crate::api_envelope::Envelope::ok(
+        api_contracts::charge::CustomerServiceEntryResponse {
+            agent_wechat: entry.agent_wechat,
+            agent_name: entry.agent_name,
+            entry_url,
+            scene: entry.scene,
+            corp_id,
+            available,
+        },
+        common_error::current_request_id(),
+    )))
 }

@@ -6,20 +6,25 @@ use axum::{extract::{Path, State}, Json};
 use common_error::{AppError, AppResult};
 use serde_json::{json, Value};
 
-pub async fn announcements_active(State(st): State<AppState>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn announcements_active(State(st): State<AppState>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::charge::ActiveAnnouncementsResponse>>> {
     let rows = sqlx::query(
         "SELECT id, title, content, priority, start_at, end_at
          FROM announcement
          WHERE status = 'published' AND deleted_at IS NULL AND start_at <= NOW() AND (end_at IS NULL OR end_at >= NOW())
          ORDER BY priority DESC, id DESC LIMIT 50"
     ).fetch_all(st.db.pool()).await?;
-    let items: Vec<Value> = rows.iter().map(|r| -> AppResult<Value> { Ok(json!({
-        "id": sqlx::Row::try_get::<u64, _>(r, "id")?,
-        "title": sqlx::Row::try_get::<String, _>(r, "title")?,
-        "content": sqlx::Row::try_get::<String, _>(r, "content")?,
-        "priority": sqlx::Row::try_get::<u8, _>(r, "priority")?,
-    })) }).collect::<AppResult<Vec<_>>>()?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"items": items}), common_error::current_request_id())))
+    let items = rows.iter().map(|r| -> AppResult<api_contracts::charge::Announcement> {
+        Ok(api_contracts::charge::Announcement {
+            id: sqlx::Row::try_get::<u64, _>(r, "id")?,
+            title: sqlx::Row::try_get::<String, _>(r, "title")?,
+            content: sqlx::Row::try_get::<String, _>(r, "content")?,
+            priority: sqlx::Row::try_get::<u8, _>(r, "priority")?,
+        })
+    }).collect::<AppResult<Vec<_>>>()?;
+    Ok(Json(common_error::ApiEnvelope::ok(
+        api_contracts::charge::ActiveAnnouncementsResponse { items },
+        common_error::current_request_id(),
+    )))
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -156,7 +161,7 @@ pub struct CustomerServiceEntryQuery {
 pub async fn customer_service_entry(
     State(st): State<AppState>,
     axum::extract::Query(q): axum::extract::Query<CustomerServiceEntryQuery>,
-) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::charge::CustomerServiceEntry>>> {
     if !["general", "refund", "complaint"].contains(&q.scene.as_str()) {
         return Err(AppError::BadRequest("客服场景无效".into()));
     }
@@ -169,10 +174,13 @@ pub async fn customer_service_entry(
     .ok_or_else(|| AppError::NotFound("当前暂无可用客服".into()))?;
     let entry_url: Option<String> = sqlx::Row::try_get(&row, "path")?;
     let entry_url = entry_url.filter(|url| url.starts_with("https://") && !url.chars().any(char::is_control));
-    Ok(Json(common_error::ApiEnvelope::ok(json!({
-        "agent_wechat": sqlx::Row::try_get::<String, _>(&row, "agent_wechat")?,
-        "agent_name": sqlx::Row::try_get::<Option<String>, _>(&row, "agent_name")?,
-        "entry_url": entry_url,
-        "scene": q.scene,
-    }), common_error::current_request_id())))
+    Ok(Json(common_error::ApiEnvelope::ok(
+        api_contracts::charge::CustomerServiceEntry {
+            agent_wechat: sqlx::Row::try_get::<String, _>(&row, "agent_wechat")?,
+            agent_name: sqlx::Row::try_get::<Option<String>, _>(&row, "agent_name")?,
+            entry_url,
+            scene: q.scene,
+        },
+        common_error::current_request_id(),
+    )))
 }
