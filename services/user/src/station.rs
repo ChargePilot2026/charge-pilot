@@ -112,7 +112,7 @@ pub async fn report_fault(
 
 pub async fn my_fault_reports(
     State(st): State<AppState>, claims: UserClaims, Query(q): Query<FaultHistoryQuery>,
-) -> AppResult<Json<common_error::ApiEnvelope<serde_json::Value>>> {
+) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::PagedResponse<api_contracts::charge::MyFaultReport>>> >{
     let page = q.page.unwrap_or(1);
     let page_size = q.page_size.unwrap_or(20);
     if page == 0 || page > 100_000 || !(1..=100).contains(&page_size) {
@@ -126,17 +126,20 @@ pub async fn my_fault_reports(
          FROM device_fault_report WHERE user_id=? AND deleted_at IS NULL
          ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?",
     ).bind(claims.user_id).bind(page_size).bind(offset).fetch_all(st.db.pool()).await?;
-    let items: Vec<serde_json::Value> = rows.iter().map(|row| -> common_error::AppResult<serde_json::Value> { Ok(serde_json::json!({
-        "report_id": sqlx::Row::try_get::<u64,_>(row,"id")?.to_string(),
-        "device_id": sqlx::Row::try_get::<String,_>(row,"device_id")?,
-        "fault_type": sqlx::Row::try_get::<String,_>(row,"fault_type")?,
-        "description": sqlx::Row::try_get::<Option<String>,_>(row,"description")?,
-        "status": sqlx::Row::try_get::<String,_>(row,"status")?,
-        "resolved_at": sqlx::Row::try_get::<Option<chrono::DateTime<chrono::Utc>>,_>(row,"resolved_at")?.map(|v|v.to_rfc3339()),
-        "created_at": sqlx::Row::try_get::<chrono::DateTime<chrono::Utc>,_>(row,"created_at")?.to_rfc3339(),
-        "updated_at": sqlx::Row::try_get::<chrono::DateTime<chrono::Utc>,_>(row,"updated_at")?.to_rfc3339(),
-    })) }).collect::<common_error::AppResult<Vec<_>>>()?;
-    Ok(Json(common_error::ApiEnvelope::ok(serde_json::json!({"items":items,"total":total,"page":page,"page_size":page_size}), common_error::current_request_id())))
+    let items = rows.iter().map(|row| -> common_error::AppResult<api_contracts::charge::MyFaultReport> { Ok(api_contracts::charge::MyFaultReport {
+        report_id: sqlx::Row::try_get::<u64,_>(row,"id")?.to_string(),
+        device_id: sqlx::Row::try_get::<String,_>(row,"device_id")?,
+        fault_type: sqlx::Row::try_get::<String,_>(row,"fault_type")?,
+        description: sqlx::Row::try_get::<Option<String>,_>(row,"description")?,
+        status: sqlx::Row::try_get::<String,_>(row,"status")?,
+        resolved_at: sqlx::Row::try_get::<Option<chrono::DateTime<chrono::Utc>>,_>(row,"resolved_at")?.map(|v|v.to_rfc3339()),
+        created_at: sqlx::Row::try_get::<chrono::DateTime<chrono::Utc>,_>(row,"created_at")?.to_rfc3339(),
+        updated_at: sqlx::Row::try_get::<chrono::DateTime<chrono::Utc>,_>(row,"updated_at")?.to_rfc3339(),
+    }) }).collect::<common_error::AppResult<Vec<_>>>()?;
+    Ok(Json(common_error::ApiEnvelope::ok(
+        api_contracts::common::PagedResponse { items, total, page, page_size, permissions: vec![] },
+        common_error::current_request_id(),
+    )))
 }
 
 pub async fn my_fault_history(
@@ -144,7 +147,7 @@ pub async fn my_fault_history(
     claims: UserClaims,
     Path(id): Path<String>,
     Query(q): Query<FaultHistoryQuery>,
-) -> AppResult<Json<common_error::ApiEnvelope<serde_json::Value>>> {
+) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::PagedResponse<api_contracts::charge::MyFaultEvent>>> >{
     let report_id = id.parse::<u64>().map_err(|_| AppError::BadRequest("报修编号无效".into()))?;
     let page = q.page.unwrap_or(1);
     let page_size = q.page_size.unwrap_or(20);
@@ -164,16 +167,16 @@ pub async fn my_fault_history(
          FROM device_fault_report_event WHERE report_id=? AND user_visible=1
          ORDER BY created_at,id LIMIT ? OFFSET ?",
     ).bind(report_id).bind(page_size).bind(offset).fetch_all(st.db.pool()).await?;
-    let items: Vec<serde_json::Value> = rows.iter().map(|row| -> AppResult<serde_json::Value> { Ok(serde_json::json!({
-        "event_id": sqlx::Row::try_get::<u64,_>(row,"id")?.to_string(),
-        "event_type": sqlx::Row::try_get::<String,_>(row,"event_type")?,
-        "from_status": sqlx::Row::try_get::<Option<String>,_>(row,"from_status")?,
-        "to_status": sqlx::Row::try_get::<Option<String>,_>(row,"to_status")?,
-        "note": sqlx::Row::try_get::<Option<String>,_>(row,"note")?,
-        "created_at": sqlx::Row::try_get::<chrono::DateTime<chrono::Utc>,_>(row,"created_at")?.to_rfc3339(),
-    })) }).collect::<AppResult<Vec<_>>>()?;
+    let items = rows.iter().map(|row| -> AppResult<api_contracts::charge::MyFaultEvent> { Ok(api_contracts::charge::MyFaultEvent {
+        event_id: sqlx::Row::try_get::<u64,_>(row,"id")?.to_string(),
+        event_type: sqlx::Row::try_get::<String,_>(row,"event_type")?,
+        from_status: sqlx::Row::try_get::<Option<String>,_>(row,"from_status")?,
+        to_status: sqlx::Row::try_get::<Option<String>,_>(row,"to_status")?,
+        note: sqlx::Row::try_get::<Option<String>,_>(row,"note")?,
+        created_at: sqlx::Row::try_get::<chrono::DateTime<chrono::Utc>,_>(row,"created_at")?.to_rfc3339(),
+    }) }).collect::<AppResult<Vec<_>>>()?;
     Ok(Json(common_error::ApiEnvelope::ok(
-        serde_json::json!({"items":items,"total":total,"page":page,"page_size":page_size}),
+        api_contracts::common::PagedResponse { items, total, page, page_size, permissions: vec![] },
         common_error::current_request_id(),
     )))
 }

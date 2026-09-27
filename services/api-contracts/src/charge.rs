@@ -490,6 +490,51 @@ mod coupon_tests {
 
 // ===== 工单与报修(user 生产,admin 消费)=====
 
+/// 用户的报修列表项。
+///
+/// 与 admin 侧的 `FaultReport` 字段**完全一致**,唯一差别是主键字段名:
+/// 这里是 **`report_id`**(面向小程序语义),admin 侧是 `id`。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MyFaultReport {
+    pub report_id: String,
+    pub device_id: String,
+    pub fault_type: String,
+    pub description: Option<String>,
+    pub status: String,
+    pub resolved_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// 用户看到的报修流转事件。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MyFaultEvent {
+    pub event_id: String,
+    pub event_type: String,
+    pub from_status: Option<String>,
+    pub to_status: Option<String>,
+    pub note: Option<String>,
+    pub created_at: String,
+}
+
+#[cfg(test)]
+mod my_fault_tests {
+    use super::*;
+
+    /// 回归护栏:用户侧主键字段是 `report_id`(**不是** `id`)
+    #[test]
+    fn my_fault_uses_report_id() {
+        let v = serde_json::to_value(MyFaultReport {
+            report_id: "1".into(), device_id: "D1".into(), fault_type: "offline".into(),
+            description: None, status: "open".into(), resolved_at: None,
+            created_at: "t".into(), updated_at: "t".into(),
+        })
+        .unwrap();
+        assert!(v["report_id"].is_string());
+        assert!(v.get("id").is_none());
+    }
+}
+
 /// 用户反馈。
 ///
 /// ⚠️ `id` / `user_id` / `order_id` / `replied_by` 是**字符串**——实现里
