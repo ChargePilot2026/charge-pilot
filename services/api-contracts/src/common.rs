@@ -71,11 +71,22 @@ impl DeletedResponse {
     }
 }
 
-/// 通用列表响应。
+/// 通用列表响应(仅 `items`)。
 ///
-/// ⚠️ 技术规格 §7.5 期望的字段是 `total` / `page` / `page_size` / `data[]`,
-/// 但现存端点多用 `{items}` 且不返回 `total`。本类型**按现状固化**,
-/// 统一分页形状属独立议题,不在本轮改动 —— 改动会破坏前端。
+/// 现存端点**两种形状都有**:
+/// - 只回 `{items}`:roles / users / coupons / customer_service / announcements
+/// - 回 `{items, total, page, page_size, permissions}`:stations(含分页与权限)
+/// 因此提供 `ListResponse`(前者)与 `PagedResponse`(后者)两个类型,
+/// **按现状固化**,不强行统一 —— 改形状会破坏 admin-web。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PagedResponse<T> {
+    pub items: Vec<T>,
+    pub total: i64,
+    pub page: u32,
+    pub page_size: u32,
+    /// 调用者权限码,后台据此显示/隐藏操作按钮
+    pub permissions: Vec<String>,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListResponse<T> {
     pub items: Vec<T>,
@@ -114,6 +125,23 @@ mod tests {
     fn empty_list_still_has_items_array() {
         let v = serde_json::to_value(ListResponse::<u64>::new(vec![])).unwrap();
         assert!(v["items"].is_array());
+        assert!(v.get("total").is_none(), "非分页列表不应凭空多出 total");
+    }
+
+    /// 分页列表必须带 total/page/page_size/permissions
+    #[test]
+    fn paged_list_keeps_all_four_fields() {
+        let p = PagedResponse::<u64> {
+            items: vec![],
+            total: 42,
+            page: 2,
+            page_size: 20,
+            permissions: vec!["station.read".into()],
+        };
+        let v = serde_json::to_value(&p).unwrap();
+        assert_eq!(v["total"], 42);
+        assert_eq!(v["page"], 2);
+        assert!(v["permissions"].is_array());
     }
 
     #[test]

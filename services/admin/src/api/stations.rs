@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 #[serde(deny_unknown_fields)]
 pub struct StationQuery { page:Option<u32>,page_size:Option<u32>,keyword:Option<String>,status:Option<String> }
 
-pub async fn list(State(st): State<AppState>, actor: ActiveAdmin, Query(q):Query<StationQuery>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn list(State(st): State<AppState>, actor: ActiveAdmin, Query(q):Query<StationQuery>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::PagedResponse<api_contracts::admin::Station>>>> {
     crate::auth::require_permission(&st,&actor, "station.read").await?;
     let page=q.page.unwrap_or(1);let page_size=q.page_size.unwrap_or(20);
     if page==0 || !(1..=100).contains(&page_size){return Err(AppError::BadRequest("分页参数无效".into()));}
@@ -28,24 +28,35 @@ pub async fn list(State(st): State<AppState>, actor: ActiveAdmin, Query(q):Query
         "SELECT id,code,name,address,longitude+0e0 AS longitude,latitude+0e0 AS latitude,status,open_hours,contact_phone,pricing_template_id,split_template_id FROM station{filter} ORDER BY id DESC LIMIT ? OFFSET ?"
     )).bind(keyword).bind(keyword).bind(keyword).bind(keyword).bind(status).bind(status)
         .bind(page_size).bind(u64::from(page-1)*u64::from(page_size)).fetch_all(&mut *tx).await?;
-    let items: Vec<Value> = rows.iter().map(|r| -> AppResult<Value> { Ok(json!({
-        "id": sqlx::Row::try_get::<u64, _>(r,"id")?,
-        "code": sqlx::Row::try_get::<String, _>(r,"code")?,
-        "name": sqlx::Row::try_get::<String, _>(r,"name")?,
-        "address": sqlx::Row::try_get::<Option<String>, _>(r,"address")?,
-        "longitude": sqlx::Row::try_get::<f64, _>(r,"longitude")?,
-        "latitude": sqlx::Row::try_get::<f64, _>(r,"latitude")?,
-        "status": sqlx::Row::try_get::<String, _>(r,"status")?,
-        "open_hours": sqlx::Row::try_get::<Option<String>, _>(r,"open_hours")?,
-        "contact_phone": sqlx::Row::try_get::<Option<String>, _>(r,"contact_phone")?,
-        "pricing_template_id": sqlx::Row::try_get::<Option<u64>, _>(r,"pricing_template_id")?,
-        "split_template_id": sqlx::Row::try_get::<Option<u64>, _>(r,"split_template_id")?,
-    })) }).collect::<AppResult<_>>()?;
+    let items = rows.iter().map(|r| -> AppResult<api_contracts::admin::Station> {
+        Ok(api_contracts::admin::Station {
+            id: sqlx::Row::try_get::<u64, _>(r,"id")?,
+            code: sqlx::Row::try_get::<String, _>(r,"code")?,
+            name: sqlx::Row::try_get::<String, _>(r,"name")?,
+            address: sqlx::Row::try_get::<Option<String>, _>(r,"address")?,
+            longitude: sqlx::Row::try_get::<f64, _>(r,"longitude")?,
+            latitude: sqlx::Row::try_get::<f64, _>(r,"latitude")?,
+            status: sqlx::Row::try_get::<String, _>(r,"status")?,
+            open_hours: sqlx::Row::try_get::<Option<String>, _>(r,"open_hours")?,
+            contact_phone: sqlx::Row::try_get::<Option<String>, _>(r,"contact_phone")?,
+            pricing_template_id: sqlx::Row::try_get::<Option<u64>, _>(r,"pricing_template_id")?,
+            split_template_id: sqlx::Row::try_get::<Option<u64>, _>(r,"split_template_id")?,
+        })
+    }).collect::<AppResult<Vec<_>>>()?;
     tx.commit().await?;
     let permissions:Vec<String>=sqlx::query_scalar(
         "SELECT p.code FROM admin_user_role a JOIN role r ON r.id=a.role_id          JOIN role_permission rp ON rp.role_id=r.id JOIN permission p ON p.id=rp.permission_id          WHERE a.id=? AND a.status='active' AND a.deleted_at IS NULL AND r.deleted_at IS NULL          AND p.code IN ('station.read','station.create','station.update','station.delete') ORDER BY p.code"
     ).bind(actor.admin_user_id).fetch_all(st.db.pool()).await?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"items": items,"permissions":permissions,"total":total,"page":page,"page_size":page_size}), common_error::current_request_id())))
+    Ok(Json(common_error::ApiEnvelope::ok(
+        api_contracts::common::PagedResponse {
+            items,
+            permissions,
+            total,
+            page,
+            page_size,
+        },
+        common_error::current_request_id(),
+    )))
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -86,16 +97,19 @@ pub async fn create(State(st): State<AppState>, actor: ActiveAdmin, Json(req): J
     Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::CreatedResponse { id: id }, common_error::current_request_id())))
 }
 
-pub async fn get(State(st): State<AppState>, actor: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn get(State(st): State<AppState>, actor: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::admin::StationDetail>>> {
     crate::auth::require_permission(&st,&actor, "station.read").await?;
     let r: Option<(u64, String, String, Option<String>, f64, f64, String)> = sqlx::query_as(
         "SELECT id, code, name, address, longitude+0e0, latitude+0e0, status FROM station WHERE id = ? AND deleted_at IS NULL"
     ).bind(id).fetch_optional(st.db.pool()).await?;
     let r = r.ok_or_else(|| AppError::NotFound("station".into()))?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({
-        "id": r.0, "code": r.1, "name": r.2, "address": r.3,
-        "longitude": r.4, "latitude": r.5, "status": r.6,
-    }), common_error::current_request_id())))
+    Ok(Json(common_error::ApiEnvelope::ok(
+        api_contracts::admin::StationDetail {
+            id: r.0, code: r.1, name: r.2, address: r.3,
+            longitude: r.4, latitude: r.5, status: r.6,
+        },
+        common_error::current_request_id(),
+    )))
 }
 
 #[derive(Debug, Deserialize, Serialize)]

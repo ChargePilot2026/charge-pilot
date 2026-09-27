@@ -58,19 +58,22 @@ pub async fn create(State(st): State<AppState>, _c: ActiveAdmin, Json(req): Json
     Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::CreatedResponse { id: id }, common_error::current_request_id())))
 }
 
-pub async fn get(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn get(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::admin::CustomerServiceDetail>>> {
     let r = sqlx::query("SELECT id, agent_wechat, agent_name, path, priority, enabled, working_hours_json FROM customer_service_config WHERE id = ?")
         .bind(id).fetch_optional(st.db.pool()).await?;
     let r = r.ok_or_else(|| AppError::NotFound("cs".into()))?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({
-        "id": sqlx::Row::try_get::<u64, _>(&r, "id")?,
-        "agent_wechat": sqlx::Row::try_get::<String, _>(&r, "agent_wechat")?,
-        "agent_name": sqlx::Row::try_get::<Option<String>, _>(&r, "agent_name")?,
-        "path": sqlx::Row::try_get::<Option<String>, _>(&r, "path")?,
-        "priority": sqlx::Row::try_get::<u32, _>(&r, "priority")?,
-        "enabled": sqlx::Row::try_get::<i8, _>(&r, "enabled")? != 0,
-        "working_hours_json": sqlx::Row::try_get::<Option<serde_json::Value>, _>(&r, "working_hours_json")?,
-    }), common_error::current_request_id())))
+    Ok(Json(common_error::ApiEnvelope::ok(
+        api_contracts::admin::CustomerServiceDetail {
+            id: sqlx::Row::try_get::<u64, _>(&r, "id")?,
+            agent_wechat: sqlx::Row::try_get::<String, _>(&r, "agent_wechat")?,
+            agent_name: sqlx::Row::try_get::<Option<String>, _>(&r, "agent_name")?,
+            path: sqlx::Row::try_get::<Option<String>, _>(&r, "path")?,
+            priority: sqlx::Row::try_get::<u32, _>(&r, "priority")?,
+            enabled: sqlx::Row::try_get::<i8, _>(&r, "enabled")? != 0,
+            working_hours_json: sqlx::Row::try_get::<Option<serde_json::Value>, _>(&r, "working_hours_json")?,
+        },
+        common_error::current_request_id(),
+    )))
 }
 
 pub async fn update(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>, Json(req): Json<CSCreateReq>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::UpdatedResponse>>> {

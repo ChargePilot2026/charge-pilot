@@ -59,21 +59,26 @@ pub async fn create(State(st): State<AppState>, _c: ActiveAdmin, Json(req): Json
     Ok(Json(common_error::ApiEnvelope::ok(json!({"created": true}), common_error::current_request_id())))
 }
 
-pub async fn get(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn get(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::admin::AdminUserDetail>>> {
     let r = sqlx::query("SELECT id, username, display_name, role_id, status, phone, email, last_login_at, created_at FROM admin_user_role WHERE id = ? AND deleted_at IS NULL")
         .bind(id).fetch_optional(st.db.pool()).await?;
     let r = r.ok_or_else(|| AppError::NotFound("user".into()))?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({
-        "id": sqlx::Row::try_get::<u64, _>(&r, "id")?,
-        "username": sqlx::Row::try_get::<String, _>(&r, "username")?,
-        "display_name": sqlx::Row::try_get::<Option<String>, _>(&r, "display_name")?,
-        "role_id": sqlx::Row::try_get::<Option<u64>, _>(&r, "role_id")?,
-        "status": sqlx::Row::try_get::<String, _>(&r, "status")?,
-        "phone": sqlx::Row::try_get::<Option<String>, _>(&r, "phone")?,
-        "email": sqlx::Row::try_get::<Option<String>, _>(&r, "email")?,
-        "last_login_at": sqlx::Row::try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(&r, "last_login_at")?.map(|t| t.to_rfc3339()),
-        "created_at": sqlx::Row::try_get::<chrono::DateTime<chrono::Utc>, _>(&r, "created_at")?.to_rfc3339(),
-    }), common_error::current_request_id())))
+    Ok(Json(common_error::ApiEnvelope::ok(
+        api_contracts::admin::AdminUserDetail {
+            id: sqlx::Row::try_get::<u64, _>(&r, "id")?,
+            username: sqlx::Row::try_get::<String, _>(&r, "username")?,
+            display_name: sqlx::Row::try_get::<Option<String>, _>(&r, "display_name")?,
+            role_id: sqlx::Row::try_get::<Option<u64>, _>(&r, "role_id")?,
+            status: sqlx::Row::try_get::<String, _>(&r, "status")?,
+            phone: sqlx::Row::try_get::<Option<String>, _>(&r, "phone")?,
+            email: sqlx::Row::try_get::<Option<String>, _>(&r, "email")?,
+            last_login_at: sqlx::Row::try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(&r, "last_login_at")?
+                .map(|t| t.to_rfc3339()),
+            created_at: sqlx::Row::try_get::<chrono::DateTime<chrono::Utc>, _>(&r, "created_at")?
+                .to_rfc3339(),
+        },
+        common_error::current_request_id(),
+    )))
 }
 
 #[derive(Debug, Deserialize)]

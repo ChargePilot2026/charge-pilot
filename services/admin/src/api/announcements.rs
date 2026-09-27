@@ -48,18 +48,21 @@ pub async fn create(State(st): State<AppState>, c: ActiveAdmin, Json(req): Json<
     Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::CreatedResponse { id: id }, common_error::current_request_id())))
 }
 
-pub async fn get(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn get(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::admin::AnnouncementDetailV2>>> {
     let r = sqlx::query("SELECT id, title, content, scope, priority, start_at, end_at, status FROM announcement WHERE id = ? AND deleted_at IS NULL")
         .bind(id).fetch_optional(st.db.pool()).await?;
     let r = r.ok_or_else(|| AppError::NotFound("announcement".into()))?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({
-        "id": sqlx::Row::try_get::<u64, _>(&r, "id")?,
-        "title": sqlx::Row::try_get::<String, _>(&r, "title")?,
-        "content": sqlx::Row::try_get::<String, _>(&r, "content")?,
-        "scope": sqlx::Row::try_get::<String, _>(&r, "scope")?,
-        "priority": sqlx::Row::try_get::<u8, _>(&r, "priority")?,
-        "status": sqlx::Row::try_get::<String, _>(&r, "status")?,
-    }), common_error::current_request_id())))
+    Ok(Json(common_error::ApiEnvelope::ok(
+        api_contracts::admin::AnnouncementDetailV2 {
+            id: sqlx::Row::try_get::<u64, _>(&r, "id")?,
+            title: sqlx::Row::try_get::<String, _>(&r, "title")?,
+            content: sqlx::Row::try_get::<String, _>(&r, "content")?,
+            scope: sqlx::Row::try_get::<String, _>(&r, "scope")?,
+            priority: sqlx::Row::try_get::<u8, _>(&r, "priority")?,
+            status: sqlx::Row::try_get::<String, _>(&r, "status")?,
+        },
+        common_error::current_request_id(),
+    )))
 }
 
 #[derive(Debug, Deserialize)]

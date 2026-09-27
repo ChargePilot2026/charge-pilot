@@ -52,15 +52,16 @@ pub async fn create(State(st): State<AppState>, _c: ActiveAdmin, Json(req): Json
     Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::CreatedResponse { id: role_id }, common_error::current_request_id())))
 }
 
-pub async fn get(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn get(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::admin::RoleDetail>>> {
     let r: Option<(u64, String, String, Option<String>)> = sqlx::query_as("SELECT id, code, name, description FROM role WHERE id = ? AND deleted_at IS NULL")
         .bind(id).fetch_optional(st.db.pool()).await?;
     let (id, code, name, desc) = r.ok_or_else(|| AppError::NotFound("role".into()))?;
     let perms: Vec<u64> = sqlx::query_scalar("SELECT permission_id FROM role_permission WHERE role_id = ?")
         .bind(id).fetch_all(st.db.pool()).await?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({
-        "id": id, "code": code, "name": name, "description": desc, "permission_ids": perms,
-    }), common_error::current_request_id())))
+    Ok(Json(common_error::ApiEnvelope::ok(
+        api_contracts::admin::RoleDetail { id, code, name, description: desc, permission_ids: perms },
+        common_error::current_request_id(),
+    )))
 }
 
 #[derive(Debug, Deserialize)]
