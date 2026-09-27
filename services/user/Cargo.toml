@@ -23,6 +23,7 @@ common-stream = { path = "../../crates/common-stream" }
 common-http = { path = "../../crates/common-http" }
 common-wechat = { path = "../../crates/common-wechat" }
 common-telemetry = { path = "../../crates/common-telemetry" }
+common-app = { path = "../../crates/common-app" }
 api-contracts = { path = "../api-contracts" }
 
 tokio.workspace = true

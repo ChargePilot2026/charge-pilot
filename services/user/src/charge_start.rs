@@ -38,7 +38,7 @@ pub async fn process(
 ) -> AppResult<(String, u64)> {
     validate(path, req)?;
     for attempt in 0..3 {
-        let mut tx = pool.begin().await?;
+        let mut tx = common_db::Tx::from_transaction(pool.begin().await?);
         match apply(&mut tx, path, req).await {
             Ok(result) => {
                 tx.commit().await?;
@@ -59,7 +59,7 @@ pub async fn process(
 
 /// Returns the canonical port code/user to release only this order's Redis hold after commit.
 pub async fn apply(
-    tx: &mut Transaction<'_, MySql>,
+    tx: &mut common_db::Tx<'_>,
     path: &str,
     req: &StartResultRequest,
 ) -> AppResult<(String, u64)> {
@@ -68,7 +68,7 @@ pub async fn apply(
         "SELECT id,payment_order_id FROM charge_order WHERE order_no=? AND deleted_at IS NULL",
     )
     .bind(path)
-    .fetch_all(&mut **tx)
+    .fetch_all(tx.executor())
     .await?;
     if ids.len() != 1 {
         return Err(AppError::NotFound("充电订单不存在或重复".into()));
@@ -77,13 +77,13 @@ pub async fn apply(
     let pid = pid.ok_or_else(conflict)?;
     // Match cancellation and payment notification lock order to avoid reversing locks.
     let pays=sqlx::query("SELECT biz_id,user_id,biz_type,status,paid_cents,refunded_cents FROM payment_order WHERE id=? AND deleted_at IS NULL FOR UPDATE")
-        .bind(pid).fetch_all(&mut **tx).await?;
+        .bind(pid).fetch_all(tx.executor()).await?;
     if pays.len() != 1 {
         return Err(conflict());
     }
     let pay = &pays[0];
     let orders=sqlx::query("SELECT user_id,device_id,port_no,port_code,payment_order_id,status FROM charge_order WHERE id=? AND deleted_at IS NULL FOR UPDATE")
-        .bind(cid).fetch_all(&mut **tx).await?;
+        .bind(cid).fetch_all(tx.executor()).await?;
     if orders.len() != 1 {
         return Err(conflict());
     }
@@ -101,7 +101,7 @@ pub async fn apply(
         return Err(conflict());
     }
     let receipt:Option<(String,bool,Option<u64>)>=sqlx::query_as("SELECT CAST(command_id AS CHAR CHARACTER SET utf8mb4),success,port_id FROM charge_start_receipt WHERE charge_order_id=? FOR UPDATE")
-        .bind(cid).fetch_optional(&mut **tx).await?;
+        .bind(cid).fetch_optional(tx.executor()).await?;
     if let Some((saved, success, port)) = receipt {
         if saved != command || success != req.success || port != req.port_id {
             return Err(conflict());
@@ -119,7 +119,7 @@ pub async fn apply(
         .filter(|v| *v > 0)
         .ok_or_else(conflict)?;
     let refunds:Vec<(i64,String)>=sqlx::query_as("SELECT refund_cents,status FROM refund_record WHERE payment_order_id=? AND deleted_at IS NULL FOR UPDATE")
-        .bind(pid).fetch_all(&mut **tx).await?;
+        .bind(pid).fetch_all(tx.executor()).await?;
     if req.success && (!refunds.is_empty() || pay.try_get::<i64, _>("refunded_cents")? != 0) {
         return Err(conflict());
     }
@@ -138,7 +138,7 @@ pub async fn apply(
     if req.success {
         let port_id = req.port_id.ok_or_else(conflict)?;
         let occupied=sqlx::query("SELECT port_id,device_id,port_no,charge_order_id,ended_at FROM active_port_charge WHERE port_id=? OR (device_id=? AND port_no=?) FOR UPDATE")
-            .bind(port_id).bind(&req.device_id).bind(req.port_no).fetch_all(&mut **tx).await?;
+            .bind(port_id).bind(&req.device_id).bind(req.port_no).fetch_all(tx.executor()).await?;
         if occupied.len() > 1 {
             return Err(conflict());
         }
@@ -154,24 +154,24 @@ pub async fn apply(
                 return Err(conflict());
             }
             sqlx::query("UPDATE active_port_charge SET charge_order_id=?,user_id=?,started_at=UTC_TIMESTAMP(3),ended_at=NULL WHERE port_id=?")
-                .bind(cid).bind(uid).bind(port_id).execute(&mut **tx).await?;
+                .bind(cid).bind(uid).bind(port_id).execute(tx.executor()).await?;
         } else {
             sqlx::query("INSERT INTO active_port_charge (port_id,device_id,port_no,charge_order_id,user_id,started_at) VALUES (?,?,?,?,?,UTC_TIMESTAMP(3))")
-                .bind(port_id).bind(&req.device_id).bind(req.port_no).bind(cid).bind(uid).execute(&mut **tx).await?;
+                .bind(port_id).bind(&req.device_id).bind(req.port_no).bind(cid).bind(uid).execute(tx.executor()).await?;
         }
         sqlx::query(
             "UPDATE charge_order SET status='charging',started_at=UTC_TIMESTAMP(3) WHERE id=?",
         )
         .bind(cid)
-        .execute(&mut **tx)
+        .execute(tx.executor())
         .await?;
     } else {
         sqlx::query("UPDATE charge_order SET status='failed',failure_reason=?,ended_at=UTC_TIMESTAMP(3) WHERE id=?")
-            .bind(req.error.as_deref().unwrap_or("设备拒绝启动")).bind(cid).execute(&mut **tx).await?;
+            .bind(req.error.as_deref().unwrap_or("设备拒绝启动")).bind(cid).execute(tx.executor()).await?;
         if available > 0 {
             let refund_no = IdGen::new("REF").next();
             sqlx::query("INSERT INTO refund_record (refund_no,payment_order_id,user_id,biz_type,biz_id,refund_cents,reason,status,created_month) VALUES (?,?,?,'charge',?,?,'设备启动失败','pending',DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))")
-            .bind(&refund_no).bind(pid).bind(uid).bind(cid).bind(available).execute(&mut **tx).await?;
+            .bind(&refund_no).bind(pid).bind(uid).bind(cid).bind(available).execute(tx.executor()).await?;
             let event = StreamEnvelope::new(
                 "refund_required",
                 "user",
@@ -181,12 +181,12 @@ pub async fn apply(
                 .bind(&event.event_id)
                 .bind(common_redis::streams::REFUND_REQUIRED)
                 .bind(serde_json::to_value(&event)?)
-                .execute(&mut **tx)
+                .execute(tx.executor())
                 .await?;
         }
     }
     sqlx::query("INSERT INTO charge_start_receipt (charge_order_id,command_id,success,port_id) VALUES (?,?,?,?)")
-        .bind(cid).bind(command).bind(req.success).bind(req.port_id).execute(&mut **tx).await?;
+        .bind(cid).bind(command).bind(req.success).bind(req.port_id).execute(tx.executor()).await?;
     crate::order_events::record(
         tx,
         cid,
@@ -216,7 +216,7 @@ mod tests {
         let pool = sqlx::MySqlPool::connect(&std::env::var("DATABASE_URL").unwrap())
             .await
             .unwrap();
-        let mut tx = pool.begin().await.unwrap();
+        let mut tx = common_db::Tx::from_transaction(pool.begin().await.unwrap());
         let tag = uuid::Uuid::new_v4().simple().to_string();
         let port = api_contracts::ScanPortDetail {
             device_id: format!("REF_{tag}"),
@@ -227,17 +227,17 @@ mod tests {
         };
         let (id, mut req) = paid(&mut tx, &port).await;
         sqlx::query("INSERT INTO refund_record (refund_no,payment_order_id,user_id,biz_type,biz_id,refund_cents,status,created_month) SELECT ?,payment_order_id,user_id,'charge',id,40,'pending',created_month FROM charge_order WHERE id=?")
-            .bind(IdGen::new("REF").next()).bind(id).execute(&mut *tx).await.unwrap();
+            .bind(IdGen::new("REF").next()).bind(id).execute(tx.executor()).await.unwrap();
         assert!(apply(&mut tx, &req.order_no, &req).await.is_err());
         req.success = false;
         apply(&mut tx, &req.order_no, &req).await.unwrap();
         apply(&mut tx, &req.order_no, &req).await.unwrap();
-        let amounts:Vec<i64>=sqlx::query_scalar("SELECT refund_cents FROM refund_record WHERE biz_type='charge' AND biz_id=? ORDER BY refund_cents").bind(id).fetch_all(&mut *tx).await.unwrap();
+        let amounts:Vec<i64>=sqlx::query_scalar("SELECT refund_cents FROM refund_record WHERE biz_type='charge' AND biz_id=? ORDER BY refund_cents").bind(id).fetch_all(tx.executor()).await.unwrap();
         assert_eq!(amounts, vec![40, 60]);
         tx.rollback().await.unwrap();
     }
     async fn paid(
-        tx: &mut Transaction<'_, MySql>,
+        tx: &mut common_db::Tx<'_>,
         port: &api_contracts::ScanPortDetail,
     ) -> (u64, StartResultRequest) {
         let tag = uuid::Uuid::new_v4().simple().to_string();
@@ -259,10 +259,10 @@ mod tests {
         .unwrap();
         sqlx::query("UPDATE charge_order SET status='paid' WHERE id=?")
             .bind(id)
-            .execute(&mut **tx)
+            .execute(tx.executor())
             .await
             .unwrap();
-        sqlx::query("UPDATE payment_order SET status='paid',paid_cents=100 WHERE biz_id=? AND biz_type='charge'").bind(id).execute(&mut **tx).await.unwrap();
+        sqlx::query("UPDATE payment_order SET status='paid',paid_cents=100 WHERE biz_id=? AND biz_type='charge'").bind(id).execute(tx.executor()).await.unwrap();
         (
             id,
             StartResultRequest {
@@ -282,7 +282,7 @@ mod tests {
         let pool = sqlx::MySqlPool::connect(&std::env::var("DATABASE_URL").unwrap())
             .await
             .unwrap();
-        let mut tx = pool.begin().await.unwrap();
+        let mut tx = common_db::Tx::from_transaction(pool.begin().await.unwrap());
         let tag = uuid::Uuid::new_v4().simple().to_string();
         let port = api_contracts::ScanPortDetail {
             device_id: format!("START_{tag}"),
@@ -299,34 +299,34 @@ mod tests {
         let started: chrono::NaiveDateTime =
             sqlx::query_scalar("SELECT started_at FROM charge_order WHERE id=?")
                 .bind(id)
-                .fetch_one(&mut *tx)
+                .fetch_one(tx.executor())
                 .await
                 .unwrap();
         apply(&mut tx, &req.order_no, &req).await.unwrap();
         let unchanged: chrono::NaiveDateTime =
             sqlx::query_scalar("SELECT started_at FROM charge_order WHERE id=?")
                 .bind(id)
-                .fetch_one(&mut *tx)
+                .fetch_one(tx.executor())
                 .await
                 .unwrap();
         assert_eq!(started, unchanged);
         let (other, mut other_req) = paid(&mut tx, &port).await;
         other_req.port_id = req.port_id;
-        tx.execute("SAVEPOINT busy_port").await.unwrap();
+        tx.executor().execute("SAVEPOINT busy_port").await.unwrap();
         assert!(apply(&mut tx, &other_req.order_no, &other_req)
             .await
             .is_err());
-        tx.execute("ROLLBACK TO SAVEPOINT busy_port").await.unwrap();
+        tx.executor().execute("ROLLBACK TO SAVEPOINT busy_port").await.unwrap();
         let occupied: u64 =
             sqlx::query_scalar("SELECT charge_order_id FROM active_port_charge WHERE port_id=?")
                 .bind(req.port_id)
-                .fetch_one(&mut *tx)
+                .fetch_one(tx.executor())
                 .await
                 .unwrap();
         assert_eq!(occupied, id);
         let status: String = sqlx::query_scalar("SELECT status FROM charge_order WHERE id=?")
             .bind(other)
-            .fetch_one(&mut *tx)
+            .fetch_one(tx.executor())
             .await
             .unwrap();
         assert_eq!(status, "paid");
@@ -341,13 +341,13 @@ mod tests {
         assert!(apply(&mut tx, &wrong.order_no, &wrong).await.is_err());
         sqlx::query("UPDATE charge_order SET status='completed' WHERE id=?")
             .bind(id)
-            .execute(&mut *tx)
+            .execute(tx.executor())
             .await
             .unwrap();
         apply(&mut tx, &req.order_no, &req).await.unwrap();
         let status: String = sqlx::query_scalar("SELECT status FROM charge_order WHERE id=?")
             .bind(id)
-            .fetch_one(&mut *tx)
+            .fetch_one(tx.executor())
             .await
             .unwrap();
         assert_eq!(status, "completed");
@@ -359,7 +359,7 @@ mod tests {
         let pool = sqlx::MySqlPool::connect(&std::env::var("DATABASE_URL").unwrap())
             .await
             .unwrap();
-        let mut tx = pool.begin().await.unwrap();
+        let mut tx = common_db::Tx::from_transaction(pool.begin().await.unwrap());
         let tag = uuid::Uuid::new_v4().simple().to_string();
         let port = api_contracts::ScanPortDetail {
             device_id: format!("FAIL_{tag}"),
@@ -378,14 +378,14 @@ mod tests {
             "SELECT refund_no,refund_cents FROM refund_record WHERE biz_type='charge' AND biz_id=?",
         )
         .bind(id)
-        .fetch_all(&mut *tx)
+        .fetch_all(tx.executor())
         .await
         .unwrap();
         assert_eq!(refunds.len(), 1);
         assert_eq!(refunds[0].1, 100);
-        let count:i64=sqlx::query_scalar("SELECT COUNT(*) FROM event_outbox WHERE JSON_UNQUOTE(JSON_EXTRACT(envelope_json,'$.payload.refund_no'))=?").bind(&refunds[0].0).fetch_one(&mut *tx).await.unwrap();
+        let count:i64=sqlx::query_scalar("SELECT COUNT(*) FROM event_outbox WHERE JSON_UNQUOTE(JSON_EXTRACT(envelope_json,'$.payload.refund_no'))=?").bind(&refunds[0].0).fetch_one(tx.executor()).await.unwrap();
         assert_eq!(count, 1);
-        let count:i64=sqlx::query_scalar("SELECT COUNT(*) FROM charge_event_log WHERE charge_order_id=? AND event='start_failed'").bind(id).fetch_one(&mut *tx).await.unwrap();
+        let count:i64=sqlx::query_scalar("SELECT COUNT(*) FROM charge_event_log WHERE charge_order_id=? AND event='start_failed'").bind(id).fetch_one(tx.executor()).await.unwrap();
         assert_eq!(count, 1);
         req.success = true;
         req.port_id = Some(9_000_000_000 + id);

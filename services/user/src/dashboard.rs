@@ -14,19 +14,19 @@ pub async fn metrics(State(st): State<AppState>) -> AppResult<Json<common_error:
 
     let charging_orders: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM charge_order WHERE status='charging' AND deleted_at IS NULL",
-    ).fetch_one(st.db.pool()).await?;
+    ).fetch_one(st.order.pool()).await?;
     let today_order_users: i64 = sqlx::query_scalar(
         "SELECT COUNT(DISTINCT user_id) FROM charge_order WHERE created_at>=? AND created_at<? AND deleted_at IS NULL",
-    ).bind(today_start).bind(tomorrow_start).fetch_one(st.db.pool()).await?;
+    ).bind(today_start).bind(tomorrow_start).fetch_one(st.order.pool()).await?;
     let today_summary = sqlx::query(
         "SELECT COUNT(*) AS completed_orders,CAST(COALESCE(SUM(total_cents),0) AS SIGNED) AS settled_cents
          FROM charge_order WHERE status='completed' AND ended_at>=? AND ended_at<? AND deleted_at IS NULL",
-    ).bind(today_start).bind(tomorrow_start).fetch_one(st.db.pool()).await?;
+    ).bind(today_start).bind(tomorrow_start).fetch_one(st.order.pool()).await?;
     let trend_rows = sqlx::query(
         "SELECT DATE(ended_at) AS day,COUNT(*) AS completed_orders,CAST(COALESCE(SUM(total_cents),0) AS SIGNED) AS settled_cents
          FROM charge_order WHERE status='completed' AND ended_at>=? AND ended_at<? AND deleted_at IS NULL
          GROUP BY DATE(ended_at) ORDER BY day",
-    ).bind(trend_start).bind(tomorrow_start).fetch_all(st.db.pool()).await?;
+    ).bind(trend_start).bind(tomorrow_start).fetch_all(st.order.pool()).await?;
     let mut by_day = HashMap::with_capacity(trend_rows.len());
     for row in &trend_rows {
         by_day.insert(

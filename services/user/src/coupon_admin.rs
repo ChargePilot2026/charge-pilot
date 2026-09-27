@@ -91,7 +91,7 @@ fn coupon_json(row: &sqlx::mysql::MySqlRow) -> AppResult<api_contracts::charge::
 
 pub async fn list(State(st): State<AppState>) -> AppResult<Json<ApiEnvelope<api_contracts::common::ListResponse<api_contracts::charge::CouponTemplate>>>> {
     let rows = sqlx::query("SELECT id,code,name,discount_type,discount_value_cents,CAST(discount_percent AS DOUBLE) AS discount_percent,min_charge_cents,valid_hours,total_quota,per_user_quota,status,start_at,end_at FROM coupon WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 200")
-        .fetch_all(st.db.pool()).await?;
+        .fetch_all(st.coupon.pool()).await?;
     let items = rows.iter().map(coupon_json).collect::<AppResult<Vec<_>>>()?;
     Ok(Json(ApiEnvelope::ok(
         api_contracts::common::ListResponse::new(items),
@@ -105,13 +105,13 @@ pub async fn create(State(st): State<AppState>, Json(req): Json<CouponCreate>) -
         .bind(req.code.trim()).bind(req.name.trim()).bind(&req.discount_type).bind(req.discount_value_cents)
         .bind(req.discount_percent).bind(req.min_charge_cents).bind(req.valid_hours).bind(req.total_quota)
         .bind(req.per_user_quota).bind(req.start_at.as_ref().map(|v| v.naive_utc())).bind(req.end_at.as_ref().map(|v| v.naive_utc()))
-        .execute(st.db.pool()).await?;
+        .execute(st.coupon.pool()).await?;
     Ok(Json(ApiEnvelope::ok(api_contracts::common::CreatedResponse { id: result.last_insert_id() }, common_error::current_request_id())))
 }
 
 pub async fn get(State(st): State<AppState>, Path(id): Path<u64>) -> AppResult<Json<ApiEnvelope<api_contracts::charge::CouponTemplate>>> {
     let row = sqlx::query("SELECT id,code,name,discount_type,discount_value_cents,CAST(discount_percent AS DOUBLE) AS discount_percent,min_charge_cents,valid_hours,total_quota,per_user_quota,status,start_at,end_at FROM coupon WHERE id=? AND deleted_at IS NULL")
-        .bind(id).fetch_optional(st.db.pool()).await?.ok_or_else(|| AppError::NotFound("coupon".into()))?;
+        .bind(id).fetch_optional(st.coupon.pool()).await?.ok_or_else(|| AppError::NotFound("coupon".into()))?;
     Ok(Json(ApiEnvelope::ok(coupon_json(&row)?, common_error::current_request_id())))
 }
 
@@ -123,21 +123,21 @@ pub async fn update(State(st): State<AppState>, Path(id): Path<u64>, Json(req): 
     }
     let changed = sqlx::query("UPDATE coupon SET name=COALESCE(?,name),status=COALESCE(?,status),end_at=COALESCE(?,end_at) WHERE id=? AND deleted_at IS NULL")
         .bind(req.name.as_deref().map(str::trim)).bind(req.status.as_deref()).bind(req.end_at.as_ref().map(|v| v.naive_utc())).bind(id)
-        .execute(st.db.pool()).await?;
+        .execute(st.coupon.pool()).await?;
     if changed.rows_affected() == 0 { return Err(AppError::NotFound("coupon".into())); }
     Ok(Json(ApiEnvelope::ok(api_contracts::common::UpdatedResponse::new(), common_error::current_request_id())))
 }
 
 pub async fn delete(State(st): State<AppState>, Path(id): Path<u64>) -> AppResult<Json<ApiEnvelope<api_contracts::common::DeletedResponse>>> {
-    let mut tx = st.db.pool().begin().await?;
+    let mut tx = st.coupon.begin().await?;
     let exists: Option<u64> = sqlx::query_scalar("SELECT id FROM coupon WHERE id=? AND deleted_at IS NULL FOR UPDATE")
-        .bind(id).fetch_optional(&mut *tx).await?;
+        .bind(id).fetch_optional(tx.executor()).await?;
     if exists.is_none() { return Err(AppError::NotFound("coupon".into())); }
     let issued: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM coupon_grant WHERE coupon_id=? AND deleted_at IS NULL)")
-        .bind(id).fetch_one(&mut *tx).await?;
+        .bind(id).fetch_one(tx.executor()).await?;
     if issued { return Err(AppError::Conflict("优惠券已有发放记录，请停用模板".into())); }
     let changed = sqlx::query("UPDATE coupon SET deleted_at=UTC_TIMESTAMP(3) WHERE id=? AND deleted_at IS NULL")
-        .bind(id).execute(&mut *tx).await?;
+        .bind(id).execute(tx.executor()).await?;
     if changed.rows_affected() == 0 { return Err(AppError::NotFound("coupon".into())); }
     tx.commit().await?;
     Ok(Json(ApiEnvelope::ok(api_contracts::common::DeletedResponse::new(), common_error::current_request_id())))
@@ -153,7 +153,7 @@ pub async fn stats(State(st): State<AppState>, axum::extract::Query(q): axum::ex
        COALESCE(SUM(g.status='expired' OR (g.status='unused' AND g.expired_at<=UTC_TIMESTAMP(3))),0) AS expired_count
        FROM coupon c LEFT JOIN coupon_grant g ON g.coupon_id=c.id AND g.deleted_at IS NULL
        WHERE c.id=? AND c.deleted_at IS NULL GROUP BY c.id,c.total_quota")
-        .bind(q.coupon_id).fetch_optional(st.db.pool()).await?.ok_or_else(|| AppError::NotFound("coupon".into()))?;
+        .bind(q.coupon_id).fetch_optional(st.coupon.pool()).await?.ok_or_else(|| AppError::NotFound("coupon".into()))?;
     let granted: i64 = row.try_get("granted_count")?;
     let used: i64 = row.try_get("used_count")?;
     let total_quota: i64 = row.try_get("total_quota")?;
@@ -184,17 +184,17 @@ async fn create_grant(
     if user_id == 0 || coupon_id == 0 || !["manual", "register", "activity", "invite", "invite_reward"].contains(&source) {
         return Err(AppError::BadRequest("发券用户、模板或来源无效".into()));
     }
-    let mut tx = pool.begin().await?;
+    let mut tx = common_db::Tx::from_transaction(pool.begin().await?);
     if let Some((saved_coupon, saved_user, grant_id)) = sqlx::query_as::<_, (u64,u64,u64)>("SELECT coupon_id,user_id,coupon_grant_id FROM coupon_grant_request WHERE request_id=?")
-        .bind(&request_uuid).fetch_optional(&mut *tx).await? {
+        .bind(&request_uuid).fetch_optional(tx.executor()).await? {
         if saved_coupon != coupon_id || saved_user != user_id { return Err(AppError::Conflict("发券幂等标识已用于其他用户或模板".into())); }
         let expired_at: chrono::NaiveDateTime = sqlx::query_scalar("SELECT expired_at FROM coupon_grant WHERE id=? AND user_id=? AND coupon_id=?")
-            .bind(grant_id).bind(user_id).bind(coupon_id).fetch_one(&mut *tx).await?;
+            .bind(grant_id).bind(user_id).bind(coupon_id).fetch_one(tx.executor()).await?;
         tx.commit().await?;
         return Ok(CouponGrantResult {request_id:request_uuid,coupon_id,coupon_grant_id:grant_id,user_id,status:"issued".into(),expired_at:expired_at.and_utc().to_rfc3339()});
     }
     let template = sqlx::query("SELECT status,valid_hours,total_quota,per_user_quota,start_at,end_at FROM coupon WHERE id=? AND deleted_at IS NULL FOR UPDATE")
-        .bind(coupon_id).fetch_optional(&mut *tx).await?.ok_or_else(|| AppError::NotFound("coupon".into()))?;
+        .bind(coupon_id).fetch_optional(tx.executor()).await?.ok_or_else(|| AppError::NotFound("coupon".into()))?;
     let status: String = template.try_get("status")?;
     let valid_hours: i64 = template.try_get("valid_hours")?;
     let total_quota: i64 = template.try_get("total_quota")?;
@@ -205,12 +205,12 @@ async fn create_grant(
         || end_at.is_some_and(|v| v <= chrono::Utc::now().naive_utc())
     { return Err(AppError::Conflict("优惠券未启用或不在发放时间范围内".into())); }
     let user_active: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM user WHERE id=? AND status='active' AND deleted_at IS NULL)")
-        .bind(user_id).fetch_one(&mut *tx).await?;
+        .bind(user_id).fetch_one(tx.executor()).await?;
     if !user_active { return Err(AppError::NotFound("有效用户不存在".into())); }
     let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM coupon_grant WHERE coupon_id=? AND deleted_at IS NULL")
-        .bind(coupon_id).fetch_one(&mut *tx).await?;
+        .bind(coupon_id).fetch_one(tx.executor()).await?;
     let per_user: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM coupon_grant WHERE coupon_id=? AND user_id=? AND deleted_at IS NULL")
-        .bind(coupon_id).bind(user_id).fetch_one(&mut *tx).await?;
+        .bind(coupon_id).bind(user_id).fetch_one(tx.executor()).await?;
     if (total_quota > 0 && total >= total_quota) || per_user >= per_user_quota {
         return Err(AppError::Conflict("优惠券发放额度已用尽".into()));
     }
@@ -221,15 +221,15 @@ async fn create_grant(
     let expires_at = end_at.map_or(expires_at, |end| end.min(expires_at));
     if expires_at <= now { return Err(AppError::Conflict("优惠券有效期已结束".into())); }
     let grant_id = sqlx::query("INSERT INTO coupon_grant (coupon_id,user_id,grant_source,source_event_id,expired_at) VALUES (?,?,?,?,?)")
-        .bind(coupon_id).bind(user_id).bind(source).bind(source_event_id).bind(expires_at).execute(&mut *tx).await?.last_insert_id();
+        .bind(coupon_id).bind(user_id).bind(source).bind(source_event_id).bind(expires_at).execute(tx.executor()).await?.last_insert_id();
     sqlx::query("INSERT INTO coupon_grant_request (request_id,coupon_id,user_id,coupon_grant_id) VALUES (?,?,?,?)")
-        .bind(&request_uuid).bind(coupon_id).bind(user_id).bind(grant_id).execute(&mut *tx).await?;
+        .bind(&request_uuid).bind(coupon_id).bind(user_id).bind(grant_id).execute(tx.executor()).await?;
     tx.commit().await?;
     Ok(CouponGrantResult {request_id:request_uuid,coupon_id,coupon_grant_id:grant_id,user_id,status:"issued".into(),expired_at:expires_at.and_utc().to_rfc3339()})
 }
 
 pub async fn grant(State(st): State<AppState>, Path(coupon_id): Path<u64>, Json(req): Json<CouponGrantRequest>) -> AppResult<Json<ApiEnvelope<CouponGrantResult>>> {
-    let result = create_grant(st.db.pool(), &req.request_id, req.user_id, coupon_id, "manual", None).await?;
+    let result = create_grant(st.coupon.pool(), &req.request_id, req.user_id, coupon_id, "manual", None).await?;
     Ok(Json(ApiEnvelope::ok(result, common_error::current_request_id())))
 }
 
@@ -239,5 +239,5 @@ pub async fn grant_activity_event(st: &AppState, entry: &common_redis::StreamEnt
     let coupon_id = payload.get("coupon_id").and_then(Value::as_u64).ok_or_else(|| AppError::BadRequest("发券事件缺少有效 coupon_id".into()))?;
     let source = payload.get("source").and_then(Value::as_str).ok_or_else(|| AppError::BadRequest("发券事件缺少 source".into()))?;
     if source == "manual" { return Err(AppError::BadRequest("人工发券不能通过活动事件执行".into())); }
-    create_grant(st.db.pool(), &entry.envelope.event_id, user_id, coupon_id, source, Some(&entry.envelope.event_id)).await
+    create_grant(st.coupon.pool(), &entry.envelope.event_id, user_id, coupon_id, source, Some(&entry.envelope.event_id)).await
 }

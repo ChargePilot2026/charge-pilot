@@ -47,7 +47,7 @@ pub async fn refresh(State(st): State<AppState>, headers: HeaderMap) -> AppResul
     let current: Option<String>=redis::cmd("GET").arg(session_key(&identity.sid)).query_async(&mut conn).await?;
     if current.as_deref()!=Some(old) { return Err(AppError::Unauthorized("刷新令牌已使用或会话已退出".into())); }
     let active: bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM `user` WHERE id=? AND BINARY openid=? AND status='active' AND deleted_at IS NULL)")
-        .bind(identity.user_id).bind(identity.openid.as_bytes()).fetch_one(st.db.pool()).await?;
+        .bind(identity.user_id).bind(identity.openid.as_bytes()).fetch_one(st.identity.pool()).await?;
     if !active {
         st.redis_cache.del(&session_key(&identity.sid)).await?;
         return Err(AppError::Forbidden("账户已停用".into()));
@@ -80,7 +80,7 @@ pub async fn require_session(State(st): State<AppState>, mut req: axum::extract:
     let exists: bool=redis::cmd("EXISTS").arg(session_key(sid)).query_async(&mut conn).await?;
     if !exists { return Err(AppError::Unauthorized("登录会话已退出或过期".into())); }
     let active: bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM `user` WHERE id=? AND BINARY openid=? AND status='active' AND deleted_at IS NULL)")
-        .bind(claims.user_id).bind(claims.sub.as_bytes()).fetch_one(st.db.pool()).await?;
+        .bind(claims.user_id).bind(claims.sub.as_bytes()).fetch_one(st.identity.pool()).await?;
     if !active { return Err(AppError::Forbidden("账户已停用".into())); }
     req.extensions_mut().insert(claims);
     Ok(next.run(req).await)

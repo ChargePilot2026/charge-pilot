@@ -22,7 +22,7 @@ use sha2::Digest;
 use sqlx::Row;
 
 pub async fn health(State(st): State<AppState>) -> AppResult<&'static str> {
-    st.db.ping().await?;
+    st.order.ping().await?;
     st.redis_cache.ping().await?;
     st.redis_stream.ping().await?;
     Ok("ok")
@@ -56,7 +56,7 @@ pub async fn login(
     let sess = common_wechat::code2session(&st.http, wechat, &req.code).await?;
     let openid = sess.openid.clone();
 
-    let mut tx = st.db.pool().begin().await?;
+    let mut tx = st.order.begin().await?;
     let (user_id, is_new) = crate::login::resolve_user(&mut tx, &openid, sess.unionid.as_deref()).await?;
     tx.commit().await?;
     let sid=uuid::Uuid::new_v4().to_string();
@@ -130,7 +130,7 @@ pub async fn scan_start(
     if saved.quote.estimated_kwh!=req.estimated_kwh || saved.quote.estimated_minutes!=req.estimated_minutes {
         return Err(AppError::Conflict("预计电量或时长已变化，请重新预估费用".into()));
     }
-    let used:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM charge_order_pricing WHERE quote_id=?)").bind(&quote_id).fetch_one(st.db.pool()).await?;
+    let used:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM charge_order_pricing WHERE quote_id=?)").bind(&quote_id).fetch_one(st.order.pool()).await?;
     if used {return Err(AppError::Conflict("报价已用于订单，请在订单列表继续处理".into()));}
     let wechat = st.cfg.wechat.as_ref()
         .ok_or_else(|| AppError::Config("wechat missing".into()))?;
@@ -152,7 +152,7 @@ pub async fn scan_start(
     // Before commit, a failed write can safely release this reservation. After
     // commit (including an uncertain commit result), retain it until recovery/expiry.
     let prepared = async {
-        let mut tx = st.db.pool().begin().await?;
+        let mut tx = st.order.begin().await?;
         let id = crate::checkout::persist_pending(&mut tx, user_id, &order_no,
             &pay_order_no, &port, &saved.quote.amount, expires_at).await?;
         crate::quote_confirmation::persist(&mut tx,id,&quote_id,&saved).await?;
@@ -167,7 +167,7 @@ pub async fn scan_start(
         amount: common_wechat::JsapiAmount { total: total_cents, currency: "CNY".into() },
         payer: common_wechat::JsapiPayer { openid: openid.clone() },
     };
-        sqlx::query("INSERT INTO charge_prepay (charge_order_id,request_json) VALUES (?,?)").bind(id).bind(serde_json::to_value(&jsapi_req)?).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO charge_prepay (charge_order_id,request_json) VALUES (?,?)").bind(id).bind(serde_json::to_value(&jsapi_req)?).execute(tx.executor()).await?;
         Ok::<_, AppError>((tx, id))
     }.await;
     let (tx, _charge_order_id) = match prepared {
@@ -192,7 +192,7 @@ pub async fn scan_cancel(
     claims: UserClaims,
     Json(req): Json<ScanCancelRequest>,
 ) -> AppResult<Json<crate::api_envelope::Envelope<api_contracts::charge::ScanCancelResponse>>> {
-    let mut tx = st.db.pool().begin().await?;
+    let mut tx = st.order.begin().await?;
     let port_code = crate::checkout::cancel_pending(&mut tx, claims.user_id, &req.order_no).await?;
     tx.commit().await?;
     let lock = PortLock::new(st.redis_cache.clone());
@@ -214,7 +214,7 @@ pub async fn charge_stop(
     // Authenticate the order before sending any command to the gateway.
     let status: Option<String> = sqlx::query_scalar(
         "SELECT status FROM charge_order WHERE order_no=? AND user_id=? AND deleted_at IS NULL"
-    ).bind(&req.order_no).bind(claims.user_id).fetch_optional(st.db.pool()).await?;
+    ).bind(&req.order_no).bind(claims.user_id).fetch_optional(st.order.pool()).await?;
     let status=status.ok_or_else(||AppError::NotFound("order".into()))?;
     if status != "charging" && status != "completed" {return Err(AppError::Conflict("订单不在充电中，不能停止".into()));}
     let body = ChargeStopCommand {
@@ -246,7 +246,7 @@ pub async fn charge_ongoing(
          ORDER BY id DESC LIMIT 1"
     )
     .bind(claims.user_id)
-    .fetch_optional(st.db.pool())
+    .fetch_optional(st.order.pool())
     .await?;
     // 无进行中订单时 data 是 JSON null(不是空对象)—— 小程序按此判"无进行中订单"
     let v: Option<api_contracts::charge::OngoingCharge> = match r {
@@ -303,7 +303,7 @@ pub async fn charge_snapshot(
     query=if let Some(id)=numeric_id {query.bind(id)} else {query.bind(&q.order_id)};
     let r = query
         .bind(claims.user_id)
-        .fetch_optional(st.db.pool())
+        .fetch_optional(st.order.pool())
         .await?.ok_or_else(||AppError::NotFound("order".into()))?;
     let status:String=r.try_get("status")?;
     let order_no:String=r.try_get("order_no")?;
@@ -384,7 +384,7 @@ pub async fn charge_curve(
     let sql = format!("SELECT id,order_no,device_id,port_no,status,started_at,CAST(charged_kwh AS CHAR) AS charged_kwh FROM charge_order WHERE {filter}=? AND user_id=? AND deleted_at IS NULL");
     let mut query = sqlx::query(&sql);
     query = if let Some(id) = numeric_id { query.bind(id) } else { query.bind(&q.order_id) };
-    let row = query.bind(claims.user_id).fetch_optional(st.db.pool()).await?
+    let row = query.bind(claims.user_id).fetch_optional(st.order.pool()).await?
         .ok_or_else(|| AppError::NotFound("order".into()))?;
     let status: String = row.try_get("status")?;
     if window == "since_start" && status != "completed" {
@@ -444,7 +444,7 @@ pub async fn charge_history(
     .bind(claims.user_id)
     .bind(page_size as i64)
     .bind(offset as i64)
-    .fetch_all(st.db.pool())
+    .fetch_all(st.order.pool())
     .await?;
     let arr = rows.iter().map(|r| -> AppResult<api_contracts::charge::ChargeHistoryItem> {
         Ok(api_contracts::charge::ChargeHistoryItem {
@@ -477,7 +477,7 @@ pub async fn charge_detail(
     )
     .bind(&order_id)
     .bind(claims.user_id)
-    .fetch_optional(st.db.pool())
+    .fetch_optional(st.order.pool())
     .await?;
     let r = r.ok_or_else(|| AppError::NotFound("order".into()))?;
     Ok(Json(crate::api_envelope::Envelope::ok(
@@ -514,7 +514,7 @@ pub async fn charge_historical_curve(
     let sql = format!("SELECT id,order_no,device_id,port_no,status,started_at,ended_at,CAST(charged_kwh AS CHAR) AS charged_kwh FROM charge_order WHERE {filter}=? AND user_id=? AND deleted_at IS NULL");
     let mut query = sqlx::query(&sql);
     query = if let Some(id) = numeric_id { query.bind(id) } else { query.bind(&order_id) };
-    let row = query.bind(claims.user_id).fetch_optional(st.db.pool()).await?
+    let row = query.bind(claims.user_id).fetch_optional(st.order.pool()).await?
         .ok_or_else(|| AppError::NotFound("order".into()))?;
     let status: String = row.try_get("status")?;
     if status != "completed" { return Err(AppError::Conflict("只有已完成订单提供历史曲线".into())); }
@@ -593,17 +593,17 @@ pub async fn charge_feedback(
     if req.images.as_ref().is_some_and(|images| images.len() > 5 || images.iter().any(|url| url.len() > 512 || !url.starts_with("https://") || url.chars().any(char::is_control))) {
         return Err(AppError::BadRequest("反馈图片链接无效".into()));
     }
-    let mut tx = st.db.pool().begin().await?;
+    let mut tx = st.order.begin().await?;
     let order_id_db: Option<u64> = sqlx::query_scalar(
         "SELECT id FROM charge_order WHERE order_no = ? AND user_id = ? AND status = 'completed' AND deleted_at IS NULL FOR UPDATE",
     )
     .bind(&order_id)
     .bind(claims.user_id)
-    .fetch_optional(&mut *tx)
+    .fetch_optional(tx.executor())
     .await?;
     let order_id_db = order_id_db.ok_or_else(|| AppError::Conflict("只有本人已完成的订单可以评价".into()))?;
     let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM feedback WHERE user_id = ? AND order_id = ? AND deleted_at IS NULL)")
-        .bind(claims.user_id).bind(order_id_db).fetch_one(&mut *tx).await?;
+        .bind(claims.user_id).bind(order_id_db).fetch_one(tx.executor()).await?;
     if exists {
         return Err(AppError::Conflict("该订单已提交过反馈".into()));
     }
@@ -617,7 +617,7 @@ pub async fn charge_feedback(
     .bind(&req.category)
     .bind(req.content.as_deref())
     .bind(req.images.as_ref().map(serde_json::to_value).transpose()?)
-    .execute(&mut *tx)
+    .execute(tx.executor())
     .await?
     .last_insert_id();
     tx.commit().await?;
@@ -633,7 +633,7 @@ pub async fn internal_order_detail(
 ) -> AppResult<Json<crate::api_envelope::Envelope<api_contracts::charge::InternalOrderDetailV2>>> {
     let r = sqlx::query("SELECT * FROM charge_order WHERE order_no = ? LIMIT 1")
         .bind(&order_id)
-        .fetch_optional(st.db.pool())
+        .fetch_optional(st.order.pool())
         .await?;
     let r = r.ok_or_else(|| AppError::NotFound("order".into()))?;
     Ok(Json(crate::api_envelope::Envelope::ok(
@@ -730,12 +730,12 @@ pub async fn phone_bind(
         .ok_or_else(|| AppError::BadRequest("微信返回的手机号格式无效".into()))?;
     let phone_hash = format!("{:x}", sha2::Sha256::digest(phone.as_bytes()));
 
-    let mut tx = st.db.pool().begin().await?;
+    let mut tx = st.order.begin().await?;
     let current: Option<String> = sqlx::query_scalar(
         "SELECT phone_hash FROM `user` WHERE id = ? AND status = 'active' AND deleted_at IS NULL FOR UPDATE",
     )
     .bind(claims.user_id)
-    .fetch_optional(&mut *tx)
+    .fetch_optional(tx.executor())
     .await?
     .ok_or_else(|| AppError::Forbidden("账号不可绑定手机号".into()))?;
     if current.as_deref() == Some(phone_hash.as_str()) {
@@ -746,12 +746,12 @@ pub async fn phone_bind(
         )));
     }
     let owner: Option<u64> = sqlx::query_scalar("SELECT id FROM `user` WHERE phone_hash = ? AND deleted_at IS NULL FOR UPDATE")
-        .bind(&phone_hash).fetch_optional(&mut *tx).await?;
+        .bind(&phone_hash).fetch_optional(tx.executor()).await?;
     if owner.is_some_and(|owner| owner != claims.user_id) {
         return Err(AppError::Conflict("该手机号已绑定其他账号".into()));
     }
     let updated = match sqlx::query("UPDATE `user` SET phone_hash = ? WHERE id = ? AND status = 'active' AND deleted_at IS NULL")
-        .bind(&phone_hash).bind(claims.user_id).execute(&mut *tx).await {
+        .bind(&phone_hash).bind(claims.user_id).execute(tx.executor()).await {
         Ok(result) => result,
         Err(sqlx::Error::Database(error)) if error.code().as_deref() == Some("1062") => {
             return Err(AppError::Conflict("该手机号已绑定其他账号".into()));
@@ -774,7 +774,7 @@ pub async fn phone_unbind(
 ) -> AppResult<Json<crate::api_envelope::Envelope<api_contracts::charge::PhoneUnbindResponse>>> {
     sqlx::query("UPDATE `user` SET phone_enc = NULL, phone_hash = NULL WHERE id = ?")
         .bind(claims.user_id)
-        .execute(st.db.pool())
+        .execute(st.order.pool())
         .await?;
     Ok(Json(crate::api_envelope::Envelope::ok(api_contracts::charge::PhoneUnbindResponse { unbound: true }, common_error::current_request_id())))
 }

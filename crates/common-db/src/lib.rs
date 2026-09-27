@@ -50,6 +50,16 @@ impl Db {
         Ok(Self { pool })
     }
 
+    /// 接管一个**已经建好**的连接池。
+    ///
+    /// 主要给 `#[cfg(test)]` 与集成测试用:测试往往自己用 `DATABASE_URL` 建池
+    /// (要自定义 options),但业务入口已收窄到 `Db` / 能力域服务对象。
+    /// 生产路径一律走 `Db::connect`,不要用这个 —— 它绕过了连接数与
+    /// 慢查询日志的集中配置。
+    pub fn from_pool(pool: Pool<MySql>) -> Self {
+        Self { pool }
+    }
+
     pub fn pool(&self) -> &Pool<MySql> {
         &self.pool
     }
@@ -107,6 +117,17 @@ where
 /// 语义就依赖这一点。
 pub struct Tx<'a> {
     tx: Transaction<'a, MySql>,
+}
+
+impl<'a> Tx<'a> {
+    /// 接管一个已经开好的 `sqlx` 事务。
+    ///
+    /// 供"入参是 `&MySqlPool`、内部自己开事务"的函数使用:它们拿不到 `Db`,
+    /// 但仍要用 `Tx` 的显式 `commit` / `rollback` 语义(而不是依赖析构时的
+    /// fire-and-forget 回滚)。
+    pub fn from_transaction(tx: Transaction<'a, MySql>) -> Self {
+        Self { tx }
+    }
 }
 
 impl<'a> Tx<'a> {

@@ -9,7 +9,7 @@ use sqlx::Row;
 pub struct Balance { balance_cents:i64, available_cents:i64, frozen_cents:i64, status:String }
 pub async fn balance(State(st):State<AppState>,claims:UserClaims)->AppResult<Json<ApiEnvelope<Balance>>> {
     let rows:Vec<(i64,i64,String)>=sqlx::query_as("SELECT balance_cents,frozen_cents,status FROM wallet_account WHERE user_id=? AND deleted_at IS NULL")
-        .bind(claims.user_id).fetch_all(st.db.pool()).await?;
+        .bind(claims.user_id).fetch_all(st.wallet.pool()).await?;
     if rows.len()>1 {return Err(AppError::Conflict("钱包账户重复，请联系客服".into()));}
     let (available_cents,frozen_cents,status)=rows.into_iter().next().unwrap_or((0,0,"active".into()));
     Ok(Json(ApiEnvelope::ok(Balance {balance_cents:available_cents,available_cents,frozen_cents,status},common_error::current_request_id())))
@@ -29,11 +29,11 @@ pub async fn txns(State(st):State<AppState>,claims:UserClaims,Query(q):Query<Txn
         Some(v @ ("recharge"|"refund"|"freeze"|"unfreeze"|"gift"))=>Some(v),
         _=>return Err(AppError::BadRequest("流水类型无效".into())),
     };
-    let mut tx=st.db.pool().begin().await?;
+    let mut tx=st.wallet.begin().await?;
     let total=sqlx::query_scalar("SELECT COUNT(*) FROM wallet_txn WHERE user_id=? AND (? IS NULL OR biz_type=?)")
-        .bind(claims.user_id).bind(kind).bind(kind).fetch_one(&mut *tx).await?;
+        .bind(claims.user_id).bind(kind).bind(kind).fetch_one(tx.executor()).await?;
     let rows=sqlx::query("SELECT txn_no,biz_type,direction,amount_cents,balance_after_cents,note,created_at FROM wallet_txn WHERE user_id=? AND (? IS NULL OR biz_type=?) ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?")
-        .bind(claims.user_id).bind(kind).bind(kind).bind(page_size).bind(u64::from(page-1)*u64::from(page_size)).fetch_all(&mut *tx).await?;
+        .bind(claims.user_id).bind(kind).bind(kind).bind(page_size).bind(u64::from(page-1)*u64::from(page_size)).fetch_all(tx.executor()).await?;
     let mut items=Vec::with_capacity(rows.len());
     for row in rows {
         let kind:String=row.try_get("biz_type")?;

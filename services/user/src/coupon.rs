@@ -26,7 +26,7 @@ pub async fn my(
         _ => "(cg.status = 'expired' OR (cg.status = 'unused' AND cg.expired_at <= UTC_TIMESTAMP(3)))",
     };
     let total: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM coupon_grant cg JOIN coupon c ON c.id = cg.coupon_id WHERE cg.user_id = ? AND cg.deleted_at IS NULL AND {filter}"))
-        .bind(claims.user_id).fetch_one(st.db.pool()).await?;
+        .bind(claims.user_id).fetch_one(st.coupon.pool()).await?;
     let rows = sqlx::query(&format!(
         "SELECT cg.id, c.name, c.discount_type, c.discount_value_cents, CAST(c.discount_percent AS DOUBLE) AS discount_percent,
                 c.min_charge_cents, cg.expired_at,
@@ -38,7 +38,7 @@ pub async fn my(
     .bind(claims.user_id)
     .bind(page_size)
     .bind(u64::from(page - 1) * u64::from(page_size))
-    .fetch_all(st.db.pool())
+    .fetch_all(st.coupon.pool())
     .await?;
     let items = rows
         .iter()
@@ -84,7 +84,7 @@ pub async fn preview(
     )
     .bind(req.coupon_grant_id)
     .bind(claims.user_id)
-    .fetch_optional(st.db.pool())
+    .fetch_optional(st.coupon.pool())
     .await?;
     let (cid, dtype, val_cents, percent_bp, min, status, expired_at) = r.ok_or_else(|| AppError::NotFound("coupon".into()))?;
     if status != "unused" || expired_at <= chrono::Utc::now() {
@@ -123,7 +123,7 @@ pub async fn stats(
         "SELECT status, COUNT(*) cnt FROM coupon_grant WHERE coupon_id = ? GROUP BY status"
     )
     .bind(q.coupon_id)
-    .fetch_all(st.db.pool())
+    .fetch_all(st.coupon.pool())
     .await?;
     let mut used = 0i64;
     let mut unused = 0i64;

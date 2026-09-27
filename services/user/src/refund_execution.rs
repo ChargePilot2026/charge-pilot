@@ -11,23 +11,23 @@ pub async fn prepare(
     State(st): State<AppState>,
     Json(req): Json<ExecutionRequest>,
 ) -> AppResult<Json<ApiEnvelope<ExecutionDetail>>> {
-    let mut tx = st.db.pool().begin().await?;
+    let mut tx = st.refund.begin().await?;
     let ids: Vec<(u64, u64)> = sqlx::query_as(
         "SELECT id,payment_order_id FROM refund_record WHERE refund_no=? AND deleted_at IS NULL",
     )
     .bind(&req.refund_no)
-    .fetch_all(&mut *tx)
+    .fetch_all(tx.executor())
     .await?;
     if ids.len() != 1 {
         return Err(conflict());
     }
     let (rid, pid) = ids[0];
-    let pays=sqlx::query("SELECT user_id,biz_id,biz_type,pay_method,total_cents,paid_cents,refunded_cents,wechat_transaction_id,status FROM payment_order WHERE id=? AND deleted_at IS NULL FOR UPDATE").bind(pid).fetch_all(&mut *tx).await?;
+    let pays=sqlx::query("SELECT user_id,biz_id,biz_type,pay_method,total_cents,paid_cents,refunded_cents,wechat_transaction_id,status FROM payment_order WHERE id=? AND deleted_at IS NULL FOR UPDATE").bind(pid).fetch_all(tx.executor()).await?;
     if pays.len() != 1 {
         return Err(conflict());
     }
     let pay = &pays[0];
-    let refunds=sqlx::query("SELECT id,user_id,biz_id,biz_type,refund_cents,status,reason,claimed_by,wechat_refund_id FROM refund_record WHERE payment_order_id=? AND deleted_at IS NULL FOR UPDATE").bind(pid).fetch_all(&mut *tx).await?;
+    let refunds=sqlx::query("SELECT id,user_id,biz_id,biz_type,refund_cents,status,reason,claimed_by,wechat_refund_id FROM refund_record WHERE payment_order_id=? AND deleted_at IS NULL FOR UPDATE").bind(pid).fetch_all(tx.executor()).await?;
     let mut matched = None;
     for refund in &refunds {
         if refund.try_get::<u64, _>("id")? == rid { matched = Some(refund); break; }
@@ -50,13 +50,13 @@ pub async fn prepare(
         "SELECT refund_record_id FROM refund_execution WHERE refund_record_id=? FOR UPDATE",
     )
     .bind(rid)
-    .fetch_optional(&mut *tx)
+    .fetch_optional(tx.executor())
     .await?;
     if claimed.is_none() {
         if status != "pending" {
             return Err(conflict());
         }
-        let review=sqlx::query("SELECT first_signer,second_signer,snapshot_json FROM refund_review WHERE refund_record_id=? FOR UPDATE").bind(rid).fetch_optional(&mut *tx).await?;
+        let review=sqlx::query("SELECT first_signer,second_signer,snapshot_json FROM refund_review WHERE refund_record_id=? FOR UPDATE").bind(rid).fetch_optional(tx.executor()).await?;
         let mut reviewed=false;
         if let Some(review)=review {
             let second:Option<u64>=review.try_get("second_signer")?;
@@ -66,12 +66,12 @@ pub async fn prepare(
             reviewed=true;
         }
         if biz_type == "wallet_recharge" {
-            let permitted:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM wallet_refund_part p JOIN wallet_refund_request r ON r.request_id=p.request_id JOIN wallet_account w ON w.id=p.wallet_account_id WHERE p.refund_record_id=? AND p.amount_cents=? AND p.settled=0 AND r.user_id=? AND w.user_id=? AND w.status='active' AND w.deleted_at IS NULL)").bind(rid).bind(row.try_get::<i64,_>("refund_cents")?).bind(uid).bind(uid).fetch_one(&mut *tx).await?;
+            let permitted:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM wallet_refund_part p JOIN wallet_refund_request r ON r.request_id=p.request_id JOIN wallet_account w ON w.id=p.wallet_account_id WHERE p.refund_record_id=? AND p.amount_cents=? AND p.settled=0 AND r.user_id=? AND w.user_id=? AND w.status='active' AND w.deleted_at IS NULL)").bind(rid).bind(row.try_get::<i64,_>("refund_cents")?).bind(uid).bind(uid).fetch_one(tx.executor()).await?;
             if !permitted {
                 return Err(conflict());
             }
         } else {
-            let orders:Vec<(String,u64,Option<u64>)>=sqlx::query_as("SELECT status,user_id,payment_order_id FROM charge_order WHERE id=? AND deleted_at IS NULL FOR UPDATE").bind(cid).fetch_all(&mut *tx).await?;
+            let orders:Vec<(String,u64,Option<u64>)>=sqlx::query_as("SELECT status,user_id,payment_order_id FROM charge_order WHERE id=? AND deleted_at IS NULL FOR UPDATE").bind(cid).fetch_all(tx.executor()).await?;
             if orders.len() != 1 || orders[0].1 != uid || orders[0].2 != Some(pid) {
                 return Err(conflict());
             }
@@ -86,7 +86,7 @@ pub async fn prepare(
                         "SELECT charge_order_id FROM charge_fee_receipt WHERE charge_order_id=?",
                     )
                     .bind(cid)
-                    .fetch_optional(&mut *tx)
+                    .fetch_optional(tx.executor())
                     .await?
                     .is_some(),
                 _ => false,
@@ -153,13 +153,13 @@ pub async fn prepare(
     if claimed.is_none() {
         sqlx::query("INSERT INTO refund_execution (refund_record_id) VALUES (?)")
             .bind(rid)
-            .execute(&mut *tx)
+            .execute(tx.executor())
             .await?;
         sqlx::query(
             "UPDATE refund_record SET status='processing',claimed_at=UTC_TIMESTAMP(3) WHERE id=?",
         )
         .bind(rid)
-        .execute(&mut *tx)
+        .execute(tx.executor())
         .await?;
     }
     tx.commit().await?;

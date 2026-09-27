@@ -16,26 +16,26 @@ pub async fn callback(
         .as_ref()
         .ok_or_else(|| AppError::Config("缺少微信支付配置".into()))?;
     let notice = common_wechat::decode_refund_notification(cfg, &headers, &body)?;
-    let mut tx = st.db.pool().begin().await?;
+    let mut tx = st.refund.begin().await?;
     apply_notification(&mut tx, &notice).await?;
     tx.commit().await?;
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 pub async fn apply_notification(
-    tx: &mut sqlx::Transaction<'_, sqlx::MySql>,
+    tx: &mut common_db::Tx<'_>,
     n: &common_wechat::RefundNotification,
 ) -> AppResult<()> {
     let ids: Vec<(u64, u64)> = sqlx::query_as(
         "SELECT id,payment_order_id FROM refund_record WHERE refund_no=? AND deleted_at IS NULL",
     )
     .bind(&n.out_refund_no)
-    .fetch_all(&mut **tx)
+    .fetch_all(tx.executor())
     .await?;
     if ids.len() != 1 {
         return Err(conflict());
     }
     let (rid, pid) = ids[0];
-    let payments=sqlx::query("SELECT order_no,wechat_transaction_id,total_cents,pay_method FROM payment_order WHERE id=? AND deleted_at IS NULL FOR UPDATE").bind(pid).fetch_all(&mut **tx).await?;
+    let payments=sqlx::query("SELECT order_no,wechat_transaction_id,total_cents,pay_method FROM payment_order WHERE id=? AND deleted_at IS NULL FOR UPDATE").bind(pid).fetch_all(tx.executor()).await?;
     if payments.len() != 1 {
         return Err(conflict());
     }
@@ -50,7 +50,7 @@ pub async fn apply_notification(
     {
         return Err(conflict());
     }
-    let rows:Vec<(i64,String,Option<String>)>=sqlx::query_as("SELECT refund_cents,status,wechat_refund_id FROM refund_record WHERE id=? AND payment_order_id=? AND deleted_at IS NULL FOR UPDATE").bind(rid).bind(pid).fetch_all(&mut **tx).await?;
+    let rows:Vec<(i64,String,Option<String>)>=sqlx::query_as("SELECT refund_cents,status,wechat_refund_id FROM refund_record WHERE id=? AND payment_order_id=? AND deleted_at IS NULL FOR UPDATE").bind(rid).bind(pid).fetch_all(tx.executor()).await?;
     if rows.len() != 1 || rows[0].0 != n.amount.refund {
         return Err(conflict());
     }
@@ -79,7 +79,7 @@ pub async fn apply_notification(
     .await
 }
 pub async fn apply(
-    tx: &mut sqlx::Transaction<'_, sqlx::MySql>,
+    tx: &mut common_db::Tx<'_>,
     path: &str,
     req: &ResultReq,
 ) -> AppResult<()> {
@@ -101,18 +101,18 @@ pub async fn apply(
         "SELECT id,payment_order_id FROM refund_record WHERE refund_no=? AND deleted_at IS NULL",
     )
     .bind(path)
-    .fetch_all(&mut **tx)
+    .fetch_all(tx.executor())
     .await?;
     if ids.len() != 1 {
         return Err(conflict());
     }
     let (rid, pid) = ids[0];
-    let payments=sqlx::query("SELECT user_id,biz_id,biz_type,paid_cents,refunded_cents,status FROM payment_order WHERE id=? AND deleted_at IS NULL FOR UPDATE").bind(pid).fetch_all(&mut **tx).await?;
+    let payments=sqlx::query("SELECT user_id,biz_id,biz_type,paid_cents,refunded_cents,status FROM payment_order WHERE id=? AND deleted_at IS NULL FOR UPDATE").bind(pid).fetch_all(tx.executor()).await?;
     if payments.len() != 1 {
         return Err(conflict());
     }
     let pay = &payments[0];
-    let rows=sqlx::query("SELECT id,payment_order_id,user_id,biz_type,biz_id,refund_cents,status,wechat_refund_id FROM refund_record WHERE id=? AND deleted_at IS NULL FOR UPDATE").bind(rid).fetch_all(&mut **tx).await?;
+    let rows=sqlx::query("SELECT id,payment_order_id,user_id,biz_type,biz_id,refund_cents,status,wechat_refund_id FROM refund_record WHERE id=? AND deleted_at IS NULL FOR UPDATE").bind(rid).fetch_all(tx.executor()).await?;
     if rows.len() != 1 {
         return Err(conflict());
     }
@@ -143,21 +143,21 @@ pub async fn apply(
     if req.success {
         let cents: i64 = row.try_get("refund_cents")?;
         if row.try_get::<String, _>("biz_type")? == "wallet_recharge" {
-            let part:Option<(u64,i64,bool)>=sqlx::query_as("SELECT wallet_account_id,amount_cents,settled FROM wallet_refund_part WHERE refund_record_id=? FOR UPDATE").bind(rid).fetch_optional(&mut **tx).await?;
+            let part:Option<(u64,i64,bool)>=sqlx::query_as("SELECT wallet_account_id,amount_cents,settled FROM wallet_refund_part WHERE refund_record_id=? FOR UPDATE").bind(rid).fetch_optional(tx.executor()).await?;
             let (wid, amount, settled) = part.ok_or_else(conflict)?;
             if amount != cents || settled {
                 return Err(conflict());
             }
-            let wallets:Vec<(i64,i64)>=sqlx::query_as("SELECT balance_cents,frozen_cents FROM wallet_account WHERE id=? AND user_id=? AND deleted_at IS NULL FOR UPDATE").bind(wid).bind(row.try_get::<u64,_>("user_id")?).fetch_all(&mut **tx).await?;
+            let wallets:Vec<(i64,i64)>=sqlx::query_as("SELECT balance_cents,frozen_cents FROM wallet_account WHERE id=? AND user_id=? AND deleted_at IS NULL FOR UPDATE").bind(wid).bind(row.try_get::<u64,_>("user_id")?).fetch_all(tx.executor()).await?;
             if wallets.len() != 1 || wallets[0].1 < cents {
                 return Err(conflict());
             }
-            sqlx::query("UPDATE wallet_account SET frozen_cents=frozen_cents-?,version=version+1 WHERE id=?").bind(cents).bind(wid).execute(&mut **tx).await?;
+            sqlx::query("UPDATE wallet_account SET frozen_cents=frozen_cents-?,version=version+1 WHERE id=?").bind(cents).bind(wid).execute(tx.executor()).await?;
             sqlx::query("UPDATE wallet_refund_part SET settled=1 WHERE refund_record_id=?")
                 .bind(rid)
-                .execute(&mut **tx)
+                .execute(tx.executor())
                 .await?;
-            sqlx::query("INSERT INTO wallet_txn (txn_no,user_id,wallet_account_id,direction,amount_cents,balance_after_cents,biz_type,biz_ref,note,created_month) VALUES (?,?,?,'out',?,?,'refund',?,'原路退款成功，扣除已预留资金',DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))").bind(common_db::IdGen::new("WTX").next()).bind(row.try_get::<u64,_>("user_id")?).bind(wid).bind(cents).bind(wallets[0].0).bind(path).execute(&mut **tx).await?;
+            sqlx::query("INSERT INTO wallet_txn (txn_no,user_id,wallet_account_id,direction,amount_cents,balance_after_cents,biz_type,biz_ref,note,created_month) VALUES (?,?,?,'out',?,?,'refund',?,'原路退款成功，扣除已预留资金',DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))").bind(common_db::IdGen::new("WTX").next()).bind(row.try_get::<u64,_>("user_id")?).bind(wid).bind(cents).bind(wallets[0].0).bind(path).execute(tx.executor()).await?;
         }
         let paid: i64 = pay.try_get("paid_cents")?;
         let refunded: i64 = pay.try_get("refunded_cents")?;
@@ -174,9 +174,9 @@ pub async fn apply(
         )
         .bind(rid)
         .bind(&req.wechat_refund_id)
-        .execute(&mut **tx)
+        .execute(tx.executor())
         .await?;
-        sqlx::query("UPDATE refund_record SET status='success',wechat_refund_id=?,completed_at=UTC_TIMESTAMP(3),failure_reason=NULL WHERE id=?").bind(&req.wechat_refund_id).bind(rid).execute(&mut **tx).await?;
+        sqlx::query("UPDATE refund_record SET status='success',wechat_refund_id=?,completed_at=UTC_TIMESTAMP(3),failure_reason=NULL WHERE id=?").bind(&req.wechat_refund_id).bind(rid).execute(tx.executor()).await?;
         sqlx::query("UPDATE payment_order SET refunded_cents=?,status=? WHERE id=?")
             .bind(total)
             .bind(if total == paid {
@@ -185,10 +185,10 @@ pub async fn apply(
                 "partial_refunded"
             })
             .bind(pid)
-            .execute(&mut **tx)
+            .execute(tx.executor())
             .await?;
     } else {
-        sqlx::query("UPDATE refund_record SET status='failed',failure_reason=?,retry_count=retry_count+1 WHERE id=?").bind(&req.failure_reason).bind(rid).execute(&mut **tx).await?;
+        sqlx::query("UPDATE refund_record SET status='failed',failure_reason=?,retry_count=retry_count+1 WHERE id=?").bind(&req.failure_reason).bind(rid).execute(tx.executor()).await?;
     }
     let event = common_redis::StreamEnvelope::new(
         "refund_completed",
@@ -199,7 +199,7 @@ pub async fn apply(
         .bind(&event.event_id)
         .bind(common_redis::streams::COMP_TX)
         .bind(serde_json::to_value(&event)?)
-        .execute(&mut **tx)
+        .execute(tx.executor())
         .await?;
     Ok(())
 }
@@ -225,7 +225,7 @@ mod tests {
             let p = pool.clone();
             let n = n.clone();
             jobs.push(tokio::spawn(async move {
-                let mut tx = p.begin().await?;
+                let mut tx = common_db::Tx::from_transaction(p.begin().await?);
                 if index % 2 == 0 {
                     apply_notification(&mut tx, &n).await?;
                 } else {
@@ -256,12 +256,12 @@ mod tests {
                 .await
                 .unwrap();
         let count:i64=sqlx::query_scalar("SELECT COUNT(*) FROM event_outbox WHERE JSON_UNQUOTE(JSON_EXTRACT(envelope_json,'$.payload.refund_no'))=?").bind(&tag).fetch_one(&pool).await.unwrap();
-        let mut tx = pool.begin().await.unwrap();
+        let mut tx = common_db::Tx::from_transaction(pool.begin().await.unwrap());
         let mut wrong = n.clone();
         wrong.amount.refund = 83;
         let wrong_rejected = apply_notification(&mut tx, &wrong).await.is_err();
         tx.rollback().await.unwrap();
-        let mut tx = pool.begin().await.unwrap();
+        let mut tx = common_db::Tx::from_transaction(pool.begin().await.unwrap());
         let mut late = n.clone();
         late.refund_status = "ABNORMAL".into();
         let late_accepted = apply_notification(&mut tx, &late).await.is_ok();

@@ -36,7 +36,7 @@ pub async fn refund(
     claims: common_auth::UserClaims,
     Json(req): Json<WalletRefundReq>,
 ) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::charge::WalletRefundApplied>>> {
-    let mut tx=st.db.pool().begin().await?;
+    let mut tx=st.wallet.begin().await?;
     let response=crate::wallet_refund::apply(&mut tx,claims.user_id,&req).await?;
     tx.commit().await?;
     Ok(Json(common_error::ApiEnvelope::ok(response,common_error::current_request_id())))

@@ -16,7 +16,7 @@ pub async fn receive(
     Path(cid): Path<u64>,
     Json(req): Json<FeeResult>,
 ) -> AppResult<Json<ApiEnvelope<api_contracts::common::AckResponse>>> {
-    let mut tx = st.db.pool().begin().await?;
+    let mut tx = st.order.begin().await?;
     apply(&mut tx, cid, &req).await?;
     tx.commit().await?;
     Ok(Json(ApiEnvelope::ok(
@@ -25,7 +25,7 @@ pub async fn receive(
     )))
 }
 pub async fn apply(
-    tx: &mut sqlx::Transaction<'_, sqlx::MySql>,
+    tx: &mut common_db::Tx<'_>,
     cid: u64,
     req: &FeeResult,
 ) -> AppResult<()> {
@@ -44,18 +44,18 @@ pub async fn apply(
         "SELECT payment_order_id FROM charge_order WHERE id=? AND deleted_at IS NULL",
     )
     .bind(cid)
-    .fetch_all(&mut **tx)
+    .fetch_all(tx.executor())
     .await?;
     if ids.len() != 1 {
         return Err(conflict());
     }
     let pid = ids[0].ok_or_else(conflict)?;
-    let pays=sqlx::query("SELECT user_id,biz_id,biz_type,paid_cents,refunded_cents,status FROM payment_order WHERE id=? AND deleted_at IS NULL FOR UPDATE").bind(pid).fetch_all(&mut **tx).await?;
+    let pays=sqlx::query("SELECT user_id,biz_id,biz_type,paid_cents,refunded_cents,status FROM payment_order WHERE id=? AND deleted_at IS NULL FOR UPDATE").bind(pid).fetch_all(tx.executor()).await?;
     if pays.len() != 1 {
         return Err(conflict());
     }
     let pay = &pays[0];
-    let rows=sqlx::query("SELECT order_no,user_id,payment_order_id,status,started_at FROM charge_order WHERE id=? AND deleted_at IS NULL FOR UPDATE").bind(cid).fetch_all(&mut **tx).await?;
+    let rows=sqlx::query("SELECT order_no,user_id,payment_order_id,status,started_at FROM charge_order WHERE id=? AND deleted_at IS NULL FOR UPDATE").bind(cid).fetch_all(tx.executor()).await?;
     if rows.len() != 1 {
         return Err(conflict());
     }
@@ -78,7 +78,7 @@ pub async fn apply(
         "SELECT result_json FROM charge_fee_receipt WHERE charge_order_id=? FOR UPDATE",
     )
     .bind(cid)
-    .fetch_optional(&mut **tx)
+    .fetch_optional(tx.executor())
     .await?;
     if let Some(saved) = previous {
         return if saved == payload {
@@ -87,7 +87,7 @@ pub async fn apply(
             Err(conflict())
         };
     }
-    let original:Option<(serde_json::Value,serde_json::Value)>=sqlx::query_as("SELECT r.meter_json,p.quote_snapshot FROM charge_end_receipt r JOIN charge_order_pricing p ON p.charge_order_id=r.charge_order_id AND p.user_id=? WHERE r.charge_order_id=? FOR UPDATE").bind(uid).bind(cid).fetch_optional(&mut **tx).await?;
+    let original:Option<(serde_json::Value,serde_json::Value)>=sqlx::query_as("SELECT r.meter_json,p.quote_snapshot FROM charge_end_receipt r JOIN charge_order_pricing p ON p.charge_order_id=r.charge_order_id AND p.user_id=? WHERE r.charge_order_id=? FOR UPDATE").bind(uid).bind(cid).fetch_optional(tx.executor()).await?;
     let (meter, quote) = original.ok_or_else(conflict)?;
     if serde_json::to_value(serde_json::from_value::<api_contracts::ChargeEndMeter>(
         meter,
@@ -107,7 +107,7 @@ pub async fn apply(
     if paid < 0 || refunded < 0 || refunded > paid {
         return Err(conflict());
     }
-    let refunds:Vec<(i64,String)>=sqlx::query_as("SELECT refund_cents,status FROM refund_record WHERE payment_order_id=? AND deleted_at IS NULL FOR UPDATE").bind(pid).fetch_all(&mut **tx).await?;
+    let refunds:Vec<(i64,String)>=sqlx::query_as("SELECT refund_cents,status FROM refund_record WHERE payment_order_id=? AND deleted_at IS NULL FOR UPDATE").bind(pid).fetch_all(tx.executor()).await?;
     let target = (paid - req.total_cents).max(0);
     let mut reserved = refunded;
     let mut successful = 0i64;
@@ -132,7 +132,7 @@ pub async fn apply(
     if amount > 0 {
         let no = common_db::IdGen::new("REF").next();
         sqlx::query("INSERT INTO refund_record (refund_no,payment_order_id,user_id,biz_type,biz_id,refund_cents,reason,status,created_month) VALUES (?,?,?,'charge',?,?,'充电实结差额退款','pending',DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))")
-            .bind(&no).bind(pid).bind(uid).bind(cid).bind(amount).execute(&mut **tx).await?;
+            .bind(&no).bind(pid).bind(uid).bind(cid).bind(amount).execute(tx.executor()).await?;
         let event = common_redis::StreamEnvelope::new(
             "refund_required",
             "user",
@@ -142,7 +142,7 @@ pub async fn apply(
             .bind(&event.event_id)
             .bind(common_redis::streams::REFUND_REQUIRED)
             .bind(serde_json::to_value(&event)?)
-            .execute(&mut **tx)
+            .execute(tx.executor())
             .await?;
     }
     sqlx::query(
@@ -152,9 +152,9 @@ pub async fn apply(
     .bind(req.service_cents)
     .bind(req.total_cents)
     .bind(cid)
-    .execute(&mut **tx)
+    .execute(tx.executor())
     .await?;
-    sqlx::query("INSERT INTO charge_fee_receipt (charge_order_id,calculation_no,result_json,shortfall_cents) VALUES (?,?,?,?)").bind(cid).bind(&req.calculation_no).bind(payload).bind((req.total_cents-paid).max(0)).execute(&mut **tx).await?;
+    sqlx::query("INSERT INTO charge_fee_receipt (charge_order_id,calculation_no,result_json,shortfall_cents) VALUES (?,?,?,?)").bind(cid).bind(&req.calculation_no).bind(payload).bind((req.total_cents-paid).max(0)).execute(tx.executor()).await?;
     crate::order_events::record(
         tx,
         cid,

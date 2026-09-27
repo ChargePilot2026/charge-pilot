@@ -35,7 +35,7 @@ pub struct InvoiceApplyReq {
 /// 锁顺序与资金写入路径 `charge_fee.rs` 一致(先 `refund_record`,再
 /// `payment_order` / `charge_order`),避免交叉死锁。
 pub async fn resolve_invoiceable_cents(
-    tx: &mut sqlx::Transaction<'_, sqlx::MySql>,
+    tx: &mut common_db::Tx<'_>,
     charge_order_id: u64,
     user_id: u64,
 ) -> AppResult<i64> {
@@ -49,7 +49,7 @@ pub async fn resolve_invoiceable_cents(
     )
     .bind(charge_order_id)
     .bind(user_id)
-    .fetch_optional(&mut **tx)
+    .fetch_optional(tx.executor())
     .await?;
     let payment_order_id = pid.and_then(|(v,)| v).ok_or_else(conflict)?;
 
@@ -59,7 +59,7 @@ pub async fn resolve_invoiceable_cents(
           WHERE payment_order_id = ? AND deleted_at IS NULL FOR UPDATE",
     )
     .bind(payment_order_id)
-    .fetch_all(&mut **tx)
+    .fetch_all(tx.executor())
     .await?;
 
     // ② 支付单
@@ -69,7 +69,7 @@ pub async fn resolve_invoiceable_cents(
     )
     .bind(payment_order_id)
     .bind(user_id)
-    .fetch_optional(&mut **tx)
+    .fetch_optional(tx.executor())
     .await?
     .ok_or_else(conflict)?;
     let (_paid_cents, refunded_cents, pay_status) = payment;
@@ -82,7 +82,7 @@ pub async fn resolve_invoiceable_cents(
         "SELECT COUNT(*) FROM charge_fee_receipt WHERE charge_order_id = ?",
     )
     .bind(charge_order_id)
-    .fetch_one(&mut **tx)
+    .fetch_one(tx.executor())
     .await?;
     if has_fee == 0 {
         return Err(AppError::Conflict("订单尚未完成计费，暂不能开票".into()));
@@ -91,7 +91,7 @@ pub async fn resolve_invoiceable_cents(
         "SELECT total_cents FROM charge_order WHERE id = ? AND deleted_at IS NULL",
     )
     .bind(charge_order_id)
-    .fetch_optional(&mut **tx)
+    .fetch_optional(tx.executor())
     .await?;
     let settled_cents = settled
         .filter(|v| *v > 0)
@@ -102,7 +102,7 @@ pub async fn resolve_invoiceable_cents(
           WHERE charge_order_id = ? ORDER BY id DESC LIMIT 1",
     )
     .bind(charge_order_id)
-    .fetch_optional(&mut **tx)
+    .fetch_optional(tx.executor())
     .await?
     .unwrap_or(0);
     if shortfall > 0 {
@@ -163,7 +163,7 @@ pub async fn apply(
         return Err(AppError::BadRequest("邮箱格式无效".into()));
     }
 
-    let mut tx = st.db.pool().begin().await?;
+    let mut tx = st.invoice.begin().await?;
     // D14:金额来源为实结额,而非预付额;并校验计费/欠款/退款终态。
     let invoiceable_cents = resolve_invoiceable_cents(&mut tx, req.biz_id, claims.user_id).await?;
     if req.total_cents > invoiceable_cents {
@@ -176,7 +176,7 @@ pub async fn apply(
     )
     .bind(claims.user_id)
     .bind(req.biz_id)
-    .fetch_one(&mut *tx)
+    .fetch_one(tx.executor())
     .await?;
     if duplicate {
         return Err(AppError::Conflict("该订单已有发票申请".into()));
@@ -196,7 +196,7 @@ pub async fn apply(
     .bind(title)
     .bind(tax_no)
     .bind(email)
-    .execute(&mut *tx)
+    .execute(tx.executor())
     .await?;
     let invoice_id = inserted.last_insert_id();
     let event = StreamEnvelope::new("invoice_required", "user", json!({"invoice_request_id": invoice_id}));
@@ -205,7 +205,7 @@ pub async fn apply(
         .bind(&event.event_id)
         .bind(streams::INVOICE_REQUIRED)
         .bind(envelope)
-        .execute(&mut *tx)
+        .execute(tx.executor())
         .await?;
     tx.commit().await?;
     Ok(Json(common_error::ApiEnvelope::ok(
@@ -232,7 +232,7 @@ pub async fn my(
         "SELECT COUNT(*) FROM invoice_request WHERE user_id = ? AND deleted_at IS NULL",
     )
     .bind(claims.user_id)
-    .fetch_one(st.db.pool())
+    .fetch_one(st.invoice.pool())
     .await?;
     let rows = sqlx::query(
         "SELECT invoice_no, biz_type, total_cents, title, review_status, reject_reason, invoice_url, created_at
@@ -242,7 +242,7 @@ pub async fn my(
     .bind(claims.user_id)
     .bind(page_size as i64)
     .bind(offset as i64)
-    .fetch_all(st.db.pool())
+    .fetch_all(st.invoice.pool())
     .await?;
     let items = rows
         .iter()
@@ -275,10 +275,10 @@ pub async fn internal_detail(
 ) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::InvoiceDetailResponse>>> {
     let row = if let Ok(id) = invoice_id.parse::<u64>() {
         sqlx::query("SELECT * FROM invoice_request WHERE id = ? AND deleted_at IS NULL")
-            .bind(id).fetch_optional(st.db.pool()).await?
+            .bind(id).fetch_optional(st.invoice.pool()).await?
     } else {
         sqlx::query("SELECT * FROM invoice_request WHERE invoice_no = ? AND deleted_at IS NULL")
-            .bind(&invoice_id).fetch_optional(st.db.pool()).await?
+            .bind(&invoice_id).fetch_optional(st.invoice.pool()).await?
     }.ok_or_else(|| AppError::NotFound("invoice".into()))?;
     Ok(Json(common_error::ApiEnvelope::ok(
         api_contracts::InvoiceDetailResponse {
@@ -330,13 +330,13 @@ pub async fn internal_review(
         return Err(AppError::BadRequest("拒绝发票申请必须填写不超过 255 字的原因".into()));
     }
 
-    let mut tx = st.db.pool().begin().await?;
+    let mut tx = st.invoice.begin().await?;
     let row = if let Ok(id) = invoice_id.parse::<u64>() {
         sqlx::query("SELECT id, biz_id, total_cents, review_status, reviewed_by, reject_reason, invoice_url FROM invoice_request WHERE id = ? AND deleted_at IS NULL FOR UPDATE")
-            .bind(id).fetch_optional(&mut *tx).await?
+            .bind(id).fetch_optional(tx.executor()).await?
     } else {
         sqlx::query("SELECT id, biz_id, total_cents, review_status, reviewed_by, reject_reason, invoice_url FROM invoice_request WHERE invoice_no = ? AND deleted_at IS NULL FOR UPDATE")
-            .bind(&invoice_id).fetch_optional(&mut *tx).await?
+            .bind(&invoice_id).fetch_optional(tx.executor()).await?
     }.ok_or_else(|| AppError::NotFound("invoice".into()))?;
     let current_status: String = sqlx::Row::try_get(&row, "review_status")?;
     let target_status = if req.decision == "reject" { "rejected" } else { "issued" };
@@ -364,7 +364,7 @@ pub async fn internal_review(
         "SELECT user_id FROM invoice_request WHERE id = ? AND deleted_at IS NULL",
     )
     .bind(id)
-    .fetch_one(&mut *tx)
+    .fetch_one(tx.executor())
     .await?;
     let invoiceable = resolve_invoiceable_cents(&mut tx, biz_id, owner).await?;
     if applied_cents > invoiceable {
@@ -375,7 +375,7 @@ pub async fn internal_review(
 
     sqlx::query("UPDATE invoice_request SET review_status = ?, reviewed_by = ?, reviewed_at = UTC_TIMESTAMP(3), reject_reason = ?, invoice_url = ? WHERE id = ? AND review_status = 'pending'")
         .bind(target_status).bind(req.actor_id).bind(reason).bind(req.invoice_url.as_deref()).bind(id)
-        .execute(&mut *tx).await?;
+        .execute(tx.executor()).await?;
     tx.commit().await?;
     Ok(Json(common_error::ApiEnvelope::ok(
                 api_contracts::charge::InvoiceReviewed { reviewed: true, review_status: target_status.to_string() },

@@ -14,7 +14,7 @@ fn conflict() -> AppError {
 
 pub async fn process(pool: &sqlx::MySqlPool, n: &PaymentNotification) -> AppResult<()> {
     for attempt in 0..3 {
-        let mut tx = pool.begin().await?;
+        let mut tx = common_db::Tx::from_transaction(pool.begin().await?);
         match record(&mut tx, n).await {
             Ok(()) => {
                 tx.commit().await?;
@@ -33,10 +33,10 @@ pub async fn process(pool: &sqlx::MySqlPool, n: &PaymentNotification) -> AppResu
     unreachable!()
 }
 
-pub async fn record(tx: &mut Transaction<'_, MySql>, n: &PaymentNotification) -> AppResult<()> {
+pub async fn record(tx: &mut common_db::Tx<'_>, n: &PaymentNotification) -> AppResult<()> {
     // Same lock order as cancellation: payment -> charge. Never trust attach.
     let rows = sqlx::query("SELECT id,biz_type,biz_id,user_id,pay_method,total_cents,paid_cents,status,wechat_transaction_id,created_month,expired_at FROM payment_order WHERE order_no=? AND deleted_at IS NULL FOR UPDATE")
-        .bind(&n.out_trade_no).fetch_all(&mut **tx).await?;
+        .bind(&n.out_trade_no).fetch_all(tx.executor()).await?;
     if rows.len() != 1 {
         return Err(conflict());
     }
@@ -55,7 +55,7 @@ pub async fn record(tx: &mut Transaction<'_, MySql>, n: &PaymentNotification) ->
         "SELECT openid,status FROM user WHERE id=? AND deleted_at IS NULL FOR UPDATE",
     )
     .bind(uid)
-    .fetch_optional(&mut **tx)
+    .fetch_optional(tx.executor())
     .await?;
     let (openid, user_status) = owner.ok_or_else(conflict)?;
     if openid != n.payer.openid {
@@ -78,9 +78,9 @@ pub async fn record(tx: &mut Transaction<'_, MySql>, n: &PaymentNotification) ->
         ]))?)
     );
     let inserted = sqlx::query("INSERT IGNORE INTO payment_callback_idempotent (wechat_transaction_id,request_digest) VALUES (?,?)")
-        .bind(&n.transaction_id).bind(&digest).execute(&mut **tx).await?.rows_affected() == 1;
+        .bind(&n.transaction_id).bind(&digest).execute(tx.executor()).await?.rows_affected() == 1;
     let recorded: Option<String> = sqlx::query_scalar("SELECT request_digest FROM payment_callback_idempotent WHERE wechat_transaction_id=? FOR UPDATE")
-        .bind(&n.transaction_id).fetch_one(&mut **tx).await?;
+        .bind(&n.transaction_id).fetch_one(tx.executor()).await?;
     if recorded.as_deref() != Some(digest.as_str()) {
         return Err(conflict());
     }
@@ -105,7 +105,7 @@ pub async fn record(tx: &mut Transaction<'_, MySql>, n: &PaymentNotification) ->
     let mut charge = None;
     if biz == "charge" {
         let rows = sqlx::query("SELECT id,order_no,user_id,device_id,port_no,port_code,payment_order_id,status FROM charge_order WHERE id=? AND deleted_at IS NULL FOR UPDATE")
-            .bind(biz_id).fetch_all(&mut **tx).await?;
+            .bind(biz_id).fetch_all(tx.executor()).await?;
         if rows.len() != 1 {
             return Err(conflict());
         }
@@ -133,15 +133,15 @@ pub async fn record(tx: &mut Transaction<'_, MySql>, n: &PaymentNotification) ->
 
     // total is the settled order face value; payer_total may include WeChat-funded discounts.
     sqlx::query("UPDATE payment_order SET status='paid',paid_cents=?,wechat_transaction_id=?,paid_at=? WHERE id=? AND created_month=?")
-        .bind(total).bind(&n.transaction_id).bind(n.success_time.naive_utc()).bind(id).bind(month).execute(&mut **tx).await?;
+        .bind(total).bind(&n.transaction_id).bind(n.success_time.naive_utc()).bind(id).bind(month).execute(tx.executor()).await?;
     if refund {
         let refund_no = IdGen::new("REF").next();
         sqlx::query("INSERT INTO refund_record (refund_no,payment_order_id,user_id,biz_type,biz_id,refund_cents,reason,status,created_month) VALUES (?,?,?,?,?,?,'订单关闭或无法启动后收到付款','pending',?)")
-            .bind(&refund_no).bind(id).bind(uid).bind(&biz).bind(biz_id).bind(total).bind(Utc::now().format("%Y-%m-01").to_string()).execute(&mut **tx).await?;
+            .bind(&refund_no).bind(id).bind(uid).bind(&biz).bind(biz_id).bind(total).bind(Utc::now().format("%Y-%m-01").to_string()).execute(tx.executor()).await?;
         if let Some(c) = charge.as_ref() {
             if c.try_get::<String, _>("status")? == "pending_payment" {
                 sqlx::query("UPDATE charge_order SET status='cancelled',ended_at=UTC_TIMESTAMP(3),failure_reason='付款确认时订单已失效，等待退款' WHERE id=?")
-                    .bind(biz_id).execute(&mut **tx).await?;
+                    .bind(biz_id).execute(tx.executor()).await?;
             }
             crate::order_events::record(
                 tx,
@@ -156,7 +156,7 @@ pub async fn record(tx: &mut Transaction<'_, MySql>, n: &PaymentNotification) ->
     } else if let Some(c) = charge {
         sqlx::query("UPDATE charge_order SET status='paid' WHERE id=?")
             .bind(biz_id)
-            .execute(&mut **tx)
+            .execute(tx.executor())
             .await?;
         crate::order_events::record(tx, biz_id, "paid", "payment", "支付确认").await?;
         enqueue(tx,common_redis::streams::CHARGE_STARTED,StreamEnvelope::new("charge_started","user",json!({
@@ -166,7 +166,7 @@ pub async fn record(tx: &mut Transaction<'_, MySql>, n: &PaymentNotification) ->
     } else {
         // The user row lock serializes first-wallet creation despite NULL soft-delete uniqueness.
         let wallets: Vec<(u64,i64)>=sqlx::query_as("SELECT id,balance_cents FROM wallet_account WHERE user_id=? AND deleted_at IS NULL FOR UPDATE")
-            .bind(uid).fetch_all(&mut **tx).await?;
+            .bind(uid).fetch_all(tx.executor()).await?;
         if wallets.len() > 1 {
             return Err(conflict());
         }
@@ -176,7 +176,7 @@ pub async fn record(tx: &mut Transaction<'_, MySql>, n: &PaymentNotification) ->
                 sqlx::query("INSERT INTO wallet_account (user_id,status) VALUES (?,?)")
                     .bind(uid)
                     .bind(&user_status)
-                    .execute(&mut **tx)
+                    .execute(tx.executor())
                     .await?
                     .last_insert_id(),
                 0,
@@ -186,22 +186,22 @@ pub async fn record(tx: &mut Transaction<'_, MySql>, n: &PaymentNotification) ->
         sqlx::query("UPDATE wallet_account SET balance_cents=?,version=version+1 WHERE id=?")
             .bind(balance)
             .bind(wid)
-            .execute(&mut **tx)
+            .execute(tx.executor())
             .await?;
         let txn=sqlx::query("INSERT INTO wallet_txn (txn_no,user_id,wallet_account_id,direction,amount_cents,balance_after_cents,biz_type,biz_ref,created_month) VALUES (?,?,?,'in',?,?,'recharge',?,?)")
-            .bind(IdGen::new("WTX").next()).bind(uid).bind(wid).bind(total).bind(balance).bind(&n.out_trade_no).bind(Utc::now().format("%Y-%m-01").to_string()).execute(&mut **tx).await?.last_insert_id();
+            .bind(IdGen::new("WTX").next()).bind(uid).bind(wid).bind(total).bind(balance).bind(&n.out_trade_no).bind(Utc::now().format("%Y-%m-01").to_string()).execute(tx.executor()).await?.last_insert_id();
         sqlx::query("UPDATE payment_order SET biz_id=? WHERE id=? AND created_month=?")
             .bind(txn)
             .bind(id)
             .bind(month)
-            .execute(&mut **tx)
+            .execute(tx.executor())
             .await?;
     }
     Ok(())
 }
 
 async fn enqueue(
-    tx: &mut Transaction<'_, MySql>,
+    tx: &mut common_db::Tx<'_>,
     stream: &str,
     envelope: StreamEnvelope,
 ) -> AppResult<()> {
@@ -211,7 +211,7 @@ async fn enqueue(
     .bind(&envelope.event_id)
     .bind(stream)
     .bind(serde_json::to_string(&envelope)?)
-    .execute(&mut **tx)
+    .execute(tx.executor())
     .await?;
     Ok(())
 }
@@ -222,14 +222,14 @@ mod tests {
     use sqlx::Executor;
 
     async fn fixture(
-        tx: &mut Transaction<'_, MySql>,
+        tx: &mut common_db::Tx<'_>,
         charge: bool,
     ) -> (u64, u64, PaymentNotification) {
         let tag = uuid::Uuid::new_v4().simple().to_string();
         let openid = format!("receipt_{tag}");
         let uid = sqlx::query("INSERT INTO user (openid) VALUES (?)")
             .bind(&openid)
-            .execute(&mut **tx)
+            .execute(tx.executor())
             .await
             .unwrap()
             .last_insert_id();
@@ -258,7 +258,7 @@ mod tests {
             .unwrap()
         } else {
             sqlx::query("INSERT INTO payment_order (order_no,biz_type,biz_id,user_id,pay_method,total_cents,created_month) VALUES (?,'wallet_recharge',0,?,'wechat',100,?)")
-                .bind(&no).bind(uid).bind(Utc::now().format("%Y-%m-01").to_string()).execute(&mut **tx).await.unwrap();
+                .bind(&no).bind(uid).bind(Utc::now().format("%Y-%m-01").to_string()).execute(tx.executor()).await.unwrap();
             0
         };
         let n=serde_json::from_value(json!({"appid":"wx_test","mchid":"1900000109","out_trade_no":no,"transaction_id":format!("WX_{tag}"),"trade_type":"JSAPI","trade_state":"SUCCESS","success_time":Utc::now().to_rfc3339(),"payer":{"openid":openid},"amount":{"total":100,"payer_total":90,"currency":"CNY","payer_currency":"CNY"}})).unwrap();
@@ -271,14 +271,14 @@ mod tests {
         let pool = sqlx::MySqlPool::connect(&std::env::var("DATABASE_URL").unwrap())
             .await
             .unwrap();
-        let mut tx = pool.begin().await.unwrap();
+        let mut tx = common_db::Tx::from_transaction(pool.begin().await.unwrap());
         let (uid, cid, n) = fixture(&mut tx, true).await;
         let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM event_outbox")
-            .fetch_one(&mut *tx)
+            .fetch_one(tx.executor())
             .await
             .unwrap();
         for wrong in ["amount", "owner"] {
-            tx.execute("SAVEPOINT invalid_receipt").await.unwrap();
+            tx.executor().execute("SAVEPOINT invalid_receipt").await.unwrap();
             let mut bad = n.clone();
             if wrong == "amount" {
                 bad.amount.total = 101;
@@ -286,7 +286,7 @@ mod tests {
                 bad.payer.openid = "other_user".into();
             }
             assert!(record(&mut tx, &bad).await.is_err());
-            tx.execute("ROLLBACK TO SAVEPOINT invalid_receipt")
+            tx.executor().execute("ROLLBACK TO SAVEPOINT invalid_receipt")
                 .await
                 .unwrap();
         }
@@ -294,37 +294,37 @@ mod tests {
         record(&mut tx, &n).await.unwrap();
         let status: String = sqlx::query_scalar("SELECT status FROM charge_order WHERE id=?")
             .bind(cid)
-            .fetch_one(&mut *tx)
+            .fetch_one(tx.executor())
             .await
             .unwrap();
         assert_eq!(status, "paid");
         let paid: i64 = sqlx::query_scalar("SELECT paid_cents FROM payment_order WHERE order_no=?")
             .bind(&n.out_trade_no)
-            .fetch_one(&mut *tx)
+            .fetch_one(tx.executor())
             .await
             .unwrap();
         assert_eq!(paid, 100);
         let events:Vec<(String,serde_json::Value)>=sqlx::query_as("SELECT event_id,envelope_json FROM event_outbox WHERE JSON_EXTRACT(envelope_json,'$.payload.charge_order_id')=?")
-            .bind(cid).fetch_all(&mut *tx).await.unwrap();
+            .bind(cid).fetch_all(tx.executor()).await.unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].1["event_id"], events[0].0);
         assert!(events[0].1["payload"]["order_no"]
             .as_str()
             .unwrap()
             .starts_with("ORD_"));
-        tx.execute("SAVEPOINT second_transaction").await.unwrap();
+        tx.executor().execute("SAVEPOINT second_transaction").await.unwrap();
         let mut second = n.clone();
         second.transaction_id.push('2');
         assert!(record(&mut tx, &second).await.is_err());
-        tx.execute("ROLLBACK TO SAVEPOINT second_transaction")
+        tx.executor().execute("ROLLBACK TO SAVEPOINT second_transaction")
             .await
             .unwrap();
         // One provider transaction cannot pay a different order, even for the same amount.
         let (_, _, mut reused) = fixture(&mut tx, false).await;
         reused.transaction_id = n.transaction_id.clone();
-        tx.execute("SAVEPOINT reused_transaction").await.unwrap();
+        tx.executor().execute("SAVEPOINT reused_transaction").await.unwrap();
         assert!(record(&mut tx, &reused).await.is_err());
-        tx.execute("ROLLBACK TO SAVEPOINT reused_transaction")
+        tx.executor().execute("ROLLBACK TO SAVEPOINT reused_transaction")
             .await
             .unwrap();
         // A delayed duplicate never resets an already-refunded payment back to paid.
@@ -332,38 +332,38 @@ mod tests {
             "UPDATE payment_order SET status='refunded',refunded_cents=100 WHERE order_no=?",
         )
         .bind(&n.out_trade_no)
-        .execute(&mut *tx)
+        .execute(tx.executor())
         .await
         .unwrap();
         record(&mut tx, &n).await.unwrap();
         let status: String =
             sqlx::query_scalar("SELECT status FROM payment_order WHERE order_no=?")
                 .bind(&n.out_trade_no)
-                .fetch_one(&mut *tx)
+                .fetch_one(tx.executor())
                 .await
                 .unwrap();
         assert_eq!(status, "refunded");
         let (_, late_cid, late) = fixture(&mut tx, true).await;
         let pid: u64 = sqlx::query_scalar("SELECT id FROM payment_order WHERE order_no=?")
             .bind(&late.out_trade_no)
-            .fetch_one(&mut *tx)
+            .fetch_one(tx.executor())
             .await
             .unwrap();
         sqlx::query("UPDATE charge_order SET status='cancelled' WHERE id=?")
             .bind(late_cid)
-            .execute(&mut *tx)
+            .execute(tx.executor())
             .await
             .unwrap();
         sqlx::query("UPDATE payment_order SET status='closed' WHERE id=?")
             .bind(pid)
-            .execute(&mut *tx)
+            .execute(tx.executor())
             .await
             .unwrap();
         record(&mut tx, &late).await.unwrap();
         record(&mut tx, &late).await.unwrap();
         let status: String = sqlx::query_scalar("SELECT status FROM charge_order WHERE id=?")
             .bind(late_cid)
-            .fetch_one(&mut *tx)
+            .fetch_one(tx.executor())
             .await
             .unwrap();
         assert_eq!(status, "cancelled");
@@ -371,12 +371,12 @@ mod tests {
             "SELECT COUNT(*) FROM refund_record WHERE payment_order_id=? AND refund_cents=100",
         )
         .bind(pid)
-        .fetch_one(&mut *tx)
+        .fetch_one(tx.executor())
         .await
         .unwrap();
         assert_eq!(refunds, 1);
         let after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM event_outbox")
-            .fetch_one(&mut *tx)
+            .fetch_one(tx.executor())
             .await
             .unwrap();
         assert_eq!(after, before + 2);
@@ -386,13 +386,13 @@ mod tests {
         let balance: i64 =
             sqlx::query_scalar("SELECT balance_cents FROM wallet_account WHERE user_id=?")
                 .bind(wallet_uid)
-                .fetch_one(&mut *tx)
+                .fetch_one(tx.executor())
                 .await
                 .unwrap();
         assert_eq!(balance, 100);
         let ledger: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM wallet_txn WHERE user_id=?")
             .bind(wallet_uid)
-            .fetch_one(&mut *tx)
+            .fetch_one(tx.executor())
             .await
             .unwrap();
         assert_eq!(ledger, 1);
@@ -412,7 +412,7 @@ mod tests {
         let pool = sqlx::MySqlPool::connect(&std::env::var("DATABASE_URL").unwrap())
             .await
             .unwrap();
-        let mut tx = pool.begin().await.unwrap();
+        let mut tx = common_db::Tx::from_transaction(pool.begin().await.unwrap());
         let (uid, _, n) = fixture(&mut tx, false).await;
         tx.commit().await.unwrap();
         let mut jobs = Vec::new();

@@ -89,7 +89,7 @@ pub async fn report_fault(
     if !st.redis_cache.rate_limit(&format!("rate:device-fault:{}", claims.user_id), 5, 86_400).await? {
         return Err(common_error::AppError::RateLimited("今日报修次数已达上限".into()));
     }
-    let mut tx = st.db.pool().begin().await?;
+    let mut tx = st.station.begin().await?;
     let report_id = sqlx::query(
         "INSERT INTO device_fault_report (device_id, user_id, report_source, fault_type, description, images_json)
          VALUES (?, ?, 'user', ?, ?, ?)"
@@ -99,13 +99,13 @@ pub async fn report_fault(
     .bind(&req.fault_type)
     .bind(req.description.as_deref())
     .bind(req.images.as_ref().map(serde_json::to_value).transpose()?)
-    .execute(&mut *tx)
+    .execute(tx.executor())
     .await?
     .last_insert_id();
     sqlx::query(
         "INSERT INTO device_fault_report_event(report_id,actor_id,event_type,to_status,note,user_visible,created_at)
          VALUES(?,?,'reported','open','用户提交报修',1,UTC_TIMESTAMP(3))",
-    ).bind(report_id).bind(claims.user_id).execute(&mut *tx).await?;
+    ).bind(report_id).bind(claims.user_id).execute(tx.executor()).await?;
     tx.commit().await?;
     Ok(Json(common_error::ApiEnvelope::ok(ReportFaultResponse { submitted: true, report_id: report_id.to_string() }, common_error::current_request_id())))
 }
@@ -120,12 +120,12 @@ pub async fn my_fault_reports(
     }
     let offset = u64::from(page - 1) * u64::from(page_size);
     let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM device_fault_report WHERE user_id=? AND deleted_at IS NULL")
-        .bind(claims.user_id).fetch_one(st.db.pool()).await?;
+        .bind(claims.user_id).fetch_one(st.station.pool()).await?;
     let rows = sqlx::query(
         "SELECT id,device_id,fault_type,description,status,assigned_to,resolved_at,created_at,updated_at
          FROM device_fault_report WHERE user_id=? AND deleted_at IS NULL
          ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?",
-    ).bind(claims.user_id).bind(page_size).bind(offset).fetch_all(st.db.pool()).await?;
+    ).bind(claims.user_id).bind(page_size).bind(offset).fetch_all(st.station.pool()).await?;
     let items = rows.iter().map(|row| -> common_error::AppResult<api_contracts::charge::MyFaultReport> { Ok(api_contracts::charge::MyFaultReport {
         report_id: sqlx::Row::try_get::<u64,_>(row,"id")?.to_string(),
         device_id: sqlx::Row::try_get::<String,_>(row,"device_id")?,
@@ -156,17 +156,17 @@ pub async fn my_fault_history(
     }
     let owns_report: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM device_fault_report WHERE id=? AND user_id=? AND deleted_at IS NULL)",
-    ).bind(report_id).bind(claims.user_id).fetch_one(st.db.pool()).await?;
+    ).bind(report_id).bind(claims.user_id).fetch_one(st.station.pool()).await?;
     if !owns_report { return Err(AppError::NotFound("报修不存在".into())); }
     let offset = u64::from(page - 1) * u64::from(page_size);
     let total: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM device_fault_report_event WHERE report_id=? AND user_visible=1",
-    ).bind(report_id).fetch_one(st.db.pool()).await?;
+    ).bind(report_id).fetch_one(st.station.pool()).await?;
     let rows = sqlx::query(
         "SELECT id,event_type,from_status,to_status,note,created_at
          FROM device_fault_report_event WHERE report_id=? AND user_visible=1
          ORDER BY created_at,id LIMIT ? OFFSET ?",
-    ).bind(report_id).bind(page_size).bind(offset).fetch_all(st.db.pool()).await?;
+    ).bind(report_id).bind(page_size).bind(offset).fetch_all(st.station.pool()).await?;
     let items = rows.iter().map(|row| -> AppResult<api_contracts::charge::MyFaultEvent> { Ok(api_contracts::charge::MyFaultEvent {
         event_id: sqlx::Row::try_get::<u64,_>(row,"id")?.to_string(),
         event_type: sqlx::Row::try_get::<String,_>(row,"event_type")?,

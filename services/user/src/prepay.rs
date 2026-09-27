@@ -25,19 +25,19 @@ pub async fn prepare(
     openid: &str,
     order: &str,
 ) -> AppResult<ScanStartResponse> {
-    let ids:Vec<(u64,Option<u64>)>=sqlx::query_as("SELECT id,payment_order_id FROM charge_order WHERE order_no=? AND user_id=? AND deleted_at IS NULL").bind(order).bind(uid).fetch_all(st.db.pool()).await?;
+    let ids:Vec<(u64,Option<u64>)>=sqlx::query_as("SELECT id,payment_order_id FROM charge_order WHERE order_no=? AND user_id=? AND deleted_at IS NULL").bind(order).bind(uid).fetch_all(st.order.pool()).await?;
     if ids.len() != 1 {
         return Err(AppError::NotFound("订单不存在".into()));
     }
     let (cid, pid) = ids[0];
     let pid = pid.ok_or_else(conflict)?;
-    let mut tx = st.db.pool().begin().await?;
-    let pays=sqlx::query("SELECT order_no,biz_id,total_cents,status,expired_at FROM payment_order WHERE id=? AND user_id=? AND biz_type='charge' AND pay_method='wechat' AND deleted_at IS NULL FOR UPDATE").bind(pid).bind(uid).fetch_all(&mut *tx).await?;
+    let mut tx = st.order.begin().await?;
+    let pays=sqlx::query("SELECT order_no,biz_id,total_cents,status,expired_at FROM payment_order WHERE id=? AND user_id=? AND biz_type='charge' AND pay_method='wechat' AND deleted_at IS NULL FOR UPDATE").bind(pid).bind(uid).fetch_all(tx.executor()).await?;
     if pays.len() != 1 {
         return Err(conflict());
     }
     let pay = &pays[0];
-    let rows=sqlx::query("SELECT payment_order_id,status,port_code FROM charge_order WHERE id=? AND user_id=? AND deleted_at IS NULL FOR UPDATE").bind(cid).bind(uid).fetch_all(&mut *tx).await?;
+    let rows=sqlx::query("SELECT payment_order_id,status,port_code FROM charge_order WHERE id=? AND user_id=? AND deleted_at IS NULL FOR UPDATE").bind(cid).bind(uid).fetch_all(tx.executor()).await?;
     if rows.len() != 1 {
         return Err(conflict());
     }
@@ -64,7 +64,7 @@ pub async fn prepare(
         "SELECT request_json,prepay_id FROM charge_prepay WHERE charge_order_id=? FOR UPDATE",
     )
     .bind(cid)
-    .fetch_optional(&mut *tx)
+    .fetch_optional(tx.executor())
     .await?;
     let (raw, existing) =
         saved.ok_or_else(|| AppError::Conflict("该订单缺少预支付记录，请联系客服".into()))?;
@@ -95,7 +95,7 @@ pub async fn prepare(
             sqlx::query("UPDATE charge_prepay SET prepay_id=? WHERE charge_order_id=?")
                 .bind(&response.prepay_id)
                 .bind(cid)
-                .execute(&mut *tx)
+                .execute(tx.executor())
                 .await?;
             response.prepay_id
         }
@@ -147,7 +147,14 @@ mod tests {
         wechat.platform_public_key_path = Some(public.to_string_lossy().into());
         wechat.pay_base_url = "http://127.0.0.1:1".into();
         let st = AppState {
-            db: common_db::Db::connect(&cfg.mysql).await.unwrap(),
+            services: crate::services::build(
+                common_db::Db::connect(&cfg.mysql).await.unwrap(),
+                reqwest::Client::new(),
+                Arc::new(cfg.auth.service_token.clone()),
+                Arc::new(cfg.clone()),
+                common_redis::RedisCache::connect(&cfg.redis_cache).await.unwrap(),
+                common_redis::RedisStream::connect(&cfg.redis_stream).await.unwrap(),
+            ),
             redis_cache: common_redis::RedisCache::connect(&cfg.redis_cache)
                 .await
                 .unwrap(),
@@ -169,7 +176,7 @@ mod tests {
             port_no: 1,
             status: "idle".into(),
         };
-        let mut tx = st.db.pool().begin().await.unwrap();
+        let mut tx = st.order.begin().await.unwrap();
         let cid = crate::checkout::persist_pending(
             &mut tx,
             123,
@@ -202,7 +209,7 @@ mod tests {
                 openid: tag.clone(),
             },
         };
-        sqlx::query("INSERT INTO charge_prepay (charge_order_id,request_json,prepay_id) VALUES (?,?,'cached_test')").bind(cid).bind(serde_json::to_value(request).unwrap()).execute(&mut *tx).await.unwrap();
+        sqlx::query("INSERT INTO charge_prepay (charge_order_id,request_json,prepay_id) VALUES (?,?,'cached_test')").bind(cid).bind(serde_json::to_value(request).unwrap()).execute(tx.executor()).await.unwrap();
         tx.commit().await.unwrap();
         let hold = common_redis::PortLock::new(st.redis_cache.clone());
         hold.try_hold(&tag, &format!("123:{tag}"), 300)
@@ -214,46 +221,46 @@ mod tests {
         let wrong_openid = prepare(&st, 123, "other", &tag).await.is_err();
         sqlx::query("UPDATE charge_order SET status='paid' WHERE id=?")
             .bind(cid)
-            .execute(st.db.pool())
+            .execute(st.order.pool())
             .await
             .unwrap();
         let paid = prepare(&st, 123, &tag, &tag).await.is_err();
         sqlx::query("UPDATE charge_order SET status='pending_payment' WHERE id=?")
             .bind(cid)
-            .execute(st.db.pool())
+            .execute(st.order.pool())
             .await
             .unwrap();
-        sqlx::query("UPDATE payment_order SET expired_at=DATE_SUB(UTC_TIMESTAMP(3),INTERVAL 1 SECOND) WHERE biz_type='charge' AND biz_id=?").bind(cid).execute(st.db.pool()).await.unwrap();
+        sqlx::query("UPDATE payment_order SET expired_at=DATE_SUB(UTC_TIMESTAMP(3),INTERVAL 1 SECOND) WHERE biz_type='charge' AND biz_id=?").bind(cid).execute(st.order.pool()).await.unwrap();
         let expired = prepare(&st, 123, &tag, &tag).await.is_err();
         sqlx::query("UPDATE payment_order SET expired_at=? WHERE biz_type='charge' AND biz_id=?")
             .bind(expiry.naive_utc())
             .bind(cid)
-            .execute(st.db.pool())
+            .execute(st.order.pool())
             .await
             .unwrap();
         hold.release_if_match(&tag, &format!("123:{tag}"))
             .await
             .unwrap();
         let lost = prepare(&st, 123, &tag, &tag).await.is_err();
-        let mut tx = st.db.pool().begin().await.unwrap();
+        let mut tx = st.order.begin().await.unwrap();
         sqlx::query("DELETE FROM charge_prepay WHERE charge_order_id=?")
             .bind(cid)
-            .execute(&mut *tx)
+            .execute(tx.executor())
             .await
             .unwrap();
         sqlx::query("DELETE FROM charge_event_log WHERE charge_order_id=?")
             .bind(cid)
-            .execute(&mut *tx)
+            .execute(tx.executor())
             .await
             .unwrap();
         sqlx::query("DELETE FROM payment_order WHERE biz_type='charge' AND biz_id=?")
             .bind(cid)
-            .execute(&mut *tx)
+            .execute(tx.executor())
             .await
             .unwrap();
         sqlx::query("DELETE FROM charge_order WHERE id=?")
             .bind(cid)
-            .execute(&mut *tx)
+            .execute(tx.executor())
             .await
             .unwrap();
         tx.commit().await.unwrap();

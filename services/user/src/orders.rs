@@ -190,13 +190,13 @@ async fn list_owned(
     owner: Option<u64>,
 ) -> AppResult<Json<ApiEnvelope<OrderPage>>> {
     let filters = validate(&query)?;
-    let mut tx = state.db.pool().begin().await?;
+    let mut tx = state.order.begin().await?;
     let mut count = QueryBuilder::new("SELECT COUNT(*) FROM charge_order c");
     conditions(&mut count, &query, &filters);
     if let Some(owner) = owner {
         count.push(" AND c.user_id = ").push_bind(owner);
     }
-    let total: i64 = count.build_query_scalar().fetch_one(&mut *tx).await?;
+    let total: i64 = count.build_query_scalar().fetch_one(tx.executor()).await?;
     let mut select = QueryBuilder::new(SELECT_ORDER);
     conditions(&mut select, &query, &filters);
     if let Some(owner) = owner {
@@ -207,7 +207,7 @@ async fn list_owned(
         .push_bind(query.page_size)
         .push(" OFFSET ")
         .push_bind(u64::from(query.page - 1) * u64::from(query.page_size));
-    let rows = select.build().fetch_all(&mut *tx).await?;
+    let rows = select.build().fetch_all(tx.executor()).await?;
     let items = rows.iter().map(summary).collect::<AppResult<Vec<_>>>()?;
     tx.commit().await?;
     Ok(Json(ApiEnvelope::ok(
@@ -248,7 +248,7 @@ async fn read_detail(
     }
     let row = select
         .build()
-        .fetch_optional(state.db.pool())
+        .fetch_optional(state.order.pool())
         .await?
         .ok_or_else(|| AppError::NotFound("订单不存在".into()))?;
     let detail = OrderDetail {
@@ -308,7 +308,7 @@ pub async fn device_orders(
          FROM charge_order WHERE device_id = ? AND deleted_at IS NULL ORDER BY id DESC LIMIT 100",
     )
     .bind(&device_id)
-    .fetch_all(st.db.pool())
+    .fetch_all(st.order.pool())
     .await?;
     let items = rows
         .iter()
@@ -343,7 +343,7 @@ pub async fn charging_orders_for_snapshots(
         "SELECT order_no, device_id, port_no, CAST(charged_kwh AS CHAR) AS charged_kwh, charged_seconds
          FROM charge_order WHERE status = 'charging' AND deleted_at IS NULL ORDER BY id DESC LIMIT 100",
     )
-    .fetch_all(st.db.pool())
+    .fetch_all(st.order.pool())
     .await?;
     let items = rows.iter().map(|row| -> AppResult<api_contracts::charge::ChargingOrderSnapshot> {
         Ok(api_contracts::charge::ChargingOrderSnapshot {
@@ -401,7 +401,7 @@ pub async fn user_detail(
     )
     .bind(claims.user_id)
     .bind(order.order_id)
-    .fetch_one(state.db.pool())
+    .fetch_one(state.order.pool())
     .await?;
     // Settlement participants belong to operators, not the end user's response.
     Ok(Json(ApiEnvelope::ok(

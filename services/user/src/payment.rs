@@ -20,7 +20,7 @@ pub async fn wechat_callback(
 ) -> AppResult<axum::http::StatusCode> {
     let cfg=st.cfg.wechat.as_ref().ok_or_else(||AppError::Config("wechat missing".into()))?;
     let receipt=common_wechat::decode_payment_notification(cfg,&headers,&body)?;
-    crate::payment_receipt::process(st.db.pool(),&receipt).await?;
+    crate::payment_receipt::process(st.order.pool(),&receipt).await?;
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
@@ -29,7 +29,7 @@ pub async fn start_result(
     Path(order_id): Path<String>,
     Json(req): Json<api_contracts::StartResultRequest>,
 ) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::AckResponse>>> {
-    let (port_code,user_id)=crate::charge_start::process(st.db.pool(),&order_id,&req).await?;
+    let (port_code,user_id)=crate::charge_start::process(st.order.pool(),&order_id,&req).await?;
     let lock=PortLock::new(st.redis_cache.clone());
     if lock.release_if_match(&port_code,&format!("{user_id}:{order_id}")).await.is_err() {
         tracing::warn!(order_no=%order_id,"start result committed; hold release will expire or retry");
@@ -54,7 +54,7 @@ pub async fn detail(
         "SELECT id, order_no, pay_method, total_cents, paid_cents, status FROM payment_order WHERE order_no = ? LIMIT 1"
     )
     .bind(&payment_order_id)
-    .fetch_optional(st.db.pool())
+    .fetch_optional(st.order.pool())
     .await?;
     let r = r.ok_or_else(|| AppError::NotFound("payment".into()))?;
     Ok(Json(common_error::ApiEnvelope::ok(

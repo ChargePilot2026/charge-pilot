@@ -15,7 +15,7 @@ pub async fn metered_order(
     State(st): State<AppState>, Path(cid): Path<u64>,
 ) -> AppResult<Json<ApiEnvelope<api_contracts::pricing::MeteredOrder>>> {
     let rows=sqlx::query("SELECT c.order_no,c.user_id,c.started_at,r.meter_json,p.quote_snapshot FROM charge_order c JOIN charge_end_receipt r ON r.charge_order_id=c.id JOIN charge_order_pricing p ON p.charge_order_id=c.id AND p.user_id=c.user_id WHERE c.id=? AND c.status='completed' AND c.deleted_at IS NULL")
-        .bind(cid).fetch_all(st.db.pool()).await?;
+        .bind(cid).fetch_all(st.order.pool()).await?;
     if rows.len()!=1 {return Err(AppError::Conflict("订单尚未完成或缺少计量/计价快照".into()));}
     let row=&rows[0];
     Ok(Json(ApiEnvelope::ok(api_contracts::pricing::MeteredOrder {
@@ -30,7 +30,7 @@ pub async fn receive(
     Path(order): Path<String>,
     Json(req): Json<ChargeEndRequest>,
 ) -> AppResult<Json<ApiEnvelope<api_contracts::common::AckResponse>>> {
-    let mut tx = st.db.pool().begin().await?;
+    let mut tx = st.order.begin().await?;
     apply(&mut tx, &order, &req).await?;
     tx.commit().await?;
     // Canonical database state is authoritative even if an old telemetry cache remains.
@@ -40,7 +40,7 @@ pub async fn receive(
     )))
 }
 pub async fn apply(
-    tx: &mut sqlx::Transaction<'_, sqlx::MySql>,
+    tx: &mut common_db::Tx<'_>,
     order: &str,
     req: &ChargeEndRequest,
 ) -> AppResult<()> {
@@ -60,7 +60,7 @@ pub async fn apply(
         return Err(conflict());
     }
     let orders=sqlx::query("SELECT id,device_id,port_no,status,started_at FROM charge_order WHERE order_no=? AND deleted_at IS NULL FOR UPDATE")
-        .bind(order).fetch_all(&mut **tx).await?;
+        .bind(order).fetch_all(tx.executor()).await?;
     if orders.len() != 1 {
         return Err(conflict());
     }
@@ -72,12 +72,12 @@ pub async fn apply(
         return Err(conflict());
     }
     let started:Option<(String,Option<u64>,bool)>=sqlx::query_as("SELECT CAST(command_id AS CHAR CHARACTER SET utf8mb4),port_id,success FROM charge_start_receipt WHERE charge_order_id=?")
-        .bind(cid).fetch_optional(&mut **tx).await?;
+        .bind(cid).fetch_optional(tx.executor()).await?;
     if started != Some((start, Some(req.port_id), true)) {
         return Err(conflict());
     }
     let existing:Option<(String,serde_json::Value)>=sqlx::query_as("SELECT CAST(stop_command_id AS CHAR CHARACTER SET utf8mb4),meter_json FROM charge_end_receipt WHERE charge_order_id=? FOR UPDATE")
-        .bind(cid).fetch_optional(&mut **tx).await?;
+        .bind(cid).fetch_optional(tx.executor()).await?;
     let meter = serde_json::to_value(&req.meter)?;
     if let Some((saved, data)) = existing {
         if saved == stop && data == meter {
@@ -94,7 +94,7 @@ pub async fn apply(
         return Err(conflict());
     }
     let changed=sqlx::query("UPDATE active_port_charge SET ended_at=? WHERE port_id=? AND charge_order_id=? AND device_id=? AND port_no=? AND ended_at IS NULL")
-        .bind(req.meter.ended_at.naive_utc()).bind(req.port_id).bind(cid).bind(&req.device_id).bind(req.port_no).execute(&mut **tx).await?.rows_affected();
+        .bind(req.meter.ended_at.naive_utc()).bind(req.port_id).bind(cid).bind(&req.device_id).bind(req.port_no).execute(tx.executor()).await?.rows_affected();
     if changed != 1 {
         return Err(conflict());
     }
@@ -104,9 +104,9 @@ pub async fn apply(
         req.meter.charged_wh % 1000
     );
     sqlx::query("UPDATE charge_order SET status='completed',ended_at=?,charged_kwh=?,charged_seconds=? WHERE id=?")
-        .bind(req.meter.ended_at.naive_utc()).bind(kwh).bind(req.meter.charged_seconds).bind(cid).execute(&mut **tx).await?;
+        .bind(req.meter.ended_at.naive_utc()).bind(kwh).bind(req.meter.charged_seconds).bind(cid).execute(tx.executor()).await?;
     sqlx::query("INSERT INTO charge_end_receipt (charge_order_id,stop_command_id,meter_json) VALUES (?,?,?)")
-        .bind(cid).bind(stop).bind(meter).execute(&mut **tx).await?;
+        .bind(cid).bind(stop).bind(meter).execute(tx.executor()).await?;
     crate::order_events::record(
         tx,
         cid,
@@ -127,7 +127,7 @@ mod tests {
         let pool = sqlx::MySqlPool::connect(&std::env::var("DATABASE_URL").unwrap())
             .await
             .unwrap();
-        let mut tx = pool.begin().await.unwrap();
+        let mut tx = common_db::Tx::from_transaction(pool.begin().await.unwrap());
         let tag = uuid::Uuid::new_v4().simple().to_string();
         let order = format!("END_{tag}");
         let port = api_contracts::ScanPortDetail {
@@ -154,10 +154,10 @@ mod tests {
         .unwrap();
         sqlx::query("UPDATE charge_order SET status='paid' WHERE id=?")
             .bind(cid)
-            .execute(&mut *tx)
+            .execute(tx.executor())
             .await
             .unwrap();
-        sqlx::query("UPDATE payment_order SET status='paid',paid_cents=100 WHERE biz_id=? AND biz_type='charge'").bind(cid).execute(&mut *tx).await.unwrap();
+        sqlx::query("UPDATE payment_order SET status='paid',paid_cents=100 WHERE biz_id=? AND biz_type='charge'").bind(cid).execute(tx.executor()).await.unwrap();
         let start = api_contracts::StartResultRequest {
             order_no: order.clone(),
             command_id: uuid::Uuid::new_v4().to_string(),
@@ -190,7 +190,7 @@ mod tests {
         wrong.start_command_id = uuid::Uuid::new_v4().to_string();
         assert!(apply(&mut tx, &order, &wrong).await.is_err());
         apply(&mut tx, &order, &req).await.unwrap();
-        let data:(String,String,u32,Option<i64>)=sqlx::query_as("SELECT status,CAST(charged_kwh AS CHAR),charged_seconds,total_cents FROM charge_order WHERE id=?").bind(cid).fetch_one(&mut *tx).await.unwrap();
+        let data:(String,String,u32,Option<i64>)=sqlx::query_as("SELECT status,CAST(charged_kwh AS CHAR),charged_seconds,total_cents FROM charge_order WHERE id=?").bind(cid).fetch_one(tx.executor()).await.unwrap();
         assert_eq!(data, ("completed".into(), "0.1250".into(), 1, None));
         wrong = req.clone();
         wrong.meter.charged_wh = 126;
@@ -200,7 +200,7 @@ mod tests {
         )
         .bind(cid + 1)
         .bind(req.port_id)
-        .execute(&mut *tx)
+        .execute(tx.executor())
         .await
         .unwrap();
         apply(&mut tx, &order, &req).await.unwrap();
@@ -208,11 +208,11 @@ mod tests {
             "SELECT charge_order_id,ended_at IS NULL FROM active_port_charge WHERE port_id=?",
         )
         .bind(req.port_id)
-        .fetch_one(&mut *tx)
+        .fetch_one(tx.executor())
         .await
         .unwrap();
         assert_eq!(owner, (cid + 1, true));
-        let events:i64=sqlx::query_scalar("SELECT COUNT(*) FROM charge_event_log WHERE charge_order_id=? AND event='device_stopped'").bind(cid).fetch_one(&mut *tx).await.unwrap();
+        let events:i64=sqlx::query_scalar("SELECT COUNT(*) FROM charge_event_log WHERE charge_order_id=? AND event='device_stopped'").bind(cid).fetch_one(tx.executor()).await.unwrap();
         assert_eq!(events, 1);
         tx.rollback().await.unwrap();
     }

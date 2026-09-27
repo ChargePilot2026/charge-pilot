@@ -34,7 +34,7 @@ pub async fn feedback_list(
     let (page, page_size, offset) = paging(&q)?;
     let mut count = QueryBuilder::<MySql>::new("SELECT COUNT(*) FROM feedback WHERE deleted_at IS NULL");
     if let Some(status) = q.status.as_deref() { count.push(" AND status = ").push_bind(status); }
-    let total: i64 = count.build_query_scalar().fetch_one(st.db.pool()).await?;
+    let total: i64 = count.build_query_scalar().fetch_one(st.casework.pool()).await?;
 
     let mut query = QueryBuilder::<MySql>::new(
         "SELECT id,user_id,order_id,device_id,rating,category,content,images_json,status,
@@ -44,7 +44,7 @@ pub async fn feedback_list(
     if let Some(status) = q.status.as_deref() { query.push(" AND status = ").push_bind(status); }
     query.push(" ORDER BY created_at DESC,id DESC LIMIT ").push_bind(page_size)
         .push(" OFFSET ").push_bind(offset);
-    let rows = query.build().fetch_all(st.db.pool()).await?;
+    let rows = query.build().fetch_all(st.casework.pool()).await?;
     let items = rows.iter().map(|r| -> AppResult<api_contracts::charge::Feedback> {
         Ok(api_contracts::charge::Feedback {
             id: sqlx::Row::try_get::<u64, _>(r, "id")?.to_string(),
@@ -91,9 +91,9 @@ pub async fn feedback_reply(
     if reply.is_some_and(|s| s.chars().count() > 2000 || s.chars().any(char::is_control)) {
         return Err(AppError::BadRequest("回复内容最多 2000 字且不能包含控制字符".into()));
     }
-    let mut tx = st.db.pool().begin().await?;
+    let mut tx = st.casework.begin().await?;
     let row = sqlx::query("SELECT status,replied_by,reply_content FROM feedback WHERE id=? AND deleted_at IS NULL FOR UPDATE")
-        .bind(feedback_id).fetch_optional(&mut *tx).await?.ok_or_else(|| AppError::NotFound("反馈不存在".into()))?;
+        .bind(feedback_id).fetch_optional(tx.executor()).await?.ok_or_else(|| AppError::NotFound("反馈不存在".into()))?;
     let status: String = row.try_get("status")?;
     let old_actor: Option<u64> = row.try_get("replied_by")?;
     let old_reply: Option<String> = row.try_get("reply_content")?;
@@ -114,9 +114,9 @@ pub async fn feedback_reply(
     }
     if req.action == "reply" {
         sqlx::query("UPDATE feedback SET status='processed',replied_by=?,replied_at=UTC_TIMESTAMP(3),reply_content=? WHERE id=?")
-            .bind(req.actor_id).bind(reply).bind(feedback_id).execute(&mut *tx).await?;
+            .bind(req.actor_id).bind(reply).bind(feedback_id).execute(tx.executor()).await?;
     } else {
-        sqlx::query("UPDATE feedback SET status='closed' WHERE id=?").bind(feedback_id).execute(&mut *tx).await?;
+        sqlx::query("UPDATE feedback SET status='closed' WHERE id=?").bind(feedback_id).execute(tx.executor()).await?;
     }
     tx.commit().await?;
     Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::ProcessedResponse { status: next_status.to_string(), already_processed: false }, common_error::current_request_id())))
@@ -132,14 +132,14 @@ pub async fn fault_list(
     let (page, page_size, offset) = paging(&q)?;
     let mut count = QueryBuilder::<MySql>::new("SELECT COUNT(*) FROM device_fault_report WHERE deleted_at IS NULL");
     if let Some(status) = q.status.as_deref() { count.push(" AND status = ").push_bind(status); }
-    let total: i64 = count.build_query_scalar().fetch_one(st.db.pool()).await?;
+    let total: i64 = count.build_query_scalar().fetch_one(st.casework.pool()).await?;
     let mut query = QueryBuilder::<MySql>::new(
         "SELECT id,device_id,user_id,report_source,fault_type,description,images_json,status,assigned_to,resolved_at,created_at,updated_at
          FROM device_fault_report WHERE deleted_at IS NULL",
     );
     if let Some(status) = q.status.as_deref() { query.push(" AND status = ").push_bind(status); }
     query.push(" ORDER BY created_at DESC,id DESC LIMIT ").push_bind(page_size).push(" OFFSET ").push_bind(offset);
-    let rows = query.build().fetch_all(st.db.pool()).await?;
+    let rows = query.build().fetch_all(st.casework.pool()).await?;
     let items = rows.iter().map(|r| -> AppResult<api_contracts::charge::FaultReport> {
         Ok(api_contracts::charge::FaultReport {
             id: sqlx::Row::try_get::<u64, _>(r,"id")?.to_string(),
@@ -181,30 +181,30 @@ async fn fault_history_rows(
     let (page, page_size, offset) = paging(q)?;
     let report_exists: bool = if let Some(user_id) = user_id {
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM device_fault_report WHERE id=? AND user_id=? AND deleted_at IS NULL)")
-            .bind(report_id).bind(user_id).fetch_one(st.db.pool()).await?
+            .bind(report_id).bind(user_id).fetch_one(st.casework.pool()).await?
     } else {
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM device_fault_report WHERE id=? AND deleted_at IS NULL)")
-            .bind(report_id).fetch_one(st.db.pool()).await?
+            .bind(report_id).fetch_one(st.casework.pool()).await?
     };
     if !report_exists { return Err(AppError::NotFound("报修不存在".into())); }
 
     let (total, rows) = if user_id.is_some() {
         let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM device_fault_report_event WHERE report_id=? AND user_visible=1")
-            .bind(report_id).fetch_one(st.db.pool()).await?;
+            .bind(report_id).fetch_one(st.casework.pool()).await?;
         let rows = sqlx::query(
             "SELECT id,event_type,from_status,to_status,note,created_at
              FROM device_fault_report_event WHERE report_id=? AND user_visible=1
              ORDER BY created_at,id LIMIT ? OFFSET ?",
-        ).bind(report_id).bind(page_size).bind(offset).fetch_all(st.db.pool()).await?;
+        ).bind(report_id).bind(page_size).bind(offset).fetch_all(st.casework.pool()).await?;
         (total, rows)
     } else {
         let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM device_fault_report_event WHERE report_id=?")
-            .bind(report_id).fetch_one(st.db.pool()).await?;
+            .bind(report_id).fetch_one(st.casework.pool()).await?;
         let rows = sqlx::query(
             "SELECT id,event_type,actor_id,from_status,to_status,assigned_to,note,user_visible,created_at
              FROM device_fault_report_event WHERE report_id=?
              ORDER BY created_at,id LIMIT ? OFFSET ?",
-        ).bind(report_id).bind(page_size).bind(offset).fetch_all(st.db.pool()).await?;
+        ).bind(report_id).bind(page_size).bind(offset).fetch_all(st.casework.pool()).await?;
         (total, rows)
     };
     let items = rows.iter().map(|row| -> AppResult<api_contracts::charge::FaultHistoryEvent> {
@@ -260,9 +260,9 @@ pub async fn fault_dispatch(
     let report_id = id.parse::<u64>().map_err(|_| AppError::BadRequest("报修编号无效".into()))?;
     if req.actor_id == 0 || req.assigned_to == 0 { return Err(AppError::BadRequest("派单账号无效".into())); }
     let note = validate_fault_note(req.note.as_deref(), false)?;
-    let mut tx = st.db.pool().begin().await?;
+    let mut tx = st.casework.begin().await?;
     let row = sqlx::query("SELECT status,assigned_to FROM device_fault_report WHERE id=? AND deleted_at IS NULL FOR UPDATE")
-        .bind(report_id).fetch_optional(&mut *tx).await?.ok_or_else(||AppError::NotFound("报修不存在".into()))?;
+        .bind(report_id).fetch_optional(tx.executor()).await?.ok_or_else(||AppError::NotFound("报修不存在".into()))?;
     let status: String = row.try_get("status")?;
     let assigned_to: Option<u64> = row.try_get("assigned_to")?;
     if status == "dispatched" && assigned_to == Some(req.assigned_to) {
@@ -271,13 +271,13 @@ pub async fn fault_dispatch(
     }
     if !["open", "dispatched"].contains(&status.as_str()) { return Err(AppError::Conflict("只有待派单或处理中报修可以派单".into())); }
     sqlx::query("UPDATE device_fault_report SET status='dispatched',assigned_to=?,resolved_at=NULL WHERE id=?")
-        .bind(req.assigned_to).bind(report_id).execute(&mut *tx).await?;
+        .bind(req.assigned_to).bind(report_id).execute(tx.executor()).await?;
     sqlx::query(
         "INSERT INTO device_fault_report_event(report_id,actor_id,event_type,from_status,to_status,assigned_to,note,user_visible,created_at)
          VALUES(?,?,?,?,?,?,?,1,UTC_TIMESTAMP(3))",
     ).bind(report_id).bind(req.actor_id).bind(if status == "open" {"dispatched"} else {"reassigned"})
         .bind(&status).bind("dispatched").bind(req.assigned_to).bind(note)
-        .execute(&mut *tx).await?;
+        .execute(tx.executor()).await?;
     tx.commit().await?;
     Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::DispatchedResponse { status: "dispatched".into(), assigned_to: req.assigned_to.to_string(), already_processed: false }, common_error::current_request_id())))
 }
@@ -297,9 +297,9 @@ pub async fn fault_resolve(
     let report_id = id.parse::<u64>().map_err(|_| AppError::BadRequest("报修编号无效".into()))?;
     if req.actor_id == 0 || !["fixed", "closed"].contains(&req.status.as_str()) { return Err(AppError::BadRequest("处理状态无效".into())); }
     let note = validate_fault_note(req.note.as_deref(), req.status == "fixed")?;
-    let mut tx = st.db.pool().begin().await?;
+    let mut tx = st.casework.begin().await?;
     let row = sqlx::query("SELECT status,assigned_to FROM device_fault_report WHERE id=? AND deleted_at IS NULL FOR UPDATE")
-        .bind(report_id).fetch_optional(&mut *tx).await?.ok_or_else(||AppError::NotFound("报修不存在".into()))?;
+        .bind(report_id).fetch_optional(tx.executor()).await?.ok_or_else(||AppError::NotFound("报修不存在".into()))?;
     let status: String = row.try_get("status")?;
     let assigned_to: Option<u64> = row.try_get("assigned_to")?;
     if status == req.status && assigned_to == Some(req.actor_id) {
@@ -310,15 +310,15 @@ pub async fn fault_resolve(
     let allowed = (req.status == "fixed" && status == "dispatched") || (req.status == "closed" && status == "fixed");
     if !allowed { return Err(AppError::Conflict("报修状态必须按处理中、已修复、已关闭顺序流转".into())); }
     if req.status == "fixed" {
-        sqlx::query("UPDATE device_fault_report SET status='fixed',resolved_at=UTC_TIMESTAMP(3) WHERE id=?").bind(report_id).execute(&mut *tx).await?;
+        sqlx::query("UPDATE device_fault_report SET status='fixed',resolved_at=UTC_TIMESTAMP(3) WHERE id=?").bind(report_id).execute(tx.executor()).await?;
     } else {
-        sqlx::query("UPDATE device_fault_report SET status='closed' WHERE id=?").bind(report_id).execute(&mut *tx).await?;
+        sqlx::query("UPDATE device_fault_report SET status='closed' WHERE id=?").bind(report_id).execute(tx.executor()).await?;
     }
     sqlx::query(
         "INSERT INTO device_fault_report_event(report_id,actor_id,event_type,from_status,to_status,assigned_to,note,user_visible,created_at)
          VALUES(?,?,?,?,?,?,?,1,UTC_TIMESTAMP(3))",
     ).bind(report_id).bind(req.actor_id).bind(&req.status).bind(&status).bind(&req.status)
-        .bind(assigned_to).bind(note).execute(&mut *tx).await?;
+        .bind(assigned_to).bind(note).execute(tx.executor()).await?;
     tx.commit().await?;
     Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::ProcessedResponse { status: req.status, already_processed: false }, common_error::current_request_id())))
 }

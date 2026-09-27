@@ -53,11 +53,11 @@ pub fn verify(saved:&SavedQuote,current:&PriceQuote)->AppResult<()> {
     }
     Ok(())
 }
-pub async fn persist(tx:&mut sqlx::Transaction<'_,sqlx::MySql>,id:u64,quote_id:&str,saved:&SavedQuote)->AppResult<()> {
+pub async fn persist(tx:&mut common_db::Tx<'_>,id:u64,quote_id:&str,saved:&SavedQuote)->AppResult<()> {
     if saved.expires_at<=Utc::now(){return Err(AppError::Conflict("报价已过期，请重新预估费用".into()));}
     let quote_id=canonical_id(quote_id)?;
     let result=sqlx::query("INSERT INTO charge_order_pricing (charge_order_id,quote_id,user_id,port_code,quote_snapshot) VALUES (?,?,?,?,?)")
-        .bind(id).bind(quote_id).bind(saved.user_id).bind(&saved.port_id).bind(serde_json::to_value(&saved.quote)?).execute(&mut **tx).await;
+        .bind(id).bind(quote_id).bind(saved.user_id).bind(&saved.port_id).bind(serde_json::to_value(&saved.quote)?).execute(tx.executor()).await;
     match result {
         Ok(_)=>Ok(()),
         Err(sqlx::Error::Database(e)) if e.is_unique_violation()=>Err(AppError::Conflict("报价已用于订单，请在订单列表继续处理".into())),
@@ -89,10 +89,10 @@ mod tests {
         let pool=sqlx::mysql::MySqlPoolOptions::new().connect(&std::env::var("DATABASE_URL").unwrap()).await.unwrap();
         let s=saved();let qid=uuid::Uuid::new_v4().to_string();let no=format!("confirm_{}",uuid::Uuid::new_v4().simple());
         let port=api_contracts::ScanPortDetail {port_id:s.port_id.clone(),port_code:s.port_id.clone(),device_id:"CONFIRM_TEST".into(),port_no:1,status:"idle".into()};
-        let mut tx=pool.begin().await.unwrap();
+        let mut tx=common_db::Tx::from_transaction(pool.begin().await.unwrap());
         let id=crate::checkout::persist_pending(&mut tx,s.user_id,&no,&format!("{no}_pay"),&port,&s.quote.amount,s.expires_at).await.unwrap();
         persist(&mut tx,id,&qid,&s).await.unwrap();
-        let snapshot:serde_json::Value=sqlx::query_scalar("SELECT quote_snapshot FROM charge_order_pricing WHERE charge_order_id=?").bind(id).fetch_one(&mut *tx).await.unwrap();
+        let snapshot:serde_json::Value=sqlx::query_scalar("SELECT quote_snapshot FROM charge_order_pricing WHERE charge_order_id=?").bind(id).fetch_one(tx.executor()).await.unwrap();
         assert_eq!(snapshot["total_cents"],70);assert_eq!(snapshot["pricing"]["version"],1);
         assert!(matches!(persist(&mut tx,id+1,&qid.to_uppercase(),&s).await,Err(AppError::Conflict(_))));
         tx.rollback().await.unwrap();

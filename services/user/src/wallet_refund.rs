@@ -10,22 +10,22 @@ pub struct ListQuery{pub page:Option<u32>,pub page_size:Option<u32>}
 pub async fn list(axum::extract::State(st):axum::extract::State<crate::AppState>,claims:common_auth::UserClaims,axum::extract::Query(query):axum::extract::Query<ListQuery>)->AppResult<axum::Json<common_error::ApiEnvelope<api_contracts::charge::WalletRefundRequests>>>{
     let page=query.page.unwrap_or(1);let size=query.page_size.unwrap_or(20);
     if page==0 || page>100000 || size==0 || size>50{return Err(AppError::BadRequest("分页参数无效".into()));}
-    let data=list_for_user(st.db.pool(),claims.user_id,page,size).await?;
+    let data=list_for_user(st.wallet.pool(),claims.user_id,page,size).await?;
     Ok(axum::Json(common_error::ApiEnvelope::ok(data,common_error::current_request_id())))
 }
 async fn list_for_user(pool:&sqlx::MySqlPool,uid:u64,page:u32,size:u32)->AppResult<api_contracts::charge::WalletRefundRequests>{
-    let mut tx=pool.begin().await?;
+    let mut tx=common_db::Tx::from_transaction(pool.begin().await?);
     let data=list_in_transaction(&mut tx,uid,page,size).await?;
     tx.commit().await?;Ok(data)
 }
-async fn list_in_transaction(tx:&mut sqlx::Transaction<'_,sqlx::MySql>,uid:u64,page:u32,size:u32)->AppResult<api_contracts::charge::WalletRefundRequests>{
-    let total:i64=sqlx::query_scalar("SELECT COUNT(*) FROM wallet_refund_request WHERE user_id=?").bind(uid).fetch_one(&mut **tx).await?;
-    let rows=sqlx::query("SELECT CAST(request_id AS CHAR CHARACTER SET utf8mb4) AS request_id,amount_cents,reason,response_json,created_at FROM wallet_refund_request WHERE user_id=? ORDER BY created_at DESC,request_id DESC LIMIT ? OFFSET ?").bind(uid).bind(size).bind(u64::from(page-1)*u64::from(size)).fetch_all(&mut **tx).await?;
+async fn list_in_transaction(tx:&mut common_db::Tx<'_>,uid:u64,page:u32,size:u32)->AppResult<api_contracts::charge::WalletRefundRequests>{
+    let total:i64=sqlx::query_scalar("SELECT COUNT(*) FROM wallet_refund_request WHERE user_id=?").bind(uid).fetch_one(tx.executor()).await?;
+    let rows=sqlx::query("SELECT CAST(request_id AS CHAR CHARACTER SET utf8mb4) AS request_id,amount_cents,reason,response_json,created_at FROM wallet_refund_request WHERE user_id=? ORDER BY created_at DESC,request_id DESC LIMIT ? OFFSET ?").bind(uid).bind(size).bind(u64::from(page-1)*u64::from(size)).fetch_all(tx.executor()).await?;
     let mut items=Vec::new();
     for row in rows {
         let id:String=row.try_get("request_id")?;
         let saved:Option<api_contracts::charge::WalletRefundApplied>=serde_json::from_value(row.try_get::<Option<Value>,_>("response_json")?.unwrap_or(serde_json::Value::Null))?;
-        let parts=sqlx::query("SELECT r.refund_no,r.refund_cents,r.status,r.failure_reason,r.completed_at FROM wallet_refund_part p JOIN refund_record r ON r.id=p.refund_record_id WHERE p.request_id=? AND r.user_id=? AND r.deleted_at IS NULL ORDER BY r.id").bind(&id).bind(uid).fetch_all(&mut **tx).await?;
+        let parts=sqlx::query("SELECT r.refund_no,r.refund_cents,r.status,r.failure_reason,r.completed_at FROM wallet_refund_part p JOIN refund_record r ON r.id=p.refund_record_id WHERE p.request_id=? AND r.user_id=? AND r.deleted_at IS NULL ORDER BY r.id").bind(&id).bind(uid).fetch_all(tx.executor()).await?;
         let mut orders=Vec::new();let mut refunded=0i64;let mut statuses=Vec::new();
         for part in parts {
             let status:String=part.try_get("status")?;let amount:i64=part.try_get("refund_cents")?;
@@ -50,13 +50,13 @@ async fn list_in_transaction(tx:&mut sqlx::Transaction<'_,sqlx::MySql>,uid:u64,p
     Ok(api_contracts::charge::WalletRefundRequests{user_id:uid.to_string(),items,total,page,page_size:size})
 }
 pub async fn apply(
-    tx: &mut sqlx::Transaction<'_, sqlx::MySql>,
+    tx: &mut common_db::Tx<'_>,
     uid: u64,
     req: &crate::wallet::WalletRefundReq,
 ) -> AppResult<api_contracts::charge::WalletRefundApplied> {
     apply_inner(tx,uid,req,false).await
 }
-async fn apply_inner(tx:&mut sqlx::Transaction<'_,sqlx::MySql>,uid:u64,req:&crate::wallet::WalletRefundReq,reviewed:bool)->AppResult<api_contracts::charge::WalletRefundApplied>{
+async fn apply_inner(tx:&mut common_db::Tx<'_>,uid:u64,req:&crate::wallet::WalletRefundReq,reviewed:bool)->AppResult<api_contracts::charge::WalletRefundApplied>{
     let request = uuid::Uuid::parse_str(&req.request_id)
         .map_err(|_| AppError::BadRequest("退款请求标识无效".into()))?
         .to_string();
@@ -68,8 +68,8 @@ async fn apply_inner(tx:&mut sqlx::Transaction<'_,sqlx::MySql>,uid:u64,req:&crat
     {
         return Err(AppError::BadRequest("退款金额或原因无效".into()));
     }
-    sqlx::query("INSERT IGNORE INTO wallet_refund_request (request_id,user_id,amount_cents,reason) VALUES (?,?,?,?)").bind(&request).bind(uid).bind(req.amount_cents).bind(&req.reason).execute(&mut **tx).await?;
-    let prior=sqlx::query("SELECT user_id,amount_cents,reason,response_json FROM wallet_refund_request WHERE request_id=? FOR UPDATE").bind(&request).fetch_one(&mut **tx).await?;
+    sqlx::query("INSERT IGNORE INTO wallet_refund_request (request_id,user_id,amount_cents,reason) VALUES (?,?,?,?)").bind(&request).bind(uid).bind(req.amount_cents).bind(&req.reason).execute(tx.executor()).await?;
+    let prior=sqlx::query("SELECT user_id,amount_cents,reason,response_json FROM wallet_refund_request WHERE request_id=? FOR UPDATE").bind(&request).fetch_one(tx.executor()).await?;
     if prior.try_get::<u64, _>("user_id")? != uid
         || prior.try_get::<i64, _>("amount_cents")? != req.amount_cents
         || prior.try_get::<Option<String>, _>("reason")? != req.reason
@@ -83,8 +83,8 @@ async fn apply_inner(tx:&mut sqlx::Transaction<'_,sqlx::MySql>,uid:u64,req:&crat
         }
     }
     // Same payment-before-wallet order as the recharge callback and refund result.
-    let payments=sqlx::query("SELECT id,order_no,biz_id,paid_cents,refunded_cents FROM payment_order WHERE user_id=? AND biz_type='wallet_recharge' AND pay_method='wechat' AND status IN ('paid','partial_refunded') AND paid_at>DATE_SUB(UTC_TIMESTAMP(3),INTERVAL 365 DAY) AND wechat_transaction_id IS NOT NULL AND deleted_at IS NULL ORDER BY paid_at,id FOR UPDATE").bind(uid).fetch_all(&mut **tx).await?;
-    let wallets=sqlx::query("SELECT id,balance_cents,frozen_cents,status FROM wallet_account WHERE user_id=? AND deleted_at IS NULL FOR UPDATE").bind(uid).fetch_all(&mut **tx).await?;
+    let payments=sqlx::query("SELECT id,order_no,biz_id,paid_cents,refunded_cents FROM payment_order WHERE user_id=? AND biz_type='wallet_recharge' AND pay_method='wechat' AND status IN ('paid','partial_refunded') AND paid_at>DATE_SUB(UTC_TIMESTAMP(3),INTERVAL 365 DAY) AND wechat_transaction_id IS NOT NULL AND deleted_at IS NULL ORDER BY paid_at,id FOR UPDATE").bind(uid).fetch_all(tx.executor()).await?;
+    let wallets=sqlx::query("SELECT id,balance_cents,frozen_cents,status FROM wallet_account WHERE user_id=? AND deleted_at IS NULL FOR UPDATE").bind(uid).fetch_all(tx.executor()).await?;
     if wallets.len() != 1 {
         return Err(conflict());
     }
@@ -98,14 +98,14 @@ async fn apply_inner(tx:&mut sqlx::Transaction<'_,sqlx::MySql>,uid:u64,req:&crat
     if balance < req.amount_cents {
         return Err(AppError::InsufficientBalance);
     }
-    let recent:i64=sqlx::query_scalar("SELECT COUNT(*) FROM wallet_refund_request WHERE user_id=? AND created_at>DATE_SUB(UTC_TIMESTAMP(3),INTERVAL 5 MINUTE)").bind(uid).fetch_one(&mut **tx).await?;
+    let recent:i64=sqlx::query_scalar("SELECT COUNT(*) FROM wallet_refund_request WHERE user_id=? AND created_at>DATE_SUB(UTC_TIMESTAMP(3),INTERVAL 5 MINUTE)").bind(uid).fetch_one(tx.executor()).await?;
     let response = if recent >= 3 && !reviewed {
         sqlx::query("UPDATE wallet_account SET status='frozen',version=version+1 WHERE id=?")
             .bind(wid)
-            .execute(&mut **tx)
+            .execute(tx.executor())
             .await?;
-        let freeze_id=sqlx::query("INSERT INTO risk_freeze_log (user_id,trigger_rule,frozen_action,reason,window_minutes,threshold_value) VALUES (?,'wallet_refund_frequency','wallet_refund','五分钟内第三次钱包退款申请',5,3)").bind(uid).execute(&mut **tx).await?.last_insert_id();
-        sqlx::query("INSERT INTO wallet_risk_freeze_link(request_id,freeze_id) VALUES(?,?)").bind(&request).bind(freeze_id).execute(&mut **tx).await?;
+        let freeze_id=sqlx::query("INSERT INTO risk_freeze_log (user_id,trigger_rule,frozen_action,reason,window_minutes,threshold_value) VALUES (?,'wallet_refund_frequency','wallet_refund','五分钟内第三次钱包退款申请',5,3)").bind(uid).execute(tx.executor()).await?.last_insert_id();
+        sqlx::query("INSERT INTO wallet_risk_freeze_link(request_id,freeze_id) VALUES(?,?)").bind(&request).bind(freeze_id).execute(tx.executor()).await?;
         api_contracts::charge::WalletRefundApplied {
             request_id: request.clone(),
             status: "manual_review".into(),
@@ -125,7 +125,7 @@ async fn apply_inner(tx:&mut sqlx::Transaction<'_,sqlx::MySql>,uid:u64,req:&crat
             if refunded < 0 || refunded > paid {
                 return Err(conflict());
             }
-            let refunds:Vec<(i64,String)>=sqlx::query_as("SELECT refund_cents,status FROM refund_record WHERE payment_order_id=? AND deleted_at IS NULL FOR UPDATE").bind(pid).fetch_all(&mut **tx).await?;
+            let refunds:Vec<(i64,String)>=sqlx::query_as("SELECT refund_cents,status FROM refund_record WHERE payment_order_id=? AND deleted_at IS NULL FOR UPDATE").bind(pid).fetch_all(tx.executor()).await?;
             let mut reserved = refunded;
             let mut successful = 0i64;
             for (amount, status) in &refunds {
@@ -175,15 +175,15 @@ async fn apply_inner(tx:&mut sqlx::Transaction<'_,sqlx::MySql>,uid:u64,req:&crat
         .bind(balance - req.amount_cents)
         .bind(frozen)
         .bind(wid)
-        .execute(&mut **tx)
+        .execute(tx.executor())
         .await?;
         let txn = common_db::IdGen::new("WTX").next();
-        sqlx::query("INSERT INTO wallet_txn (txn_no,user_id,wallet_account_id,direction,amount_cents,balance_after_cents,biz_type,biz_ref,note,created_month) VALUES (?,?,?,'out',?,?,'freeze',?,'钱包退款资金预留',DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))").bind(&txn).bind(uid).bind(wid).bind(req.amount_cents).bind(balance-req.amount_cents).bind(&request).execute(&mut **tx).await?;
+        sqlx::query("INSERT INTO wallet_txn (txn_no,user_id,wallet_account_id,direction,amount_cents,balance_after_cents,biz_type,biz_ref,note,created_month) VALUES (?,?,?,'out',?,?,'freeze',?,'钱包退款资金预留',DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))").bind(&txn).bind(uid).bind(wid).bind(req.amount_cents).bind(balance-req.amount_cents).bind(&request).execute(tx.executor()).await?;
         let mut parts = Vec::new();
         for (pid, payment_no, biz, amount) in allocations {
             let no = common_db::IdGen::new("REF").next();
-            let rid=sqlx::query("INSERT INTO refund_record (refund_no,payment_order_id,user_id,biz_type,biz_id,refund_cents,reason,status,created_month) VALUES (?,?,?,'wallet_recharge',?,?,'钱包余额原路退款','pending',DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))").bind(&no).bind(pid).bind(uid).bind(biz).bind(amount).execute(&mut **tx).await?.last_insert_id();
-            sqlx::query("INSERT INTO wallet_refund_part (refund_record_id,request_id,wallet_account_id,amount_cents) VALUES (?,?,?,?)").bind(rid).bind(&request).bind(wid).bind(amount).execute(&mut **tx).await?;
+            let rid=sqlx::query("INSERT INTO refund_record (refund_no,payment_order_id,user_id,biz_type,biz_id,refund_cents,reason,status,created_month) VALUES (?,?,?,'wallet_recharge',?,?,'钱包余额原路退款','pending',DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))").bind(&no).bind(pid).bind(uid).bind(biz).bind(amount).execute(tx.executor()).await?.last_insert_id();
+            sqlx::query("INSERT INTO wallet_refund_part (refund_record_id,request_id,wallet_account_id,amount_cents) VALUES (?,?,?,?)").bind(rid).bind(&request).bind(wid).bind(amount).execute(tx.executor()).await?;
             let event = common_redis::StreamEnvelope::new(
                 "refund_required",
                 "user",
@@ -193,7 +193,7 @@ async fn apply_inner(tx:&mut sqlx::Transaction<'_,sqlx::MySql>,uid:u64,req:&crat
                 .bind(&event.event_id)
                 .bind(common_redis::streams::REFUND_REQUIRED)
                 .bind(serde_json::to_value(&event)?)
-                .execute(&mut **tx)
+                .execute(tx.executor())
                 .await?;
             parts.push(api_contracts::charge::WalletRefundOrderPart { refund_no: no.clone(), payment_order_no: payment_no.clone(), refund_cents: amount, status: "pending".into() });
         }
@@ -210,7 +210,7 @@ async fn apply_inner(tx:&mut sqlx::Transaction<'_,sqlx::MySql>,uid:u64,req:&crat
     sqlx::query("UPDATE wallet_refund_request SET response_json=? WHERE request_id=?")
         .bind(serde_json::to_value(&response)?)
         .bind(request)
-        .execute(&mut **tx)
+        .execute(tx.executor())
         .await?;
     Ok(response)
 }
@@ -224,23 +224,23 @@ mod tests {
         let pool = sqlx::MySqlPool::connect(&std::env::var("DATABASE_URL").unwrap())
             .await
             .unwrap();
-        let mut tx = pool.begin().await.unwrap();
+        let mut tx = common_db::Tx::from_transaction(pool.begin().await.unwrap());
         let tag = uuid::Uuid::new_v4().simple().to_string();
         let uid = sqlx::query("INSERT INTO user (openid) VALUES (?)")
             .bind(&tag)
-            .execute(&mut *tx)
+            .execute(tx.executor())
             .await
             .unwrap()
             .last_insert_id();
         let wid = sqlx::query("INSERT INTO wallet_account (user_id,balance_cents) VALUES (?,500)")
             .bind(uid)
-            .execute(&mut *tx)
+            .execute(tx.executor())
             .await
             .unwrap()
             .last_insert_id();
         let mut payments = Vec::new();
         for amount in [200, 300] {
-            let id=sqlx::query("INSERT INTO payment_order (order_no,user_id,biz_type,biz_id,pay_method,total_cents,paid_cents,status,paid_at,wechat_transaction_id,created_month) VALUES (?,?,'wallet_recharge',1,'wechat',?,?,'paid',UTC_TIMESTAMP(3),?,DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))").bind(format!("PAY{amount}{tag}")).bind(uid).bind(amount).bind(amount).bind(format!("WX{amount}{tag}")).execute(&mut *tx).await.unwrap().last_insert_id();
+            let id=sqlx::query("INSERT INTO payment_order (order_no,user_id,biz_type,biz_id,pay_method,total_cents,paid_cents,status,paid_at,wechat_transaction_id,created_month) VALUES (?,?,'wallet_recharge',1,'wechat',?,?,'paid',UTC_TIMESTAMP(3),?,DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))").bind(format!("PAY{amount}{tag}")).bind(uid).bind(amount).bind(amount).bind(format!("WX{amount}{tag}")).execute(tx.executor()).await.unwrap().last_insert_id();
             payments.push(id);
         }
         let req = crate::wallet::WalletRefundReq {
@@ -264,7 +264,7 @@ mod tests {
         let reserved: (i64, i64) =
             sqlx::query_as("SELECT balance_cents,frozen_cents FROM wallet_account WHERE id=?")
                 .bind(wid)
-                .fetch_one(&mut *tx)
+                .fetch_one(tx.executor())
                 .await
                 .unwrap();
         assert_eq!(reserved, (250, 250));
@@ -273,7 +273,7 @@ mod tests {
             let no = part.refund_no.as_str();
             sqlx::query("UPDATE refund_record SET status='processing' WHERE refund_no=?")
                 .bind(no)
-                .execute(&mut *tx)
+                .execute(tx.executor())
                 .await
                 .unwrap();
             let result = crate::refund::ResultReq {
@@ -292,7 +292,7 @@ mod tests {
         let settled: (i64, i64) =
             sqlx::query_as("SELECT balance_cents,frozen_cents FROM wallet_account WHERE id=?")
                 .bind(wid)
-                .fetch_one(&mut *tx)
+                .fetch_one(tx.executor())
                 .await
                 .unwrap();
         assert_eq!(settled, (250, 0));
@@ -323,7 +323,7 @@ mod tests {
             "SELECT balance_cents,frozen_cents,status FROM wallet_account WHERE id=?",
         )
         .bind(wid)
-        .fetch_one(&mut *tx)
+        .fetch_one(tx.executor())
         .await
         .unwrap();
         assert_eq!(frozen, (150, 100, "frozen".into()));
@@ -334,11 +334,11 @@ mod tests {
         .bind(uid)
         .bind(payments[0])
         .bind(payments[1])
-        .fetch_one(&mut *tx)
+        .fetch_one(tx.executor())
         .await
         .unwrap();
         assert_eq!(invalid, 0);
-        sqlx::raw_sql("SAVEPOINT before_risk_review").execute(&mut *tx).await.unwrap();
+        sqlx::raw_sql("SAVEPOINT before_risk_review").execute(tx.executor()).await.unwrap();
         let release=crate::wallet_risk_release::Release{actor_id:77,comment:"已核实冻结原因".into()};
         assert!(crate::wallet_risk_release::apply(&mut tx,&third.request_id,&release).await.is_err());
         let decision=RiskDecision{actor_id:77,approved:true,comment:"核实原路退款".into()};
@@ -348,30 +348,30 @@ mod tests {
         assert!(accepted.review.as_ref().unwrap().approved);
         assert!(accepted.review.as_ref().unwrap().comment=="核实原路退款");
         assert_eq!(super::review(&mut tx,&third.request_id,&decision).await.unwrap(),accepted);
-        let funds:(i64,i64,String)=sqlx::query_as("SELECT balance_cents,frozen_cents,status FROM wallet_account WHERE id=?").bind(wid).fetch_one(&mut *tx).await.unwrap();
+        let funds:(i64,i64,String)=sqlx::query_as("SELECT balance_cents,frozen_cents,status FROM wallet_account WHERE id=?").bind(wid).fetch_one(tx.executor()).await.unwrap();
         assert_eq!(funds,(149,101,"frozen".into()));
-        let parts:i64=sqlx::query_scalar("SELECT COUNT(*) FROM wallet_refund_part WHERE request_id=?").bind(&third.request_id).fetch_one(&mut *tx).await.unwrap();assert_eq!(parts,1);
+        let parts:i64=sqlx::query_scalar("SELECT COUNT(*) FROM wallet_refund_part WHERE request_id=?").bind(&third.request_id).fetch_one(tx.executor()).await.unwrap();assert_eq!(parts,1);
         let changed=RiskDecision{actor_id:78,approved:false,comment:"改变决定".into()};assert!(super::review(&mut tx,&third.request_id,&changed).await.is_err());
-        sqlx::raw_sql("ROLLBACK TO SAVEPOINT before_risk_review").execute(&mut *tx).await.unwrap();
+        sqlx::raw_sql("ROLLBACK TO SAVEPOINT before_risk_review").execute(tx.executor()).await.unwrap();
         let rejected=super::review(&mut tx,&third.request_id,&changed).await.unwrap();assert_eq!(rejected.status,"rejected");
         assert!(!rejected.review.as_ref().unwrap().approved);
         assert!(rejected.refund_orders.is_empty());
         assert_eq!(super::review(&mut tx,&third.request_id,&changed).await.unwrap(),rejected);
         assert!(super::review(&mut tx,&third.request_id,&decision).await.is_err());
         assert_eq!(apply(&mut tx,uid,&third).await.unwrap(),rejected);
-        let funds:(i64,i64,String)=sqlx::query_as("SELECT balance_cents,frozen_cents,status FROM wallet_account WHERE id=?").bind(wid).fetch_one(&mut *tx).await.unwrap();assert_eq!(funds,(150,100,"frozen".into()));
-        let parts:i64=sqlx::query_scalar("SELECT COUNT(*) FROM wallet_refund_part WHERE request_id=?").bind(&third.request_id).fetch_one(&mut *tx).await.unwrap();assert_eq!(parts,0);
+        let funds:(i64,i64,String)=sqlx::query_as("SELECT balance_cents,frozen_cents,status FROM wallet_account WHERE id=?").bind(wid).fetch_one(tx.executor()).await.unwrap();assert_eq!(funds,(150,100,"frozen".into()));
+        let parts:i64=sqlx::query_scalar("SELECT COUNT(*) FROM wallet_refund_part WHERE request_id=?").bind(&third.request_id).fetch_one(tx.executor()).await.unwrap();assert_eq!(parts,0);
         let listing=list_in_transaction(&mut tx,uid,1,20).await.unwrap();assert!(listing.items.iter().any(|v|v.request_id==third.request_id&&v.status=="rejected"));
-        sqlx::raw_sql("SAVEPOINT before_release").execute(&mut *tx).await.unwrap();
-        sqlx::query("INSERT INTO risk_freeze_log(user_id,trigger_rule,frozen_action) VALUES (?,'other_risk','wallet')").bind(uid).execute(&mut *tx).await.unwrap();
+        sqlx::raw_sql("SAVEPOINT before_release").execute(tx.executor()).await.unwrap();
+        sqlx::query("INSERT INTO risk_freeze_log(user_id,trigger_rule,frozen_action) VALUES (?,'other_risk','wallet')").bind(uid).execute(tx.executor()).await.unwrap();
         let released=crate::wallet_risk_release::apply(&mut tx,&third.request_id,&release).await.unwrap();assert!(!released.wallet_active);
-        sqlx::raw_sql("ROLLBACK TO SAVEPOINT before_release").execute(&mut *tx).await.unwrap();
-        sqlx::query("UPDATE user SET status='frozen' WHERE id=?").bind(uid).execute(&mut *tx).await.unwrap();
+        sqlx::raw_sql("ROLLBACK TO SAVEPOINT before_release").execute(tx.executor()).await.unwrap();
+        sqlx::query("UPDATE user SET status='frozen' WHERE id=?").bind(uid).execute(tx.executor()).await.unwrap();
         let released=crate::wallet_risk_release::apply(&mut tx,&third.request_id,&release).await.unwrap();assert!(!released.wallet_active);
-        sqlx::raw_sql("ROLLBACK TO SAVEPOINT before_release").execute(&mut *tx).await.unwrap();
+        sqlx::raw_sql("ROLLBACK TO SAVEPOINT before_release").execute(tx.executor()).await.unwrap();
         let released=crate::wallet_risk_release::apply(&mut tx,&third.request_id,&release).await.unwrap();assert!(released.wallet_active);
         assert_eq!(crate::wallet_risk_release::apply(&mut tx,&third.request_id,&release).await.unwrap(),released);
-        let funds:(i64,i64,String)=sqlx::query_as("SELECT balance_cents,frozen_cents,status FROM wallet_account WHERE id=?").bind(wid).fetch_one(&mut *tx).await.unwrap();assert_eq!(funds,(150,100,"active".into()));
+        let funds:(i64,i64,String)=sqlx::query_as("SELECT balance_cents,frozen_cents,status FROM wallet_account WHERE id=?").bind(wid).fetch_one(tx.executor()).await.unwrap();assert_eq!(funds,(150,100,"active".into()));
         tx.rollback().await.unwrap();
     }
 }
@@ -380,11 +380,11 @@ mod tests {
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RiskDecision {pub actor_id:u64,pub approved:bool,pub comment:String}
-pub async fn review(tx:&mut sqlx::Transaction<'_,sqlx::MySql>,id:&str,req:&RiskDecision)->AppResult<api_contracts::charge::WalletRefundApplied>{
+pub async fn review(tx:&mut common_db::Tx<'_>,id:&str,req:&RiskDecision)->AppResult<api_contracts::charge::WalletRefundApplied>{
  if req.actor_id==0 || req.comment.trim().is_empty() || req.comment.chars().count()>255 || req.comment.chars().any(char::is_control){return Err(AppError::BadRequest("审核意见无效".into()));}
  let id=uuid::Uuid::parse_str(id).map_err(|_|AppError::BadRequest("申请编号无效".into()))?.to_string();
- let row=sqlx::query("SELECT user_id,amount_cents,reason,response_json FROM wallet_refund_request WHERE request_id=? FOR UPDATE").bind(&id).fetch_optional(&mut **tx).await?.ok_or_else(||AppError::NotFound("退款申请不存在".into()))?;
- let previous=sqlx::query("SELECT actor_id,approved,comment,response_json FROM wallet_risk_review WHERE request_id=?").bind(&id).fetch_optional(&mut **tx).await?;
+ let row=sqlx::query("SELECT user_id,amount_cents,reason,response_json FROM wallet_refund_request WHERE request_id=? FOR UPDATE").bind(&id).fetch_optional(tx.executor()).await?.ok_or_else(||AppError::NotFound("退款申请不存在".into()))?;
+ let previous=sqlx::query("SELECT actor_id,approved,comment,response_json FROM wallet_risk_review WHERE request_id=?").bind(&id).fetch_optional(tx.executor()).await?;
  if let Some(previous)=previous {
   if previous.try_get::<u64,_>("actor_id")?==req.actor_id && previous.try_get::<bool,_>("approved")?==req.approved && previous.try_get::<String,_>("comment")?==req.comment.trim(){return Ok(serde_json::from_value(previous.try_get("response_json")?)?);}
   return Err(AppError::Conflict("该申请已完成审核，请刷新".into()));
@@ -398,12 +398,12 @@ pub async fn review(tx:&mut sqlx::Transaction<'_,sqlx::MySql>,id:&str,req:&RiskD
  }else {api_contracts::charge::WalletRefundApplied{request_id:id.clone(),status:"rejected".into(),txn_no:None,refund_cents:row.try_get::<i64,_>("amount_cents")?,refund_orders:vec![],message:None,review:None}};
  response.review=Some(api_contracts::charge::WalletRiskReview{actor_id:req.actor_id.to_string(),approved:req.approved,comment:req.comment.trim().to_string()});
  let stored=serde_json::to_value(&response)?;
- sqlx::query("INSERT INTO wallet_risk_review(request_id,actor_id,approved,comment,response_json) VALUES(?,?,?,?,?)").bind(&id).bind(req.actor_id).bind(req.approved).bind(req.comment.trim()).bind(&stored).execute(&mut **tx).await?;
- sqlx::query("UPDATE wallet_refund_request SET response_json=? WHERE request_id=?").bind(&stored).bind(&id).execute(&mut **tx).await?;
+ sqlx::query("INSERT INTO wallet_risk_review(request_id,actor_id,approved,comment,response_json) VALUES(?,?,?,?,?)").bind(&id).bind(req.actor_id).bind(req.approved).bind(req.comment.trim()).bind(&stored).execute(tx.executor()).await?;
+ sqlx::query("UPDATE wallet_refund_request SET response_json=? WHERE request_id=?").bind(&stored).bind(&id).execute(tx.executor()).await?;
  Ok(response)
 }
 pub async fn review_handler(axum::extract::State(st):axum::extract::State<crate::AppState>,axum::extract::Path(id):axum::extract::Path<String>,axum::Json(req):axum::Json<RiskDecision>)->AppResult<axum::Json<common_error::ApiEnvelope<api_contracts::charge::WalletRefundApplied>>>{
- let mut tx=st.db.pool().begin().await?;let result=review(&mut tx,&id,&req).await?;tx.commit().await?;
+ let mut tx=st.wallet.begin().await?;let result=review(&mut tx,&id,&req).await?;tx.commit().await?;
  Ok(axum::Json(common_error::ApiEnvelope::ok(result,common_error::current_request_id())))
 }
 #[derive(serde::Deserialize)]
@@ -413,9 +413,9 @@ pub async fn risk_list(axum::extract::State(st):axum::extract::State<crate::AppS
  if page==0 || page>100000 || size==0 || size>50 || !["pending","reviewed"].contains(&status){return Err(AppError::BadRequest("筛选参数无效".into()));}
  let filter=if status=="pending"{"JSON_UNQUOTE(JSON_EXTRACT(r.response_json,'$.status'))='manual_review'"}else{"v.request_id IS NOT NULL"};
  let from=" FROM wallet_refund_request r LEFT JOIN wallet_risk_review v ON v.request_id=r.request_id LEFT JOIN wallet_risk_freeze_link l ON l.request_id=r.request_id LEFT JOIN risk_freeze_log f ON f.id=l.freeze_id AND f.user_id=r.user_id LEFT JOIN wallet_risk_release u ON u.request_id=r.request_id ";
- let mut tx=st.db.pool().begin().await?;
- let total:i64=sqlx::query_scalar(&format!("SELECT COUNT(*){from}WHERE {filter}")).fetch_one(&mut *tx).await?;
-  let rows=sqlx::query(&format!("SELECT CAST(r.request_id AS CHAR CHARACTER SET utf8mb4) request_id,r.user_id,r.amount_cents,r.reason,r.created_at,v.response_json review_json,v.created_at review_created_at,u.response_json release_json,u.created_at release_created_at,f.status freeze_status,l.freeze_id {from} WHERE {filter} ORDER BY r.created_at DESC,r.request_id DESC LIMIT ? OFFSET ?")).bind(size).bind(u64::from(page-1)*u64::from(size)).fetch_all(&mut *tx).await?;
+ let mut tx=st.wallet.begin().await?;
+ let total:i64=sqlx::query_scalar(&format!("SELECT COUNT(*){from}WHERE {filter}")).fetch_one(tx.executor()).await?;
+  let rows=sqlx::query(&format!("SELECT CAST(r.request_id AS CHAR CHARACTER SET utf8mb4) request_id,r.user_id,r.amount_cents,r.reason,r.created_at,v.response_json review_json,v.created_at review_created_at,u.response_json release_json,u.created_at release_created_at,f.status freeze_status,l.freeze_id {from} WHERE {filter} ORDER BY r.created_at DESC,r.request_id DESC LIMIT ? OFFSET ?")).bind(size).bind(u64::from(page-1)*u64::from(size)).fetch_all(tx.executor()).await?;
  let mut items=vec![];for row in rows{
  let review:Option<Value>=row.try_get("review_json")?;let release:Option<Value>=row.try_get("release_json")?;let freeze:Option<String>=row.try_get("freeze_status")?;
   let review_created:Option<chrono::NaiveDateTime>=row.try_get("review_created_at")?;let release_created:Option<chrono::NaiveDateTime>=row.try_get("release_created_at")?;

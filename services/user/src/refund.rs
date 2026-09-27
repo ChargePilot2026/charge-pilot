@@ -17,18 +17,18 @@ use serde::Deserialize;
 pub async fn list(State(st):State<AppState>,axum::extract::Query(q):axum::extract::Query<api_contracts::refunds::RefundQuery>)->AppResult<Json<common_error::ApiEnvelope<api_contracts::common::PagedResponse<api_contracts::charge::AdminRefund>>>>{
     use sqlx::Row;
     if !q.valid(){return Err(AppError::BadRequest("退款筛选参数无效".into()));}
-    let mut tx=st.db.pool().begin().await?;
+    let mut tx=st.refund.begin().await?;
     let total:i64=sqlx::query_scalar("SELECT COUNT(*) FROM refund_record WHERE deleted_at IS NULL AND (? IS NULL OR status=?) AND (? IS NULL OR refund_no=?)")
-        .bind(&q.status).bind(&q.status).bind(&q.refund_no).bind(&q.refund_no).fetch_one(&mut *tx).await?;
+        .bind(&q.status).bind(&q.status).bind(&q.refund_no).bind(&q.refund_no).fetch_one(tx.executor()).await?;
     let page=q.page.unwrap_or(1);let size=q.page_size.unwrap_or(20);
     let rows=sqlx::query("SELECT id,refund_no,user_id,payment_order_id,biz_type,refund_cents,status,reason,failure_reason,created_at,completed_at FROM refund_record WHERE deleted_at IS NULL AND (? IS NULL OR status=?) AND (? IS NULL OR refund_no=?) ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?")
-        .bind(&q.status).bind(&q.status).bind(&q.refund_no).bind(&q.refund_no).bind(size).bind(u64::from(page-1)*u64::from(size)).fetch_all(&mut *tx).await?;
+        .bind(&q.status).bind(&q.status).bind(&q.refund_no).bind(&q.refund_no).bind(size).bind(u64::from(page-1)*u64::from(size)).fetch_all(tx.executor()).await?;
     let mut items=Vec::new();
     for row in rows {
         let rid: u64 = row.try_get("id")?;
         // 先查审核信息再一次性构造结构体——原先 push 基础项后用 `item["review"]=`
         // 回填,类型化后不再需要回填
-        let review_row = sqlx::query("SELECT first_signer,second_signer,first_comment,second_comment,approved_at FROM refund_review WHERE refund_record_id=?").bind(rid).fetch_optional(&mut *tx).await?;
+        let review_row = sqlx::query("SELECT first_signer,second_signer,first_comment,second_comment,approved_at FROM refund_review WHERE refund_record_id=?").bind(rid).fetch_optional(tx.executor()).await?;
         let review = match review_row {
             Some(r) => {
                 let second: Option<u64> = r.try_get("second_signer")?;
@@ -79,17 +79,17 @@ pub async fn claim(
     if req.admin_user_id == 0 || uuid::Uuid::parse_str(&req.event_id).is_err() {
         return Err(AppError::BadRequest("退款领取身份或事件标识无效".into()));
     }
-    let mut tx = st.db.pool().begin().await?;
+    let mut tx = st.refund.begin().await?;
     let rows:Vec<(u64,u64,i64,String,u64,Option<u64>)>=sqlx::query_as("SELECT id,user_id,refund_cents,status,payment_order_id,claimed_by FROM refund_record WHERE refund_no=? AND deleted_at IS NULL FOR UPDATE")
-        .bind(&req.refund_no).fetch_all(&mut *tx).await?;
+        .bind(&req.refund_no).fetch_all(tx.executor()).await?;
     if rows.len() != 1 {
         return Err(AppError::NotFound("退款不存在或重复".into()));
     }
     let (id, user_id, cents, mut status, pay_id, owner) = rows[0].clone();
-    let unsigned:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM refund_review WHERE refund_record_id=? AND second_signer IS NULL)").bind(id).fetch_one(&mut *tx).await?;
+    let unsigned:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM refund_review WHERE refund_record_id=? AND second_signer IS NULL)").bind(id).fetch_one(tx.executor()).await?;
     if unsigned{return Err(AppError::Conflict("退款尚未完成双签审核".into()));}
     if status == "pending" && owner.is_none() {
-        sqlx::query("UPDATE refund_record SET claimed_by=?,claimed_at=UTC_TIMESTAMP(3),status='processing' WHERE id=?").bind(req.admin_user_id).bind(id).execute(&mut *tx).await?;
+        sqlx::query("UPDATE refund_record SET claimed_by=?,claimed_at=UTC_TIMESTAMP(3),status='processing' WHERE id=?").bind(req.admin_user_id).bind(id).execute(tx.executor()).await?;
         status = "processing".into();
     } else if owner != Some(req.admin_user_id)
         || !["processing", "success", "failed"].contains(&status.as_str())
@@ -124,7 +124,7 @@ pub async fn result(
     Path(refund_id): Path<String>,
     Json(req): Json<ResultReq>,
 ) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::AckResponse>>> {
-    let mut tx = st.db.pool().begin().await?;
+    let mut tx = st.refund.begin().await?;
     crate::refund_result::apply(&mut tx, &refund_id, &req).await?;
     tx.commit().await?;
 
@@ -143,10 +143,10 @@ pub async fn detail(
          FROM refund_record WHERE refund_no=? AND deleted_at IS NULL LIMIT 1",
     )
     .bind(&refund_id)
-    .fetch_optional(st.db.pool())
+    .fetch_optional(st.refund.pool())
     .await?;
     let r = r.ok_or_else(|| AppError::NotFound("refund".into()))?;
-    let review:Option<(u64,Option<u64>)>=sqlx::query_as("SELECT first_signer,second_signer FROM refund_review WHERE refund_record_id=?").bind(r.0).fetch_optional(st.db.pool()).await?;
+    let review:Option<(u64,Option<u64>)>=sqlx::query_as("SELECT first_signer,second_signer FROM refund_review WHERE refund_record_id=?").bind(r.0).fetch_optional(st.refund.pool()).await?;
     Ok(Json(common_error::ApiEnvelope::ok(
         api_contracts::charge::AdminRefundDetail {
             id: r.0,
@@ -186,7 +186,7 @@ pub async fn create_refund_record(
     .bind(refund_cents)
     .bind(reason)
     .bind(&now_month)
-    .execute(st.db.pool())
+    .execute(st.refund.pool())
     .await?;
     Ok(refund_no)
 }

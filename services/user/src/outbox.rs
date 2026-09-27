@@ -25,9 +25,9 @@ pub fn spawn(st: AppState) {
 }
 
 async fn publish_one(st: &AppState) -> AppResult<bool> {
-    let mut tx = st.db.pool().begin().await?;
+    let mut tx = st.order.begin().await?;
     let row=sqlx::query("SELECT id,stream,envelope_json FROM event_outbox WHERE status='pending' AND scheduled_at<=UTC_TIMESTAMP(3) ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED")
-        .fetch_optional(&mut *tx).await?;
+        .fetch_optional(tx.executor()).await?;
     let Some(row) = row else {
         tx.rollback().await?;
         return Ok(false);
@@ -41,7 +41,7 @@ async fn publish_one(st: &AppState) -> AppResult<bool> {
 }
 
 async fn publish_locked(
-    tx: &mut sqlx::Transaction<'_, sqlx::MySql>,
+    tx: &mut common_db::Tx<'_>,
     redis: &common_redis::RedisStream,
     id: u64,
     stream: &str,
@@ -60,15 +60,15 @@ async fn publish_locked(
             );
             if sent {
                 sqlx::query("UPDATE event_outbox SET status='published',published_at=UTC_TIMESTAMP(3),last_error=NULL WHERE id=?")
-                    .bind(id).execute(&mut **tx).await?;
+                    .bind(id).execute(tx.executor()).await?;
             } else {
                 sqlx::query("UPDATE event_outbox SET retry_count=retry_count+1,scheduled_at=UTC_TIMESTAMP(3)+INTERVAL 30 SECOND,last_error='Redis publish failed or timed out' WHERE id=?")
-                    .bind(id).execute(&mut **tx).await?;
+                    .bind(id).execute(tx.executor()).await?;
             }
         }
         Err(_) => {
             sqlx::query("UPDATE event_outbox SET status='failed',last_error='Invalid event envelope' WHERE id=?")
-                .bind(id).execute(&mut **tx).await?;
+                .bind(id).execute(tx.executor()).await?;
             tracing::error!(outbox_id = id, backtrace = %common_error::backtrace(), "invalid user outbox event requires repair");
         }
     }
@@ -91,13 +91,13 @@ mod tests {
         let stream = format!("test_outbox_{}", uuid::Uuid::new_v4().simple());
         let envelope = StreamEnvelope::new("test", "user", serde_json::json!({"test":true}));
         let json = serde_json::to_value(&envelope).unwrap();
-        let mut tx = pool.begin().await.unwrap();
+        let mut tx = common_db::Tx::from_transaction(pool.begin().await.unwrap());
         let id =
             sqlx::query("INSERT INTO event_outbox (event_id,stream,envelope_json) VALUES (?,?,?)")
                 .bind(&envelope.event_id)
                 .bind(&stream)
                 .bind(&json)
-                .execute(&mut *tx)
+                .execute(tx.executor())
                 .await
                 .unwrap()
                 .last_insert_id();
@@ -117,7 +117,7 @@ mod tests {
         let failed: (String, u32, Option<chrono::NaiveDateTime>) =
             sqlx::query_as("SELECT status,retry_count,published_at FROM event_outbox WHERE id=?")
                 .bind(id)
-                .fetch_one(&mut *tx)
+                .fetch_one(tx.executor())
                 .await
                 .unwrap();
         redis::cmd("DEL")
@@ -131,7 +131,7 @@ mod tests {
         let published: (String, Option<chrono::NaiveDateTime>) =
             sqlx::query_as("SELECT status,published_at FROM event_outbox WHERE id=?")
                 .bind(id)
-                .fetch_one(&mut *tx)
+                .fetch_one(tx.executor())
                 .await
                 .unwrap();
         let entries: redis::Value = redis::cmd("XRANGE")

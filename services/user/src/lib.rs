@@ -12,6 +12,7 @@
     clippy::disallowed_methods,
 )]
 pub mod api;
+pub mod services;
 pub mod checkout;
 mod charge_start;
 mod charge_end;
@@ -54,12 +55,20 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct AppState {
     pub cfg: Arc<AppConfig>,
-    pub db: Db,
+    /// P3:裸 `Db` 已从 AppState 移除,见 `services.rs`。
+    pub services: services::UserServices,
     pub redis_cache: RedisCache,
     pub redis_stream: RedisStream,
     pub jwt: Arc<JwtCodec>,
     pub http: reqwest::Client,
     pub service_token: Arc<String>,
+}
+
+impl std::ops::Deref for AppState {
+    type Target = services::UserServices;
+    fn deref(&self) -> &Self::Target {
+        &self.services
+    }
 }
 
 mod wallet_recharge;

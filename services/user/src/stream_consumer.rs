@@ -53,7 +53,7 @@ impl StreamHandler for ChargeEndedHandler {
     async fn handle(&self, entry: &StreamEntry) -> AppResult<()> {
         let order_no=entry.envelope.payload.get("order_no").and_then(|v|v.as_str()).ok_or_else(||common_error::AppError::BadRequest("结束事件缺少订单号".into()))?;
         let completed:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM charge_order WHERE order_no=? AND status='completed' AND deleted_at IS NULL)")
-            .bind(order_no).fetch_one(self.state.db.pool()).await?;
+            .bind(order_no).fetch_one(self.state.order.pool()).await?;
         if !completed {return Err(common_error::AppError::Conflict("充电结束尚未持久化确认".into()));}
         self.state.redis_cache.del(&format!("snapshot:{order_no}")).await?;
         info!(order_no,"confirmed charge end invalidated telemetry cache");
