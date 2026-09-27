@@ -338,24 +338,24 @@ pub async fn device_orders(
 /// Internal snapshot warmer input. The user service owns charge-order lifecycle data.
 pub async fn charging_orders_for_snapshots(
     State(st): State<AppState>,
-) -> AppResult<Json<ApiEnvelope<serde_json::Value>>> {
+) -> AppResult<Json<ApiEnvelope<api_contracts::charge::ChargingOrderSnapshots>> >{
     let rows = sqlx::query(
         "SELECT order_no, device_id, port_no, CAST(charged_kwh AS CHAR) AS charged_kwh, charged_seconds
          FROM charge_order WHERE status = 'charging' AND deleted_at IS NULL ORDER BY id DESC LIMIT 100",
     )
     .fetch_all(st.db.pool())
     .await?;
-    let items: Vec<serde_json::Value> = rows.iter().map(|row| -> AppResult<serde_json::Value> {
-        Ok(serde_json::json!({
-            "order_no": row.try_get::<String, _>("order_no")?,
-            "device_id": row.try_get::<String, _>("device_id")?,
-            "port_no": row.try_get::<u8, _>("port_no")?,
-            "charged_kwh": row.try_get::<Option<String>, _>("charged_kwh")?,
-            "charged_seconds": row.try_get::<Option<u32>, _>("charged_seconds")?,
-        }))
+    let items = rows.iter().map(|row| -> AppResult<api_contracts::charge::ChargingOrderSnapshot> {
+        Ok(api_contracts::charge::ChargingOrderSnapshot {
+            order_no: row.try_get::<String, _>("order_no")?,
+            device_id: row.try_get::<String, _>("device_id")?,
+            port_no: row.try_get::<u8, _>("port_no")?,
+            charged_kwh: row.try_get::<Option<String>, _>("charged_kwh")?,
+            charged_seconds: row.try_get::<Option<u32>, _>("charged_seconds")?,
+        })
     }).collect::<AppResult<Vec<_>>>()?;
     Ok(Json(ApiEnvelope::ok(
-        serde_json::json!({ "items": items }),
+        api_contracts::charge::ChargingOrderSnapshots { items },
         common_error::current_request_id(),
     )))
 }

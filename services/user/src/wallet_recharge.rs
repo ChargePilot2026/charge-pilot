@@ -52,14 +52,24 @@ pub async fn prepare(st:&AppState,uid:u64,openid:&str,req:&crate::wallet::Rechar
 
 #[derive(serde::Deserialize)]
 pub struct ListQuery {pub page:Option<u32>}
-pub async fn list(axum::extract::State(st):axum::extract::State<AppState>,claims:common_auth::UserClaims,axum::extract::Query(q):axum::extract::Query<ListQuery>)->AppResult<axum::Json<common_error::ApiEnvelope<Value>>> {
+pub async fn list(axum::extract::State(st):axum::extract::State<AppState>,claims:common_auth::UserClaims,axum::extract::Query(q):axum::extract::Query<ListQuery>)->AppResult<axum::Json<common_error::ApiEnvelope<api_contracts::charge::MyRecharges>>> {
  let page=q.page.unwrap_or(1);
  if page==0 || page>100000 {return Err(AppError::BadRequest("分页无效".into()));}
  let rows=sqlx::query("SELECT CAST(r.request_id AS CHAR CHARACTER SET utf8mb4) request_id,p.order_no,p.total_cents,p.status,p.expired_at FROM wallet_recharge_request r JOIN payment_order p ON p.id=r.payment_order_id AND p.user_id=r.user_id WHERE r.user_id=? AND p.deleted_at IS NULL ORDER BY r.created_at DESC,r.request_id DESC LIMIT 20 OFFSET ?").bind(claims.user_id).bind(u64::from(page-1)*20).fetch_all(st.db.pool()).await?;
  let mut items=vec![];
  for row in rows {let expiry:chrono::NaiveDateTime=row.try_get("expired_at")?;let status:String=row.try_get("status")?;
- items.push(json!({"request_id":row.try_get::<String,_>("request_id")?,"pay_order_no":row.try_get::<String,_>("order_no")?,"amount_cents":row.try_get::<i64,_>("total_cents")?,"can_pay":status=="initiated" && expiry.and_utc()>chrono::Utc::now(),"status":status,"expires_at":expiry.and_utc().to_rfc3339()}));}
- Ok(axum::Json(common_error::ApiEnvelope::ok(json!({"user_id":claims.user_id.to_string(),"page":page,"items":items}),common_error::current_request_id())))
+ items.push(api_contracts::charge::RechargeRequest {
+        request_id: row.try_get::<String,_>("request_id")?,
+        pay_order_no: row.try_get::<String,_>("order_no")?,
+        amount_cents: row.try_get::<i64,_>("total_cents")?,
+        can_pay: status == "initiated" && expiry.and_utc() > chrono::Utc::now(),
+        status,
+        expires_at: expiry.and_utc().to_rfc3339(),
+    });}
+ Ok(axum::Json(common_error::ApiEnvelope::ok(
+        api_contracts::charge::MyRecharges { user_id: claims.user_id.to_string(), page, items },
+        common_error::current_request_id(),
+    )))
 }
 
 #[cfg(test)]

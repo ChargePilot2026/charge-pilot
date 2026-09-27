@@ -535,6 +535,90 @@ mod my_fault_tests {
     }
 }
 
+// ===== 支付与钱包充值 =====
+
+/// 支付单详情。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaymentDetail {
+    pub id: u64,
+    pub order_no: String,
+    /// `wechat` / `wallet` 等
+    pub pay_method: String,
+    pub total_cents: i64,
+    pub paid_cents: i64,
+    /// `initiated` / `paid` / `closed` / `refunded` / `failed`
+    pub status: String,
+}
+
+/// 钱包充值申请。
+///
+/// ⚠️ `user_id` 是**字符串**;`can_pay` 是服务端算出的可支付判定
+/// (状态为 `initiated` 且未过期)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RechargeRequest {
+    pub request_id: String,
+    pub pay_order_no: String,
+    pub amount_cents: i64,
+    pub can_pay: bool,
+    pub status: String,
+    pub expires_at: String,
+}
+
+/// 用户的充值申请列表。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MyRecharges {
+    pub user_id: String,
+    pub page: u32,
+    pub items: Vec<RechargeRequest>,
+}
+
+#[cfg(test)]
+mod payment_tests {
+    use super::*;
+
+    /// 回归护栏:`user_id` 是字符串(实现里 `claims.user_id.to_string()`)
+    #[test]
+    fn my_recharges_user_id_is_string() {
+        let v = serde_json::to_value(MyRecharges {
+            user_id: "7".into(), page: 1, items: vec![],
+        })
+        .unwrap();
+        assert!(v["user_id"].is_string());
+    }
+}
+
+/// 充电中订单快照项(user 内部端点,供管理端批量取快照)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChargingOrderSnapshot {
+    pub order_no: String,
+    pub device_id: String,
+    pub port_no: u8,
+    pub charged_kwh: Option<String>,
+    pub charged_seconds: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChargingOrderSnapshots {
+    pub items: Vec<ChargingOrderSnapshot>,
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+
+    /// 回归护栏:电量是**字符串**(保精度),秒数可空
+    #[test]
+    fn snapshot_keeps_kwh_as_string() {
+        let v = serde_json::to_value(ChargingOrderSnapshot {
+            order_no: "O1".into(), device_id: "D1".into(), port_no: 1,
+            charged_kwh: Some("1.234".into()), charged_seconds: None,
+        })
+        .unwrap();
+        assert!(v["charged_kwh"].is_string());
+        assert!(v["charged_seconds"].is_null());
+    }
+}
+
 /// 用户反馈。
 ///
 /// ⚠️ `id` / `user_id` / `order_id` / `replied_by` 是**字符串**——实现里

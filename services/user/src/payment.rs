@@ -50,7 +50,7 @@ pub struct PaymentDetailResp {
 pub async fn detail(
     State(st): State<AppState>,
     Path(payment_order_id): Path<String>,
-) -> AppResult<Json<common_error::ApiEnvelope<serde_json::Value>>> {
+) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::charge::PaymentDetail>> >{
     let r: Option<(u64, String, String, i64, i64, String)> = sqlx::query_as(
         "SELECT id, order_no, pay_method, total_cents, paid_cents, status FROM payment_order WHERE order_no = ? LIMIT 1"
     )
@@ -58,12 +58,15 @@ pub async fn detail(
     .fetch_optional(st.db.pool())
     .await?;
     let r = r.ok_or_else(|| AppError::NotFound("payment".into()))?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({
-        "id": r.0,
-        "order_no": r.1,
-        "pay_method": r.2,
-        "total_cents": r.3,
-        "paid_cents": r.4,
-        "status": r.5,
-    }), common_error::current_request_id())))
+    Ok(Json(common_error::ApiEnvelope::ok(
+        api_contracts::charge::PaymentDetail {
+        id: r.0,
+        order_no: r.1,
+        pay_method: r.2,
+        total_cents: r.3,
+        paid_cents: r.4,
+        status: r.5,
+        },
+        common_error::current_request_id(),
+    )))
 }
