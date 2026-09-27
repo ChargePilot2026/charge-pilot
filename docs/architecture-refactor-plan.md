@@ -488,6 +488,8 @@ D5 保留"允许丢失"选项，与 D4 把 `pricing_rule_changed` 列为可靠�
 **D3 处置已修正**：早期方案写"admin 改调 billing HTTP"——不可执行，billing 无承接点，改造后创建会变 503。经核实 `admin-web` 零调用，按**未开放功能整体删除**处理。
 
 
+| **D18** | **站点详情经纬度颠倒** | `admin/src/api/internal.rs::stations_detail` 的 SQL 列序为 `(…, longitude, latitude, …)`,即 `r.4=longitude` / `r.5=latitude`,但代码写成 `"longitude": r.5, "latitude": r.4` —— **两者互换**。同文件 `stations_nearby` 正确,仅此一处错;该端点被 user/gateway 消费 | **修**:改为按字段名显式赋值(`longitude: r.4, latitude: r.5`),并由 `StationForUser` 类型固定字段名,杜绝按列序错配 | **P2** | 测试 `coordinates_are_not_swapped` 断言北京站经度 116.397 > 纬度 39.908 |
+
 ### migration 接管
 
 现状：`init-mysql.sh` 以 root 手工按序 apply 各 schema 的 `0001..00NN`，**无版本表**。直接切 `sqlx::migrate!` 会让存量库从版本 1 重放，`0003_device_import_retry.sql` 等会重复加列。
@@ -708,13 +710,13 @@ P4 改 `common-redis` 影响全部 5 个服务的消费者，**不能只跑 bill
 | **P4** | ✅ | D3 / D4③b / D4②裁剪水位 / D5 / D6 / D15 / D17 + migration 接管（`migrate-baseline` 工具、5 个 Dockerfile 补 `COPY migrations`、compose 挂载 + 独立 migrate job） |
 | **P6** | ✅ | `docs/api-change-list.md`；P2 的 gateway 类型化未改变任何字段名，§3 仍成立 |
 
-**当前闸口**：V1 `cargo check --workspace --all-targets` **零 error**；V2 `cargo test --workspace` **218 passed / 0 failed**。
+**当前闸口**：V1 `cargo check --workspace --all-targets` **零 error**；V2 `cargo test --workspace` **220 passed / 0 failed**。
 
 ### 未完成
 
 | 阶段 | 原因 |
 |---|---|
-| **P2** `api-contracts` 重写 | **进行中**。① gateway 已归零（`ApiEnvelope<Value>` 11→0、`json!` 18→0）② **E5 路径单一真源完成**：`api-contracts::paths` 79→177 条，admin/user/billing 的 `api_types::paths` 131 条定义全部改为再导出/别名（**零调用方改动**），并加 4 个防回潮测试。**user/api.rs 归零**(Value 13→1)· user 余 35 · **admin 117→51** 待做;`withdraw_*` 死代码已删(D3 闭环) |
+| **P2** `api-contracts` 重写 | **进行中**。① gateway 已归零（`ApiEnvelope<Value>` 11→0、`json!` 18→0）② **E5 路径单一真源完成**：`api-contracts::paths` 79→177 条，admin/user/billing 的 `api_types::paths` 131 条定义全部改为再导出/别名（**零调用方改动**），并加 4 个防回潮测试。**user/api.rs 归零**(Value 13→1)· user 余 35 · **admin 117→50** 待做;`withdraw_*` 死代码已删(D3 闭环) |
 | **P3** 逐服务迁移 | 未启动。5 个服务仍是扁平的 handler 模块；`AppState.db` 298 处引用未收敛 |
 | **P5** 全局收口 | 依赖 P2/P3。lint 仍为 `allow`，未转 `deny` |
 | **D13** Argon2 `spawn_blocking` | 属 P3-admin 范围，随之顺延 |

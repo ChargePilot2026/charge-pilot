@@ -34,7 +34,7 @@ pub struct NearbyQuery {
     pub radius_km: Option<f64>,
 }
 
-pub async fn stations_nearby(State(st): State<AppState>, axum::extract::Query(q): axum::extract::Query<NearbyQuery>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn stations_nearby(State(st): State<AppState>, axum::extract::Query(q): axum::extract::Query<NearbyQuery>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::admin::NearbyStations>>> {
     let radius = q.radius_km.unwrap_or(5.0);
     let lat = q.lat;
     let lng = q.lng;
@@ -50,32 +50,46 @@ pub async fn stations_nearby(State(st): State<AppState>, axum::extract::Query(q)
     .bind(lat - 1.0).bind(lat + 1.0)
     .bind(lng - 1.0).bind(lng + 1.0)
     .fetch_all(st.db.pool()).await?;
-    let items: Vec<Value> = rows.iter().map(|r| -> AppResult<Option<Value>> {
+    let items: Vec<Option<api_contracts::admin::NearbyStation>> = rows.iter().map(|r| -> AppResult<Option<api_contracts::admin::NearbyStation>> {
         let slat = sqlx::Row::try_get::<f64, _>(r, "latitude")?;
         let slng = sqlx::Row::try_get::<f64, _>(r, "longitude")?;
         let dist = ((slat - lat).powi(2) + (slng - lng).powi(2)).sqrt() * 111.0; // 近似 km
         if dist > radius { return Ok(None); }
-        Ok(Some(json!({
-            "id": sqlx::Row::try_get::<u64, _>(r, "id")?,
-            "code": sqlx::Row::try_get::<String, _>(r, "code")?,
-            "name": sqlx::Row::try_get::<String, _>(r, "name")?,
-            "address": sqlx::Row::try_get::<Option<String>, _>(r, "address")?,
-            "longitude": slng,
-            "latitude": slat,
-            "distance_km": dist,
-        })))
-    }).collect::<AppResult<Vec<_>>>()?.into_iter().flatten().collect();
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"items": items}), common_error::current_request_id())))
+        Ok(Some(api_contracts::admin::NearbyStation {
+            id: sqlx::Row::try_get::<u64, _>(r, "id")?,
+            code: sqlx::Row::try_get::<String, _>(r, "code")?,
+            name: sqlx::Row::try_get::<String, _>(r, "name")?,
+            address: sqlx::Row::try_get::<Option<String>, _>(r, "address")?,
+            longitude: slng,
+            latitude: slat,
+            distance_km: dist,
+        }))
+    }).collect::<AppResult<Vec<_>>>()?;
+    Ok(Json(common_error::ApiEnvelope::ok(
+        api_contracts::admin::NearbyStations { items: items.into_iter().flatten().collect() },
+        common_error::current_request_id(),
+    )))
 }
 
-pub async fn stations_detail(State(st): State<AppState>, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn stations_detail(State(st): State<AppState>, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::admin::StationForUser>>> {
     let r: Option<(u64, String, String, Option<String>, f64, f64, String)> = sqlx::query_as(
         "SELECT id, code, name, address, longitude, latitude, status FROM station WHERE id = ? AND deleted_at IS NULL"
     ).bind(id).fetch_optional(st.db.pool()).await?;
     let r = r.ok_or_else(|| AppError::NotFound("station".into()))?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({
-        "id": r.0, "code": r.1, "name": r.2, "address": r.3, "longitude": r.5, "latitude": r.4, "status": r.6,
-    }), common_error::current_request_id())))
+    // D18 修复:SQL 列序为 (…, longitude, latitude, …) 即 r.4=longitude、r.5=latitude,
+    // 原实现写成 longitude: r.5 / latitude: r.4,经纬度颠倒。这里显式按名赋值。
+    Ok(Json(common_error::ApiEnvelope::ok(
+        api_contracts::admin::StationForUser {
+            id: r.0,
+            code: r.1,
+            name: r.2,
+            address: r.3,
+            longitude: r.4,
+            latitude: r.5,
+            status: r.6,
+        },
+        common_error::current_request_id(),
+    )))
 }
 
 pub async fn pricing_rule_get(State(st): State<AppState>, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::admin::PricingRuleForBilling>>> {
@@ -120,20 +134,23 @@ pub async fn split_template_get(State(st): State<AppState>, Path(id): Path<u64>)
 #[derive(Debug, serde::Deserialize)]
 pub struct AlertsQuery { pub device_id: Option<String>, pub status: Option<String> }
 
-pub async fn alerts_active(State(st): State<AppState>, axum::extract::Query(q): axum::extract::Query<AlertsQuery>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn alerts_active(State(st): State<AppState>, axum::extract::Query(q): axum::extract::Query<AlertsQuery>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::ListResponse<api_contracts::admin::ActiveAlert>>>>{
     let mut sql = String::from("SELECT id, device_id, severity, metric, status, created_at FROM alert_event WHERE status = 'active'");
     if q.device_id.is_some() { sql.push_str(" AND device_id = ?"); }
     sql.push_str(" ORDER BY id DESC LIMIT 100");
     let mut query = sqlx::query(&sql);
     if let Some(d) = &q.device_id { query = query.bind(d); }
     let rows = query.fetch_all(st.db.pool()).await?;
-    let items: Vec<Value> = rows.iter().map(|r| -> AppResult<Value> { Ok(json!({
-        "id": sqlx::Row::try_get::<u64, _>(r, "id")?,
-        "device_id": sqlx::Row::try_get::<String, _>(r, "device_id")?,
-        "severity": sqlx::Row::try_get::<String, _>(r, "severity")?,
-        "metric": sqlx::Row::try_get::<String, _>(r, "metric")?,
-    })) }).collect::<AppResult<Vec<_>>>()?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"items": items}), common_error::current_request_id())))
+    let items = rows.iter().map(|r| -> AppResult<api_contracts::admin::ActiveAlert> { Ok(api_contracts::admin::ActiveAlert {
+        id: sqlx::Row::try_get::<u64, _>(r, "id")?,
+        device_id: sqlx::Row::try_get::<String, _>(r, "device_id")?,
+        severity: sqlx::Row::try_get::<String, _>(r, "severity")?,
+        metric: sqlx::Row::try_get::<String, _>(r, "metric")?,
+    }) }).collect::<AppResult<Vec<_>>>()?;
+    Ok(Json(common_error::ApiEnvelope::ok(
+        api_contracts::common::ListResponse::new(items),
+        common_error::current_request_id(),
+    )))
 }
 
 pub async fn device_reboot(State(st): State<AppState>, Path(id): Path<String>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {

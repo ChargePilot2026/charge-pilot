@@ -876,3 +876,74 @@ mod internal_tests {
         assert!(v["parties"].is_array());
     }
 }
+
+// ===== 站点(user/gateway 经内部端点消费)=====
+
+/// 附近站点项。⚠️ 经纬度是 **f64 数字**,不是字符串。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NearbyStation {
+    pub id: u64,
+    pub code: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
+    pub longitude: f64,
+    pub latitude: f64,
+    pub distance_km: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct NearbyStations {
+    pub items: Vec<NearbyStation>,
+}
+
+/// 站点详情。
+///
+/// ⚠️ **D18**:原实现按 SQL 列序 `(… , longitude, latitude, …)` 取值时写成
+/// `longitude: r.5 / latitude: r.4`,**经纬度颠倒**。本类型以字段名固定,
+/// 由 `stations_detail` 显式赋值,杜绝按位置错配。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StationForUser {
+    pub id: u64,
+    pub code: String,
+    pub name: String,
+    pub address: Option<String>,
+    pub longitude: f64,
+    pub latitude: f64,
+    pub status: String,
+}
+
+/// 生效中的告警(内部端点,字段少于后台列表:无 status/acked_by/created_at)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActiveAlert {
+    pub id: u64,
+    pub device_id: String,
+    pub severity: String,
+    pub metric: String,
+}
+
+#[cfg(test)]
+mod station_tests {
+    use super::*;
+
+    /// **D18 回归护栏**:经纬度必须各归其位。
+    /// 站点详情与附近站点是不同接口,曾因按 SQL 列序取值而把两者写反。
+    #[test]
+    fn coordinates_are_not_swapped() {
+        let d = StationForUser {
+            id: 1, code: "S1".into(), name: "站".into(), address: None,
+            // 北京站:经度 116.397,纬度 39.908
+            longitude: 116.397, latitude: 39.908, status: "active".into(),
+        };
+        let v = serde_json::to_value(&d).unwrap();
+        assert_eq!(v["longitude"], 116.397);
+        assert_eq!(v["latitude"], 39.908);
+        assert!(v["longitude"].as_f64().unwrap() > v["latitude"].as_f64().unwrap(), "北京经度应大于纬度");
+    }
+
+    #[test]
+    fn nearby_station_defaults_to_empty_items() {
+        let v = serde_json::to_value(NearbyStations::default()).unwrap();
+        assert!(v["items"].is_array());
+    }
+}
