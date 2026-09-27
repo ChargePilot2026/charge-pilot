@@ -763,6 +763,123 @@ mod refund_detail_tests {
     }
 }
 
+// ===== 钱包退款 =====
+
+/// 钱包退款拆出的单笔订单退款。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WalletRefundOrderPart {
+    pub refund_no: String,
+    pub payment_order_no: String,
+    pub refund_cents: i64,
+    pub status: String,
+}
+
+/// 钱包退款申请结果。
+///
+/// 实现有三条返回路径,字段集不同:
+/// - `accepted`   : {request_id, status, txn_no, refund_cents, refund_orders}
+/// - `manual_review`: {request_id, status, refund_cents, refund_orders(空), message}
+/// - 幂等重放     : 原样返回上次存进 `response_json` 的上述之一
+/// - 风控审核后   : 上述之一 + `review`
+/// 故用可选字段 + `skip_serializing_if` 精确复刻,保证响应格式不变。
+/// 注:字段顺序按 `accepted` 路径排列;`manual_review` 路径原本的
+/// `txn_no` 位置不存在,故键顺序与历史 JSON 有差异,键集合与取值完全一致。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WalletRefundApplied {
+    pub request_id: String,
+    /// `accepted` / `manual_review` / `rejected`
+    pub status: String,
+    /// 仅 `accepted` 场景返回
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub txn_no: Option<String>,
+    pub refund_cents: i64,
+    /// 人工审核场景是**空数组**(不是缺键)
+    pub refund_orders: Vec<WalletRefundOrderPart>,
+    /// 仅 `manual_review` 场景返回
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// 仅风控人工审核后返回
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub review: Option<WalletRiskReview>,
+}
+
+/// 风控审核落款。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WalletRiskReview {
+    /// 审核人 ID 的**字符串**形式
+    pub actor_id: String,
+    pub approved: bool,
+    pub comment: String,
+}
+
+#[cfg(test)]
+mod wallet_refund_tests {
+    use super::*;
+
+    fn manual_review() -> WalletRefundApplied {
+        WalletRefundApplied {
+            request_id: "R1".into(), status: "manual_review".into(), txn_no: None,
+            refund_cents: 500, refund_orders: vec![],
+            message: Some("退款频次较高，钱包已冻结".into()), review: None,
+        }
+    }
+
+    /// 回归护栏:人工审核场景 refund_orders 是**空数组**而非缺键
+    #[test]
+    fn manual_review_has_empty_orders_and_message() {
+        let v = serde_json::to_value(manual_review()).unwrap();
+        assert!(v["refund_orders"].is_array());
+        assert!(v.get("txn_no").is_none(), "人工审核场景不应出现 txn_no");
+        assert!(v["message"].is_string());
+    }
+
+    /// 回归护栏:accepted 场景必须带 txn_no,且不得出现 message/review
+    #[test]
+    fn accepted_has_txn_no_and_no_message_or_review() {
+        let v = serde_json::to_value(WalletRefundApplied {
+            request_id: "R2".into(), status: "accepted".into(),
+            txn_no: Some("WTX1".into()), refund_cents: 250,
+            refund_orders: vec![WalletRefundOrderPart {
+                refund_no: "REF1".into(), payment_order_no: "PAY1".into(),
+                refund_cents: 250, status: "pending".into(),
+            }],
+            message: None, review: None,
+        })
+        .unwrap();
+        assert_eq!(v["txn_no"], "WTX1");
+        assert!(v.get("message").is_none());
+        assert!(v.get("review").is_none());
+        assert_eq!(v["refund_orders"][0]["payment_order_no"], "PAY1");
+    }
+
+    /// 回归护栏:风控审核后 `review.actor_id` 是字符串而非数字
+    #[test]
+    fn review_actor_id_is_string() {
+        let mut applied = manual_review();
+        applied.status = "accepted".into();
+        applied.message = None;
+        applied.txn_no = Some("WTX2".into());
+        applied.review = Some(WalletRiskReview {
+            actor_id: "77".into(), approved: true, comment: "核实原路退款".into(),
+        });
+        let v = serde_json::to_value(&applied).unwrap();
+        assert!(v["review"]["actor_id"].is_string());
+        assert_eq!(v["review"]["actor_id"], "77");
+    }
+
+    /// 回归护栏:反序列化必须能吃回旧的 `response_json`(缺 review 键)
+    #[test]
+    fn deserializes_legacy_response_without_review() {
+        let legacy = serde_json::json!({
+            "request_id": "R3", "status": "manual_review", "refund_cents": 500,
+            "refund_orders": [], "message": "x"
+        });
+        let back: WalletRefundApplied = serde_json::from_value(legacy).unwrap();
+        assert!(back.review.is_none());
+        assert_eq!(back.status, "manual_review");
+    }
+}
+
 /// 用户反馈。
 ///
 /// ⚠️ `id` / `user_id` / `order_id` / `replied_by` 是**字符串**——实现里
