@@ -510,3 +510,133 @@ mod dashboard_tests {
         assert_eq!(v.as_array().unwrap().len(), 7);
     }
 }
+
+// ===== 告警 =====
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlertEvent {
+    pub id: u64,
+    pub device_id: String,
+    /// 规则可能已被删,故可空
+    pub rule_id: Option<u64>,
+    pub severity: String,
+    pub metric: String,
+    /// 触发时的遥测数值(实现读的是 f64)
+    pub value: Option<f64>,
+    pub status: String,
+    /// 确认人 id
+    pub acked_by: Option<u64>,
+    pub created_at: String,
+}
+
+/// 告警规则**列表**项。⚠️ 比详情**少** `device_id_pattern` / `threshold` /
+/// `window_seconds` —— 列表只够渲染表格,编辑要用详情。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlertRule {
+    pub id: u64,
+    pub name: String,
+    pub metric: String,
+    pub op: String,
+    pub severity: String,
+    pub enabled: bool,
+}
+
+/// 告警规则详情(比列表多 3 个字段)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlertRuleDetail {
+    pub id: u64,
+    pub name: String,
+    pub device_id_pattern: String,
+    pub metric: String,
+    pub op: String,
+    pub threshold: String,
+    pub window_seconds: u32,
+    pub severity: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlertSubscription {
+    pub id: u64,
+    pub rule_id: Option<u64>,
+    /// 未指定级别表示订阅全部
+    pub severity: Option<String>,
+    pub webhook_subscription_id: Option<u64>,
+    pub admin_user_id: Option<u64>,
+}
+
+/// 风控配置项。`value` 是字符串(配置值统一按文本存取)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RiskConfigItem {
+    pub key: String,
+    /// 配置值是 JSON(可能是数字/布尔/对象),不是统一字符串
+    pub value: serde_json::Value,
+    pub description: Option<String>,
+}
+
+#[cfg(test)]
+mod alert_tests {
+    use super::*;
+
+    /// 回归护栏:告警 `value` 是 f64 数字(实现直接读遥测数值),
+    /// `rule_id` / `acked_by` 可空(规则/确认人可能已删)
+    #[test]
+    fn alert_value_is_number_and_refs_nullable() {
+        let a = AlertEvent {
+            id: 1, device_id: "D1".into(), rule_id: None, severity: "critical".into(),
+            metric: "power_w".into(), value: Some(3500.5), status: "active".into(),
+            acked_by: None, created_at: "2026-09-28T00:00:00Z".into(),
+        };
+        let v = serde_json::to_value(&a).unwrap();
+        assert_eq!(v["value"], 3500.5);
+        assert!(v["rule_id"].is_null());
+        assert!(v["acked_by"].is_null());
+    }
+
+    /// 回归护栏:规则**列表**项不含 threshold/window_seconds(避免后台拿到就渲染)
+    #[test]
+    fn alert_rule_list_item_is_minimal() {
+        let r = AlertRule {
+            id: 1, name: "n".into(), metric: "power_w".into(),
+            op: ">".into(), severity: "warning".into(), enabled: true,
+        };
+        let v = serde_json::to_value(&r).unwrap();
+        assert!(v.get("threshold").is_none());
+        assert!(v.get("window_seconds").is_none());
+        assert!(v["enabled"].is_boolean());
+    }
+
+    /// 回归护栏:风控 value 是 JSON(可能是数字),不是字符串
+    #[test]
+    fn risk_config_value_is_json() {
+        let c = RiskConfigItem {
+            key: "max_daily_recharge_cents".into(),
+            value: serde_json::json!(100000),
+            description: None,
+        };
+        let v = serde_json::to_value(&c).unwrap();
+        assert!(v["value"].is_number(), "风控阈值是数字 JSON");
+    }
+
+    /// 告警订阅可只订阅全部级别(severity 为空)
+    #[test]
+    fn alert_subscription_severity_is_optional() {
+        let s = AlertSubscription {
+            id: 1, rule_id: None, severity: None,
+            webhook_subscription_id: None, admin_user_id: Some(3),
+        };
+        let v = serde_json::to_value(&s).unwrap();
+        assert!(v["severity"].is_null());
+    }
+
+    /// 规则详情比列表多 device_id_pattern,不可混用
+    #[test]
+    fn alert_rule_detail_has_device_pattern() {
+        let d = AlertRuleDetail {
+            id: 1, name: "n".into(), device_id_pattern: "GW-*".into(),
+            metric: "power_w".into(), op: ">".into(), threshold: "3000".into(),
+            window_seconds: 60, severity: "warning".into(),
+        };
+        let v = serde_json::to_value(&d).unwrap();
+        assert_eq!(v["device_id_pattern"], "GW-*");
+    }
+}
