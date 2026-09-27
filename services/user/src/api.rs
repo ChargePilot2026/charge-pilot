@@ -421,7 +421,7 @@ pub async fn charge_history(
     State(st): State<AppState>,
     claims: UserClaims,
     Query(q): Query<HistoryQuery>,
-) -> AppResult<Json<crate::api_envelope::Envelope<serde_json::Value>>> {
+) -> AppResult<Json<crate::api_envelope::Envelope<api_contracts::charge::ChargeHistoryResponse>>> {
     let page = q.page.unwrap_or(1).max(1);
     let page_size = q.page_size.unwrap_or(20).min(100);
     let offset = (page - 1) * page_size;
@@ -435,23 +435,30 @@ pub async fn charge_history(
     .bind(offset as i64)
     .fetch_all(st.db.pool())
     .await?;
-    let arr: Vec<serde_json::Value> = rows.iter().map(|r| -> AppResult<serde_json::Value> { Ok(json!({
-        "order_no": r.try_get::<String, _>("order_no")?,
-        "status": r.try_get::<String, _>("status")?,
-        "total_cents": r.try_get::<Option<i64>, _>("total_cents")?,
-        "started_at": r.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("started_at")?.map(|t| t.to_rfc3339()),
-        "ended_at": r.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("ended_at")?.map(|t| t.to_rfc3339()),
-    })) }).collect::<AppResult<Vec<_>>>()?;
-    Ok(Json(crate::api_envelope::Envelope::ok(json!({
-        "page": page, "page_size": page_size, "items": arr
-    }), common_error::current_request_id())))
+    let arr = rows.iter().map(|r| -> AppResult<api_contracts::charge::ChargeHistoryItem> {
+        Ok(api_contracts::charge::ChargeHistoryItem {
+            order_no: r.try_get::<String, _>("order_no")?,
+            status: r.try_get::<String, _>("status")?,
+            total_cents: r.try_get::<Option<i64>, _>("total_cents")?,
+            started_at: r
+                .try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("started_at")?
+                .map(|t| t.to_rfc3339()),
+            ended_at: r
+                .try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("ended_at")?
+                .map(|t| t.to_rfc3339()),
+        })
+    }).collect::<AppResult<Vec<_>>>()?;
+    Ok(Json(crate::api_envelope::Envelope::ok(
+        api_contracts::charge::ChargeHistoryResponse { page, page_size, items: arr },
+        common_error::current_request_id(),
+    )))
 }
 
 pub async fn charge_detail(
     State(st): State<AppState>,
     claims: UserClaims,
     Path(order_id): Path<String>,
-) -> AppResult<Json<crate::api_envelope::Envelope<serde_json::Value>>> {
+) -> AppResult<Json<crate::api_envelope::Envelope<api_contracts::charge::ChargeDetailV2>>> {
     let r = sqlx::query(
         "SELECT order_no, status, electric_cents, service_cents, total_cents,
                 started_at, ended_at, device_id, port_no, failure_reason
@@ -462,18 +469,25 @@ pub async fn charge_detail(
     .fetch_optional(st.db.pool())
     .await?;
     let r = r.ok_or_else(|| AppError::NotFound("order".into()))?;
-    Ok(Json(crate::api_envelope::Envelope::ok(json!({
-        "order_no": r.try_get::<String, _>("order_no")?,
-        "status": r.try_get::<String, _>("status")?,
-        "electric_cents": r.try_get::<Option<i64>, _>("electric_cents")?,
-        "service_cents": r.try_get::<Option<i64>, _>("service_cents")?,
-        "total_cents": r.try_get::<Option<i64>, _>("total_cents")?,
-        "device_id": r.try_get::<String, _>("device_id")?,
-        "port_no": r.try_get::<u8, _>("port_no")?,
-        "started_at": r.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("started_at")?.map(|t| t.to_rfc3339()),
-        "ended_at": r.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("ended_at")?.map(|t| t.to_rfc3339()),
-        "failure_reason": r.try_get::<Option<String>, _>("failure_reason")?,
-    }), common_error::current_request_id())))
+    Ok(Json(crate::api_envelope::Envelope::ok(
+        api_contracts::charge::ChargeDetailV2 {
+            order_no: r.try_get::<String, _>("order_no")?,
+            status: r.try_get::<String, _>("status")?,
+            electric_cents: r.try_get::<Option<i64>, _>("electric_cents")?,
+            service_cents: r.try_get::<Option<i64>, _>("service_cents")?,
+            total_cents: r.try_get::<Option<i64>, _>("total_cents")?,
+            device_id: r.try_get::<String, _>("device_id")?,
+            port_no: r.try_get::<u8, _>("port_no")?,
+            started_at: r
+                .try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("started_at")?
+                .map(|t| t.to_rfc3339()),
+            ended_at: r
+                .try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("ended_at")?
+                .map(|t| t.to_rfc3339()),
+            failure_reason: r.try_get::<Option<String>, _>("failure_reason")?,
+        },
+        common_error::current_request_id(),
+    )))
 }
 
 pub async fn charge_historical_curve(
@@ -537,7 +551,7 @@ pub async fn charge_feedback(
     claims: UserClaims,
     Path(order_id): Path<String>,
     Json(req): Json<FeedbackReq>,
-) -> AppResult<Json<crate::api_envelope::Envelope<serde_json::Value>>> {
+) -> AppResult<Json<crate::api_envelope::Envelope<api_contracts::charge::FeedbackSubmitted>>> {
     if order_id.is_empty() || order_id.len() > 64 {
         return Err(AppError::BadRequest("订单编号无效".into()));
     }
@@ -590,31 +604,41 @@ pub async fn charge_feedback(
     .await?
     .last_insert_id();
     tx.commit().await?;
-    Ok(Json(crate::api_envelope::Envelope::ok(json!({"submitted": true,"feedback_id":feedback_id.to_string()}), common_error::current_request_id())))
+    Ok(Json(crate::api_envelope::Envelope::ok(
+        api_contracts::charge::FeedbackSubmitted { submitted: true, feedback_id: feedback_id.to_string() },
+        common_error::current_request_id(),
+    )))
 }
 
 pub async fn internal_order_detail(
     State(st): State<AppState>,
     Path(order_id): Path<String>,
-) -> AppResult<Json<crate::api_envelope::Envelope<serde_json::Value>>> {
+) -> AppResult<Json<crate::api_envelope::Envelope<api_contracts::charge::InternalOrderDetailV2>>> {
     let r = sqlx::query("SELECT * FROM charge_order WHERE order_no = ? LIMIT 1")
         .bind(&order_id)
         .fetch_optional(st.db.pool())
         .await?;
     let r = r.ok_or_else(|| AppError::NotFound("order".into()))?;
-    Ok(Json(crate::api_envelope::Envelope::ok(json!({
-        "order_id": r.try_get::<u64, _>("id")?,
-        "order_no": r.try_get::<String, _>("order_no")?,
-        "user_id": r.try_get::<u64, _>("user_id")?,
-        "device_id": r.try_get::<String, _>("device_id")?,
-        "port_no": r.try_get::<u8, _>("port_no")?,
-        "status": r.try_get::<String, _>("status")?,
-        "electric_cents": r.try_get::<Option<i64>, _>("electric_cents")?,
-        "service_cents": r.try_get::<Option<i64>, _>("service_cents")?,
-        "total_cents": r.try_get::<Option<i64>, _>("total_cents")?,
-        "started_at": r.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("started_at")?.map(|t| t.to_rfc3339()),
-        "ended_at": r.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("ended_at")?.map(|t| t.to_rfc3339()),
-    }), common_error::current_request_id())))
+    Ok(Json(crate::api_envelope::Envelope::ok(
+        api_contracts::charge::InternalOrderDetailV2 {
+            order_id: r.try_get::<u64, _>("id")?,
+            order_no: r.try_get::<String, _>("order_no")?,
+            user_id: r.try_get::<u64, _>("user_id")?,
+            device_id: r.try_get::<String, _>("device_id")?,
+            port_no: r.try_get::<u8, _>("port_no")?,
+            status: r.try_get::<String, _>("status")?,
+            electric_cents: r.try_get::<Option<i64>, _>("electric_cents")?,
+            service_cents: r.try_get::<Option<i64>, _>("service_cents")?,
+            total_cents: r.try_get::<Option<i64>, _>("total_cents")?,
+            started_at: r
+                .try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("started_at")?
+                .map(|t| t.to_rfc3339()),
+            ended_at: r
+                .try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("ended_at")?
+                .map(|t| t.to_rfc3339()),
+        },
+        common_error::current_request_id(),
+    )))
 }
 
 // ===================== 个人中心 =====================
@@ -658,7 +682,7 @@ pub async fn phone_bind(
     State(st): State<AppState>,
     claims: UserClaims,
     Json(req): Json<PhoneBindReq>,
-) -> AppResult<Json<crate::api_envelope::Envelope<serde_json::Value>>> {
+) -> AppResult<Json<crate::api_envelope::Envelope<api_contracts::charge::PhoneBindResponse>>> {
     if req.code.trim().is_empty() || req.code.len() > 512 || req.code.chars().any(char::is_control) {
         return Err(AppError::BadRequest("手机号授权凭证无效".into()));
     }
@@ -699,7 +723,10 @@ pub async fn phone_bind(
     .ok_or_else(|| AppError::Forbidden("账号不可绑定手机号".into()))?;
     if current.as_deref() == Some(phone_hash.as_str()) {
         tx.commit().await?;
-        return Ok(Json(crate::api_envelope::Envelope::ok(json!({"bound": true}), common_error::current_request_id())));
+        return Ok(Json(crate::api_envelope::Envelope::ok(
+            api_contracts::charge::PhoneBindResponse { bound: true },
+            common_error::current_request_id(),
+        )));
     }
     let owner: Option<u64> = sqlx::query_scalar("SELECT id FROM `user` WHERE phone_hash = ? AND deleted_at IS NULL FOR UPDATE")
         .bind(&phone_hash).fetch_optional(&mut *tx).await?;
@@ -718,7 +745,10 @@ pub async fn phone_bind(
         return Err(AppError::Forbidden("账号不可绑定手机号".into()));
     }
     tx.commit().await?;
-    Ok(Json(crate::api_envelope::Envelope::ok(json!({"bound": true}), common_error::current_request_id())))
+    Ok(Json(crate::api_envelope::Envelope::ok(
+        api_contracts::charge::PhoneBindResponse { bound: true },
+        common_error::current_request_id(),
+    )))
 }
 
 pub async fn phone_unbind(

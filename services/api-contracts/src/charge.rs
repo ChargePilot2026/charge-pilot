@@ -107,10 +107,14 @@ pub struct ChargeDetail {
 
 // ===== 反馈 =====
 
+/// 反馈提交结果。
+///
+/// ⚠️ `feedback_id` 是**字符串**而非数字 —— 与原实现 `feedback_id.to_string()`
+/// 一致,改成数字会破坏小程序侧的类型判断。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeedbackSubmitted {
     pub submitted: bool,
-    pub feedback_id: u64,
+    pub feedback_id: String,
 }
 
 // ===== 内部订单详情(admin 经 HTTP 消费)=====
@@ -182,10 +186,97 @@ mod tests {
         assert_eq!(v["page"], 1);
     }
 
+    /// 回归护栏:feedback_id 必须是字符串(原实现为 `to_string()`)
+    #[test]
+    fn feedback_id_stays_a_string() {
+        let v = serde_json::to_value(FeedbackSubmitted {
+            submitted: true,
+            feedback_id: "42".into(),
+        })
+        .unwrap();
+        assert!(v["feedback_id"].is_string(), "feedback_id 不得变成数字");
+    }
+
     #[test]
     fn scan_cancel_shape_is_frozen() {
         let v = serde_json::to_value(ScanCancelResponse { order_no: "O1".into(), cancelled: true }).unwrap();
         assert_eq!(v["order_no"], "O1");
         assert_eq!(v["cancelled"], true);
+    }
+}
+
+// ===== 充电详情补充字段 =====
+
+/// 订单详情。`failure_reason` 失败时才有,序列化时保留为 null。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChargeDetailV2 {
+    pub order_no: String,
+    pub status: String,
+    pub electric_cents: Option<i64>,
+    pub service_cents: Option<i64>,
+    pub total_cents: Option<i64>,
+    pub device_id: String,
+    pub port_no: u8,
+    pub started_at: Option<String>,
+    pub ended_at: Option<String>,
+    pub failure_reason: Option<String>,
+}
+
+// ===== 内部订单详情补充 =====
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalOrderDetailV2 {
+    pub order_id: u64,
+    pub order_no: String,
+    pub user_id: u64,
+    pub device_id: String,
+    pub port_no: u8,
+    pub status: String,
+    pub electric_cents: Option<i64>,
+    pub service_cents: Option<i64>,
+    pub total_cents: Option<i64>,
+    pub started_at: Option<String>,
+    pub ended_at: Option<String>,
+}
+
+// ===== 公告 =====
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Announcement {
+    pub id: u64,
+    pub title: String,
+    pub content: String,
+    pub level: String,
+    pub published_at: Option<String>,
+}
+
+/// admin 的"生效中公告"响应(小程序只读 `items`)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActiveAnnouncementsResponse {
+    pub items: Vec<Announcement>,
+}
+
+#[cfg(test)]
+mod detail_tests {
+    use super::*;
+
+    #[test]
+    fn failure_reason_stays_null_not_omitted() {
+        let d = ChargeDetailV2 {
+            order_no: "O1".into(), status: "completed".into(),
+            electric_cents: Some(50), service_cents: None, total_cents: Some(50),
+            device_id: "D1".into(), port_no: 1,
+            started_at: None, ended_at: None, failure_reason: None,
+        };
+        let v = serde_json::to_value(&d).unwrap();
+        assert!(v["failure_reason"].is_null(), "失败原因须保留为 null");
+        assert!(v["service_cents"].is_null());
+        assert_eq!(v["total_cents"], 50);
+    }
+
+    #[test]
+    fn active_announcements_shape() {
+        let v = serde_json::to_value(ActiveAnnouncementsResponse { items: vec![] }).unwrap();
+        assert!(v["items"].is_array());
     }
 }
