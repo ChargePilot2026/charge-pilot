@@ -41,7 +41,7 @@ pub async fn list(
 ) -> AppResult<Json<ApiEnvelope<Vec<ImportJob>>>> {
     authorize(&state, &claims).await?;
     let rows = sqlx::query("SELECT import_id,status,last_error FROM device_import WHERE actor_id=? ORDER BY created_at DESC,import_id LIMIT 50")
-        .bind(claims.admin_user_id).fetch_all(state.db.pool()).await?;
+        .bind(claims.admin_user_id).fetch_all(state.device.pool()).await?;
     let mut jobs = vec![];
     for row in rows {
         jobs.push(ImportJob {
@@ -71,13 +71,13 @@ pub async fn create(
         .sort_by_key(|d| d.device_id.to_ascii_lowercase());
     let request = serde_json::to_value(&batch)?;
     let id = req.import_id.to_string();
-    let mut tx = state.db.pool().begin().await?;
+    let mut tx = state.device.begin().await?;
     sqlx::query("INSERT INTO device_import (import_id,actor_id,request_json) VALUES (?,?,?) ON DUPLICATE KEY UPDATE import_id=device_import.import_id")
-        .bind(&id).bind(claims.admin_user_id).bind(&request).execute(&mut *tx).await?;
+        .bind(&id).bind(claims.admin_user_id).bind(&request).execute(tx.executor()).await?;
     let row =
         sqlx::query("SELECT actor_id,request_json FROM device_import WHERE import_id=? FOR UPDATE")
             .bind(&id)
-            .fetch_one(&mut *tx)
+            .fetch_one(tx.executor())
             .await?;
     if row.try_get::<u64, _>("actor_id")? != claims.admin_user_id
         || row.try_get::<serde_json::Value, _>("request_json")? != request
@@ -104,13 +104,13 @@ async fn finish(
     automatic: bool,
 ) -> AppResult<Json<ApiEnvelope<ImportJob>>> {
     // A job lock serializes retries. Identity locks serialize overlapping batches.
-    let mut tx = state.db.pool().begin().await?;
+    let mut tx = state.device.begin().await?;
     let row = sqlx::query(
         "SELECT request_json,status,last_error,attempts,retryable,(next_attempt_at<=UTC_TIMESTAMP(3)) AS due FROM device_import WHERE import_id=? AND actor_id=? FOR UPDATE",
     )
     .bind(&id)
     .bind(actor_id)
-    .fetch_optional(&mut *tx)
+    .fetch_optional(tx.executor())
     .await?
     .ok_or_else(|| AppError::NotFound("导入记录不存在".into()))?;
     if row.try_get::<String, _>("status")? == "completed" {
@@ -139,23 +139,23 @@ async fn finish(
         )));
     }
     let batch: DeviceProvisionBatch = serde_json::from_value(row.try_get("request_json")?)?;
-    (&mut *tx).execute("SAVEPOINT import_attempt").await?;
+    (tx.executor()).execute("SAVEPOINT import_attempt").await?;
     let result: AppResult<()> = async {
         // Recheck live permissions for every manual or automatic attempt.
         authorize_by_id(&state, actor_id).await?;
         batch.validate().map_err(AppError::BadRequest)?;
         for device in &batch.devices {
             let station: Option<u64> = sqlx::query_scalar("SELECT id FROM station WHERE id=? AND deleted_at IS NULL FOR SHARE")
-                .bind(device.station_id).fetch_optional(&mut *tx).await?;
+                .bind(device.station_id).fetch_optional(tx.executor()).await?;
             if station.is_none() { return Err(AppError::BadRequest(format!("设备 {} 的站点不存在",device.device_id))); }
             let request = serde_json::to_value(device)?;
             sqlx::query("INSERT INTO device_import_identity (device_id,request_json) VALUES (?,?) ON DUPLICATE KEY UPDATE device_id=device_import_identity.device_id")
-                .bind(&device.device_id).bind(&request).execute(&mut *tx).await?;
+                .bind(&device.device_id).bind(&request).execute(tx.executor()).await?;
             let stored: serde_json::Value = sqlx::query_scalar("SELECT request_json FROM device_import_identity WHERE device_id=? FOR UPDATE")
-                .bind(&device.device_id).fetch_one(&mut *tx).await?;
+                .bind(&device.device_id).fetch_one(tx.executor()).await?;
             if stored != request { return Err(AppError::Conflict(format!("设备 {} 已用其他参数导入",device.device_id))); }
             let existing = sqlx::query("SELECT station_id,vendor_id,model,deleted_at,status FROM device_meta WHERE device_id=? FOR UPDATE")
-                .bind(&device.device_id).fetch_all(&mut *tx).await?;
+                .bind(&device.device_id).fetch_all(tx.executor()).await?;
             if existing.len() > 1 { return Err(AppError::Conflict("后台设备存在重复记录".into())); }
             if let Some(row) = existing.first() {
                 if row.try_get::<Option<u64>,_>("station_id")? != Some(device.station_id) || row.try_get::<Option<u64>,_>("vendor_id")? != Some(device.vendor_id)
@@ -165,14 +165,14 @@ async fn finish(
                 }
             } else {
                 sqlx::query("INSERT INTO device_meta (device_id,station_id,vendor_id,model) VALUES (?,?,?,?)")
-                    .bind(&device.device_id).bind(device.station_id).bind(device.vendor_id).bind(&device.model).execute(&mut *tx).await?;
+                    .bind(&device.device_id).bind(device.station_id).bind(device.vendor_id).bind(&device.model).execute(tx.executor()).await?;
             }
         }
         let client = ApiClient::new(state.http.clone(),state.service_token.clone());
         let _: DeviceProvisionResult = client.post(state.cfg.service_urls.gateway.as_deref(),api_contracts::paths::GATEWAY_DEVICE_PROVISION,&batch).await?;
-        sqlx::query("UPDATE device_import SET status='completed',last_error=NULL,retryable=FALSE,attempts=attempts+1 WHERE import_id=?").bind(&id).execute(&mut *tx).await?;
+        sqlx::query("UPDATE device_import SET status='completed',last_error=NULL,retryable=FALSE,attempts=attempts+1 WHERE import_id=?").bind(&id).execute(tx.executor()).await?;
         sqlx::query("INSERT INTO audit_log (actor_id,module,action,target_type,target_id,after_json,created_month) VALUES (?,'device','import','device_import',?,?,DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))")
-            .bind(actor_id).bind(&id).bind(serde_json::to_value(&batch)?).execute(&mut *tx).await?;
+            .bind(actor_id).bind(&id).bind(serde_json::to_value(&batch)?).execute(tx.executor()).await?;
         Ok(())
     }.await;
     let (status, last_error) = match result {
@@ -183,13 +183,13 @@ async fn finish(
         Err(error) => {
             // Retain the job lock while discarding partial metadata writes.
             // A late failed attempt must never overwrite another completion.
-            (&mut *tx)
+            (tx.executor())
                 .execute("ROLLBACK TO SAVEPOINT import_attempt")
                 .await?;
             let message = error.message().chars().take(1000).collect::<String>();
             let retryable = retry_delay(&error, attempts + 1);
             sqlx::query("UPDATE device_import SET status='failed',last_error=?,attempts=attempts+1,retryable=?,next_attempt_at=TIMESTAMPADD(SECOND,?,UTC_TIMESTAMP(3)) WHERE import_id=?")
-                .bind(&message).bind(retryable.is_some()).bind(retryable.unwrap_or(0)).bind(&id).execute(&mut *tx).await?;
+                .bind(&message).bind(retryable.is_some()).bind(retryable.unwrap_or(0)).bind(&id).execute(tx.executor()).await?;
             tx.commit().await?;
             ("failed", Some(message))
         }
@@ -223,7 +223,7 @@ pub fn spawn_recovery(state: AppState) {
         loop {
             interval.tick().await;
             let jobs: Result<Vec<(String,u64)>,_> = sqlx::query_as("SELECT import_id,actor_id FROM device_import WHERE status<>'completed' AND retryable=TRUE AND attempts<8 AND next_attempt_at<=UTC_TIMESTAMP(3) ORDER BY next_attempt_at,import_id LIMIT 10")
-                .fetch_all(state.db.pool()).await;
+                .fetch_all(state.device.pool()).await;
             match jobs {
                 Ok(jobs) => {
                     for (id, actor_id) in jobs {

@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 
 pub async fn list(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::admin::RoleList>>> {
     let rows = sqlx::query("SELECT id, code, name, description, is_builtin, created_at FROM role WHERE deleted_at IS NULL ORDER BY id ASC")
-        .fetch_all(st.db.pool()).await?;
+        .fetch_all(st.identity.pool()).await?;
     let items = rows.iter().map(|r| -> AppResult<api_contracts::admin::Role> {
         Ok(api_contracts::admin::Role {
             id: sqlx::Row::try_get::<u64, _>(r, "id")?,
@@ -37,15 +37,15 @@ pub struct RoleCreateReq {
 
 pub async fn create(State(st): State<AppState>, _c: ActiveAdmin, Json(req): Json<RoleCreateReq>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::CreatedResponse>>> {
     crate::auth::require_permission(&st,&_c,"role.create").await?;
-    let mut tx = st.db.pool().begin().await?;
+    let mut tx = st.identity.begin().await?;
     let result = sqlx::query("INSERT INTO role (code, name, description) VALUES (?, ?, ?)")
         .bind(&req.code).bind(&req.name).bind(req.description.as_deref())
-        .execute(&mut *tx).await?;
+        .execute(tx.executor()).await?;
     let role_id = result.last_insert_id();
     if let Some(pids) = req.permission_ids {
         for pid in pids {
             sqlx::query("INSERT IGNORE INTO role_permission (role_id, permission_id) VALUES (?, ?)")
-                .bind(role_id).bind(pid).execute(&mut *tx).await?;
+                .bind(role_id).bind(pid).execute(tx.executor()).await?;
         }
     }
     tx.commit().await?;
@@ -54,10 +54,10 @@ pub async fn create(State(st): State<AppState>, _c: ActiveAdmin, Json(req): Json
 
 pub async fn get(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::admin::RoleDetail>>> {
     let r: Option<(u64, String, String, Option<String>)> = sqlx::query_as("SELECT id, code, name, description FROM role WHERE id = ? AND deleted_at IS NULL")
-        .bind(id).fetch_optional(st.db.pool()).await?;
+        .bind(id).fetch_optional(st.identity.pool()).await?;
     let (id, code, name, desc) = r.ok_or_else(|| AppError::NotFound("role".into()))?;
     let perms: Vec<u64> = sqlx::query_scalar("SELECT permission_id FROM role_permission WHERE role_id = ?")
-        .bind(id).fetch_all(st.db.pool()).await?;
+        .bind(id).fetch_all(st.identity.pool()).await?;
     Ok(Json(common_error::ApiEnvelope::ok(
         api_contracts::admin::RoleDetail { id, code, name, description: desc, permission_ids: perms },
         common_error::current_request_id(),
@@ -73,16 +73,16 @@ pub struct RoleUpdateReq {
 
 pub async fn update(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>, Json(req): Json<RoleUpdateReq>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::UpdatedResponse>>> {
     crate::auth::require_permission(&st,&_c,"role.update").await?;
-    let mut tx = st.db.pool().begin().await?;
+    let mut tx = st.identity.begin().await?;
     let n = sqlx::query("UPDATE role SET name = COALESCE(?, name), description = COALESCE(?, description) WHERE id = ? AND deleted_at IS NULL")
         .bind(req.name.as_deref()).bind(req.description.as_deref()).bind(id)
-        .execute(&mut *tx).await?;
+        .execute(tx.executor()).await?;
     if n.rows_affected() == 0 { return Err(AppError::NotFound("role".into())); }
     if let Some(pids) = req.permission_ids {
-        sqlx::query("DELETE FROM role_permission WHERE role_id = ?").bind(id).execute(&mut *tx).await?;
+        sqlx::query("DELETE FROM role_permission WHERE role_id = ?").bind(id).execute(tx.executor()).await?;
         for pid in pids {
             sqlx::query("INSERT IGNORE INTO role_permission (role_id, permission_id) VALUES (?, ?)")
-                .bind(id).bind(pid).execute(&mut *tx).await?;
+                .bind(id).bind(pid).execute(tx.executor()).await?;
         }
     }
     tx.commit().await?;
@@ -92,14 +92,14 @@ pub async fn update(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<
 pub async fn delete(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::DeletedResponse>>> {
     crate::auth::require_permission(&st,&_c,"role.delete").await?;
     let n = sqlx::query("UPDATE role SET deleted_at = NOW(3) WHERE id = ? AND is_builtin = 0 AND deleted_at IS NULL")
-        .bind(id).execute(st.db.pool()).await?;
+        .bind(id).execute(st.identity.pool()).await?;
     if n.rows_affected() == 0 { return Err(AppError::Conflict("role is builtin or not found".into())); }
     Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::DeletedResponse::new(), common_error::current_request_id())))
 }
 
 pub async fn permissions(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::ListResponse<api_contracts::admin::Permission>>>> {
     let rows = sqlx::query("SELECT id, code, name, module, description FROM permission ORDER BY module, id")
-        .fetch_all(st.db.pool()).await?;
+        .fetch_all(st.identity.pool()).await?;
     let items = rows.iter().map(|r| -> AppResult<api_contracts::admin::Permission> {
         Ok(api_contracts::admin::Permission {
             id: sqlx::Row::try_get::<u64, _>(r, "id")?,

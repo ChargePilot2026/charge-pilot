@@ -11,7 +11,7 @@ pub async fn list(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json
     let rows = sqlx::query(
         "SELECT id, title, content, scope, priority, start_at, end_at, status, created_at
          FROM announcement WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 200"
-    ).fetch_all(st.db.pool()).await?;
+    ).fetch_all(st.config.pool()).await?;
     let items = rows.iter().map(|r| -> AppResult<api_contracts::admin::AnnouncementListItem> {
         Ok(api_contracts::admin::AnnouncementListItem {
             id: sqlx::Row::try_get::<u64, _>(r, "id")?,
@@ -49,14 +49,14 @@ pub async fn create(State(st): State<AppState>, c: ActiveAdmin, Json(req): Json<
     )
     .bind(&req.title).bind(&req.content).bind(&req.scope).bind(req.priority)
     .bind(req.start_at).bind(req.end_at).bind(c.admin_user_id)
-    .execute(st.db.pool()).await?;
+    .execute(st.config.pool()).await?;
     let id = result.last_insert_id();
     Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::CreatedResponse { id: id }, common_error::current_request_id())))
 }
 
 pub async fn get(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::admin::AnnouncementDetailV2>>> {
     let r = sqlx::query("SELECT id, title, content, scope, priority, start_at, end_at, status FROM announcement WHERE id = ? AND deleted_at IS NULL")
-        .bind(id).fetch_optional(st.db.pool()).await?;
+        .bind(id).fetch_optional(st.config.pool()).await?;
     let r = r.ok_or_else(|| AppError::NotFound("announcement".into()))?;
     Ok(Json(common_error::ApiEnvelope::ok(
         api_contracts::admin::AnnouncementDetailV2 {
@@ -87,7 +87,7 @@ pub async fn update(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<
          WHERE id = ? AND deleted_at IS NULL"
     )
     .bind(req.title.as_deref()).bind(req.content.as_deref()).bind(req.status.as_deref()).bind(req.end_at).bind(id)
-    .execute(st.db.pool()).await?;
+    .execute(st.config.pool()).await?;
     if n.rows_affected() == 0 { return Err(AppError::NotFound("announcement".into())); }
     Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::UpdatedResponse::new(), common_error::current_request_id())))
 }
@@ -95,7 +95,7 @@ pub async fn update(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<
 pub async fn delete(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::DeletedResponse>>> {
     crate::auth::require_permission(&st,&_c,"announcement.delete").await?;
     let n = sqlx::query("UPDATE announcement SET deleted_at = NOW(3) WHERE id = ? AND deleted_at IS NULL")
-        .bind(id).execute(st.db.pool()).await?;
+        .bind(id).execute(st.config.pool()).await?;
     if n.rows_affected() == 0 { return Err(AppError::NotFound("announcement".into())); }
     Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::DeletedResponse::new(), common_error::current_request_id())))
 }

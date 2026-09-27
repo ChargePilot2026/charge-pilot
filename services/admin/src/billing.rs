@@ -13,7 +13,7 @@ pub async fn settlements(State(st): State<AppState>, _c: ActiveAdmin) -> AppResu
     let rows = sqlx::query(
         "SELECT id, settlement_no, split_template_id, period_start, period_end, total_cents, status, created_at
          FROM settled_record ORDER BY id DESC LIMIT 200"
-    ).fetch_all(st.db.pool()).await?;
+    ).fetch_all(st.finance.pool()).await?;
         let items = rows.iter().map(|r| -> AppResult<api_contracts::admin::Settlement> {
         Ok(api_contracts::admin::Settlement {
             id: sqlx::Row::try_get::<u64, _>(r, "id")?,
@@ -44,13 +44,13 @@ pub struct WithdrawReviewReq {
 }
 
 pub async fn refunds(State(st): State<AppState>, c: ActiveAdmin, axum::extract::Query(q):axum::extract::Query<api_contracts::refunds::RefundQuery>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::PagedResponse<api_contracts::admin::AdminRefundRow>>>> {
-    let allowed:i64=sqlx::query_scalar("SELECT COUNT(*) FROM admin_user_role a JOIN role r ON r.id=a.role_id JOIN role_permission rp ON rp.role_id=r.id JOIN permission p ON p.id=rp.permission_id WHERE a.id=? AND a.status='active' AND a.deleted_at IS NULL AND r.deleted_at IS NULL AND p.code='finance.refund.read'").bind(c.admin_user_id).fetch_one(st.db.pool()).await?;
+    let allowed:i64=sqlx::query_scalar("SELECT COUNT(*) FROM admin_user_role a JOIN role r ON r.id=a.role_id JOIN role_permission rp ON rp.role_id=r.id JOIN permission p ON p.id=rp.permission_id WHERE a.id=? AND a.status='active' AND a.deleted_at IS NULL AND r.deleted_at IS NULL AND p.code='finance.refund.read'").bind(c.admin_user_id).fetch_one(st.finance.pool()).await?;
     if allowed==0{return Err(AppError::Forbidden("缺少 finance.refund.read 权限".into()));}
     if !q.valid(){return Err(AppError::BadRequest("退款筛选参数无效".into()));}
     let mut page:api_contracts::common::PagedResponse<api_contracts::charge::AdminRefund>=common_http::internal::ApiClient::new(st.http.clone(),st.service_token.clone()).get(st.cfg.service_urls.user.as_deref(),p::USER_INTERNAL_REFUND_LIST,&q).await?;
     use sqlx::Row;
-    let can_retry:i64=sqlx::query_scalar("SELECT COUNT(*) FROM admin_user_role a JOIN role_permission rp ON rp.role_id=a.role_id JOIN permission p ON p.id=rp.permission_id WHERE a.id=? AND p.code='finance.refund.retry'").bind(c.admin_user_id).fetch_one(st.db.pool()).await?;
-    let can_review:i64=sqlx::query_scalar("SELECT COUNT(*) FROM admin_user_role a JOIN role r ON r.id=a.role_id JOIN role_permission rp ON rp.role_id=r.id JOIN permission p ON p.id=rp.permission_id WHERE a.id=? AND a.status='active' AND a.deleted_at IS NULL AND r.deleted_at IS NULL AND r.code='customer_finance' AND p.code='order.refund.review'").bind(c.admin_user_id).fetch_one(st.db.pool()).await?;
+    let can_retry:i64=sqlx::query_scalar("SELECT COUNT(*) FROM admin_user_role a JOIN role_permission rp ON rp.role_id=a.role_id JOIN permission p ON p.id=rp.permission_id WHERE a.id=? AND p.code='finance.refund.retry'").bind(c.admin_user_id).fetch_one(st.finance.pool()).await?;
+    let can_review:i64=sqlx::query_scalar("SELECT COUNT(*) FROM admin_user_role a JOIN role r ON r.id=a.role_id JOIN role_permission rp ON rp.role_id=r.id JOIN permission p ON p.id=rp.permission_id WHERE a.id=? AND a.status='active' AND a.deleted_at IS NULL AND r.deleted_at IS NULL AND r.code='customer_finance' AND p.code='order.refund.review'").bind(c.admin_user_id).fetch_one(st.finance.pool()).await?;
     let mut items=Vec::with_capacity(page.items.len());
     for item in std::mem::take(&mut page.items) {
         // 被拒且从未产生审核行时,review 是 null —— 原实现会在其上补出
@@ -70,7 +70,7 @@ pub async fn refunds(State(st): State<AppState>, c: ActiveAdmin, axum::extract::
         let first_signer=review.as_ref().and_then(|r|r.first_signer.as_deref());
         let can_approve=can_review>0 && item.status=="pending" && item.biz_type=="charge" && review_status!=Some("approved") && first_signer!=Some(me.as_str());
         let can_reject=can_review>0 && item.status=="pending" && item.biz_type=="charge" && review_status==Some("awaiting_second");
-        let task_row=sqlx::query("SELECT stage,attempts,last_error,scheduled_at FROM refund_task WHERE refund_no=?").bind(&item.refund_no).fetch_optional(st.db.pool()).await?;
+        let task_row=sqlx::query("SELECT stage,attempts,last_error,scheduled_at FROM refund_task WHERE refund_no=?").bind(&item.refund_no).fetch_optional(st.finance.pool()).await?;
         let (can_retry, task)=match task_row {
             Some(t)=>{
                 let stage:String=t.try_get("stage")?;
@@ -104,11 +104,11 @@ pub async fn refund_approve(State(st):State<AppState>,c:ActiveAdmin,Path(no):Pat
 pub struct RefundRejectReq {pub reason:String}
 pub async fn refund_create(State(st):State<AppState>,c:ActiveAdmin,Path(id):Path<u64>,Json(req):Json<api_contracts::refunds::ManualRefundRequest>)->AppResult<Json<common_error::ApiEnvelope<api_contracts::charge::ManualRefundCreated>>>{
     crate::auth::require_permission(&st,&c,"order.refund.create").await?;
-    let mut tx=st.db.pool().begin().await?;
-    let grants:Vec<String>=sqlx::query_scalar("SELECT p.code FROM admin_user_role a JOIN role r ON r.id=a.role_id JOIN role_permission rp ON rp.role_id=r.id JOIN permission p ON p.id=rp.permission_id WHERE a.id=? AND a.status='active' AND a.deleted_at IS NULL AND r.deleted_at IS NULL AND r.code='customer_finance' AND p.code IN ('order.read','order.refund.create','order.refund.review') FOR SHARE").bind(c.admin_user_id).fetch_all(&mut *tx).await?;
+    let mut tx=st.finance.begin().await?;
+    let grants:Vec<String>=sqlx::query_scalar("SELECT p.code FROM admin_user_role a JOIN role r ON r.id=a.role_id JOIN role_permission rp ON rp.role_id=r.id JOIN permission p ON p.id=rp.permission_id WHERE a.id=? AND a.status='active' AND a.deleted_at IS NULL AND r.deleted_at IS NULL AND r.code='customer_finance' AND p.code IN ('order.read','order.refund.create','order.refund.review') FOR SHARE").bind(c.admin_user_id).fetch_all(tx.executor()).await?;
     if grants.len()!=3{return Err(AppError::Forbidden("发起退款需客户财务角色及订单查看、退款申请、退款审核权限".into()));}
     let result:api_contracts::charge::ManualRefundCreated=common_http::internal::ApiClient::new(st.http.clone(),st.service_token.clone()).post(st.cfg.service_urls.user.as_deref(),&p::USER_INTERNAL_ORDER_REFUND_CREATE.replace(":order_id",&id.to_string()),&json!({"actor_id":c.admin_user_id,"request":req})).await?;
-    sqlx::query("INSERT INTO audit_log(actor_id,module,action,target_type,target_id,after_json,created_month) VALUES (?,'finance','refund.create','charge_order',?,?,DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))").bind(c.admin_user_id).bind(id.to_string()).bind(json!({"request":req,"result":result})).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO audit_log(actor_id,module,action,target_type,target_id,after_json,created_month) VALUES (?,'finance','refund.create','charge_order',?,?,DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))").bind(c.admin_user_id).bind(id.to_string()).bind(json!({"request":req,"result":result})).execute(tx.executor()).await?;
     tx.commit().await?;
     Ok(Json(common_error::ApiEnvelope::ok(result,common_error::current_request_id())))
 }
@@ -120,10 +120,10 @@ pub async fn refund_reject(State(st):State<AppState>,c:ActiveAdmin,Path(no):Path
 /// 键集合本就不同,故用泛型承载而不是强行合并成一个类型。
 async fn review_decision<T:serde::de::DeserializeOwned+serde::Serialize>(st:AppState,c:ActiveAdmin,no:String,req:RefundApprovalReq,reject:bool)->AppResult<Json<common_error::ApiEnvelope<T>>>{
     if no.is_empty() || no.len()>64 || !no.bytes().all(|b|b.is_ascii_alphanumeric() || b"_-|*@".contains(&b)) || req.approve_comment.trim().is_empty() || req.approve_comment.chars().count()>255 || req.approve_comment.chars().any(char::is_control){return Err(AppError::BadRequest("退款单号或审核意见无效".into()));}
-    let mut tx=st.db.pool().begin().await?;
+    let mut tx=st.finance.begin().await?;
     // Lock the actual account and grant rows until this approval has been sent.
-    async fn authorize(tx:&mut sqlx::Transaction<'_,sqlx::MySql>,id:u64)->AppResult<()> {
-        let rows:Vec<u64>=sqlx::query_scalar("SELECT a.id FROM admin_user_role a JOIN role r ON r.id=a.role_id JOIN role_permission rp ON rp.role_id=r.id JOIN permission p ON p.id=rp.permission_id WHERE a.id=? AND a.status='active' AND a.deleted_at IS NULL AND r.deleted_at IS NULL AND r.code='customer_finance' AND p.code='order.refund.review' FOR SHARE").bind(id).fetch_all(&mut **tx).await?;
+    async fn authorize(tx:&mut common_db::Tx<'_>,id:u64)->AppResult<()> {
+        let rows:Vec<u64>=sqlx::query_scalar("SELECT a.id FROM admin_user_role a JOIN role r ON r.id=a.role_id JOIN role_permission rp ON rp.role_id=r.id JOIN permission p ON p.id=rp.permission_id WHERE a.id=? AND a.status='active' AND a.deleted_at IS NULL AND r.deleted_at IS NULL AND r.code='customer_finance' AND p.code='order.refund.review' FOR SHARE").bind(id).fetch_all(tx.executor()).await?;
         if rows.is_empty(){return Err(AppError::Forbidden("审核人必须是具备 order.refund.review 权限的有效客户财务账号".into()));}Ok(())
     }
     authorize(&mut tx,c.admin_user_id).await?;
@@ -136,8 +136,8 @@ async fn review_decision<T:serde::de::DeserializeOwned+serde::Serialize>(st:AppS
     }
     let path=if reject{p::USER_INTERNAL_REFUND_REJECT}else{p::USER_INTERNAL_REFUND_APPROVE};
     let result:T=client.post(st.cfg.service_urls.user.as_deref(),&path.replace(":refund_id",&no),&json!({"actor_id":c.admin_user_id,"comment":req.approve_comment})).await?;
-    if reject{sqlx::query("UPDATE refund_task SET stage='manual_review',last_error='退款审核已拒绝' WHERE refund_no=? AND stage IN ('queued','querying','reporting')").bind(&no).execute(&mut *tx).await?;}
-    sqlx::query("INSERT INTO audit_log(actor_id,module,action,target_type,target_id,after_json,created_month) VALUES (?,'finance',?,'refund_record',?,?,DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))").bind(c.admin_user_id).bind(if reject{"refund.reject"}else{"refund.approve"}).bind(&no).bind(json!({"comment":req.approve_comment,"result":result})).execute(&mut *tx).await?;
+    if reject{sqlx::query("UPDATE refund_task SET stage='manual_review',last_error='退款审核已拒绝' WHERE refund_no=? AND stage IN ('queued','querying','reporting')").bind(&no).execute(tx.executor()).await?;}
+    sqlx::query("INSERT INTO audit_log(actor_id,module,action,target_type,target_id,after_json,created_month) VALUES (?,'finance',?,'refund_record',?,?,DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))").bind(c.admin_user_id).bind(if reject{"refund.reject"}else{"refund.approve"}).bind(&no).bind(json!({"comment":req.approve_comment,"result":result})).execute(tx.executor()).await?;
     tx.commit().await?;
     Ok(Json(common_error::ApiEnvelope::ok(result,common_error::current_request_id())))
 }
@@ -148,10 +148,10 @@ pub async fn refund_retry(State(st): State<AppState>, c: ActiveAdmin, Path(no): 
     if reason.is_empty() || reason.chars().count()>255 || reason.chars().any(char::is_control) || no.is_empty() || no.len()>64 || !no.bytes().all(|b|b.is_ascii_alphanumeric() || b"_-|*@".contains(&b)) {
         return Err(AppError::BadRequest("退款单号或重试原因无效".into()));
     }
-    let mut tx=st.db.pool().begin().await?;
-    let allowed:i64=sqlx::query_scalar("SELECT COUNT(*) FROM admin_user_role a JOIN role r ON r.id=a.role_id JOIN role_permission rp ON rp.role_id=r.id JOIN permission p ON p.id=rp.permission_id WHERE a.id=? AND a.status='active' AND a.deleted_at IS NULL AND r.deleted_at IS NULL AND p.code='finance.refund.retry'").bind(c.admin_user_id).fetch_one(&mut *tx).await?;
+    let mut tx=st.finance.begin().await?;
+    let allowed:i64=sqlx::query_scalar("SELECT COUNT(*) FROM admin_user_role a JOIN role r ON r.id=a.role_id JOIN role_permission rp ON rp.role_id=r.id JOIN permission p ON p.id=rp.permission_id WHERE a.id=? AND a.status='active' AND a.deleted_at IS NULL AND r.deleted_at IS NULL AND p.code='finance.refund.retry'").bind(c.admin_user_id).fetch_one(tx.executor()).await?;
     if allowed==0{return Err(AppError::Forbidden("缺少 finance.refund.retry 权限".into()));}
-    let row=sqlx::query("SELECT stage,last_error,scheduled_at<=UTC_TIMESTAMP(3) AS due FROM refund_task WHERE refund_no=? FOR UPDATE").bind(&no).fetch_optional(&mut *tx).await?.ok_or_else(||AppError::NotFound("退款任务不存在".into()))?;
+    let row=sqlx::query("SELECT stage,last_error,scheduled_at<=UTC_TIMESTAMP(3) AS due FROM refund_task WHERE refund_no=? FOR UPDATE").bind(&no).fetch_optional(tx.executor()).await?.ok_or_else(||AppError::NotFound("退款任务不存在".into()))?;
     let stage:String=row.try_get("stage")?;
     if !["queued","querying","reporting"].contains(&stage.as_str()) || row.try_get::<Option<String>,_>("last_error")?.is_none(){
         return Err(AppError::Conflict("仅异常中的自动退款任务可重试；已完成或需人工审核的退款不能直接重启".into()));
@@ -159,9 +159,9 @@ pub async fn refund_retry(State(st): State<AppState>, c: ActiveAdmin, Path(no): 
     let already_queued=row.try_get::<i32,_>("due")?!=0;
     if !already_queued {
         // Only wake the existing task. Never reset provider request, result, stage or refund number.
-        sqlx::query("UPDATE refund_task SET scheduled_at=UTC_TIMESTAMP(3) WHERE refund_no=?").bind(&no).execute(&mut *tx).await?;
+        sqlx::query("UPDATE refund_task SET scheduled_at=UTC_TIMESTAMP(3) WHERE refund_no=?").bind(&no).execute(tx.executor()).await?;
         sqlx::query("INSERT INTO audit_log (actor_id,module,action,target_type,target_id,after_json,created_month) VALUES (?,'finance','refund.retry','refund_task',?,?,DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))")
-            .bind(c.admin_user_id).bind(&no).bind(json!({"reason":reason,"stage":stage})).execute(&mut *tx).await?;
+            .bind(c.admin_user_id).bind(&no).bind(json!({"reason":reason,"stage":stage})).execute(tx.executor()).await?;
     }
     tx.commit().await?;
     Ok(Json(common_error::ApiEnvelope::ok(api_contracts::admin::RefundRetryQueued{queued:true,already_queued,refund_no:no,stage},common_error::current_request_id())))
@@ -178,7 +178,7 @@ async fn authorize_invoice_review(st: &AppState, actor: &ActiveAdmin) -> AppResu
     )
     .bind(actor.admin_user_id)
     .bind(&actor.sub)
-    .fetch_one(st.db.pool())
+    .fetch_one(st.finance.pool())
     .await?;
     if !allowed { return Err(AppError::Forbidden("需要 customer_finance 角色和 invoice.review 权限".into())); }
     Ok(())
@@ -190,7 +190,7 @@ pub async fn invoices(State(st): State<AppState>, c: ActiveAdmin) -> AppResult<J
         "SELECT invoice_request_id,review_status,reviewed_by,reject_reason,
                 first_reviewer_id,first_reviewed_at,second_reviewer_id,second_reviewed_at,invoice_url
          FROM invoice_review ORDER BY id DESC LIMIT 100",
-    ).fetch_all(st.db.pool()).await?;
+    ).fetch_all(st.finance.pool()).await?;
     let client = common_http::internal::ApiClient::new(st.http.clone(), st.service_token.clone());
     let mut items = Vec::with_capacity(rows.len());
     for row in rows {
@@ -231,11 +231,11 @@ pub async fn invoice_approve(State(st): State<AppState>, c: ActiveAdmin, Path(id
     let valid_url = invoice_url.len() <= 512 && reqwest::Url::parse(invoice_url)
         .is_ok_and(|url| url.scheme() == "https" && url.host_str().is_some());
     if !valid_url { return Err(AppError::BadRequest("开票后必须提供有效 HTTPS 发票链接".into())); }
-    let mut tx = st.db.pool().begin().await?;
+    let mut tx = st.finance.begin().await?;
     sqlx::query("INSERT IGNORE INTO invoice_review (invoice_request_id,review_status) VALUES (?,'pending')")
-        .bind(id).execute(&mut *tx).await?;
+        .bind(id).execute(tx.executor()).await?;
     let local = sqlx::query("SELECT review_status,first_reviewer_id,second_reviewer_id,invoice_url FROM invoice_review WHERE invoice_request_id=? FOR UPDATE")
-        .bind(id).fetch_one(&mut *tx).await?;
+        .bind(id).fetch_one(tx.executor()).await?;
     let local_status: String = sqlx::Row::try_get(&local, "review_status")?;
     let first_reviewer: Option<u64> = sqlx::Row::try_get(&local, "first_reviewer_id")?;
     let second_reviewer: Option<u64> = sqlx::Row::try_get(&local, "second_reviewer_id")?;
@@ -255,9 +255,9 @@ pub async fn invoice_approve(State(st): State<AppState>, c: ActiveAdmin, Path(id
     if local_status == "pending" {
         if user_status != "pending" { return Err(AppError::Conflict("用户发票申请已处理，不能再次审核".into())); }
         sqlx::query("UPDATE invoice_review SET review_status='awaiting_second',first_reviewer_id=?,first_reviewed_at=UTC_TIMESTAMP(3),invoice_url=? WHERE invoice_request_id=?")
-            .bind(c.admin_user_id).bind(invoice_url).bind(id).execute(&mut *tx).await?;
+            .bind(c.admin_user_id).bind(invoice_url).bind(id).execute(tx.executor()).await?;
         sqlx::query("INSERT INTO audit_log(actor_id,module,action,target_type,target_id,after_json,created_month) VALUES (?,'finance','invoice.first_approve','invoice_request',?,?,DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))")
-            .bind(c.admin_user_id).bind(id.to_string()).bind(json!({"invoice_url":invoice_url})).execute(&mut *tx).await?;
+            .bind(c.admin_user_id).bind(id.to_string()).bind(json!({"invoice_url":invoice_url})).execute(tx.executor()).await?;
         tx.commit().await?;
         return Ok(Json(common_error::ApiEnvelope::ok(api_contracts::admin::InvoiceReviewAck{reviewed:true,review_status:"awaiting_second".into(),first_reviewer_id:Some(c.admin_user_id.to_string()),recovered:None,already_processed:None}, common_error::current_request_id())));
     }
@@ -278,7 +278,7 @@ pub async fn invoice_approve(State(st): State<AppState>, c: ActiveAdmin, Path(id
              JOIN permission p ON p.id=rp.permission_id
              WHERE a.id=? AND a.status='active' AND a.deleted_at IS NULL
                AND r.code='customer_finance' AND p.code='invoice.review' FOR SHARE",
-        ).bind(first_id).fetch_optional(&mut *tx).await?;
+        ).bind(first_id).fetch_optional(tx.executor()).await?;
         if first_active.is_none() { return Err(AppError::Forbidden("首次审核人账号已停用或已撤销发票审核权限".into())); }
     }
     // 崩溃恢复:上游已由同一管理员签发过、只是 admin 库事务回滚,识别为幂等重放。
@@ -293,9 +293,9 @@ pub async fn invoice_approve(State(st): State<AppState>, c: ActiveAdmin, Path(id
         api_contracts::admin::InvoiceReviewAck{reviewed:true,review_status:upstream.review_status,first_reviewer_id:None,recovered:None,already_processed:None}
     };
     sqlx::query("UPDATE invoice_review SET review_status='approved',second_reviewer_id=?,second_reviewed_at=UTC_TIMESTAMP(3),reviewed_by=?,reviewed_at=UTC_TIMESTAMP(3),reject_reason=NULL WHERE invoice_request_id=?")
-        .bind(c.admin_user_id).bind(c.admin_user_id).bind(id).execute(&mut *tx).await?;
+        .bind(c.admin_user_id).bind(c.admin_user_id).bind(id).execute(tx.executor()).await?;
     sqlx::query("INSERT INTO audit_log(actor_id,module,action,target_type,target_id,after_json,created_month) VALUES (?,'finance','invoice.second_approve','invoice_request',?,?,DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))")
-        .bind(c.admin_user_id).bind(id.to_string()).bind(json!({"invoice_url":invoice_url,"first_reviewer_id":first_reviewer,"result":result})).execute(&mut *tx).await?;
+        .bind(c.admin_user_id).bind(id.to_string()).bind(json!({"invoice_url":invoice_url,"first_reviewer_id":first_reviewer,"result":result})).execute(tx.executor()).await?;
     tx.commit().await?;
     Ok(Json(common_error::ApiEnvelope::ok(result, common_error::current_request_id())))
 }
@@ -309,11 +309,11 @@ pub async fn invoice_reject(State(st): State<AppState>, c: ActiveAdmin, Path(id)
         return Err(AppError::BadRequest("拒绝原因必须填写且最多 255 字".into()));
     }
     authorize_invoice_review(&st, &c).await?;
-    let mut tx = st.db.pool().begin().await?;
+    let mut tx = st.finance.begin().await?;
     sqlx::query("INSERT IGNORE INTO invoice_review (invoice_request_id,review_status) VALUES (?,'pending')")
-        .bind(id).execute(&mut *tx).await?;
+        .bind(id).execute(tx.executor()).await?;
     let local = sqlx::query("SELECT review_status,reviewed_by,reject_reason FROM invoice_review WHERE invoice_request_id=? FOR UPDATE")
-        .bind(id).fetch_one(&mut *tx).await?;
+        .bind(id).fetch_one(tx.executor()).await?;
     let local_status: String = sqlx::Row::try_get(&local, "review_status")?;
     if local_status == "rejected"
         && sqlx::Row::try_get::<Option<u64>, _>(&local, "reviewed_by")? == Some(c.admin_user_id)
@@ -339,9 +339,9 @@ pub async fn invoice_reject(State(st): State<AppState>, c: ActiveAdmin, Path(id)
         api_contracts::admin::InvoiceRejectAck{reviewed:true,review_status:upstream.review_status,rejected:Some(true),already_processed:None}
     };
     sqlx::query("UPDATE invoice_review SET review_status='rejected',reviewed_by=?,reviewed_at=UTC_TIMESTAMP(3),reject_reason=? WHERE invoice_request_id=?")
-        .bind(c.admin_user_id).bind(req.reason.trim()).bind(id).execute(&mut *tx).await?;
+        .bind(c.admin_user_id).bind(req.reason.trim()).bind(id).execute(tx.executor()).await?;
     sqlx::query("INSERT INTO audit_log (actor_id,module,action,target_type,target_id,after_json,created_month) VALUES (?,'finance','invoice.reject','invoice_request',?,?,DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))")
-        .bind(c.admin_user_id).bind(id.to_string()).bind(json!({"reason":req.reason,"result":result})).execute(&mut *tx).await?;
+        .bind(c.admin_user_id).bind(id.to_string()).bind(json!({"reason":req.reason,"result":result})).execute(tx.executor()).await?;
     tx.commit().await?;
     Ok(Json(common_error::ApiEnvelope::ok(result, common_error::current_request_id())))
 }
@@ -351,7 +351,7 @@ pub async fn reconcile_logs(State(st): State<AppState>, _c: ActiveAdmin) -> AppR
         "SELECT id, reconcile_type, reconcile_date, internal_count, wechat_count, diff_count,
                 internal_cents, wechat_cents, diff_cents, resolved, created_at
          FROM finance_reconcile_log ORDER BY id DESC LIMIT 200"
-    ).fetch_all(st.db.pool()).await?;
+    ).fetch_all(st.finance.pool()).await?;
         let items = rows.iter().map(|r| -> AppResult<api_contracts::admin::ReconcileLog> {
         Ok(api_contracts::admin::ReconcileLog {
             id: sqlx::Row::try_get::<u64, _>(r, "id")?,
@@ -374,12 +374,12 @@ pub struct WalletRiskQuery {pub page:Option<u32>,pub page_size:Option<u32>,pub s
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WalletRiskDecision {pub approved:bool,pub comment:String}
-async fn wallet_risk_authorize(tx:&mut sqlx::Transaction<'_,sqlx::MySql>,actor:u64,release:bool)->AppResult<()> {
+async fn wallet_risk_authorize(tx:&mut common_db::Tx<'_>,actor:u64,release:bool)->AppResult<()> {
  let permission=if release{"finance.wallet_risk.release"}else{"finance.wallet_risk.review"};
- let rows:Vec<u64>=sqlx::query_scalar("SELECT a.id FROM admin_user_role a JOIN role r ON r.id=a.role_id JOIN role_permission rp ON rp.role_id=r.id JOIN permission p ON p.id=rp.permission_id WHERE a.id=? AND a.status='active' AND a.deleted_at IS NULL AND r.deleted_at IS NULL AND r.code IN ('customer_finance','customer_cs') AND p.code=? AND (?=FALSE OR r.code='customer_finance') FOR SHARE").bind(actor).bind(permission).bind(release).fetch_all(&mut **tx).await?;
+ let rows:Vec<u64>=sqlx::query_scalar("SELECT a.id FROM admin_user_role a JOIN role r ON r.id=a.role_id JOIN role_permission rp ON rp.role_id=r.id JOIN permission p ON p.id=rp.permission_id WHERE a.id=? AND a.status='active' AND a.deleted_at IS NULL AND r.deleted_at IS NULL AND r.code IN ('customer_finance','customer_cs') AND p.code=? AND (?=FALSE OR r.code='customer_finance') FOR SHARE").bind(actor).bind(permission).bind(release).fetch_all(tx.executor()).await?;
  if rows.is_empty(){return Err(AppError::Forbidden(format!("角色或权限不足，需要 {permission}")));}Ok(())
 }pub async fn wallet_risks(State(st):State<AppState>,c:ActiveAdmin,axum::extract::Query(q):axum::extract::Query<WalletRiskQuery>)->AppResult<Json<common_error::ApiEnvelope<api_contracts::charge::WalletRiskList>>>{
- let mut tx=st.db.pool().begin().await?;wallet_risk_authorize(&mut tx,c.admin_user_id,false).await?;
+ let mut tx=st.finance.begin().await?;wallet_risk_authorize(&mut tx,c.admin_user_id,false).await?;
  let mut result:api_contracts::charge::WalletRiskList=common_http::internal::ApiClient::new(st.http.clone(),st.service_token.clone()).get(st.cfg.service_urls.user.as_deref(),p::USER_INTERNAL_WALLET_RISKS,&q).await?;
  let can_release=match wallet_risk_authorize(&mut tx,c.admin_user_id,true).await {Ok(())=>true,Err(AppError::Forbidden(_))=>false,Err(e)=>return Err(e)};
  // user 侧已按"已审核 + 冻结原因仍 frozen + 未解冻"算过一遍,
@@ -389,9 +389,9 @@ async fn wallet_risk_authorize(tx:&mut sqlx::Transaction<'_,sqlx::MySql>,actor:u
 }
 pub async fn wallet_risk_review(State(st):State<AppState>,c:ActiveAdmin,Path(id):Path<String>,Json(req):Json<WalletRiskDecision>)->AppResult<Json<common_error::ApiEnvelope<api_contracts::charge::WalletRefundApplied>>>{
  let id=uuid::Uuid::parse_str(&id).map_err(|_|AppError::BadRequest("申请编号无效".into()))?.to_string();
- let mut tx=st.db.pool().begin().await?;wallet_risk_authorize(&mut tx,c.admin_user_id,false).await?;
+ let mut tx=st.finance.begin().await?;wallet_risk_authorize(&mut tx,c.admin_user_id,false).await?;
  let result:api_contracts::charge::WalletRefundApplied=common_http::internal::ApiClient::new(st.http.clone(),st.service_token.clone()).post(st.cfg.service_urls.user.as_deref(),&p::USER_INTERNAL_WALLET_RISK_REVIEW.replace(":request_id",&id),&json!({"actor_id":c.admin_user_id,"approved":req.approved,"comment":req.comment})).await?;
- sqlx::query("INSERT INTO audit_log(actor_id,module,action,target_type,target_id,after_json,created_month) VALUES (?,'finance','wallet_risk.review','wallet_refund_request',?,?,DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))").bind(c.admin_user_id).bind(&id).bind(serde_json::to_value(&result)?).execute(&mut *tx).await?;
+ sqlx::query("INSERT INTO audit_log(actor_id,module,action,target_type,target_id,after_json,created_month) VALUES (?,'finance','wallet_risk.review','wallet_refund_request',?,?,DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))").bind(c.admin_user_id).bind(&id).bind(serde_json::to_value(&result)?).execute(tx.executor()).await?;
  tx.commit().await?;Ok(Json(common_error::ApiEnvelope::ok(result,common_error::current_request_id())))
 }
 
@@ -400,8 +400,8 @@ pub async fn wallet_risk_review(State(st):State<AppState>,c:ActiveAdmin,Path(id)
 pub struct WalletRiskRelease {pub comment:String}
 pub async fn wallet_risk_release(State(st):State<AppState>,c:ActiveAdmin,Path(id):Path<String>,Json(req):Json<WalletRiskRelease>)->AppResult<Json<common_error::ApiEnvelope<api_contracts::charge::WalletRiskReleased>>>{
  let id=uuid::Uuid::parse_str(&id).map_err(|_|AppError::BadRequest("申请编号无效".into()))?.to_string();
- let mut tx=st.db.pool().begin().await?;wallet_risk_authorize(&mut tx,c.admin_user_id,true).await?;
+ let mut tx=st.finance.begin().await?;wallet_risk_authorize(&mut tx,c.admin_user_id,true).await?;
  let result:api_contracts::charge::WalletRiskReleased=common_http::internal::ApiClient::new(st.http.clone(),st.service_token.clone()).post(st.cfg.service_urls.user.as_deref(),&p::USER_INTERNAL_WALLET_RISK_RELEASE.replace(":request_id",&id),&json!({"actor_id":c.admin_user_id,"comment":req.comment})).await?;
- sqlx::query("INSERT INTO audit_log(actor_id,module,action,target_type,target_id,after_json,created_month) VALUES (?,'finance','wallet_risk.release','wallet_refund_request',?,?,DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))").bind(c.admin_user_id).bind(&id).bind(serde_json::to_value(&result)?).execute(&mut *tx).await?;
+ sqlx::query("INSERT INTO audit_log(actor_id,module,action,target_type,target_id,after_json,created_month) VALUES (?,'finance','wallet_risk.release','wallet_refund_request',?,?,DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))").bind(c.admin_user_id).bind(&id).bind(serde_json::to_value(&result)?).execute(tx.executor()).await?;
  tx.commit().await?;Ok(Json(common_error::ApiEnvelope::ok(result,common_error::current_request_id())))
 }

@@ -54,7 +54,7 @@ async fn stations(state: &AppState, items: &mut [OrderSummary]) -> AppResult<()>
     }
     ids.push_unseparated(")");
     let rows: Vec<(String, u64, String)> =
-        query.build_query_as().fetch_all(state.db.pool()).await?;
+        query.build_query_as().fetch_all(state.order.pool()).await?;
     let names: HashMap<_, _> = rows
         .into_iter()
         .map(|(device, id, name)| (device, (id, name)))
@@ -82,7 +82,7 @@ pub async fn list(
              WHERE d.station_id = ? AND d.deleted_at IS NULL AND s.deleted_at IS NULL",
         )
         .bind(station_id)
-        .fetch_all(state.db.pool())
+        .fetch_all(state.order.pool())
         .await?;
         query.device_ids = Some(devices.join(","));
     }
@@ -126,7 +126,7 @@ pub async fn get(
         detail.order.total_fee_cents = billing.total_cents;
     }
     detail.billing = Some(billing);
-    let grants:i64=sqlx::query_scalar("SELECT COUNT(*) FROM admin_user_role a JOIN role r ON r.id=a.role_id JOIN role_permission rp ON rp.role_id=r.id JOIN permission p ON p.id=rp.permission_id WHERE a.id=? AND a.status='active' AND a.deleted_at IS NULL AND r.deleted_at IS NULL AND r.code='customer_finance' AND p.code IN ('order.refund.create','order.refund.review')").bind(claims.admin_user_id).fetch_one(state.db.pool()).await?;
+    let grants:i64=sqlx::query_scalar("SELECT COUNT(*) FROM admin_user_role a JOIN role r ON r.id=a.role_id JOIN role_permission rp ON rp.role_id=r.id JOIN permission p ON p.id=rp.permission_id WHERE a.id=? AND a.status='active' AND a.deleted_at IS NULL AND r.deleted_at IS NULL AND r.code='customer_finance' AND p.code IN ('order.refund.create','order.refund.review')").bind(claims.admin_user_id).fetch_one(state.order.pool()).await?;
     detail.refund_applicant_id=if grants==2 && ["completed","failed","cancelled"].contains(&detail.order.status.as_str()) && detail.paid_cents.unwrap_or(0)>0 {Some(claims.admin_user_id.to_string())}else{None};
     Ok(Json(ApiEnvelope::ok(
         detail,

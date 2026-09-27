@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 // ===== 计费规则 =====
 pub async fn charge_rules(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::ListResponse<api_contracts::admin::ChargeRule>>>> {
     let rows = sqlx::query("SELECT id, name, mode, service_fee_cents_per_kwh, service_fee_cents_per_min, min_charge_cents, version, status FROM pricing_rule WHERE deleted_at IS NULL")
-        .fetch_all(st.db.pool()).await?;
+        .fetch_all(st.config.pool()).await?;
         let items = rows.iter().map(|r| -> AppResult<api_contracts::admin::ChargeRule> {
         Ok(api_contracts::admin::ChargeRule {
             id: sqlx::Row::try_get::<u64, _>(r, "id")?,
@@ -45,14 +45,14 @@ pub struct ChargeRuleCreateReq {
 
 pub async fn charge_rule_create(State(st): State<AppState>, _c: ActiveAdmin, Json(req): Json<ChargeRuleCreateReq>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::CreatedResponse>>> {
     crate::auth::require_permission(&st,&_c,"pricing.rule.create").await?;
-    let mut tx = st.db.pool().begin().await?;
+    let mut tx = st.config.begin().await?;
     let result = sqlx::query(
         "INSERT INTO pricing_rule (name, station_id, mode, time_of_use_json, service_fee_cents_per_kwh, service_fee_cents_per_min, min_charge_cents)
          VALUES (?, ?, ?, ?, ?, ?, ?)"
     )
     .bind(&req.name).bind(req.station_id).bind(&req.mode).bind(req.time_of_use_json)
     .bind(req.service_fee_cents_per_kwh).bind(req.service_fee_cents_per_min).bind(req.min_charge_cents)
-    .execute(&mut *tx).await?;
+    .execute(tx.executor()).await?;
     let id = result.last_insert_id();
 
     // **D5 修复**:原先用 `let _ =` 吞掉发布失败 —— DB 已提交而事件永久丢失。
@@ -63,7 +63,7 @@ pub async fn charge_rule_create(State(st): State<AppState>, _c: ActiveAdmin, Jso
         .bind(&env.event_id)
         .bind(common_redis::streams::PRICING_RULE_CHANGED)
         .bind(serde_json::to_value(&env)?)
-        .execute(&mut *tx)
+        .execute(tx.executor())
         .await?;
     tx.commit().await?;
 
@@ -73,7 +73,7 @@ pub async fn charge_rule_create(State(st): State<AppState>, _c: ActiveAdmin, Jso
 // ===== 计费模板 =====
 pub async fn pricing_templates(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::ListResponse<api_contracts::admin::PricingTemplate>>>> {
     let rows = sqlx::query("SELECT id, code, name, default_pricing_rule_id FROM pricing_template WHERE deleted_at IS NULL")
-        .fetch_all(st.db.pool()).await?;
+        .fetch_all(st.config.pool()).await?;
         let items = rows.iter().map(|r| -> AppResult<api_contracts::admin::PricingTemplate> {
         Ok(api_contracts::admin::PricingTemplate {
             id: sqlx::Row::try_get::<u64, _>(r, "id")?,
@@ -98,7 +98,7 @@ pub async fn pricing_template_create(State(st): State<AppState>, _c: ActiveAdmin
     crate::auth::require_permission(&st,&_c,"pricing.template.create").await?;
     let result = sqlx::query("INSERT INTO pricing_template (code, name, default_pricing_rule_id) VALUES (?, ?, ?)")
         .bind(&req.code).bind(&req.name).bind(req.default_pricing_rule_id)
-        .execute(st.db.pool()).await?;
+        .execute(st.config.pool()).await?;
     let id = result.last_insert_id();
     Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::CreatedResponse { id }, common_error::current_request_id())))
 }
@@ -106,7 +106,7 @@ pub async fn pricing_template_create(State(st): State<AppState>, _c: ActiveAdmin
 // ===== 分账模板 =====
 pub async fn split_templates(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::ListResponse<api_contracts::admin::SplitTemplate>>>> {
     let rows = sqlx::query("SELECT id, code, name, mode, status FROM split_template WHERE deleted_at IS NULL")
-        .fetch_all(st.db.pool()).await?;
+        .fetch_all(st.config.pool()).await?;
         let items = rows.iter().map(|r| -> AppResult<api_contracts::admin::SplitTemplate> {
         Ok(api_contracts::admin::SplitTemplate {
             id: sqlx::Row::try_get::<u64, _>(r, "id")?,
@@ -132,14 +132,14 @@ pub async fn split_template_create(State(st): State<AppState>, _c: ActiveAdmin, 
     crate::auth::require_permission(&st,&_c,"finance.split_template.create").await?;
     let result = sqlx::query("INSERT INTO split_template (code, name, mode) VALUES (?, ?, ?)")
         .bind(&req.code).bind(&req.name).bind(&req.mode)
-        .execute(st.db.pool()).await?;
+        .execute(st.config.pool()).await?;
     let id = result.last_insert_id();
     Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::CreatedResponse { id }, common_error::current_request_id())))
 }
 
 pub async fn split_parties(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::ListResponse<api_contracts::admin::SplitParty>>>> {
     let rows = sqlx::query("SELECT id, party_code, party_name, ratio_bp FROM split_party WHERE split_template_id = ?")
-        .bind(id).fetch_all(st.db.pool()).await?;
+        .bind(id).fetch_all(st.config.pool()).await?;
         let items = rows.iter().map(|r| -> AppResult<api_contracts::admin::SplitParty> {
         Ok(api_contracts::admin::SplitParty {
             id: sqlx::Row::try_get::<u64, _>(r, "id")?,
@@ -170,7 +170,7 @@ pub async fn split_party_create(State(st): State<AppState>, _c: ActiveAdmin, Pat
     )
     .bind(id).bind(&req.party_code).bind(&req.party_name).bind(req.ratio_bp)
     .bind(req.bank_account.as_deref()).bind(req.bank_name.as_deref())
-    .execute(st.db.pool()).await?;
+    .execute(st.config.pool()).await?;
     let new_id = result.last_insert_id();
     Ok(Json(common_error::ApiEnvelope::ok(api_types::CreatedIdResponse { id: new_id }, common_error::current_request_id())))
 }

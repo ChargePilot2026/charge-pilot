@@ -27,7 +27,7 @@ use axum::{extract::State, Json};
 use common_error::AppResult;
 
 pub async fn health(State(st): State<crate::AppState>) -> AppResult<&'static str> {
-    st.db.ping().await?;
+    st.services.identity.ping().await?;
     st.redis_cache.ping().await?;
     st.redis_stream.ping().await?;
     Ok("ok")

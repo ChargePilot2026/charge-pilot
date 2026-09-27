@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 pub async fn list(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::ListResponse<api_contracts::admin::WebhookSubscription>>>> {
     let rows = sqlx::query(
         "SELECT id, name, url, secret, event_types, enabled, created_at FROM webhook_subscription WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 200"
-    ).fetch_all(st.db.pool()).await?;
+    ).fetch_all(st.webhook.pool()).await?;
         let items = rows.iter().map(|r| -> AppResult<api_contracts::admin::WebhookSubscription> {
         Ok(api_contracts::admin::WebhookSubscription {
             id: sqlx::Row::try_get::<u64, _>(r, "id")?,
@@ -49,7 +49,7 @@ pub async fn create(State(st): State<AppState>, _c: ActiveAdmin, Json(req): Json
         "INSERT INTO webhook_subscription (name, url, secret, event_types, headers_json, enabled) VALUES (?, ?, ?, ?, ?, 1)"
     )
     .bind(&req.name).bind(&req.url).bind(&secret).bind(event_types).bind(req.headers_json)
-    .execute(st.db.pool()).await?;
+    .execute(st.webhook.pool()).await?;
     let id = result.last_insert_id();
     Ok(Json(common_error::ApiEnvelope::ok(
         api_contracts::admin::WebhookCreated { id, secret },
@@ -60,7 +60,7 @@ pub async fn create(State(st): State<AppState>, _c: ActiveAdmin, Json(req): Json
 pub async fn get(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::admin::WebhookSubscriptionDetail>>> {
     let r: Option<(u64, String, String, String, serde_json::Value)> = sqlx::query_as(
         "SELECT id, name, url, secret, event_types FROM webhook_subscription WHERE id = ? AND deleted_at IS NULL"
-    ).bind(id).fetch_optional(st.db.pool()).await?;
+    ).bind(id).fetch_optional(st.webhook.pool()).await?;
     let r = r.ok_or_else(|| AppError::NotFound("webhook".into()))?;
     Ok(Json(common_error::ApiEnvelope::ok(
         api_contracts::admin::WebhookSubscriptionDetail {
@@ -94,7 +94,7 @@ pub async fn update(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<
          WHERE id = ? AND deleted_at IS NULL"
     )
     .bind(req.name.as_deref()).bind(req.url.as_deref()).bind(event_types).bind(req.enabled).bind(id)
-    .execute(st.db.pool()).await?;
+    .execute(st.webhook.pool()).await?;
     if n.rows_affected() == 0 { return Err(AppError::NotFound("webhook".into())); }
     Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::UpdatedResponse::new(), common_error::current_request_id())))
 }
@@ -102,7 +102,7 @@ pub async fn update(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<
 pub async fn delete(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::DeletedResponse>>> {
     crate::auth::require_permission(&st,&_c,"webhook.delete").await?;
     let n = sqlx::query("UPDATE webhook_subscription SET deleted_at = NOW(3) WHERE id = ? AND deleted_at IS NULL")
-        .bind(id).execute(st.db.pool()).await?;
+        .bind(id).execute(st.webhook.pool()).await?;
     if n.rows_affected() == 0 { return Err(AppError::NotFound("webhook".into())); }
     Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::DeletedResponse::new(), common_error::current_request_id())))
 }
@@ -111,7 +111,7 @@ pub async fn deliveries(State(st): State<AppState>, _c: ActiveAdmin, Path(id): P
     let rows = sqlx::query(
         "SELECT id, event_type, response_status, attempt_count, duration_ms, delivered_at
          FROM webhook_delivery_log WHERE subscription_id = ? ORDER BY id DESC LIMIT 100"
-    ).bind(id).fetch_all(st.db.pool()).await?;
+    ).bind(id).fetch_all(st.webhook.pool()).await?;
         let items = rows.iter().map(|r| -> AppResult<api_contracts::admin::WebhookDelivery> {
         Ok(api_contracts::admin::WebhookDelivery {
             id: sqlx::Row::try_get::<u64, _>(r, "id")?,

@@ -7,6 +7,7 @@ mod api_types;
 mod auth;
 mod billing;
 mod ota;
+mod services;
 mod password;
 mod webhook;
 mod alert;
@@ -34,12 +35,24 @@ use tracing::info;
 #[derive(Clone)]
 pub struct AppState {
     pub cfg: Arc<AppConfig>,
-    pub db: Db,
+    /// P3:裸 `Db` 已从 AppState 移除。连接一律经具名能力域取得
+    /// (`st.identity` / `st.finance` / `st.device` / …),见 `services.rs`。
+    pub services: services::AdminServices,
     pub redis_cache: RedisCache,
     pub redis_stream: RedisStream,
     pub jwt: Arc<JwtCodec>,
     pub http: reqwest::Client,
     pub service_token: Arc<String>,
+}
+
+/// `AppState` 直接 `Deref` 到能力域集合,于是 `st.identity` / `st.finance` 这类
+/// 字段访问成立。`cfg` / `redis_*` / `jwt` / `http` 等自身字段优先级更高,
+/// 两者不冲突。
+impl std::ops::Deref for AppState {
+    type Target = services::AdminServices;
+    fn deref(&self) -> &Self::Target {
+        &self.services
+    }
 }
 
 #[tokio::main]
@@ -61,7 +74,14 @@ async fn main() -> AppResult<()> {
 
     let state = AppState {
         cfg: cfg.clone(),
-        db: db.clone(),
+        services: services::build(
+            db,
+            http.clone(),
+            Arc::new(cfg.auth.service_token.clone()),
+            cfg.clone(),
+            redis_cache.clone(),
+            redis_stream.clone(),
+        ),
         redis_cache: redis_cache.clone(),
         redis_stream: redis_stream.clone(),
         jwt: jwt.clone(),

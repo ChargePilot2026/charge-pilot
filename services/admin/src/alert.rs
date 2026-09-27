@@ -11,7 +11,7 @@ pub async fn list(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json
     let rows = sqlx::query(
         "SELECT id, device_id, rule_id, severity, metric, value, threshold, status, acked_by, acked_at, created_at
          FROM alert_event ORDER BY id DESC LIMIT 200"
-    ).fetch_all(st.db.pool()).await?;
+    ).fetch_all(st.alert.pool()).await?;
         let items = rows.iter().map(|r| -> AppResult<api_contracts::admin::AlertEvent> {
         Ok(api_contracts::admin::AlertEvent {
             id: sqlx::Row::try_get::<u64, _>(r, "id")?,
@@ -34,14 +34,14 @@ pub async fn list(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json
 pub async fn ack(State(st): State<AppState>, c: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::AckFlag>>> {
     crate::auth::require_permission(&st,&c,"alert.ack").await?;
     let n = sqlx::query("UPDATE alert_event SET status = 'acknowledged', acked_by = ?, acked_at = NOW(3) WHERE id = ? AND status = 'active'")
-        .bind(c.admin_user_id).bind(id).execute(st.db.pool()).await?;
+        .bind(c.admin_user_id).bind(id).execute(st.alert.pool()).await?;
     if n.rows_affected() == 0 { return Err(AppError::Conflict("not active".into())); }
     Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::AckFlag::new(true), common_error::current_request_id())))
 }
 
 pub async fn rules_list(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::ListResponse<api_contracts::admin::AlertRule>>>> {
     let rows = sqlx::query("SELECT id, name, device_id_pattern, metric, op, threshold, window_seconds, severity, enabled FROM alert_rule WHERE deleted_at IS NULL")
-        .fetch_all(st.db.pool()).await?;
+        .fetch_all(st.alert.pool()).await?;
         let items = rows.iter().map(|r| -> AppResult<api_contracts::admin::AlertRule> {
         Ok(api_contracts::admin::AlertRule {
             id: sqlx::Row::try_get::<u64, _>(r, "id")?,
@@ -77,7 +77,7 @@ pub async fn rules_create(State(st): State<AppState>, _c: ActiveAdmin, Json(req)
     )
     .bind(&req.name).bind(req.device_id_pattern.as_deref()).bind(&req.metric).bind(&req.op)
     .bind(req.threshold).bind(req.window_seconds).bind(&req.severity)
-    .execute(st.db.pool()).await?;
+    .execute(st.alert.pool()).await?;
     let id = result.last_insert_id();
     Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::CreatedResponse { id: id }, common_error::current_request_id())))
 }
@@ -85,7 +85,7 @@ pub async fn rules_create(State(st): State<AppState>, _c: ActiveAdmin, Json(req)
 pub async fn rules_get(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::admin::AlertRuleDetail>>> {
     let r: Option<(u64, String, String, String, String, serde_json::Value, u32, String, i8)> = sqlx::query_as(
         "SELECT id, name, device_id_pattern, metric, op, threshold, window_seconds, severity, enabled FROM alert_rule WHERE id = ? AND deleted_at IS NULL"
-    ).bind(id).fetch_optional(st.db.pool()).await?;
+    ).bind(id).fetch_optional(st.alert.pool()).await?;
     let r = r.ok_or_else(|| AppError::NotFound("rule".into()))?;
     let detail = api_contracts::admin::AlertRuleDetail {
         id: r.0, name: r.1, device_id_pattern: r.2, metric: r.3, op: r.4,
@@ -109,7 +109,7 @@ pub async fn rules_update(State(st): State<AppState>, _c: ActiveAdmin, Path(id):
          WHERE id = ? AND deleted_at IS NULL"
     )
     .bind(req.name.as_deref()).bind(req.severity.as_deref()).bind(req.enabled).bind(id)
-    .execute(st.db.pool()).await?;
+    .execute(st.alert.pool()).await?;
     if n.rows_affected() == 0 { return Err(AppError::NotFound("rule".into())); }
     Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::UpdatedResponse::new(), common_error::current_request_id())))
 }
@@ -117,14 +117,14 @@ pub async fn rules_update(State(st): State<AppState>, _c: ActiveAdmin, Path(id):
 pub async fn rules_delete(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::DeletedResponse>>> {
     crate::auth::require_permission(&st,&_c,"alert.rule.delete").await?;
     let n = sqlx::query("UPDATE alert_rule SET deleted_at = NOW(3) WHERE id = ? AND deleted_at IS NULL")
-        .bind(id).execute(st.db.pool()).await?;
+        .bind(id).execute(st.alert.pool()).await?;
     if n.rows_affected() == 0 { return Err(AppError::NotFound("rule".into())); }
     Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::DeletedResponse::new(), common_error::current_request_id())))
 }
 
 pub async fn subs_list(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::ListResponse<api_contracts::admin::AlertSubscription>>>> {
     let rows = sqlx::query("SELECT id, rule_id, severity, webhook_subscription_id, admin_user_id, enabled FROM alert_subscription")
-        .fetch_all(st.db.pool()).await?;
+        .fetch_all(st.alert.pool()).await?;
         let items = rows.iter().map(|r| -> AppResult<api_contracts::admin::AlertSubscription> {
         Ok(api_contracts::admin::AlertSubscription {
             id: sqlx::Row::try_get::<u64, _>(r, "id")?,
@@ -154,13 +154,13 @@ pub async fn subs_create(State(st): State<AppState>, _c: ActiveAdmin, Json(req):
         "INSERT INTO alert_subscription (rule_id, severity, webhook_subscription_id, admin_user_id, enabled) VALUES (?, ?, ?, ?, 1)"
     )
     .bind(req.rule_id).bind(req.severity.as_deref()).bind(req.webhook_subscription_id).bind(req.admin_user_id)
-    .execute(st.db.pool()).await?;
+    .execute(st.alert.pool()).await?;
     let id = result.last_insert_id();
     Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::CreatedResponse { id: id }, common_error::current_request_id())))
 }
 
 pub async fn risk_config_get(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::ListResponse<api_contracts::admin::RiskConfigItem>>>> {
-    let rows = sqlx::query("SELECT `key`, value, description FROM risk_config").fetch_all(st.db.pool()).await?;
+    let rows = sqlx::query("SELECT `key`, value, description FROM risk_config").fetch_all(st.alert.pool()).await?;
         let items = rows.iter().map(|r| -> AppResult<api_contracts::admin::RiskConfigItem> {
         Ok(api_contracts::admin::RiskConfigItem {
             key: sqlx::Row::try_get::<String, _>(r, "key")?,
@@ -186,7 +186,7 @@ pub async fn risk_config_put(State(st): State<AppState>, c: ActiveAdmin, Json(re
              ON DUPLICATE KEY UPDATE value = VALUES(value), description = VALUES(description), updated_by = VALUES(updated_by)"
         )
         .bind(key).bind(value).bind(desc).bind(c.admin_user_id)
-        .execute(st.db.pool()).await?;
+        .execute(st.alert.pool()).await?;
     }
     Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::UpdatedResponse::new(), common_error::current_request_id())))
 }

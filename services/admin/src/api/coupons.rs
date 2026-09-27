@@ -11,7 +11,7 @@ async fn require_permission(st: &AppState, c: &ActiveAdmin, permission: &str) ->
         "SELECT EXISTS(SELECT 1 FROM admin_user_role a JOIN role r ON r.id=a.role_id AND r.deleted_at IS NULL
          JOIN role_permission rp ON rp.role_id=r.id JOIN permission p ON p.id=rp.permission_id
          WHERE a.id=? AND a.username=? AND a.status='active' AND a.deleted_at IS NULL AND p.code=?)",
-    ).bind(c.admin_user_id).bind(&c.sub).bind(permission).fetch_one(st.db.pool()).await?;
+    ).bind(c.admin_user_id).bind(&c.sub).bind(permission).fetch_one(st.config.pool()).await?;
     if !allowed { return Err(AppError::Forbidden(format!("缺少 {permission} 权限"))); }
     Ok(())
 }
@@ -23,7 +23,7 @@ fn user_client(st: &AppState) -> common_http::internal::ApiClient {
 /// 审计载荷落 `audit_log.before_json` / `after_json`(JSON 列),此处用 Value 是写库不是出参。
 async fn audit(st: &AppState, c: &ActiveAdmin, action: &str, target: &str, before: Option<Value>, after: Value, request_id: Option<&str>) -> AppResult<()> {
     sqlx::query("INSERT INTO audit_log(actor_id,module,action,target_type,target_id,request_id,before_json,after_json,created_month) VALUES (?,'coupon',?,'coupon',?,?,?, ?,DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))")
-        .bind(c.admin_user_id).bind(action).bind(target).bind(request_id).bind(before).bind(after).execute(st.db.pool()).await?;
+        .bind(c.admin_user_id).bind(action).bind(target).bind(request_id).bind(before).bind(after).execute(st.config.pool()).await?;
     Ok(())
 }
 

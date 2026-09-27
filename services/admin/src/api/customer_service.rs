@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 
 pub async fn list(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::ListResponse<api_contracts::admin::CustomerServiceListItem>>>> {
     let rows = sqlx::query("SELECT id, agent_wechat, agent_name, path, priority, enabled FROM customer_service_config ORDER BY priority DESC, id ASC")
-        .fetch_all(st.db.pool()).await?;
+        .fetch_all(st.cases.pool()).await?;
     let items = rows.iter().map(|r| -> AppResult<api_contracts::admin::CustomerServiceListItem> {
         Ok(api_contracts::admin::CustomerServiceListItem {
             id: sqlx::Row::try_get::<u64, _>(r, "id")?,
@@ -58,14 +58,14 @@ pub async fn create(State(st): State<AppState>, _c: ActiveAdmin, Json(req): Json
     )
     .bind(&req.agent_wechat).bind(req.agent_name.as_deref()).bind(req.path.as_deref())
     .bind(req.priority).bind(req.enabled).bind(req.working_hours_json)
-    .execute(st.db.pool()).await?;
+    .execute(st.cases.pool()).await?;
     let id = result.last_insert_id();
     Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::CreatedResponse { id: id }, common_error::current_request_id())))
 }
 
 pub async fn get(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::admin::CustomerServiceDetail>>> {
     let r = sqlx::query("SELECT id, agent_wechat, agent_name, path, priority, enabled, working_hours_json FROM customer_service_config WHERE id = ?")
-        .bind(id).fetch_optional(st.db.pool()).await?;
+        .bind(id).fetch_optional(st.cases.pool()).await?;
     let r = r.ok_or_else(|| AppError::NotFound("cs".into()))?;
     Ok(Json(common_error::ApiEnvelope::ok(
         api_contracts::admin::CustomerServiceDetail {
@@ -85,7 +85,7 @@ pub async fn update(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<
     crate::auth::require_permission(&st,&_c,"customer_service.update").await?;
     validate(&req)?;
     let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM customer_service_config WHERE id = ?)")
-        .bind(id).fetch_one(st.db.pool()).await?;
+        .bind(id).fetch_one(st.cases.pool()).await?;
     if !exists { return Err(AppError::NotFound("cs".into())); }
     sqlx::query(
         "UPDATE customer_service_config
@@ -94,16 +94,16 @@ pub async fn update(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<
     )
     .bind(&req.agent_wechat).bind(req.agent_name.as_deref()).bind(req.path.as_deref())
     .bind(req.priority.unwrap_or_default()).bind(req.enabled.unwrap_or(true)).bind(req.working_hours_json).bind(id)
-    .execute(st.db.pool()).await?;
+    .execute(st.cases.pool()).await?;
     Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::UpdatedResponse::new(), common_error::current_request_id())))
 }
 
 pub async fn delete(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::DeletedResponse>>> {
     crate::auth::require_permission(&st,&_c,"customer_service.delete").await?;
     let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM customer_service_config WHERE id = ?)")
-        .bind(id).fetch_one(st.db.pool()).await?;
+        .bind(id).fetch_one(st.cases.pool()).await?;
     if !exists { return Err(AppError::NotFound("cs".into())); }
     sqlx::query("UPDATE customer_service_config SET enabled = 0 WHERE id = ?")
-        .bind(id).execute(st.db.pool()).await?;
+        .bind(id).execute(st.cases.pool()).await?;
     Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::DeletedResponse::new(), common_error::current_request_id())))
 }

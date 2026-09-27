@@ -12,7 +12,7 @@ pub async fn announcements_active(State(st): State<AppState>) -> AppResult<Json<
          FROM announcement
          WHERE status = 'published' AND deleted_at IS NULL AND start_at <= NOW() AND (end_at IS NULL OR end_at >= NOW())
          ORDER BY priority DESC, id DESC LIMIT 50"
-    ).fetch_all(st.db.pool()).await?;
+    ).fetch_all(st.device.pool()).await?;
     let items = rows.iter().map(|r| -> AppResult<api_contracts::charge::Announcement> {
         Ok(api_contracts::charge::Announcement {
             id: sqlx::Row::try_get::<u64, _>(r, "id")?,
@@ -49,7 +49,7 @@ pub async fn stations_nearby(State(st): State<AppState>, axum::extract::Query(q)
     )
     .bind(lat - 1.0).bind(lat + 1.0)
     .bind(lng - 1.0).bind(lng + 1.0)
-    .fetch_all(st.db.pool()).await?;
+    .fetch_all(st.device.pool()).await?;
     let items: Vec<Option<api_contracts::admin::NearbyStation>> = rows.iter().map(|r| -> AppResult<Option<api_contracts::admin::NearbyStation>> {
         let slat = sqlx::Row::try_get::<f64, _>(r, "latitude")?;
         let slng = sqlx::Row::try_get::<f64, _>(r, "longitude")?;
@@ -74,7 +74,7 @@ pub async fn stations_nearby(State(st): State<AppState>, axum::extract::Query(q)
 pub async fn stations_detail(State(st): State<AppState>, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::admin::StationForUser>>> {
     let r: Option<(u64, String, String, Option<String>, f64, f64, String)> = sqlx::query_as(
         "SELECT id, code, name, address, longitude, latitude, status FROM station WHERE id = ? AND deleted_at IS NULL"
-    ).bind(id).fetch_optional(st.db.pool()).await?;
+    ).bind(id).fetch_optional(st.device.pool()).await?;
     let r = r.ok_or_else(|| AppError::NotFound("station".into()))?;
     // D18 修复:SQL 列序为 (…, longitude, latitude, …) 即 r.4=longitude、r.5=latitude,
     // 原实现写成 longitude: r.5 / latitude: r.4,经纬度颠倒。这里显式按名赋值。
@@ -96,7 +96,7 @@ pub async fn pricing_rule_get(State(st): State<AppState>, Path(id): Path<u64>) -
     let r: Option<(u64, String, String, i64, i64, i64, u32)> = sqlx::query_as(
         "SELECT id, name, mode, service_fee_cents_per_kwh, service_fee_cents_per_min, min_charge_cents, version
          FROM pricing_rule WHERE id = ? AND deleted_at IS NULL"
-    ).bind(id).fetch_optional(st.db.pool()).await?;
+    ).bind(id).fetch_optional(st.device.pool()).await?;
     let r = r.ok_or_else(|| AppError::NotFound("pricing_rule".into()))?;
     Ok(Json(common_error::ApiEnvelope::ok(
         api_contracts::admin::PricingRuleForBilling {
@@ -113,10 +113,10 @@ pub async fn pricing_rule_get(State(st): State<AppState>, Path(id): Path<u64>) -
 pub async fn split_template_get(State(st): State<AppState>, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::admin::SplitTemplateWithParties>>> {
     let r: Option<(u64, String, String, String)> = sqlx::query_as(
         "SELECT id, code, name, mode FROM split_template WHERE id = ? AND status = 'active' AND deleted_at IS NULL"
-    ).bind(id).fetch_optional(st.db.pool()).await?;
+    ).bind(id).fetch_optional(st.device.pool()).await?;
     let r = r.ok_or_else(|| AppError::NotFound("split_template".into()))?;
     let party_rows = sqlx::query("SELECT id, party_code, party_name, ratio_bp FROM split_party WHERE split_template_id = ? ORDER BY id")
-        .bind(id).fetch_all(st.db.pool()).await?;
+        .bind(id).fetch_all(st.device.pool()).await?;
     let parties = party_rows.iter().map(|p| -> AppResult<api_contracts::admin::SplitParty> { Ok(api_contracts::admin::SplitParty {
         id: sqlx::Row::try_get::<u64, _>(p, "id")?,
         party_code: sqlx::Row::try_get::<String, _>(p, "party_code")?,
@@ -140,7 +140,7 @@ pub async fn alerts_active(State(st): State<AppState>, axum::extract::Query(q): 
     sql.push_str(" ORDER BY id DESC LIMIT 100");
     let mut query = sqlx::query(&sql);
     if let Some(d) = &q.device_id { query = query.bind(d); }
-    let rows = query.fetch_all(st.db.pool()).await?;
+    let rows = query.fetch_all(st.device.pool()).await?;
     let items = rows.iter().map(|r| -> AppResult<api_contracts::admin::ActiveAlert> { Ok(api_contracts::admin::ActiveAlert {
         id: sqlx::Row::try_get::<u64, _>(r, "id")?,
         device_id: sqlx::Row::try_get::<String, _>(r, "device_id")?,
@@ -169,7 +169,7 @@ pub async fn announcements_expire(State(st): State<AppState>) -> AppResult<Json<
     let result = sqlx::query(
         "UPDATE announcement SET status = 'expired'
          WHERE status = 'published' AND end_at IS NOT NULL AND end_at < UTC_TIMESTAMP(3) AND deleted_at IS NULL"
-    ).execute(st.db.pool()).await?;
+    ).execute(st.device.pool()).await?;
     Ok(Json(common_error::ApiEnvelope::ok(
         api_contracts::admin::AnnouncementExpireResult { expired_count: result.rows_affected() },
         common_error::current_request_id(),
@@ -193,7 +193,7 @@ pub async fn customer_service_entry(
         "SELECT agent_wechat, agent_name, path FROM customer_service_config
          WHERE enabled = 1 ORDER BY priority DESC, id ASC LIMIT 1",
     )
-    .fetch_optional(st.db.pool())
+    .fetch_optional(st.device.pool())
     .await?
     .ok_or_else(|| AppError::NotFound("当前暂无可用客服".into()))?;
     let entry_url: Option<String> = sqlx::Row::try_get(&row, "path")?;

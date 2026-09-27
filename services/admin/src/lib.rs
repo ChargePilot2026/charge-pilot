@@ -17,6 +17,7 @@ pub mod clients;
 pub mod auth;
 pub mod billing;
 pub mod ota;
+pub mod services;
 pub mod password;
 pub mod webhook;
 pub mod alert;
@@ -33,10 +34,21 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct AppState {
     pub cfg: Arc<AppConfig>,
-    pub db: Db,
+    /// P3:裸 `Db` 已从 AppState 移除,见 `services.rs`。
+    pub services: services::AdminServices,
     pub redis_cache: RedisCache,
     pub redis_stream: RedisStream,
     pub jwt: Arc<JwtCodec>,
     pub http: reqwest::Client,
     pub service_token: Arc<String>,
+}
+
+/// `AppState` 直接 `Deref` 到能力域集合,于是 `st.identity` / `st.finance` 这类
+/// 字段访问成立。`cfg` / `redis_*` / `jwt` / `http` 等自身字段优先级更高,
+/// 两者不冲突。
+impl std::ops::Deref for AppState {
+    type Target = services::AdminServices;
+    fn deref(&self) -> &Self::Target {
+        &self.services
+    }
 }

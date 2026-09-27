@@ -37,7 +37,7 @@ pub async fn nearby(
         FROM station WHERE status='active' AND deleted_at IS NULL AND latitude BETWEEN ? AND ?
         HAVING distance_km <= ? ORDER BY distance_km,id LIMIT 100")
         .bind(query.lat).bind(query.lat).bind(query.lng).bind(query.lat-radius/110.0).bind(query.lat+radius/110.0).bind(radius)
-        .fetch_all(state.db.pool()).await?;
+        .fetch_all(state.device.pool()).await?;
     let mut items = Vec::with_capacity(rows.len());
     for row in rows {
         items.push(NearbyStationItem {
@@ -61,7 +61,7 @@ pub async fn detail(
     Path(id): Path<u64>,
 ) -> AppResult<Json<ApiEnvelope<StationPublicDetail>>> {
     let row = sqlx::query("SELECT id,code,name,address,longitude+0e0 AS longitude,latitude+0e0 AS latitude,open_hours,contact_phone FROM station WHERE id=? AND status='active' AND deleted_at IS NULL")
-        .bind(id).fetch_optional(state.db.pool()).await?.ok_or_else(||AppError::NotFound("站点不存在或未开放".into()))?;
+        .bind(id).fetch_optional(state.device.pool()).await?.ok_or_else(||AppError::NotFound("站点不存在或未开放".into()))?;
     Ok(Json(ApiEnvelope::ok(
         StationPublicDetail {
             id: row.try_get("id")?,

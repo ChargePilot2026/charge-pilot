@@ -18,7 +18,7 @@ pub struct MembershipCreateReq {
 pub async fn list(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::ListResponse<api_contracts::admin::MembershipCard>>>> {
     // 会员卡模板仍属于预留功能；这里只展示已存在的用户会员卡记录。
     let rows = sqlx::query("SELECT id, user_id, card_type, status, start_at, end_at, price_cents FROM membership_card WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 200")
-        .fetch_all(st.db.pool()).await?;
+        .fetch_all(st.config.pool()).await?;
     let items = rows.iter().map(|r| -> AppResult<api_contracts::admin::MembershipCard> { Ok(api_contracts::admin::MembershipCard {
         id: sqlx::Row::try_get::<u64, _>(r, "id")?,
         user_id: sqlx::Row::try_get::<u64, _>(r, "user_id")?,

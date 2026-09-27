@@ -25,7 +25,7 @@ pub async fn list(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json
         "SELECT id, username, display_name, role_id, status, last_login_at, created_at
          FROM admin_user_role WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 200"
     )
-    .fetch_all(st.db.pool()).await?;
+    .fetch_all(st.identity.pool()).await?;
     let items = rows.iter().map(|r| -> AppResult<api_contracts::admin::AdminUser> {
         Ok(api_contracts::admin::AdminUser {
             id: sqlx::Row::try_get::<u64, _>(r, "id")?,
@@ -55,13 +55,13 @@ pub async fn create(State(st): State<AppState>, _c: ActiveAdmin, Json(req): Json
     )
     .bind(&req.username).bind(req.display_name.as_deref()).bind(&hash)
     .bind(req.phone.as_deref()).bind(req.email.as_deref()).bind(req.role_id)
-    .execute(st.db.pool()).await?;
+    .execute(st.identity.pool()).await?;
     Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::CreatedFlag::new(), common_error::current_request_id())))
 }
 
 pub async fn get(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::admin::AdminUserDetail>>> {
     let r = sqlx::query("SELECT id, username, display_name, role_id, status, phone, email, last_login_at, created_at FROM admin_user_role WHERE id = ? AND deleted_at IS NULL")
-        .bind(id).fetch_optional(st.db.pool()).await?;
+        .bind(id).fetch_optional(st.identity.pool()).await?;
     let r = r.ok_or_else(|| AppError::NotFound("user".into()))?;
     Ok(Json(common_error::ApiEnvelope::ok(
         api_contracts::admin::AdminUserDetail {
@@ -107,7 +107,7 @@ pub async fn update(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<
     .bind(req.phone.as_deref())
     .bind(req.email.as_deref())
     .bind(id)
-    .execute(st.db.pool()).await?;
+    .execute(st.identity.pool()).await?;
     if n.rows_affected() == 0 {
         return Err(AppError::NotFound("user".into()));
     }
@@ -117,7 +117,7 @@ pub async fn update(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<
 pub async fn delete(State(st): State<AppState>, actor: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::DeletedResponse>>> {
     crate::auth::require_permission(&st,&actor,"admin_user.delete").await?;
     let n = sqlx::query("UPDATE admin_user_role SET deleted_at = NOW(3), deleted_by = ? WHERE id = ? AND deleted_at IS NULL")
-        .bind(actor.admin_user_id).bind(id).execute(st.db.pool()).await?;
+        .bind(actor.admin_user_id).bind(id).execute(st.identity.pool()).await?;
     if n.rows_affected() == 0 {
         return Err(AppError::NotFound("user".into()));
     }
@@ -132,7 +132,7 @@ pub async fn reset_password(State(st): State<AppState>, _c: ActiveAdmin, Path(id
     // D13:argon2 哈希离开执行线程,并发受限。
     let hash = crate::password::hash(req.new_password.clone()).await?;
     let n = sqlx::query("UPDATE admin_user_role SET password_hash = ?, failed_login_count = 0 WHERE id = ? AND deleted_at IS NULL")
-        .bind(&hash).bind(id).execute(st.db.pool()).await?;
+        .bind(&hash).bind(id).execute(st.identity.pool()).await?;
     if n.rows_affected() == 0 {
         return Err(AppError::NotFound("user".into()));
     }

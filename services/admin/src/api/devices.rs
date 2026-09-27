@@ -14,7 +14,7 @@ async fn authorize(st: &AppState, actor: &ActiveAdmin) -> AppResult<Vec<String>>
          JOIN role_permission rp ON rp.role_id=r.id JOIN permission p ON p.id=rp.permission_id
          WHERE a.id=? AND a.username=? AND a.status='active' AND a.deleted_at IS NULL
          AND r.deleted_at IS NULL AND p.code IN ('device.read','device.import')"
-    ).bind(actor.admin_user_id).bind(&actor.sub).fetch_all(st.db.pool()).await?;
+    ).bind(actor.admin_user_id).bind(&actor.sub).fetch_all(st.device.pool()).await?;
     Ok(permissions)
 }
 
@@ -65,12 +65,12 @@ fn device(r: &sqlx::mysql::MySqlRow) -> AppResult<api_contracts::admin::DeviceRo
 pub async fn list(State(st): State<AppState>, actor: ActiveAdmin, Query(q): Query<DeviceQuery>) -> AppResult<Json<ApiEnvelope<api_contracts::common::PagedResponse<api_contracts::admin::DeviceRow>>>> {
     let permissions=authorize(&st,&actor).await?;
     let (page,size)=q.validate()?;
-    let mut tx=st.db.pool().begin().await?;
+    let mut tx=st.device.begin().await?;
     let mut count=QueryBuilder::<MySql>::new(format!("SELECT COUNT(*){FROM}")); q.filter(&mut count);
-    let total:i64=count.build_query_scalar().fetch_one(&mut *tx).await?;
+    let total:i64=count.build_query_scalar().fetch_one(tx.executor()).await?;
     let mut sql=QueryBuilder::<MySql>::new(format!("{COLUMNS}{FROM}")); q.filter(&mut sql);
     sql.push(" ORDER BY d.id DESC LIMIT ").push_bind(size).push(" OFFSET ").push_bind(u64::from(page-1)*u64::from(size));
-    let rows=sql.build().fetch_all(&mut *tx).await?;
+    let rows=sql.build().fetch_all(tx.executor()).await?;
     let items=rows.iter().map(device).collect::<AppResult<Vec<_>>>()?;
     tx.commit().await?;
     Ok(Json(ApiEnvelope::ok(api_contracts::common::PagedResponse{items,total,page,page_size:size,permissions},common_error::current_request_id())))
@@ -78,13 +78,13 @@ pub async fn list(State(st): State<AppState>, actor: ActiveAdmin, Query(q): Quer
 pub async fn get(State(st): State<AppState>, actor: ActiveAdmin, Path(id): Path<String>) -> AppResult<Json<ApiEnvelope<api_contracts::admin::DeviceRow>>> {
     authorize(&st,&actor).await?;
     let row=sqlx::query(&format!("{COLUMNS}{FROM} WHERE d.device_id=? AND d.deleted_at IS NULL"))
-        .bind(id).fetch_optional(st.db.pool()).await?.ok_or_else(||AppError::NotFound("device".into()))?;
+        .bind(id).fetch_optional(st.device.pool()).await?.ok_or_else(||AppError::NotFound("device".into()))?;
     Ok(Json(ApiEnvelope::ok(device(&row)?,common_error::current_request_id())))
 }
 pub async fn orders(State(st): State<AppState>, actor: ActiveAdmin, Path(id): Path<String>, Query(mut q): Query<api_contracts::orders::OrderQuery>) -> AppResult<Json<ApiEnvelope<api_contracts::orders::OrderPage>>> {
     authorize(&st,&actor).await?;
     let exists:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM device_meta WHERE device_id=? AND deleted_at IS NULL)")
-        .bind(&id).fetch_one(st.db.pool()).await?;
+        .bind(&id).fetch_one(st.device.pool()).await?;
     if !exists {return Err(AppError::NotFound("device".into()));}
     q.device_id=Some(id);
     super::orders::list(State(st),actor,Query(q)).await

@@ -73,7 +73,7 @@ impl axum::extract::FromRequestParts<AppState> for ActiveAdmin {
             "SELECT status, locked_until FROM admin_user_role WHERE id = ? AND deleted_at IS NULL",
         )
         .bind(claims.admin_user_id)
-        .fetch_optional(st.db.pool())
+        .fetch_optional(st.identity.pool())
         .await?;
         let (status, locked_until) = row
             .ok_or_else(|| AppError::Unauthorized("管理员账号不存在或已删除".into()))?;
@@ -105,7 +105,7 @@ pub async fn require_permission(
     .bind(actor.admin_user_id)
     .bind(&actor.sub)
     .bind(permission)
-    .fetch_one(st.db.pool())
+    .fetch_one(st.identity.pool())
     .await?;
     if !allowed {
         return Err(AppError::Forbidden(format!("缺少 {permission} 权限")));
@@ -123,7 +123,7 @@ pub async fn require_permission_by_id(
     let username: Option<String> =
         sqlx::query_scalar("SELECT username FROM admin_user_role WHERE id = ? AND deleted_at IS NULL")
             .bind(admin_user_id)
-            .fetch_optional(st.db.pool())
+            .fetch_optional(st.identity.pool())
             .await?;
     let username = username
         .ok_or_else(|| AppError::Unauthorized("管理员账号不存在或已删除".into()))?;
@@ -140,7 +140,7 @@ pub async fn require_permission_by_id(
     .bind(admin_user_id)
     .bind(&username)
     .bind(permission)
-    .fetch_one(st.db.pool())
+    .fetch_one(st.identity.pool())
     .await?;
     if !allowed {
         return Err(AppError::Forbidden(format!("缺少 {permission} 权限")));
@@ -171,7 +171,7 @@ pub async fn login(
          FROM admin_user_role WHERE username = ? AND deleted_at IS NULL LIMIT 1"
     )
     .bind(&req.username)
-    .fetch_optional(st.db.pool())
+    .fetch_optional(st.identity.pool())
     .await?;
     let (id, username, role_id, hash, status, _failed, locked_until) = match r {
         Some(v) => v,
@@ -197,7 +197,7 @@ pub async fn login(
         .bind(MAX_FAILED_LOGINS)
         .bind(LOCK_MINUTES)
         .bind(id)
-        .execute(st.db.pool())
+        .execute(st.identity.pool())
         .await?;
         return Err(AppError::Unauthorized("bad credentials".into()));
     }
@@ -210,7 +210,7 @@ pub async fn login(
     // 置回 'active' 只会影响"锁定到期后恢复"的场景。
     sqlx::query("UPDATE admin_user_role SET last_login_at=NOW(3), failed_login_count=0,
                     locked_until=NULL, status='active' WHERE id=?")
-        .bind(id).execute(st.db.pool()).await?;
+        .bind(id).execute(st.identity.pool()).await?;
 
     let token = st.jwt.issue_admin(&username, id, &role_code, permissions.clone())?;
     Ok(Json(common_error::ApiEnvelope::ok(LoginResp {
@@ -226,7 +226,7 @@ async fn load_role_and_permissions(
     let role_code: String = if let Some(rid) = role_id {
         sqlx::query_scalar("SELECT code FROM role WHERE id = ? AND deleted_at IS NULL")
             .bind(rid)
-            .fetch_optional(st.db.pool())
+            .fetch_optional(st.identity.pool())
             .await?
             .ok_or_else(|| AppError::ServiceUnavailable("管理员角色不存在或已停用".into()))?
     } else {
@@ -235,7 +235,7 @@ async fn load_role_and_permissions(
     let permissions: Vec<String> = if let Some(rid) = role_id {
         let rows = sqlx::query("SELECT p.code FROM permission p JOIN role_permission rp ON rp.permission_id = p.id WHERE rp.role_id = ?")
             .bind(rid)
-            .fetch_all(st.db.pool())
+            .fetch_all(st.identity.pool())
             .await?;
         rows.iter().map(|row| row.try_get::<String, _>("code").map_err(AppError::from)).collect::<AppResult<Vec<_>>>()?
     } else {
@@ -262,7 +262,7 @@ pub async fn refresh(
             "SELECT role_id, status, locked_until FROM admin_user_role WHERE id = ? AND deleted_at IS NULL",
         )
         .bind(claims.admin_user_id)
-        .fetch_optional(st.db.pool())
+        .fetch_optional(st.identity.pool())
         .await?;
     let (role_id, status, locked_until) =
         row.ok_or_else(|| AppError::Unauthorized("管理员账号不存在或已删除".into()))?;
@@ -596,7 +596,14 @@ mod permission_tests {
             redis_stream: common_redis::RedisStream::connect(&cfg.redis_stream).await.expect("redis"),
             http: reqwest::Client::new(),
             service_token: Arc::new(cfg.auth.service_token.clone()),
-            db: db.clone(),
+            services: crate::services::build(
+                db.clone(),
+                reqwest::Client::new(),
+                Arc::new(cfg.auth.service_token.clone()),
+                cfg.clone(),
+                common_redis::RedisCache::connect(&cfg.redis_cache).await.expect("redis"),
+                common_redis::RedisStream::connect(&cfg.redis_stream).await.expect("redis"),
+            ),
             cfg,
         };
 

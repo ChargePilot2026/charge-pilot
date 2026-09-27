@@ -11,7 +11,7 @@ pub async fn packages_list(State(st): State<AppState>, _c: ActiveAdmin) -> AppRe
     let rows = sqlx::query(
         "SELECT id, code, vendor_id, version, size_bytes, checksum_sha256, status, created_at
          FROM ota_package WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 200"
-    ).fetch_all(st.db.pool()).await?;
+    ).fetch_all(st.device.pool()).await?;
         let items = rows.iter().map(|r| -> AppResult<api_contracts::admin::OtaPackage> {
         Ok(api_contracts::admin::OtaPackage {
             id: sqlx::Row::try_get::<u64, _>(r, "id")?,
@@ -50,7 +50,7 @@ pub async fn packages_create(State(st): State<AppState>, _c: ActiveAdmin, Json(r
     )
     .bind(&req.code).bind(req.vendor_id).bind(&req.version).bind(&req.storage_url)
     .bind(req.size_bytes).bind(&req.checksum_sha256).bind(req.sign.as_deref()).bind(req.release_notes.as_deref())
-    .execute(st.db.pool()).await?;
+    .execute(st.device.pool()).await?;
     let id = result.last_insert_id();
     Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::CreatedResponse { id: id }, common_error::current_request_id())))
 }
@@ -58,7 +58,7 @@ pub async fn packages_create(State(st): State<AppState>, _c: ActiveAdmin, Json(r
 pub async fn packages_get(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::admin::OtaPackageDetail>>> {
     let r: Option<(u64, String, String, String, String, u64)> = sqlx::query_as(
         "SELECT id, code, version, storage_url, checksum_sha256, size_bytes FROM ota_package WHERE id = ? AND deleted_at IS NULL"
-    ).bind(id).fetch_optional(st.db.pool()).await?;
+    ).bind(id).fetch_optional(st.device.pool()).await?;
     let r = r.ok_or_else(|| AppError::NotFound("ota package".into()))?;
     Ok(Json(common_error::ApiEnvelope::ok(
         api_contracts::admin::OtaPackageDetail {
@@ -71,7 +71,7 @@ pub async fn packages_get(State(st): State<AppState>, _c: ActiveAdmin, Path(id):
 pub async fn packages_delete(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::DeletedResponse>>> {
     crate::auth::require_permission(&st,&_c,"ota.package.delete").await?;
     let n = sqlx::query("UPDATE ota_package SET deleted_at = NOW(3) WHERE id = ? AND deleted_at IS NULL")
-        .bind(id).execute(st.db.pool()).await?;
+        .bind(id).execute(st.device.pool()).await?;
     if n.rows_affected() == 0 { return Err(AppError::NotFound("ota package".into())); }
     Ok(Json(common_error::ApiEnvelope::ok(api_contracts::common::DeletedResponse::new(), common_error::current_request_id())))
 }
@@ -80,7 +80,7 @@ pub async fn schedules_list(State(st): State<AppState>, _c: ActiveAdmin) -> AppR
     let rows = sqlx::query(
         "SELECT id, package_id, rollout_strategy, batch_size, status, scheduled_at, started_at, completed_at, created_at
          FROM ota_schedule ORDER BY id DESC LIMIT 200"
-    ).fetch_all(st.db.pool()).await?;
+    ).fetch_all(st.device.pool()).await?;
         let items = rows.iter().map(|r| -> AppResult<api_contracts::admin::OtaSchedule> {
         Ok(api_contracts::admin::OtaSchedule {
             id: sqlx::Row::try_get::<u64, _>(r, "id")?,
@@ -119,7 +119,7 @@ pub async fn schedules_create(State(st): State<AppState>, c: ActiveAdmin, Json(r
 pub async fn schedules_get(State(st): State<AppState>, _c: ActiveAdmin, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::admin::OtaScheduleDetail>>> {
     let r: Option<(u64, u64, String, String)> = sqlx::query_as(
         "SELECT id, package_id, rollout_strategy, status FROM ota_schedule WHERE id = ?"
-    ).bind(id).fetch_optional(st.db.pool()).await?;
+    ).bind(id).fetch_optional(st.device.pool()).await?;
     let r = r.ok_or_else(|| AppError::NotFound("ota schedule".into()))?;
     Ok(Json(common_error::ApiEnvelope::ok(
         api_contracts::admin::OtaScheduleDetail {

@@ -21,7 +21,7 @@ pub async fn enqueue(st: &AppState, entry: &common_redis::StreamEntry) -> AppRes
     sqlx::query("INSERT IGNORE INTO refund_task (refund_no,event_id) VALUES (?,?)")
         .bind(no)
         .bind(&entry.envelope.event_id)
-        .execute(st.db.pool())
+        .execute(st.finance.pool())
         .await?;
     Ok(())
 }
@@ -44,8 +44,8 @@ pub fn spawn(st: AppState) {
     });
 }
 async fn drive_one(st: &AppState) -> AppResult<bool> {
-    let mut tx = st.db.pool().begin().await?;
-    let row=sqlx::query("SELECT CAST(refund_no AS CHAR CHARACTER SET utf8mb4) AS refund_no,stage,request_json,result_json FROM refund_task WHERE stage IN ('queued','querying','reporting') AND scheduled_at<=UTC_TIMESTAMP(3) ORDER BY scheduled_at,refund_no LIMIT 1 FOR UPDATE SKIP LOCKED").fetch_optional(&mut *tx).await?;
+    let mut tx = st.finance.begin().await?;
+    let row=sqlx::query("SELECT CAST(refund_no AS CHAR CHARACTER SET utf8mb4) AS refund_no,stage,request_json,result_json FROM refund_task WHERE stage IN ('queued','querying','reporting') AND scheduled_at<=UTC_TIMESTAMP(3) ORDER BY scheduled_at,refund_no LIMIT 1 FOR UPDATE SKIP LOCKED").fetch_optional(tx.executor()).await?;
     let Some(row) = row else {
         tx.rollback().await?;
         return Ok(false);
@@ -64,14 +64,14 @@ async fn drive_one(st: &AppState) -> AppResult<bool> {
     if let Err(error) = result {
         // Config/network failures remain retryable. No failed connection is proof of failed refund.
         let message = error.to_string().chars().take(255).collect::<String>();
-        sqlx::query("UPDATE refund_task SET attempts=attempts+1,last_error=?,scheduled_at=DATE_ADD(UTC_TIMESTAMP(3),INTERVAL 30 SECOND) WHERE refund_no=?").bind(message).bind(&no).execute(&mut *tx).await?;
+        sqlx::query("UPDATE refund_task SET attempts=attempts+1,last_error=?,scheduled_at=DATE_ADD(UTC_TIMESTAMP(3),INTERVAL 30 SECOND) WHERE refund_no=?").bind(message).bind(&no).execute(tx.executor()).await?;
     }
     tx.commit().await?;
     Ok(true)
 }
 async fn advance(
     st: &AppState,
-    tx: &mut sqlx::Transaction<'_, sqlx::MySql>,
+    tx: &mut common_db::Tx<'_>,
     no: &str,
     stage: &str,
     request: Option<serde_json::Value>,
@@ -97,7 +97,7 @@ async fn advance(
                 "manual_review"
             })
             .bind(no)
-            .execute(&mut **tx)
+            .execute(tx.executor())
             .await?;
         return Ok(());
     }
@@ -128,7 +128,7 @@ async fn advance(
                     "manual_review"
                 })
                 .bind(no)
-                .execute(&mut **tx)
+                .execute(tx.executor())
                 .await?;
             return Ok(());
         }
@@ -148,7 +148,7 @@ async fn advance(
                 currency: "CNY".into(),
             },
         };
-        sqlx::query("UPDATE refund_task SET stage='querying',request_json=?,last_error=NULL WHERE refund_no=?").bind(serde_json::to_value(req)?).bind(no).execute(&mut **tx).await?;
+        sqlx::query("UPDATE refund_task SET stage='querying',request_json=?,last_error=NULL WHERE refund_no=?").bind(serde_json::to_value(req)?).bind(no).execute(tx.executor()).await?;
         // Commit the immutable provider request before any provider side effect.
         return Ok(());
     }
@@ -160,10 +160,10 @@ async fn advance(
         other => other?,
     };
     if response.status == "PROCESSING" {
-        sqlx::query("UPDATE refund_task SET scheduled_at=DATE_ADD(UTC_TIMESTAMP(3),INTERVAL 60 SECOND),attempts=attempts+1,last_error=NULL WHERE refund_no=?").bind(no).execute(&mut **tx).await?;
+        sqlx::query("UPDATE refund_task SET scheduled_at=DATE_ADD(UTC_TIMESTAMP(3),INTERVAL 60 SECOND),attempts=attempts+1,last_error=NULL WHERE refund_no=?").bind(no).execute(tx.executor()).await?;
     } else {
         let result = serde_json::json!({"refund_no":no,"success":response.status=="SUCCESS","wechat_refund_id":response.refund_id,"failure_reason":if response.status=="SUCCESS"{None}else{Some(format!("微信退款状态 {}，需人工处理",response.status))}});
-        sqlx::query("UPDATE refund_task SET stage='reporting',result_json=?,last_error=NULL WHERE refund_no=?").bind(result).bind(no).execute(&mut **tx).await?;
+        sqlx::query("UPDATE refund_task SET stage='reporting',result_json=?,last_error=NULL WHERE refund_no=?").bind(result).bind(no).execute(tx.executor()).await?;
     }
     Ok(())
 }
@@ -295,7 +295,14 @@ mod tests {
         wechat.platform_public_key_path = Some(public.to_string_lossy().into());
         wechat.refund_url = format!("{base}/v3/refund/domestic/refunds");
         let st = AppState {
-            db: common_db::Db::connect(&cfg.mysql).await.unwrap(),
+            services: crate::services::build(
+                common_db::Db::connect(&cfg.mysql).await.unwrap(),
+                reqwest::Client::new(),
+                Arc::new(cfg.auth.service_token.clone()),
+                Arc::new(cfg.clone()),
+                common_redis::RedisCache::connect(&cfg.redis_cache).await.unwrap(),
+                common_redis::RedisStream::connect(&cfg.redis_stream).await.unwrap(),
+            ),
             redis_cache: common_redis::RedisCache::connect(&cfg.redis_cache)
                 .await
                 .unwrap(),
@@ -310,25 +317,25 @@ mod tests {
         sqlx::query("INSERT INTO refund_task (refund_no,event_id) VALUES (?,?)")
             .bind(&no)
             .bind(uuid::Uuid::new_v4().to_string())
-            .execute(st.db.pool())
+            .execute(st.finance.pool())
             .await
             .unwrap();
         let outcome=async {
             for expected in ["querying","querying","reporting","reporting","done"] {
-                let mut tx=st.db.pool().begin().await?;
-                let row=sqlx::query("SELECT stage,request_json,result_json FROM refund_task WHERE refund_no=? FOR UPDATE").bind(&no).fetch_one(&mut *tx).await?;
+                let mut tx=st.finance.begin().await?;
+                let row=sqlx::query("SELECT stage,request_json,result_json FROM refund_task WHERE refund_no=? FOR UPDATE").bind(&no).fetch_one(tx.executor()).await?;
                 let stage:String=row.try_get("stage")?;
                 let step=advance(&st,&mut tx,&no,&stage,row.try_get("request_json")?,row.try_get("result_json")?).await;
                 if expected=="reporting" && stage=="reporting" {assert!(step.is_err());}else{step?;}
                 tx.commit().await?;
-                let actual:String=sqlx::query_scalar("SELECT stage FROM refund_task WHERE refund_no=?").bind(&no).fetch_one(st.db.pool()).await?;assert_eq!(actual,expected);
+                let actual:String=sqlx::query_scalar("SELECT stage FROM refund_task WHERE refund_no=?").bind(&no).fetch_one(st.finance.pool()).await?;assert_eq!(actual,expected);
             }
             assert_eq!(mock_state.submissions.load(Ordering::SeqCst),1);assert_eq!(mock_state.reports.load(Ordering::SeqCst),2);
             Ok::<_,AppError>(())
         }.await;
         sqlx::query("DELETE FROM refund_task WHERE refund_no=?")
             .bind(&no)
-            .execute(st.db.pool())
+            .execute(st.finance.pool())
             .await
             .unwrap();
         server.abort();

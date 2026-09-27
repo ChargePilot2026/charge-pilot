@@ -14,7 +14,7 @@ async fn require_permission(st: &AppState, c: &ActiveAdmin, code: &str) -> AppRe
          JOIN role_permission rp ON rp.role_id=r.id
          JOIN permission p ON p.id=rp.permission_id
          WHERE a.id=? AND a.username=? AND a.status='active' AND a.deleted_at IS NULL AND p.code=?)",
-    ).bind(c.admin_user_id).bind(&c.sub).bind(code).fetch_one(st.db.pool()).await?;
+    ).bind(c.admin_user_id).bind(&c.sub).bind(code).fetch_one(st.cases.pool()).await?;
     if !allowed { return Err(AppError::Forbidden(format!("缺少 {code} 权限"))); }
     Ok(())
 }
@@ -54,7 +54,7 @@ pub async fn feedback_reply(
     if !result.already_processed {
         sqlx::query("INSERT INTO audit_log(actor_id,module,action,target_type,target_id,after_json,created_month) VALUES (?,'customer_service',?,'feedback',?,?,DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))")
             .bind(c.admin_user_id).bind(if req.action == "reply" {"feedback.reply"} else {"feedback.close"})
-            .bind(&id).bind(json!({"request":req,"result":result})).execute(st.db.pool()).await?;
+            .bind(&id).bind(json!({"request":req,"result":result})).execute(st.cases.pool()).await?;
     }
     Ok(Json(common_error::ApiEnvelope::ok(result, common_error::current_request_id())))
 }
@@ -93,14 +93,14 @@ pub async fn fault_dispatch(
     require_permission(&st, &c, "fault.dispatch").await?;
     if id.parse::<u64>().is_err() || req.assigned_to == 0 { return Err(AppError::BadRequest("报修编号或指派账号无效".into())); }
     let target_active: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM admin_user_role WHERE id=? AND status='active' AND deleted_at IS NULL)")
-        .bind(req.assigned_to).fetch_one(st.db.pool()).await?;
+        .bind(req.assigned_to).fetch_one(st.cases.pool()).await?;
     if !target_active { return Err(AppError::BadRequest("指派的管理员账号无效或已停用".into())); }
     let result: api_contracts::common::DispatchedResponse = common_http::internal::ApiClient::new(st.http.clone(), st.service_token.clone())
         .post(st.cfg.service_urls.user.as_deref(), &api_contracts::paths::USER_INTERNAL_DEVICE_FAULT_DISPATCH.replace(":id", &id),
             &json!({"actor_id":c.admin_user_id,"assigned_to":req.assigned_to,"note":req.note})).await?;
     if !result.already_processed {
         sqlx::query("INSERT INTO audit_log(actor_id,module,action,target_type,target_id,after_json,created_month) VALUES (?,'inspection','fault.dispatch','device_fault_report',?,?,DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))")
-            .bind(c.admin_user_id).bind(&id).bind(json!({"assigned_to":req.assigned_to,"result":result})).execute(st.db.pool()).await?;
+            .bind(c.admin_user_id).bind(&id).bind(json!({"assigned_to":req.assigned_to,"result":result})).execute(st.cases.pool()).await?;
     }
     Ok(Json(common_error::ApiEnvelope::ok(result, common_error::current_request_id())))
 }
@@ -127,7 +127,7 @@ pub async fn fault_resolve(
     if !result.already_processed {
         sqlx::query("INSERT INTO audit_log(actor_id,module,action,target_type,target_id,after_json,created_month) VALUES (?,'inspection',?,'device_fault_report',?,?,DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))")
             .bind(c.admin_user_id).bind(format!("fault.{}", req.status)).bind(&id)
-            .bind(json!({"result":result})).execute(st.db.pool()).await?;
+            .bind(json!({"result":result})).execute(st.cases.pool()).await?;
     }
     Ok(Json(common_error::ApiEnvelope::ok(result, common_error::current_request_id())))
 }

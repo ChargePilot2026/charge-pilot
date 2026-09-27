@@ -13,7 +13,7 @@ async fn require_permission(st: &AppState, c: &ActiveAdmin, permission: &str) ->
         "SELECT EXISTS(SELECT 1 FROM admin_user_role a JOIN role r ON r.id=a.role_id AND r.deleted_at IS NULL
          JOIN role_permission rp ON rp.role_id=r.id JOIN permission p ON p.id=rp.permission_id
          WHERE a.id=? AND a.username=? AND a.status='active' AND a.deleted_at IS NULL AND p.code=?)",
-    ).bind(c.admin_user_id).bind(&c.sub).bind(permission).fetch_one(st.db.pool()).await?;
+    ).bind(c.admin_user_id).bind(&c.sub).bind(permission).fetch_one(st.config.pool()).await?;
     if !allowed { return Err(AppError::Forbidden(format!("缺少 {permission} 权限"))); }
     Ok(())
 }
@@ -101,13 +101,13 @@ fn public_config(row: &sqlx::mysql::MySqlRow) -> AppResult<api_contracts::admin:
 pub async fn get(State(st): State<AppState>, c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::admin::WhitelabelPublicConfig>>> {
     require_permission(&st, &c, "whitelabel.read").await?;
     let row = sqlx::query("SELECT id, mini_program_name, logo_url, theme_color, contact_phone, about_text, config_json FROM whitelabel_config WHERE id=1")
-        .fetch_optional(st.db.pool()).await?;
+        .fetch_optional(st.config.pool()).await?;
     let config = match row {
         Some(row) => public_config(&row)?,
         None => {
             // 回退到最近一行;一行都没有时回默认视图(历史实现回空对象 `{}`)。
             let latest = sqlx::query("SELECT id, mini_program_name, logo_url, theme_color, contact_phone, about_text, config_json FROM whitelabel_config ORDER BY id DESC LIMIT 1")
-                .fetch_optional(st.db.pool()).await?;
+                .fetch_optional(st.config.pool()).await?;
             match latest { Some(row) => public_config(&row)?, None => api_contracts::admin::WhitelabelPublicConfig::unset() }
         },
     };
@@ -128,9 +128,9 @@ pub async fn put(
     clean_optional(&mut req.privacy_url);
     require_permission(&st, &c, "whitelabel.update").await?;
     validate(&req)?;
-    let mut tx = st.db.pool().begin().await?;
+    let mut tx = st.config.begin().await?;
     let old = sqlx::query("SELECT id, mini_program_name, logo_url, theme_color, contact_phone, about_text, config_json FROM whitelabel_config WHERE id=1 FOR UPDATE")
-        .fetch_optional(&mut *tx).await?;
+        .fetch_optional(tx.executor()).await?;
     let before = match old { Some(row) => Some(serde_json::to_value(public_config(&row)?)?), None => Some(Value::Null) };
     let config_json = json!({
         "admin_logo_url": req.admin_logo_url.clone(),
@@ -153,7 +153,7 @@ pub async fn put(
     .bind(req.service_phone.as_deref())
     .bind(req.about_us.as_deref())
     .bind(config_json.clone())
-    .execute(&mut *tx).await?;
+    .execute(tx.executor()).await?;
     let after = api_contracts::admin::WhitelabelPublicConfig {
         id: 1,
         miniprogram_name: req.miniprogram_name.trim().to_string(),
@@ -171,7 +171,7 @@ pub async fn put(
         about_us: req.about_us.clone(),
     };
     sqlx::query("INSERT INTO audit_log(actor_id,module,action,target_type,target_id,before_json,after_json,created_month) VALUES (?,'settings','whitelabel.update','whitelabel_config','1',?,?,DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))")
-        .bind(c.admin_user_id).bind(before).bind(serde_json::to_value(&after)?).execute(&mut *tx).await?;
+        .bind(c.admin_user_id).bind(before).bind(serde_json::to_value(&after)?).execute(tx.executor()).await?;
     tx.commit().await?;
     st.redis_cache.del("whitelabel:config").await?;
     Ok(Json(common_error::ApiEnvelope::ok(api_contracts::admin::WhitelabelSaved { id: 1, config: after }, common_error::current_request_id())))

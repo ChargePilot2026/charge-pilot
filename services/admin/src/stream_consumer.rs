@@ -47,7 +47,7 @@ impl StreamHandler for AlertHandler {
         let event_id = entry.envelope.event_id.clone();
         let already_recorded: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM alert_event WHERE event_id = ?)"
-        ).bind(&event_id).fetch_one(self.state.db.pool()).await?;
+        ).bind(&event_id).fetch_one(self.state.config.pool()).await?;
         if !already_recorded {
             let now_month = chrono::Utc::now().format("%Y-%m-01").to_string();
             sqlx::query(
@@ -55,7 +55,7 @@ impl StreamHandler for AlertHandler {
                  VALUES (?, ?, ?, 'active', ?, NOW(3), ?)"
             )
             .bind(&device_id).bind(&severity).bind(&metric).bind(&event_id).bind(&now_month)
-            .execute(self.state.db.pool()).await?;
+            .execute(self.state.config.pool()).await?;
         }
         info!(device_id, severity, "alert recorded");
 
@@ -89,7 +89,7 @@ impl StreamHandler for InvoiceRequiredHandler {
             .filter(|id| *id > 0)
             .ok_or_else(|| AppError::BadRequest("invoice event is missing invoice_request_id".into()))?;
         sqlx::query("INSERT IGNORE INTO invoice_review (invoice_request_id, review_status) VALUES (?, 'pending')")
-            .bind(invoice_request_id).execute(self.state.db.pool()).await?;
+            .bind(invoice_request_id).execute(self.state.config.pool()).await?;
         info!(invoice_request_id, "invoice required recorded");
         Ok(())
     }
@@ -106,7 +106,7 @@ impl StreamHandler for DeviceEventHandler {
         // 更新设备最近一次遥测时间(可选:便于 PC 后台看板上显示)
         sqlx::query("UPDATE device_meta SET last_seen_at = NOW(3) WHERE device_id = ?")
             .bind(&device_id)
-            .execute(self.state.db.pool())
+            .execute(self.state.config.pool())
             .await?;
         Ok(())
     }
