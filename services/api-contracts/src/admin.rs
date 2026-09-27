@@ -379,3 +379,63 @@ mod pricing_tests {
         assert!(v["mode"].is_string());
     }
 }
+
+// ===== 财务(admin 视角)=====
+
+/// 结算单(admin_db 的 `settled_record`,**不是** billing_db 的 settlement)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Settlement {
+    pub id: u64,
+    pub settlement_no: String,
+    pub split_template_id: u64,
+    /// `DATE`,序列化为 `YYYY-MM-DD`
+    pub period_start: String,
+    pub period_end: String,
+    pub total_cents: i64,
+    pub status: String,
+}
+
+/// 对账日志。
+///
+/// ⚠️ `diff_count` 是 **i32**(有符号,允许负数表示内部多于微信),
+/// `internal_count` / `wechat_count` 是 u32。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReconcileLog {
+    pub id: u64,
+    pub reconcile_type: String,
+    pub reconcile_date: String,
+    pub internal_count: u32,
+    pub wechat_count: u32,
+    pub diff_count: i32,
+    /// 数据库 `TINYINT`,对外 boolean
+    pub resolved: bool,
+}
+
+#[cfg(test)]
+mod finance_tests {
+    use super::*;
+
+    /// 回归护栏:对账差异可能为负(内部笔数多于微信),不得用无符号类型
+    #[test]
+    fn diff_count_can_be_negative() {
+        let r = ReconcileLog {
+            id: 1, reconcile_type: "daily".into(), reconcile_date: "2026-09-28".into(),
+            internal_count: 10, wechat_count: 12, diff_count: -2, resolved: false,
+        };
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(v["diff_count"], -2, "差异可为负,不能截断成无符号");
+        assert!(v["resolved"].is_boolean());
+    }
+
+    /// 结算周期是日期字符串,不是时间戳
+    #[test]
+    fn settlement_period_is_date_string() {
+        let s = Settlement {
+            id: 1, settlement_no: "STL-1".into(), split_template_id: 2,
+            period_start: "2026-09-01".into(), period_end: "2026-09-30".into(),
+            total_cents: 1000, status: "settled".into(),
+        };
+        let v = serde_json::to_value(&s).unwrap();
+        assert_eq!(v["period_start"], "2026-09-01");
+    }
+}

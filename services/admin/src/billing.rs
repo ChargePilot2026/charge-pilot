@@ -9,21 +9,26 @@ use common_error::{AppError, AppResult};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-pub async fn settlements(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn settlements(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::ListResponse<api_contracts::admin::Settlement>>>> {
     let rows = sqlx::query(
         "SELECT id, settlement_no, split_template_id, period_start, period_end, total_cents, status, created_at
          FROM settled_record ORDER BY id DESC LIMIT 200"
     ).fetch_all(st.db.pool()).await?;
-    let items: Vec<Value> = rows.iter().map(|r| -> AppResult<Value> { Ok(json!({
-        "id": sqlx::Row::try_get::<u64, _>(r, "id")?,
-        "settlement_no": sqlx::Row::try_get::<String, _>(r, "settlement_no")?,
-        "split_template_id": sqlx::Row::try_get::<u64, _>(r, "split_template_id")?,
-        "period_start": sqlx::Row::try_get::<chrono::NaiveDate, _>(r, "period_start")?.to_string(),
-        "period_end": sqlx::Row::try_get::<chrono::NaiveDate, _>(r, "period_end")?.to_string(),
-        "total_cents": sqlx::Row::try_get::<i64, _>(r, "total_cents")?,
-        "status": sqlx::Row::try_get::<String, _>(r, "status")?,
-    })) }).collect::<AppResult<Vec<_>>>()?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"items": items}), common_error::current_request_id())))
+        let items = rows.iter().map(|r| -> AppResult<api_contracts::admin::Settlement> {
+        Ok(api_contracts::admin::Settlement {
+            id: sqlx::Row::try_get::<u64, _>(r, "id")?,
+            settlement_no: sqlx::Row::try_get::<String, _>(r, "settlement_no")?,
+            split_template_id: sqlx::Row::try_get::<u64, _>(r, "split_template_id")?,
+            period_start: sqlx::Row::try_get::<chrono::NaiveDate, _>(r, "period_start")?.to_string(),
+            period_end: sqlx::Row::try_get::<chrono::NaiveDate, _>(r, "period_end")?.to_string(),
+            total_cents: sqlx::Row::try_get::<i64, _>(r, "total_cents")?,
+            status: sqlx::Row::try_get::<String, _>(r, "status")?,
+        })
+    }).collect::<AppResult<Vec<_>>>()?;
+    Ok(Json(common_error::ApiEnvelope::ok(
+        api_contracts::common::ListResponse::new(items),
+        common_error::current_request_id(),
+    )))
 }
 
 #[derive(Debug, Deserialize)]
@@ -305,22 +310,27 @@ pub async fn invoice_reject(State(st): State<AppState>, c: ActiveAdmin, Path(id)
     Ok(Json(common_error::ApiEnvelope::ok(result, common_error::current_request_id())))
 }
 
-pub async fn reconcile_logs(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn reconcile_logs(State(st): State<AppState>, _c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::ListResponse<api_contracts::admin::ReconcileLog>>>> {
     let rows = sqlx::query(
         "SELECT id, reconcile_type, reconcile_date, internal_count, wechat_count, diff_count,
                 internal_cents, wechat_cents, diff_cents, resolved, created_at
          FROM finance_reconcile_log ORDER BY id DESC LIMIT 200"
     ).fetch_all(st.db.pool()).await?;
-    let items: Vec<Value> = rows.iter().map(|r| -> AppResult<Value> { Ok(json!({
-        "id": sqlx::Row::try_get::<u64, _>(r, "id")?,
-        "reconcile_type": sqlx::Row::try_get::<String, _>(r, "reconcile_type")?,
-        "reconcile_date": sqlx::Row::try_get::<chrono::NaiveDate, _>(r, "reconcile_date")?.to_string(),
-        "internal_count": sqlx::Row::try_get::<u32, _>(r, "internal_count")?,
-        "wechat_count": sqlx::Row::try_get::<u32, _>(r, "wechat_count")?,
-        "diff_count": sqlx::Row::try_get::<i32, _>(r, "diff_count")?,
-        "resolved": sqlx::Row::try_get::<i8, _>(r, "resolved")? != 0,
-    })) }).collect::<AppResult<Vec<_>>>()?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({"items": items}), common_error::current_request_id())))
+        let items = rows.iter().map(|r| -> AppResult<api_contracts::admin::ReconcileLog> {
+        Ok(api_contracts::admin::ReconcileLog {
+            id: sqlx::Row::try_get::<u64, _>(r, "id")?,
+            reconcile_type: sqlx::Row::try_get::<String, _>(r, "reconcile_type")?,
+            reconcile_date: sqlx::Row::try_get::<chrono::NaiveDate, _>(r, "reconcile_date")?.to_string(),
+            internal_count: sqlx::Row::try_get::<u32, _>(r, "internal_count")?,
+            wechat_count: sqlx::Row::try_get::<u32, _>(r, "wechat_count")?,
+            diff_count: sqlx::Row::try_get::<i32, _>(r, "diff_count")?,
+            resolved: sqlx::Row::try_get::<i8, _>(r, "resolved")? != 0,
+        })
+    }).collect::<AppResult<Vec<_>>>()?;
+    Ok(Json(common_error::ApiEnvelope::ok(
+        api_contracts::common::ListResponse::new(items),
+        common_error::current_request_id(),
+    )))
 }
 
 #[derive(Deserialize,serde::Serialize)]
