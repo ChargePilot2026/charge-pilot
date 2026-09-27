@@ -814,3 +814,65 @@ mod ota_tests {
         assert!(v["completed_at"].is_null());
     }
 }
+
+// ===== 内部端点(admin 生产,user/gateway 消费)=====
+
+/// 计费规则详情(供 billing 报价使用)。
+/// ⚠️ 比后台列表**少** `status`/`created_at`,且 `version` 是 u32。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PricingRuleForBilling {
+    pub id: u64,
+    pub name: String,
+    pub mode: String,
+    pub service_fee_cents_per_kwh: i64,
+    pub service_fee_cents_per_min: i64,
+    pub min_charge_cents: i64,
+    pub version: u32,
+}
+
+/// 分账模板 + 参与方(billing 分账时读取)。
+/// ⚠️ **参与方比例合计必须为 10000**,否则 billing 会拒绝分账(见 §五 D1)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SplitTemplateWithParties {
+    pub id: u64,
+    pub code: String,
+    pub name: String,
+    pub mode: String,
+    pub parties: Vec<SplitParty>,
+}
+
+/// 公告过期处理结果。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnnouncementExpireResult {
+    pub expired_count: u64,
+}
+
+#[cfg(test)]
+mod internal_tests {
+    use super::*;
+
+    /// 回归护栏:billing 依赖 `version` 与三个费率字段,少一个就无法报价
+    #[test]
+    fn pricing_rule_for_billing_has_all_rate_fields() {
+        let r = PricingRuleForBilling {
+            id: 1, name: "n".into(), mode: "kwh".into(),
+            service_fee_cents_per_kwh: 30, service_fee_cents_per_min: 2,
+            min_charge_cents: 0, version: 3,
+        };
+        let v = serde_json::to_value(&r).unwrap();
+        for f in ["service_fee_cents_per_kwh", "service_fee_cents_per_min", "min_charge_cents", "version"] {
+            assert!(v.get(f).is_some(), "billing 报价依赖 {f}");
+        }
+    }
+
+    /// 分账模板必须带 parties,否则 billing 无法分账
+    #[test]
+    fn split_template_carries_parties() {
+        let t = SplitTemplateWithParties {
+            id: 1, code: "ST".into(), name: "模板".into(), mode: "mode_b".into(),
+            parties: vec![],
+        };
+        let v = serde_json::to_value(&t).unwrap();
+        assert!(v["parties"].is_array());
+    }
+}

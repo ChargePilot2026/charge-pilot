@@ -78,37 +78,43 @@ pub async fn stations_detail(State(st): State<AppState>, Path(id): Path<u64>) ->
     }), common_error::current_request_id())))
 }
 
-pub async fn pricing_rule_get(State(st): State<AppState>, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn pricing_rule_get(State(st): State<AppState>, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::admin::PricingRuleForBilling>>> {
     let r: Option<(u64, String, String, i64, i64, i64, u32)> = sqlx::query_as(
         "SELECT id, name, mode, service_fee_cents_per_kwh, service_fee_cents_per_min, min_charge_cents, version
          FROM pricing_rule WHERE id = ? AND deleted_at IS NULL"
     ).bind(id).fetch_optional(st.db.pool()).await?;
     let r = r.ok_or_else(|| AppError::NotFound("pricing_rule".into()))?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({
-        "id": r.0, "name": r.1, "mode": r.2,
-        "service_fee_cents_per_kwh": r.3,
-        "service_fee_cents_per_min": r.4,
-        "min_charge_cents": r.5,
-        "version": r.6,
-    }), common_error::current_request_id())))
+    Ok(Json(common_error::ApiEnvelope::ok(
+        api_contracts::admin::PricingRuleForBilling {
+            id: r.0, name: r.1, mode: r.2,
+            service_fee_cents_per_kwh: r.3,
+            service_fee_cents_per_min: r.4,
+            min_charge_cents: r.5,
+            version: r.6,
+        },
+        common_error::current_request_id(),
+    )))
 }
 
-pub async fn split_template_get(State(st): State<AppState>, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn split_template_get(State(st): State<AppState>, Path(id): Path<u64>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::admin::SplitTemplateWithParties>>> {
     let r: Option<(u64, String, String, String)> = sqlx::query_as(
         "SELECT id, code, name, mode FROM split_template WHERE id = ? AND status = 'active' AND deleted_at IS NULL"
     ).bind(id).fetch_optional(st.db.pool()).await?;
     let r = r.ok_or_else(|| AppError::NotFound("split_template".into()))?;
     let party_rows = sqlx::query("SELECT id, party_code, party_name, ratio_bp FROM split_party WHERE split_template_id = ? ORDER BY id")
         .bind(id).fetch_all(st.db.pool()).await?;
-    let parties: Vec<Value> = party_rows.iter().map(|p| -> AppResult<Value> { Ok(json!({
-        "id": sqlx::Row::try_get::<u64, _>(p, "id")?,
-        "party_code": sqlx::Row::try_get::<String, _>(p, "party_code")?,
-        "party_name": sqlx::Row::try_get::<String, _>(p, "party_name")?,
-        "ratio_bp": sqlx::Row::try_get::<u32, _>(p, "ratio_bp")?,
-    })) }).collect::<AppResult<Vec<_>>>()?;
-    Ok(Json(common_error::ApiEnvelope::ok(json!({
-        "id": r.0, "code": r.1, "name": r.2, "mode": r.3, "parties": parties,
-    }), common_error::current_request_id())))
+    let parties = party_rows.iter().map(|p| -> AppResult<api_contracts::admin::SplitParty> { Ok(api_contracts::admin::SplitParty {
+        id: sqlx::Row::try_get::<u64, _>(p, "id")?,
+        party_code: sqlx::Row::try_get::<String, _>(p, "party_code")?,
+        party_name: sqlx::Row::try_get::<String, _>(p, "party_name")?,
+        ratio_bp: sqlx::Row::try_get::<u32, _>(p, "ratio_bp")?,
+    }) }).collect::<AppResult<Vec<_>>>()?;
+    Ok(Json(common_error::ApiEnvelope::ok(
+        api_contracts::admin::SplitTemplateWithParties {
+            id: r.0, code: r.1, name: r.2, mode: r.3, parties,
+        },
+        common_error::current_request_id(),
+    )))
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -141,13 +147,13 @@ pub async fn device_reboot(State(st): State<AppState>, Path(id): Path<String>) -
 }
 
 /// Worker calls this endpoint so only the admin service writes announcement state.
-pub async fn announcements_expire(State(st): State<AppState>) -> AppResult<Json<common_error::ApiEnvelope<Value>>> {
+pub async fn announcements_expire(State(st): State<AppState>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::admin::AnnouncementExpireResult>>> {
     let result = sqlx::query(
         "UPDATE announcement SET status = 'expired'
          WHERE status = 'published' AND end_at IS NOT NULL AND end_at < UTC_TIMESTAMP(3) AND deleted_at IS NULL"
     ).execute(st.db.pool()).await?;
     Ok(Json(common_error::ApiEnvelope::ok(
-        json!({"expired_count": result.rows_affected()}),
+        api_contracts::admin::AnnouncementExpireResult { expired_count: result.rows_affected() },
         common_error::current_request_id(),
     )))
 }
