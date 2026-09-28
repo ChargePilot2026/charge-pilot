@@ -4,6 +4,16 @@
 //! 一直保持占用,断连与部分写入都只做重发,绝不假装已停止。
 //! `meter_required: true` 的 STOP 帧必须带回 `meter`,否则不认。
 
+// P5:本文件是 gateway 侧 **停止域的 repository 层**,SQL 只允许出现在这里
+// (方案 §三)。本文件内剩下的 `Value` / `json!` 均落在方案 §三 例外清单第 1、2 类:
+//   - 第 2 类:`charge_stop_command.meter_json` 原样透出(同一 STOP 重复 ACK
+//     必须逐字节一致,重新序列化会破坏该判定);
+//   - 第 1 类:`charge_ended` Redis Stream 事件载荷;
+//   - 下发给设备的 STOP 帧载荷与 user 服务响应体同理,producer 侧不建模。
+#![allow(clippy::disallowed_methods)]
+#![allow(clippy::disallowed_types)]
+#![allow(clippy::disallowed_macros)]
+
 use api_contracts::{ChargeEndMeter, ChargeEndRequest, ChargeMeterSegment, ChargeStopResponse};
 use chrono::{DateTime, Utc};
 use common_app::ServiceBase;

@@ -3,6 +3,19 @@
 //! 端口: 8084(仅内部 HTTP)
 //! 端点: 9 个内部 API + Stream 消费 charge_ended_stream.billing-cg
 
+// 分层与序列化约束(P1a 建立;P5 收口完成,转 deny)
+// 说明:配置在仓库根 clippy.toml,级别在这里。billing 同时有 `[lib]` 与
+// `[[bin]]` 两个 crate root,二者都要声明 —— crate 级属性不跨 root 传递。
+// repository 层与测试模块各自文件级豁免。
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::disallowed_macros,
+        clippy::disallowed_types,
+        clippy::disallowed_methods,
+    )
+)]
+
 mod api;
 mod charge_fee;
 mod fee_delivery;

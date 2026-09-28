@@ -7,12 +7,52 @@
 //! `close_idle_sessions` / `command_acknowledge`)由本对象自己开事务,
 //! 保证"锁 + 判定 + 写"不会被调用方拆开;**只读查询**直接走 pool,
 //! 不必为一次 SELECT 付出事务开销。
+//!
+//! P5:本文件是 gateway 侧**设备域的 repository 层**,SQL 只允许出现在这里
+//! (方案 §三:handler/usecase 层禁 SQL,由 clippy `disallowed-methods` 保证)。
+//! 编排层(`provision.rs` / `registration.rs` / `telemetry_obs.rs` /
+//! `outbox.rs`)原本直写的 SQL 已按原样下沉到本文件,handler 只做校验与编排。
+#![allow(clippy::disallowed_methods)]
+// `Value` 仅用于 `device_provision.request_json` 列原样透出(方案 §三
+// 例外清单第 2 类):该列存的是整份导入请求,重建档时必须逐字节与请求比对,
+// 建模成 `DeviceProvision` 反而会在字段新增时把存量行卡成不可反序列化。
+#![allow(clippy::disallowed_types)]
 
+use api_contracts::devices::{DeviceProvision, ProvisionedDevice, ProvisionedPort};
 use api_contracts::gateway_devices as gd;
+use chrono::Datelike;
 use common_app::ServiceBase;
 use common_db::Tx;
 use common_error::{AppError, AppResult};
+use serde::Deserialize;
 use sqlx::Row;
+
+/// 物理设备注册请求(P5:从 `registration.rs` 搬入)。
+///
+/// 随请求下沉是因为 `register()` 的全部校验都要在拿到事务句柄**之后**
+/// 按数据库实际行做判定(`station_id` / `model` 与建档值是否一致),
+/// handler 无法拆开"拼装请求 → 开事务 → 比对"。DTO 在此定义、handler `pub use`
+/// 转出,对外的请求体形状不变。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RegisterRequest {
+    pub device_id: String,
+    pub vendor_id: u64,
+    pub station_id: Option<u64>,
+    pub port_count: u8,
+    pub model: Option<String>,
+    pub firmware_version: Option<String>,
+    pub mac_addr: Option<String>,
+    #[serde(default = "register_connect_type_default")]
+    pub connect_type: String,
+    pub client_ip: Option<String>,
+}
+
+/// `connect_type` 缺省值。放在 repository 层是因为 DTO 的
+/// `#[serde(default)]` 必须指向一个可见的函数路径。
+pub fn register_connect_type_default() -> String {
+    "tcp".into()
+}
 
 /// 一次补传帧解析出的单条遥测测量。
 pub struct Measurement<'a> {
@@ -143,10 +183,60 @@ impl DeviceService {
             sqlx::query("INSERT INTO telemetry (device_id, port_no, metric, value_num, ts) VALUES (?, ?, ?, ?, ?)")
                 .bind(m.device_id).bind(m.port_no).bind(m.metric).bind(m.value).bind(m.ts)
                 .execute(tx.executor()).await?;
-            crate::telemetry_obs::aggregate_measurement(&mut tx, m.device_id, m.port_no, m.metric, m.value, m.ts).await?;
+            Self::aggregate_measurement(&mut tx, m.device_id, m.port_no, m.metric, m.value, m.ts).await?;
         }
         tx.commit().await?;
         Ok(measurements.len())
+    }
+
+    /// 把一条**实际采样**写进 15 分钟与小时两张聚合表,与它的原始
+    /// `telemetry` 行同事务。重放/补传的采样也计次。
+    ///
+    /// P5:原在 `telemetry_obs.rs`,与 `record_measurements` 是同一条写路径,
+    /// 下沉到同一 repository 内避免 handler 反手开事务再回调。
+    async fn aggregate_measurement(
+        tx: &mut Tx<'_>,
+        device_id: &str,
+        port_no: u8,
+        metric: &str,
+        value: f64,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> AppResult<()> {
+        if device_id.is_empty() || port_no == 0 || !value.is_finite() {
+            return Err(AppError::BadRequest("遥测聚合数据无效".into()));
+        }
+        let seconds = at.timestamp();
+        for (table, width) in [
+            ("telemetry_aggregate_15min", 15 * 60),
+            ("telemetry_aggregate_hourly", 60 * 60),
+        ] {
+            let bucket_seconds = seconds.div_euclid(width) * width;
+            let bucket = chrono::DateTime::<chrono::Utc>::from_timestamp(bucket_seconds, 0)
+                .ok_or_else(|| AppError::BadRequest("遥测时间超出支持范围".into()))?;
+            let bucket_month = chrono::NaiveDate::from_ymd_opt(bucket.year(), bucket.month(), 1)
+                .ok_or_else(|| AppError::Internal("invalid telemetry aggregate month".into()))?;
+            let sql = format!(
+                "INSERT INTO {table} (device_id, port_no, metric, bucket_start, bucket_month, avg_value, min_value, max_value, `count`)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+                 ON DUPLICATE KEY UPDATE
+                   avg_value = ((avg_value * `count`) + VALUES(avg_value)) / (`count` + 1),
+                   min_value = LEAST(min_value, VALUES(min_value)),
+                   max_value = GREATEST(max_value, VALUES(max_value)),
+                   `count` = `count` + 1"
+            );
+            sqlx::query(&sql)
+                .bind(device_id)
+                .bind(port_no)
+                .bind(metric)
+                .bind(bucket)
+                .bind(bucket_month)
+                .bind(value)
+                .bind(value)
+                .bind(value)
+                .execute(tx.executor())
+                .await?;
+        }
+        Ok(())
     }
 
     /// 近 2 分钟原始采样(取每个指标的最新值)。
@@ -280,21 +370,198 @@ impl DeviceService {
         envelope: &common_redis::StreamEnvelope,
     ) -> AppResult<()> {
         let mut tx = self.base.begin().await?;
-        crate::outbox::enqueue(&mut tx, stream, envelope).await?;
+        self.enqueue_event_in(&mut tx, stream, envelope).await?;
         tx.commit().await?;
         Ok(())
     }
 
-    /// 设备批量建档的**整批**事务句柄。批量导入必须原子:
-    /// 中途失败不能留下半批设备。
-    pub async fn begin_provision(&self) -> AppResult<Tx<'_>> {
-        self.base.begin().await
+    /// 在**调用方已有**的事务里入 outbox。发信与业务写必须同事务,
+    /// 否则 Redis 故障会丢事件,或事务回滚后留下幽灵事件。
+    pub async fn enqueue_event_in(
+        &self,
+        tx: &mut Tx<'_>,
+        stream: &str,
+        envelope: &common_redis::StreamEnvelope,
+    ) -> AppResult<()> {
+        sqlx::query("INSERT INTO event_outbox (event_id, stream, envelope_json) VALUES (?, ?, ?)")
+            .bind(&envelope.event_id)
+            .bind(stream)
+            .bind(serde_json::to_value(envelope)?)
+            .execute(tx.executor())
+            .await?;
+        Ok(())
     }
 
-    /// 设备注册事务。注册要"锁设备行 → 校验厂商 → 关旧会话 → 建新会话 → 更新设备",
-    /// 跨 5 张表,故整段留在服务层。
-    pub async fn begin_registration(&self) -> AppResult<Tx<'_>> {
-        self.base.begin().await
+    // ===== 设备批量建档 =====
+
+    /// 批量建档整批事务。**逐台设备**在同一事务内完成
+    /// 「写 `device_provision` → 比对参数 → 校验厂商 → 锁设备行 →
+    /// 建设备+端口 → 回读端口」,任一台失败即整批回滚:批量导入必须原子,
+    /// 中途失败不能留下半批设备。
+    ///
+    /// 锁顺序按调用方已排序的 `device_id` 升序推进,避免并发批次互相等待。
+    /// SQL / bind 顺序 / 判定顺序 / 错误文案与搬迁前逐字一致。
+    pub async fn provision(&self, devices: &[DeviceProvision]) -> AppResult<Vec<ProvisionedDevice>> {
+        let mut tx = self.base.begin().await?;
+        let mut items = Vec::with_capacity(devices.len());
+        for device in devices {
+            let request = serde_json::to_value(device)?;
+            sqlx::query("INSERT INTO device_provision (device_id,request_json) VALUES (?,?) ON DUPLICATE KEY UPDATE device_id=device_provision.device_id")
+                .bind(&device.device_id).bind(&request).execute(tx.executor()).await?;
+            let stored: serde_json::Value = sqlx::query_scalar(
+                "SELECT request_json FROM device_provision WHERE device_id=? FOR UPDATE",
+            )
+            .bind(&device.device_id)
+            .fetch_one(tx.executor())
+            .await?;
+            if stored != request {
+                return Err(AppError::Conflict(format!(
+                    "设备 {} 已使用不同参数导入",
+                    device.device_id
+                )));
+            }
+            let vendor: Option<u64> = sqlx::query_scalar(
+                "SELECT id FROM vendor WHERE id=? AND status='enabled' AND deleted_at IS NULL",
+            )
+            .bind(device.vendor_id)
+            .fetch_optional(tx.executor())
+            .await?;
+            if vendor.is_none() {
+                return Err(AppError::BadRequest(format!(
+                    "设备 {} 的厂商不存在或未启用",
+                    device.device_id
+                )));
+            }
+            let rows = sqlx::query("SELECT vendor_id,station_id,port_count,model,status,deleted_at FROM device WHERE device_id=? FOR UPDATE")
+                .bind(&device.device_id).fetch_all(tx.executor()).await?;
+            let created = rows.is_empty();
+            if !created {
+                if rows.len() != 1 {
+                    return Err(AppError::Conflict(format!(
+                        "设备 {} 存在重复记录，需先清理",
+                        device.device_id
+                    )));
+                }
+                let row = &rows[0];
+                if row.try_get::<u64, _>("vendor_id")? != device.vendor_id
+                    || row.try_get::<Option<u64>, _>("station_id")? != Some(device.station_id)
+                    || row.try_get::<u8, _>("port_count")? != device.port_count
+                    || row.try_get::<Option<String>, _>("model")? != device.model
+                    || row.try_get::<String, _>("status")? != "enabled"
+                    || row
+                        .try_get::<Option<chrono::NaiveDateTime>, _>("deleted_at")?
+                        .is_some()
+                {
+                    return Err(AppError::Conflict(format!(
+                        "设备 {} 已存在且配置不同或已停用",
+                        device.device_id
+                    )));
+                }
+            } else {
+                sqlx::query("INSERT INTO device (device_id,vendor_id,station_id,port_count,model) VALUES (?,?,?,?,?)")
+                    .bind(&device.device_id).bind(device.vendor_id).bind(device.station_id).bind(device.port_count).bind(&device.model)
+                    .execute(tx.executor()).await?;
+                for port_no in 1..=device.port_count {
+                    let port_code = format!("{}:{port_no}", device.device_id);
+                    let existing: i64 = sqlx::query_scalar(
+                        "SELECT COUNT(*) FROM device_port WHERE port_code=? AND deleted_at IS NULL",
+                    )
+                    .bind(&port_code)
+                    .fetch_one(tx.executor())
+                    .await?;
+                    if existing > 0 {
+                        return Err(AppError::Conflict(format!("端口码 {port_code} 已存在")));
+                    }
+                    sqlx::query("INSERT INTO device_port (device_id,port_no,port_code) VALUES (?,?,?)")
+                        .bind(&device.device_id)
+                        .bind(port_no)
+                        .bind(port_code)
+                        .execute(tx.executor())
+                        .await?;
+                }
+            }
+            let rows = sqlx::query("SELECT id,port_no,port_code FROM device_port WHERE device_id=? AND deleted_at IS NULL ORDER BY port_no,id")
+                .bind(&device.device_id).fetch_all(tx.executor()).await?;
+            if rows.len() != usize::from(device.port_count) {
+                return Err(AppError::Conflict(format!(
+                    "设备 {} 的端口记录不完整",
+                    device.device_id
+                )));
+            }
+            let mut ports = Vec::with_capacity(rows.len());
+            for (index, row) in rows.iter().enumerate() {
+                let port_no: u8 = row.try_get("port_no")?;
+                if usize::from(port_no) != index + 1 {
+                    return Err(AppError::Conflict("设备端口编号重复或缺失".into()));
+                }
+                ports.push(ProvisionedPort {
+                    port_id: row.try_get("id")?,
+                    port_no,
+                    port_code: row.try_get("port_code")?,
+                });
+            }
+            items.push(ProvisionedDevice {
+                device_id: device.device_id.clone(),
+                created,
+                ports,
+            });
+        }
+        tx.commit().await?;
+        Ok(items)
+    }
+
+    // ===== 设备注册 =====
+
+    /// 设备注册。要"锁设备行 → 校验厂商 → 关旧会话 → 建新会话 → 更新设备",
+    /// 跨 5 张表且必须原子,故整段留在服务层。
+    ///
+    /// 返回 `(session_id, session_uuid)`:两者对应**同一行** `device_session`,
+    /// 调用方回给设备的 UUID 必须是入库那一个,否则设备后续按 UUID 查会话
+    /// 会查不到自己。
+    pub async fn register(&self, req: &RegisterRequest) -> AppResult<(u64, String)> {
+        let mut tx = self.base.begin().await?;
+        let rows = sqlx::query("SELECT id,vendor_id,station_id,port_count,model,status FROM device WHERE device_id=? AND deleted_at IS NULL FOR UPDATE")
+            .bind(&req.device_id).fetch_all(tx.executor()).await?;
+        if rows.is_empty() {
+            return Err(AppError::business(2001, "设备未建档"));
+        }
+        if rows.len() != 1 {
+            return Err(AppError::Conflict("设备存在重复记录，需先清理".into()));
+        }
+        let device = &rows[0];
+        let station_id: Option<u64> = device.try_get("station_id")?;
+        if device.try_get::<String, _>("status")? != "enabled" {
+            return Err(AppError::DeviceDisabled);
+        }
+        if device.try_get::<u64, _>("vendor_id")? != req.vendor_id
+            || device.try_get::<u8, _>("port_count")? != req.port_count
+            || req.station_id.is_some_and(|id| station_id != Some(id))
+            || (req.model.is_some() && device.try_get::<Option<String>, _>("model")? != req.model)
+        {
+            return Err(AppError::Conflict("设备注册信息与运营配置不一致".into()));
+        }
+        let vendor: Option<(String, String)> = sqlx::query_as(
+            "SELECT status,protocol FROM vendor WHERE id=? AND deleted_at IS NULL FOR SHARE",
+        )
+        .bind(req.vendor_id)
+        .fetch_optional(tx.executor())
+        .await?;
+        let (status, protocol) = vendor.ok_or_else(|| AppError::BadRequest("厂商不存在".into()))?;
+        if status != "enabled" {
+            return Err(AppError::BadRequest("厂商未启用".into()));
+        }
+        if protocol != "hybrid" && protocol != req.connect_type {
+            return Err(AppError::BadRequest("连接协议与厂商配置不符".into()));
+        }
+        sqlx::query("UPDATE device_session SET ended_at=UTC_TIMESTAMP(3),close_reason='re_register' WHERE device_id=? AND ended_at IS NULL")
+            .bind(&req.device_id).execute(tx.executor()).await?;
+        let session_uuid = uuid::Uuid::new_v4().to_string();
+        let session_id = sqlx::query("INSERT INTO device_session (session_id,device_id,protocol,remote_addr,started_at,last_active_at,created_month) VALUES (?,?,?,?,UTC_TIMESTAMP(3),UTC_TIMESTAMP(3),DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))")
+            .bind(&session_uuid).bind(&req.device_id).bind(&req.connect_type).bind(&req.client_ip).execute(tx.executor()).await?.last_insert_id();
+        sqlx::query("UPDATE device SET registered_at=UTC_TIMESTAMP(3),last_seen_at=UTC_TIMESTAMP(3),last_ip=?,firmware_version=COALESCE(?,firmware_version),mac_addr=COALESCE(?,mac_addr) WHERE id=?")
+            .bind(&req.client_ip).bind(&req.firmware_version).bind(&req.mac_addr).bind(device.try_get::<u64,_>("id")?).execute(tx.executor()).await?;
+        tx.commit().await?;
+        Ok((session_id, session_uuid))
     }
 
     // ===== 会话 =====

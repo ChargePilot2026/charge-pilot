@@ -64,8 +64,11 @@ pub fn estimate(rule:&DevicePricing,kwh:&str,minutes:i64,start_minute:usize)->Ap
  Ok(api_contracts::QuoteResponse{electric_cents:electric,service_cents:service,total_cents:total})
 }
 #[cfg(test)]
+// 测试夹具用 `json!` 搭分时电价(`DevicePricing.time_of_use` 是数据库
+// JSON 列,形状就是配置原文),走契约 DTO 反而会掩盖配置形状变化。
+#[allow(clippy::disallowed_macros, clippy::disallowed_types)]
 mod tests{
- use super::*;use serde_json::json;
+  use super::*;use serde_json::json;
  fn rule()->DevicePricing{DevicePricing{station_id:1,station_name:"Station".into(),rule_id:1,name:"Rule".into(),version:1,mode:"kwh".into(),time_of_use:json!([{ "period":"peak","start":"08:00","end":"20:00","electric_price_cents":100,"service_price_cents":40},{"period":"off","start":"20:00","end":"08:00","electric_price_cents":50,"service_price_cents":20}]),service_fee_cents_per_kwh:30,service_fee_cents_per_min:2,min_charge_cents:0}}
  #[test] fn crossing_periods_and_midnight(){let r=estimate(&rule(),"1",120,19*60).unwrap();assert_eq!((r.electric_cents,r.service_cents,r.total_cents),(75,30,105));let r=estimate(&rule(),"0.500",120,23*60).unwrap();assert_eq!((r.electric_cents,r.service_cents),(25,10));}
  #[test] fn minimum_and_modes(){let mut p=rule();p.min_charge_cents=100;let r=estimate(&p,"0.100",60,10*60).unwrap();assert_eq!((r.electric_cents,r.service_cents,r.total_cents),(10,90,100));p.min_charge_cents=0;p.mode="mixed".into();assert_eq!(estimate(&p,"1",60,600).unwrap().total_cents,260);p.mode="minute".into();assert_eq!(estimate(&p,"1",60,600).unwrap().total_cents,220);}

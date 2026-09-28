@@ -1,6 +1,17 @@
 //! snapshot_warmer: 通过 user / gateway 内部 HTTP 轮询并缓存有真实遥测的充电中订单快照
 //! 频率: 2 s
 
+// 本文件**已无 SQL**(P3 之前的三条查询已下沉到 user / gateway 的 repository 层,
+// 此处只经内部 HTTP 取数)。残留的 `Value` / `json!` 属方案 §三 的三类正用途:
+// ① 下游内部端点的 `items` / `snapshot` 是**动态形状的 JSON 载荷**,需原样读取
+//    后逐字段提取(`power_w` / `current_a` / `ts` …),DTO 定死会在新增字段时
+//    静默丢值;
+// ② 写进 Redis 的快照**本身就是一个 JSON 文档**(`write_snapshot<T: Serialize>`),
+//    这里现搭的对象就是最终线缆字节;
+// ③ `charged_kwh` / `elapsed_seconds` 是**可选字段**,值来自 DB 列,拼装时
+//    必须保留「无值」与「零」的区别,故不能用强类型。
+#![allow(clippy::disallowed_macros, clippy::disallowed_types)]
+
 use crate::AppState;
 use common_redis::write_snapshot;
 use common_error::{AppError, AppResult};

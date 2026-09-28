@@ -5,6 +5,18 @@
 //! `result_reported=TRUE` 之前绝不 ACK 掉 Redis Stream —— 用户服务
 //! 持久化确认结果之后才算完成。
 
+// P5:本文件是 gateway 侧 **充电指令域的 repository 层**,SQL 只允许出现在
+// 这里(方案 §三:handler/usecase 层禁 SQL,由 clippy `disallowed-methods`
+// 保证)。`charge_command` 状态机与端口占用联动必须与 SQL 同处一层:
+//! 「判定 → 写状态 → 释放 Redis 锁」跨两个存储,拆开会让补偿路径失去原子性。
+// 本文件内剩下的 `Value` / `json!` 均落在方案 §三 例外清单第 1、2 类:
+//   - 第 2 类:`charge_command` / `charge_stop_command` 的 `*_json` 列原样透出;
+//   - 第 1 类:`charge_ended` 等 Redis Stream 事件载荷(schema 归消费方约定);
+//   - user 服务 start-result 响应体只读 `ok` 一个键,建模整个信封无收益。
+#![allow(clippy::disallowed_methods)]
+#![allow(clippy::disallowed_types)]
+#![allow(clippy::disallowed_macros)]
+
 use api_contracts::StartResultRequest;
 use common_app::ServiceBase;
 use common_db::Tx;

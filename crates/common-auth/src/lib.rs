@@ -10,7 +10,7 @@
 
 // 分层与序列化约束(P1a 建立;随 P3 逐服务迁移完成转 deny)
 // 说明:配置在仓库根 clippy.toml,级别在这里。测试模块豁免。
-#![allow(
+#![deny(
     clippy::disallowed_macros,
     clippy::disallowed_types,
     clippy::disallowed_methods,

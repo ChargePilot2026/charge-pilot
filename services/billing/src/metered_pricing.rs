@@ -163,6 +163,9 @@ pub fn calculate_segmented(
 }
 
 #[cfg(test)]
+// 测试夹具用 `json!` 搭分时电价(`DevicePricing.time_of_use` 是数据库
+// JSON 列,形状就是配置原文),走契约 DTO 反而会掩盖配置形状变化。
+#[allow(clippy::disallowed_macros, clippy::disallowed_types)]
 mod tests {
     use super::*;
     use serde_json::json;

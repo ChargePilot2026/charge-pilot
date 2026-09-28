@@ -135,6 +135,7 @@ pub fn verify_response(
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_macros, clippy::disallowed_types)]
 mod tests {
     use super::*;
     use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey, LineEnding};

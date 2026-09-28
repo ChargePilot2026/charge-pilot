@@ -15,6 +15,15 @@
 //! 4. 取件用 `FOR UPDATE SKIP LOCKED` + `LIMIT 1`,多实例不抢同一行;
 //!    没取到时显式 `rollback` 再返回 `false`(fire-and-forget 的析构回滚不等价)。
 
+// 本文件是 billing 侧 **fee(计费)域** 的 repository 层,SQL 只允许出现在这里
+// (方案 §三:handler / usecase 层禁 SQL,由 clippy disallowed-methods 保证)。
+//
+// `disallowed_types` 的豁免只服务于 `source_json` / `payload_json` 两处:
+// 它们是数据库 JSON 列,这里要做的是**原样存进去 / 原样透出**(幂等重放
+// 靠逐字比对快照),载荷形状由 `MeteredOrder` 等契约 DTO 决定,类型化反而
+// 会丢掉未知字段。
+#![allow(clippy::disallowed_methods, clippy::disallowed_types)]
+
 use crate::api_types::{CalculateResponse, FeeBreakdownResponse};
 use crate::charge_fee::{resolve_fee, resolve_fee_segmented};
 use api_contracts::pricing::MeteredOrder;
@@ -157,7 +166,7 @@ impl FeeService {
     /// ```
     /// `uk_order` 保证同一订单重复计费重试只会**多一条请求而非多条单**；
     /// `idx_month` 让「本月待人工定价清单」这类月度运营查询走索引。
-    #[allow(clippy::disallowed_methods)] // billing 侧 repository 层
+    #[allow(clippy::disallowed_methods)] // 见文件头:fee 域 repository 层
     pub async fn record_manual_fee_review(
         &self,
         charge_order_id: u64,

@@ -97,6 +97,15 @@ async fn handle_conn(
     result
 }
 
+/// 把一帧设备报文归约成一个领域事件并投递。
+///
+/// **豁免理由**:下面两处 `json!` 构造的是 **Redis Stream 事件载荷**
+/// (`device_status` / `device_alert`),属于方案 §三 例外清单第 1 类。
+/// 事件载荷的 schema 归**消费方**(user/billing/告警)约定,producer 侧没有
+/// 权威结构体可依;强行在 producer 建模等于让消费方按 gateway 的内部结构
+/// 写代码,耦合方向反了。能校验的字段(status 长度与控制字符、severity
+/// 白名单)已在构造前校验完。
+#[allow(clippy::disallowed_macros)]
 async fn handle_frame(frame: &Frame, state: &AppState, session: &str) -> AppResult<()> {
     match frame.msg_type.as_str() {
         "heartbeat" => { /* 设备心跳 */ }

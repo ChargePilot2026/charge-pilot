@@ -26,6 +26,12 @@
 //!   现在用 `XGROUP SETID` 把该组的游标对齐到新 entry 之前,使重投的消息
 //!   成为该组「未读」的第一条。
 
+// 本文件是 worker 侧 **retry(重试)域** 的 repository 层,DLQ 重放游标
+// (`dlq_replay_cursor`)的读写只允许出现在这里(方案 §三:任务循环层禁 SQL,
+// 由 clippy disallowed-methods 保证)。D21/D23 的游标与重放逻辑一个字未动,
+// 仅加文件级 lint 豁免。
+#![allow(clippy::disallowed_methods)]
+
 use common_app::ServiceBase;
 use common_error::{AppError, AppResult};
 use common_redis::RedisStream;

@@ -4,6 +4,10 @@
 //!   - DTO 序列化往返
 //!   - 路径常量冻结
 //!   - 计费 + 分账纯函数组合
+//!
+//! 测试直接比对 `serde_json::Value` 与信封字面量 —— 被测对象就是响应体
+//! 字节本身,类型化断言看不到「多了/少了一个字段」这类形状回归。
+#![allow(clippy::disallowed_macros, clippy::disallowed_types)]
 
 use billing::api_types;
 use billing::engine;

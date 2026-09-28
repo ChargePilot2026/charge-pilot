@@ -10,13 +10,18 @@
 //!   - `PortLock`: 三层防护中的逻辑锁 / 物理锁(见技术规格 § 5.5)
 
 
-// 分层与序列化约束(P1a 建立;随 P3 逐服务迁移完成转 deny)
+// 分层与序列化约束(P1a 建立;P5 收口完成,已转 deny)
 // 说明:配置在仓库根 clippy.toml,级别在这里。测试模块豁免。
-#![allow(
+#![deny(
     clippy::disallowed_macros,
     clippy::disallowed_types,
     clippy::disallowed_methods,
 )]
+// `disallowed_types` 在本 crate 豁免:`StreamEnvelope.payload` 是
+// **跨服务 Stream 的线缆格式**(方案 §三 例外清单第 1 类的定义处)——
+// 生产者可能是任何服务,payload 形状无法在本 crate 枚举。解析在
+// `common-stream` 的 handler 边界完成,随即转成具名结构。
+#![allow(clippy::disallowed_types)]
 use common_config::RedisConfig;
 use common_error::{AppError, AppResult};
 use redis::{aio::ConnectionManager, AsyncCommands, Client, RedisResult, Value};
@@ -619,6 +624,7 @@ pub async fn read_snapshot<T: serde::de::DeserializeOwned>(
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_macros)]
 mod tests {
     use super::*;
 

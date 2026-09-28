@@ -1,12 +1,14 @@
 # Clippy 强制配置
 #
-# 放置位置说明(实测):lint **配置**只能放本文件;lint **级别**写在各 crate 的
-# `#![deny(...)]`。三种直觉写法都无效:
+# lint **级别**写在各 crate 的 crate 根:
+#   - lib crate  → `src/lib.rs` 的 `#![deny(...)]`(P5 收口完成的服务已转 deny)
+#   - bin crate  → `src/main.rs` 顶部 `#![cfg_attr(not(test), deny(...))]`
+#   - 尚未完成迁移的服务暂为 `#![allow(...)]`
+# 三种直觉写法都无效:
 #   - `cfg_attr(not(test), clippy::disallowed_macros = [...])` → attribute value must be a literal
 #   - 源码内 `#![clippy::disallowed_macros = [...]]`          → custom inner attributes are unstable
 #   - Cargo.toml `[lints.clippy] disallowed_macros = [...]`   → invalid type: sequence
 #
-# 当前为 `allow` 级别(见各服务 lib.rs),随 P3 逐服务迁移完成后转 `deny`。
 
 disallowed-macros = [
   "serde_json::json",
@@ -17,9 +19,10 @@ disallowed-types = [
   "sqlx::QueryBuilder",
 ]
 
+# `sqlx::QueryBuilder` 是**类型**,只登记在 disallowed-types —— 写进
+# disallowed-methods 会报 `warning: expected a function, found a struct`。
 disallowed-methods = [
-  { path = "sqlx::query",        reason = "SQL 只允许出现在 repository_sql.rs" },
-  { path = "sqlx::query_as",     reason = "SQL 只允许出现在 repository_sql.rs" },
-  { path = "sqlx::query_scalar", reason = "SQL 只允许出现在 repository_sql.rs" },
-  { path = "sqlx::QueryBuilder", reason = "这是类型;应登记到 disallowed-types 而非 methods" },
+  { path = "sqlx::query",        reason = "SQL 只允许出现在 repository 层(各域的 capability/<域>/repository_sql.rs 或 services/<域>.rs);common-db、migrate-baseline 这类基础设施 crate 例外 —— SQL 就是它们的职责" },
+  { path = "sqlx::query_as",     reason = "SQL 只允许出现在 repository 层(各域的 capability/<域>/repository_sql.rs 或 services/<域>.rs);common-db、migrate-baseline 这类基础设施 crate 例外 —— SQL 就是它们的职责" },
+  { path = "sqlx::query_scalar", reason = "SQL 只允许出现在 repository 层(各域的 capability/<域>/repository_sql.rs 或 services/<域>.rs);common-db、migrate-baseline 这类基础设施 crate 例外 —— SQL 就是它们的职责" },
 ]

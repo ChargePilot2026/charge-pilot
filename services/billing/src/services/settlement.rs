@@ -18,6 +18,12 @@
 //!   `settlement_party_amount` 插入在**同一个事务**里;取模板的 HTTP 调用
 //!   发生在事务内(在 `FOR UPDATE` 之后),这是原实现的行为,未改。
 
+// 本文件是 billing 侧 **settlement(对账分账)域** 的 repository 层,SQL 只
+// 允许出现在这里(方案 §三:handler / usecase 层禁 SQL,由 clippy
+// disallowed-methods 保证)。handler 侧的 `api.rs` 只做编排,分账状态机与
+// 快照查询都在本文件。
+#![allow(clippy::disallowed_methods)]
+
 use crate::api_types::{
     OrderSplitParty, OrderSplitResponse, SettlementDetailResponse, SplitAllocation, SplitRequest,
     SplitResponse,

@@ -14,8 +14,12 @@
 //! }
 //! // 不再有 `pub db: Db`
 //! ```
+//!
+//! P5 收口:原先的 `ChargeService` 示范骨架、`ServiceDeps`、`build_service_base`
+//! 全仓零调用,已删除 —— 保留零调用的示范代码会诱导后来者照抄一个不该存在
+//! 的模式(且它自身就带一条 `sqlx::query_scalar` 违规)。真正在用的是 `ServiceBase`。
 
-#![allow(
+#![deny(
     clippy::disallowed_macros,
     clippy::disallowed_types,
     clippy::disallowed_methods,
@@ -23,4 +27,4 @@
 
 pub mod service;
 
-pub use service::{build_service_base, ServiceBase, ServiceDeps};
+pub use service::{build_service_base, ServiceBase};

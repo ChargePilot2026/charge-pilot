@@ -71,7 +71,10 @@ pub struct ChargeSnapshot {
     pub next_poll_after_ms: u64,
     pub server_ts: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub telemetry_ts: Option<serde_json::Value>,
+    /// 设备时钟戳的上报值。⚠️ 豁免:对应 DB 的 `telemetry.ts` JSON 列
+    /// (方案 §三 正用途第 2 类)。user 侧按「原样透出」写进快照缓存,
+    /// 上游可能给数字时间戳也可能给字符串,契约层不强制统一格式。
+    pub telemetry_ts: Option<crate::OpaqueJson>,
 }
 
 // ===== 充电历史 =====
@@ -1000,6 +1003,10 @@ mod wallet_refund_list_tests {
     }
 }
 
+/// 测试夹具模块(方案 §三 明文允许的测试豁免):
+/// `json!` 在此只用于构造**旧格式 `response_json`** 的反序列化夹具,
+/// 验证缺 `review` 键时仍能读回;不产出任何对外契约。
+#[allow(clippy::disallowed_macros)]
 #[cfg(test)]
 mod wallet_refund_tests {
     use super::*;
@@ -1082,8 +1089,12 @@ pub struct Feedback {
     /// `rating` / `complaint` / `suggestion`
     pub category: String,
     pub content: Option<String>,
-    /// 图片 URL 数组,无图为空数组(不是 null)
-    pub images: Vec<serde_json::Value>,
+    /// 图片 URL 数组,无图为空数组(不是 null)。
+    /// ⚠️ 豁免:原样透出 DB 列 `feedback.images_json`(JSON 列,
+    /// 方案 §三 正用途第 2 类)。写入侧(user)校验为 `Vec<String>` 且限 5 张、
+    /// https 开头,但那是**写入约束**;历史存量行无 schema 保障,
+    /// 契约层透传不能因为某行多一个字段就整体反序列化失败。
+    pub images: Vec<crate::OpaqueJson>,
     /// `pending` / `processed` / `closed`
     pub status: String,
     pub replied_by: Option<String>,
@@ -1102,7 +1113,9 @@ pub struct FaultReport {
     pub report_source: String,
     pub fault_type: String,
     pub description: Option<String>,
-    pub images: Vec<serde_json::Value>,
+    /// 同 `Feedback.images`:原样透出 DB 列 `device_fault_report.images_json`
+    /// (JSON 列,方案 §三 正用途第 2 类),存量行无 schema 保障。
+    pub images: Vec<crate::OpaqueJson>,
     pub status: String,
     pub assigned_to: Option<String>,
     pub resolved_at: Option<String>,

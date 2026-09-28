@@ -1,25 +1,11 @@
 //! The gateway service publishes its own outbox; Redis failure never loses a receipt.
 //!
-//! P3:发布逻辑已下沉到 `OutboxService`,本文件只留入队辅助与后台任务编排。
+//! P3:发布逻辑已下沉到 `OutboxService`,本文件只留后台任务编排。
+//! P5:`enqueue` 的 SQL 进一步下沉到 `DeviceService::enqueue_event_in` ——
+//! 入队必须发生在**发信方自己的事务**里,跨域调用一个自由函数无法保证这一点。
+//! 本文件剩下的只有投递循环编排。
 use crate::AppState;
-use common_error::AppResult;
-use common_redis::StreamEnvelope;
 use std::time::Duration;
-
-/// Persist gateway-owned events with the business write so a Redis outage cannot lose them.
-pub async fn enqueue(
-    tx: &mut common_db::Tx<'_>,
-    stream: &str,
-    envelope: &StreamEnvelope,
-) -> AppResult<()> {
-    sqlx::query("INSERT INTO event_outbox (event_id, stream, envelope_json) VALUES (?, ?, ?)")
-        .bind(&envelope.event_id)
-        .bind(stream)
-        .bind(serde_json::to_value(envelope)?)
-        .execute(tx.executor())
-        .await?;
-    Ok(())
-}
 
 pub fn spawn(st: AppState) {
     tokio::spawn(async move {

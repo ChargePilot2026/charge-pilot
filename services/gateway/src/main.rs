@@ -3,6 +3,15 @@
 //! 端口分配(技术规格 § 2.1):
 //!   - 9100: TCP 设备长连接
 //!   - 8083: 内部 HTTP(经 device-net/docker network)
+//!
+//! P5:SQL / `serde_json::Value` / `json!` 三类 lint 在本 crate **转 deny**。
+//! 测试目标(`cargo test --all-targets`)不转 deny,测试夹具可以用
+//! `json!` / `Value` 构造样本而不必污染生产代码的类型化约束。
+#![cfg_attr(not(test), deny(
+    clippy::disallowed_macros,
+    clippy::disallowed_types,
+    clippy::disallowed_methods
+))]
 
 mod api;
 mod scan;
@@ -11,7 +20,6 @@ mod registration;
 pub mod services;
 mod clients;
 mod protocol;
-mod telemetry_obs;
 mod stream_consumer;
 mod charge_command;
 mod charge_stop;

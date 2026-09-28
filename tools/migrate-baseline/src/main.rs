@@ -14,6 +14,23 @@
 //! cargo run -p migrate-baseline -- --source ../../migrations/admin_db --probe admin_user_role --dry-run
 //! ```
 
+// 分层与序列化约束(P1a 建立;P5 收口完成,转 deny)
+// 说明:配置在仓库根 clippy.toml,级别在 crate 根(bin crate 无 lib.rs);
+// `not(test)` 让 `#[cfg(test)]` 内的测试夹具不被 deny。
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::disallowed_macros,
+        clippy::disallowed_types,
+        clippy::disallowed_methods,
+    )
+)]
+// 本 crate 是**迁移基线登记工具**:它直接读写 `_sqlx_migrations` 与
+// `information_schema`,SQL 就是它的职责本身 —— 不存在「下沉到 repository 层」
+// 的对象(见仓库根 clippy.toml 的 reason:基础设施 crate 例外)。
+// crate 级属性按出现顺序解析,后写的覆盖先写的,故这条放在上面 deny 之后。
+#![allow(clippy::disallowed_methods)]
+
 use anyhow::{bail, Context, Result};
 use sqlx::migrate::{Migrate, MigrationType, Migrator};
 use sqlx::{Connection, MySqlConnection, Row};

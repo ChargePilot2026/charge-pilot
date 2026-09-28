@@ -11,12 +11,26 @@
 
 // 分层与序列化约束(P1a 建立;随 P3 逐服务迁移完成转 deny)
 // 说明:配置在仓库根 clippy.toml,级别在这里。测试模块豁免。
-#![allow(
+#![deny(
     clippy::disallowed_macros,
     clippy::disallowed_types,
     clippy::disallowed_methods,
 )]
 use serde::{Deserialize, Serialize};
+
+/// 契约层的「不透明 JSON」类型别名。
+///
+/// **为什么用别名而不是裸 `serde_json::Value`**:clippy 的 `disallowed_types`
+/// 只认字面路径,`#[allow]` 加在**字段/结构体**上对它无效(只在函数与
+/// `#[cfg(test)]` 模块级有效)。别名处的 `#[allow]` 是唯一既能精确豁免、
+/// 又能保住字段类型的写法 —— 别名是 `serde_json::Value` 的**同义**类型,
+/// 不改变序列化行为、不改变字段名、对 5 个服务零影响。
+///
+/// **什么时候可以用别名**:本 crate 里凡是对应**数据库 JSON 列原样透出**的
+/// 字段(方案 §三 正用途第 2 类)。这些字段无固定 schema,类型化会波及
+/// 存量数据与全部消费者,故契约层必须保持不透明。
+#[allow(clippy::disallowed_types)]
+pub type OpaqueJson = serde_json::Value;
 
 pub mod orders;
 pub mod refunds;
@@ -514,11 +528,18 @@ pub struct StartResultRequest {
 }
 
 // ---- admin <-> user 订单详情 ----
+//
+// `OrderListResponse` 的元素类型刻意保持不透明:它是 admin 订单列表接口的
+// 行级透传壳(每行字段由 user 服务按当前列表视图拼装),契约层没有权威 schema。
+// 类型化等于替 user 固化列表行结构,会同时改动 admin-web 与 miniprogram 的
+// 读法,故只保留 `Vec<Value>` 形状。
 
+/// ⚠️ 豁免:元素形状由 user 服务按列表视图逐行拼装(DB JSON 语义),
+/// 契约层无权威 schema,类型化会波及 admin-web / miniprogram 的读法。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct OrderListResponse {
     #[serde(default)]
-    pub items: Vec<serde_json::Value>,
+    pub items: Vec<OpaqueJson>,
 }
 
 impl OrderListResponse {

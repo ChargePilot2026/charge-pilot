@@ -4,9 +4,9 @@
 //! 主入口在 `bin/billing.rs`(见 [[bin]] 配置)。
 
 
-// 分层与序列化约束(P1a 建立;随 P3 逐服务迁移完成转 deny)
-// 说明:配置在仓库根 clippy.toml,级别在这里。测试模块豁免。
-#![allow(
+// 分层与序列化约束(P1a 建立;P5 收口完成,转 deny)
+// 说明:配置在仓库根 clippy.toml,级别在这里。repository 层与测试模块各自豁免。
+#![deny(
     clippy::disallowed_macros,
     clippy::disallowed_types,
     clippy::disallowed_methods,

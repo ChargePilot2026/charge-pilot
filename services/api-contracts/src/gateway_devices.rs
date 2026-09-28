@@ -139,7 +139,9 @@ pub struct FirmwarePushRequest {
 pub struct DeviceCommandRequest {
     pub cmd: String,
     #[serde(default)]
-    pub params: Option<serde_json::Map<String, serde_json::Value>>,
+    /// 键名由 `cmd` 决定(重启/读取/设置…),**无法在契约层枚举**,故整体豁免。
+    /// 契约层唯一能约束的「必须是对象」已由 `Map` 表达(见结构体文档)。
+    pub params: Option<serde_json::Map<String, crate::OpaqueJson>>,
 }
 
 #[cfg(test)]

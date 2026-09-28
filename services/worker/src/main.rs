@@ -5,6 +5,19 @@
 //! 当前 Stream 组: webhook_retry(真实投递,D11) / ota_schedule(失败进入 DLQ) / comp_tx(结果审计)
 //! scheduled_task cron/manual runner 与其他计划任务尚未接入
 
+// 分层与序列化约束(P1a 建立;P5 收口完成,转 deny)
+// 说明:配置在仓库根 clippy.toml,级别在 crate 根(bin crate 无 lib.rs)。
+// worker 是 bin crate,`not(test)` 让 `#[cfg(test)]` 模块内的测试夹具不被 deny。
+// repository 层与测试模块各自文件级豁免。
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::disallowed_macros,
+        clippy::disallowed_types,
+        clippy::disallowed_methods,
+    )
+)]
+
 mod scheduler;
 mod tasks;
 mod streams;

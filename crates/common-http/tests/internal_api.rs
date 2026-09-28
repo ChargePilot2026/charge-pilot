@@ -1,3 +1,7 @@
+// 集成测试直接构造/断言 API 信封的 JSON 字面量 —— 被测对象就是响应体字节
+// 本身,类型化断言看不到「多了/少了一个字段」这类形状回归。
+#![allow(clippy::disallowed_macros, clippy::disallowed_types)]
+
 use axum::{
     extract::Query,
     http::{HeaderMap, StatusCode},

@@ -15,6 +15,12 @@
 //!
 //! ⚠️ 本域是**审计台账**,不声称执行任何退款或补偿动作。
 
+// 本文件是 worker 侧 **event(事件消费)域** 的 repository 层,SQL 只允许
+// 出现在这里(方案 §三:handler / 任务循环层禁 SQL,由 clippy
+// disallowed-methods 保证)。`AppState` 上已无裸 `db` 字段,消费入口拿不到
+// 连接池。
+#![allow(clippy::disallowed_methods)]
+
 use common_app::ServiceBase;
 use common_error::{AppError, AppResult};
 use common_redis::StreamEntry;

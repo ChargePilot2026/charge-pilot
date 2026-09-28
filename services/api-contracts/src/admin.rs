@@ -7,6 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::common::ListResponse;
+use crate::OpaqueJson;
 
 // ===== 角色 =====
 
@@ -180,8 +181,11 @@ pub struct CustomerServiceDetail {
     pub path: Option<String>,
     pub priority: u32,
     pub enabled: bool,
-    /// 营业时间为任意 JSON(后台可配置结构),保留动态
-    pub working_hours_json: Option<serde_json::Value>,
+    /// 营业时间为任意 JSON(后台可配置结构),保留动态。
+    /// ⚠️ 豁免:对应 DB 列 `customer_service_config.working_hours_json`
+    /// (JSON 列,方案 §三 正用途第 2 类)。admin-web 侧声明为 `unknown`
+    /// 并自行渲染,契约层无权威 schema,类型化会同时改动写入请求与后台渲染。
+    pub working_hours_json: Option<OpaqueJson>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -553,7 +557,9 @@ pub struct AlertRuleDetail {
     pub op: String,
     /// ⚠️ `alert_rule.threshold` 是 **JSON 列**,故此处是原始 JSON 值而非字符串:
     /// `between` 规则存的是数组,写成 `String` 会直接解码失败。
-    pub threshold: serde_json::Value,
+    /// 豁免:DB 列 `alert_rule.threshold`(JSON 列,方案 §三 正用途第 2 类),
+    /// 标量与数组两种形状共存,无固定 schema,契约层必须保持不透明。
+    pub threshold: OpaqueJson,
     pub window_seconds: u32,
     pub severity: String,
     pub enabled: bool,
@@ -573,11 +579,17 @@ pub struct AlertSubscription {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RiskConfigItem {
     pub key: String,
-    /// 配置值是 JSON(可能是数字/布尔/对象),不是统一字符串
-    pub value: serde_json::Value,
+    /// 配置值是 JSON(可能是数字/布尔/对象),不是统一字符串。
+    /// ⚠️ 豁免:对应 DB 列 `risk_config.value`(JSON 列,方案 §三 正用途第 2 类);
+    /// 阈值项写数字、开关项写布尔、嵌套项写对象,契约层无 schema 可依。
+    pub value: OpaqueJson,
     pub description: Option<String>,
 }
 
+/// 测试夹具模块(方案 §三 明文允许的测试豁免):
+/// `json!` 在此只用于**搭断言输入**(模拟 DB JSON 列的内容),
+/// 不产出任何对外契约 —— 生产代码里该位置一律走 DB 原样透出。
+#[allow(clippy::disallowed_macros)]
 #[cfg(test)]
 mod alert_tests {
     use super::*;
@@ -1174,6 +1186,8 @@ pub struct AdminWalletRiskRow {
     pub freeze_linked: bool,
 }
 
+/// 同上:`json!` 用来验证 `between` 规则的 threshold 数组不被压成字符串。
+#[allow(clippy::disallowed_macros)]
 #[cfg(test)]
 mod finance_admin_tests {
     use super::*;
@@ -1281,19 +1295,27 @@ pub struct WhitelabelPublicConfig {
     pub id: u64,
     pub miniprogram_name: String,
     pub miniprogram_logo_url: Option<String>,
-    pub admin_logo_url: serde_json::Value,
+    /// ⚠️ 下面六项原样透出 DB 列 `whitelabel_config.config_json`
+    /// (JSON 列,方案 §三 正用途第 2 类)。改成 `Option<String>` 会把
+    /// 「未配置」从序列化出的 `null` 变成**缺键**,而 admin-web 与 miniprogram
+    /// 都按「键恒存在」读这个视图;且 `config_json` 可存任意 JSON,
+    /// 当前全是字符串只是事实,不是约束。
+    pub admin_logo_url: OpaqueJson,
     pub theme_color: Option<String>,
     pub service_phone: Option<String>,
-    pub service_wechat_id: serde_json::Value,
-    pub icp_record_no: serde_json::Value,
-    pub custom_domain: serde_json::Value,
-    pub agreement_url: serde_json::Value,
-    pub privacy_url: serde_json::Value,
+    pub service_wechat_id: OpaqueJson,
+    pub icp_record_no: OpaqueJson,
+    pub custom_domain: OpaqueJson,
+    pub agreement_url: OpaqueJson,
+    pub privacy_url: OpaqueJson,
     pub about_us: Option<String>,
 }
 
 impl WhitelabelPublicConfig {
     /// 尚未配置任何一行时的默认视图(历史实现回 `{}`)。
+    /// 函数级豁免:`Value::Null` 就是「键存在但为 null」的默认值写法,
+    /// 与上面的字段类型严格一致,这里不引入任何新的 JSON 拼装。
+    #[allow(clippy::disallowed_types)]
     pub fn unset() -> Self {
         Self {
             id: 0,

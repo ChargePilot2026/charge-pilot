@@ -27,7 +27,10 @@ pub struct DevicePricing {
     pub name:String,
     pub version:u32,
     pub mode:String,
-    pub time_of_use:serde_json::Value,
+    /// ⚠️ 豁免:DB 列 `pricing_rule.time_of_use_json`(JSON 列,方案 §三 正用途第 2 类)。
+    /// 表结构本身由后台配置(admin 写入、billing/user/admin 各家解析),
+    /// 契约层无权威 schema,类型化等于替全部服务固化一套结构。
+    pub time_of_use:crate::OpaqueJson,
     pub service_fee_cents_per_kwh:i64,
     pub service_fee_cents_per_min:i64,
     pub min_charge_cents:i64,

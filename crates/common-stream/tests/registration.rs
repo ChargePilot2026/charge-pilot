@@ -1,6 +1,11 @@
 //! Run against a disposable Redis database with TEST_REDIS_URL set:
 //! cargo test -p common-stream --test registration -- --ignored
 
+// 测试直接断言 Redis Stream 线缆上的载荷字面量(`serde_json::Value`),
+// 强类型化会掩盖字段丢失/变形 —— 属方案 §三 的「Redis Stream 线缆载荷」
+// 正用途。
+#![allow(clippy::disallowed_macros, clippy::disallowed_types)]
+
 use async_trait::async_trait;
 use common_config::RedisConfig;
 use common_error::{AppError, AppResult};

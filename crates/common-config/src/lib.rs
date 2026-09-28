@@ -6,12 +6,21 @@
 
 // 分层与序列化约束(P1a 建立;随 P3 逐服务迁移完成转 deny)
 // 说明:配置在仓库根 clippy.toml,级别在这里。测试模块豁免。
-#![allow(
+#![deny(
     clippy::disallowed_macros,
     clippy::disallowed_types,
     clippy::disallowed_methods,
 )]
 use common_error::{AppError, AppResult};
+
+/// 「不透明 JSON」类型别名,给本 crate 里对应**数据库 JSON 列原样透出**的
+/// 配置项使用(方案 §三 正用途第 2 类)。
+///
+/// 别名是 `serde_json::Value` 的**同义**类型:不改变序列化行为、不改变字段名,
+/// 对所有消费者零影响。而 clippy 的 `disallowed_types` 只认字面路径,
+/// `#[allow]` 加在字段上对它无效 —— 别名处的 `#[allow]` 才能精确豁免。
+#[allow(clippy::disallowed_types)]
+pub type OpaqueJson = serde_json::Value;
 use serde::{Deserialize, Serialize};
 use std::env;
 use url::Url;
@@ -212,7 +221,11 @@ pub struct AppConfig {
     pub log_level: String,
     pub runtime_env: RuntimeEnv,
     pub bootstrap_admin: Option<BootstrapAdmin>,
-    pub time_of_use_default: Option<serde_json::Value>,
+    /// ⚠️ 豁免:对应 DB 列 `pricing_rule.time_of_use_json`(JSON 列,方案 §三 正用途第 2 类)
+    /// 分时电价表的结构由后台配置、各服务各自解析,配置层必须保持不透明透出。
+    /// 类型化会波及 `AppConfig` 的全部消费者(5 个服务都读它),故不动类型。
+    #[allow(clippy::disallowed_types)]
+    pub time_of_use_default: Option<OpaqueJson>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

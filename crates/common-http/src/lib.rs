@@ -5,16 +5,16 @@
 //! - `tracing_layer`: tracing tower 中间件
 
 
-// 分层与序列化约束(P1a 建立;随 P3 逐服务迁移完成转 deny)
+// 分层与序列化约束(P1a 建立;P5 收口完成,转 deny)
 // 说明:配置在仓库根 clippy.toml,级别在这里。测试模块豁免。
-#![allow(
+#![deny(
     clippy::disallowed_macros,
     clippy::disallowed_types,
     clippy::disallowed_methods,
 )]
 use axum::{body::Body, http::Request, middleware::Next, response::Response};
 use common_auth::constant_time_eq;
-use common_error::{AppError, AppResult};
+use common_error::{ApiEnvelope, AppError, AppResult};
 use tracing::Instrument;
 use std::sync::Arc;
 use std::time::Duration;
@@ -175,15 +175,18 @@ pub async fn service_token_required(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     if !constant_time_eq(provided.as_bytes(), expected.as_bytes()) {
-        let body = serde_json::json!({
-            "code": 1001,
-            "message": "missing or invalid service token",
-            "request_id": Uuid::new_v4().to_string()
-        });
-        let resp = axum::response::Response::builder()
+        // 与全站响应形状对齐:原实现裸 `json!` 手写 `{code,message,request_id}`,
+        // 形状与 `ApiEnvelope::err` 一致(缺 `data`、content-type 同为
+        // application/json),但绕过了信封构造器 —— 契约一改这里就会漏。
+        let body = ApiEnvelope::<()>::err(
+            common_error::codes::UNAUTHORIZED,
+            "missing or invalid service token",
+            Uuid::new_v4().to_string(),
+        );
+        let resp = Response::builder()
             .status(401)
             .header("content-type", "application/json")
-            .body(axum::body::Body::from(body.to_string()))
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
             .unwrap();
         return Err(resp);
     }
@@ -191,8 +194,28 @@ pub async fn service_token_required(
 }
 
 #[cfg(test)]
+// 断言直接比对 `serde_json::Value`:被测对象就是响应体字节本身,类型化
+// 断言看不到「多了一个字段」这类形状回归。
+#[allow(clippy::disallowed_types)]
 mod tests {
     use super::*;
+
+    /// 401 响应**形状**锁定:与全站 `ApiEnvelope` 信封一致 ——
+    /// `code=1001`、`message` 文案、`request_id` 透传、**不得带 `data` 字段**。
+    /// 此前这里是裸 `json!` 手写体,信封契约变了也不会失败,现由本测试兜住。
+    #[test]
+    fn service_token_rejection_body_matches_api_envelope() {
+        let body = ApiEnvelope::<()>::err(
+            common_error::codes::UNAUTHORIZED,
+            "missing or invalid service token",
+            "rid-fixed",
+        );
+        let v: serde_json::Value = serde_json::to_value(&body).unwrap();
+        assert_eq!(v["code"], 1001);
+        assert_eq!(v["message"], "missing or invalid service token");
+        assert_eq!(v["request_id"], "rid-fixed");
+        assert!(v.get("data").is_none(), "错误响应不得带 data 字段");
+    }
 
     #[test]
     fn service_client_construct() {

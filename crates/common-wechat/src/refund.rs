@@ -137,11 +137,17 @@ async fn send(
     // Do not trust any business response, even a non-2xx response, before verification.
     pay_signing::verify_response(cfg, &headers, &raw)?;
     if !status.is_success() {
+        // 微信错误体只取 `code` 一个字段,用具名 DTO 而非整包 `Value` ——
+        // 未知字段不影响反序列化,比 `Value::get` 链更早失败也更明确。
+        #[derive(serde::Deserialize)]
+        struct WechatErrorBody {
+            code: String,
+        }
         if query
             && status.as_u16() == 404
-            && serde_json::from_str::<serde_json::Value>(&raw)
+            && serde_json::from_str::<WechatErrorBody>(&raw)
                 .ok()
-                .and_then(|v| v.get("code").and_then(|c| c.as_str()).map(str::to_owned))
+                .map(|b| b.code)
                 .as_deref()
                 == Some("RESOURCE_NOT_EXISTS")
         {

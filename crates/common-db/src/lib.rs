@@ -7,13 +7,19 @@
 //!   - 提供 `IdGen` / `TimeOf` 等公用工具
 
 
-// 分层与序列化约束(P1a 建立;随 P3 逐服务迁移完成转 deny)
+// 分层与序列化约束(P1a 建立;P5 收口完成,已转 deny)
 // 说明:配置在仓库根 clippy.toml,级别在这里。测试模块豁免。
-#![allow(
+#![deny(
     clippy::disallowed_macros,
     clippy::disallowed_types,
     clippy::disallowed_methods,
 )]
+// `disallowed_methods` 在本 crate **整体豁免**:
+// common-db 是数据库基础设施 crate,`ping` / `ensure_schema_metadata` /
+// `soft_delete` 里的 SQL 就是它的职责本身(连得上吗、sql_mode 是什么、
+// 通用软删),不存在「该下沉到某个业务域 repository」这回事。
+// 业务侧的 SQL 仍由各服务自己的 repository 层约束(见 clippy.toml 的 reason)。
+#![allow(clippy::disallowed_methods)]
 use async_trait::async_trait;
 use common_config::MysqlConfig;
 use common_error::{AppError, AppResult};

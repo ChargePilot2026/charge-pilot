@@ -66,47 +66,7 @@ impl ServiceBase {
     }
 }
 
-/// 充电能力域的 usecase 骨架。
-///
-/// 迁移时按能力域逐个替换 `AppState` 上的字段;旧 `AppState.db` 保留到该服务
-/// 全部调用方迁完(P3)。
-pub struct ChargeService {
-    base: ServiceBase,
-}
-
-impl ChargeService {
-    pub fn new(base: ServiceBase) -> Self {
-        Self { base }
-    }
-
-    /// 示范:一次显式事务内完成读,失败显式回滚。
-    ///
-    /// 刻意用 `begin/rollback` 而非 `with_tx`——`charge_start.rs` 的重试语义依赖
-    /// "等待回滚完成并处理错误",`with_tx` 的装箱 Future 表达不了这一点。
-    pub async fn count_orders(&self, order_no: &str) -> AppResult<i64> {
-        let mut tx = self.base.begin().await?;
-        let result =
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM charge_order WHERE order_no = ?")
-                .bind(order_no)
-                .fetch_one(tx.executor())
-                .await;
-        match result {
-            Ok(v) => {
-                tx.commit().await?;
-                Ok(v)
-            }
-            Err(e) => {
-                tx.rollback().await?; // 显式回滚并等待完成
-                Err(e.into())
-            }
-        }
-    }
-
-    pub fn cfg(&self) -> &Arc<AppConfig> {
-        self.base.cfg()
-    }
-}
-
+/// 一次性装配 `ServiceBase`(薄封装,保留给各服务的 `services::build` 调用)。
 pub fn build_service_base(
     db: Db,
     http: reqwest::Client,
@@ -114,17 +74,6 @@ pub fn build_service_base(
     cfg: Arc<AppConfig>,
 ) -> ServiceBase {
     ServiceBase::new(db, http, service_token, cfg)
-}
-
-/// 各服务启动时装配的依赖容器
-pub struct ServiceDeps {
-    pub cfg: Arc<AppConfig>,
-    pub db: Db,
-    pub redis_cache: RedisCache,
-    pub redis_stream: RedisStream,
-    pub jwt: Arc<JwtCodec>,
-    pub http: reqwest::Client,
-    pub service_token: Arc<String>,
 }
 
 #[cfg(test)]
