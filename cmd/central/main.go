@@ -104,7 +104,8 @@ func run(ctx context.Context) error {
 	}
 	adminAPI := admin.API{Store: adminStore, Sessions: admin.Sessions{Redis: cache}, JWT: jwt}
 	adminAPI.Register(router)
-	billing.Service{Store: billing.Store{DB: billingORM}, Orders: charge.BillingOrders{DB: userORM}, Splits: billing.SplitResolver{AdminDB: adminORM}, ServiceToken: cfg.ServiceToken}.Register(router)
+	billing.Service{Store: billing.Store{DB: billingORM}, Orders: charge.BillingOrders{DB: userORM}, Splits: billing.SplitResolver{AdminDB: adminORM}, ServiceToken: cfg.ServiceToken,
+		Bills: charge.BillIssuer{Store: charge.BillStore{DB: userORM}}}.Register(router)
 	admin.ResourceAPI{Store: admin.ResourceStore{AdminDB: adminORM, UserDB: userORM, BillingDB: billingORM}, Auth: adminAPI, GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken}.Register(router)
 	admin.Dashboard{UserDB: userORM, AdminDB: adminORM}.Register(router, adminAPI)
 	identity.API{WeChat: identity.MiniProgram{SDK: wechat}, Users: identity.UserStore{DB: userORM}, Sessions: identity.Sessions{Redis: cache}, JWT: jwt}.Register(router)
@@ -134,11 +135,13 @@ func run(ctx context.Context) error {
 	}
 	charge.RefundAPI{Executor: charge.RefundExecutor{DB: userORM, Provider: refundProvider, ProviderName: cfg.PaymentMode}, ServiceToken: cfg.ServiceToken}.Register(router)
 	charge.UserAccountAPI{
-		Auth:         identity.SessionAuthenticator{JWT: jwt, Sessions: identity.Sessions{Redis: cache}, Users: identity.UserStore{DB: userORM}},
-		UserDB:       userORM, AdminDB: adminORM, GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken,
+		Auth:   identity.SessionAuthenticator{JWT: jwt, Sessions: identity.Sessions{Redis: cache}, Users: identity.UserStore{DB: userORM}},
+		UserDB: userORM, AdminDB: adminORM, GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken,
 		Gateway: serviceclient.Client{Timeout: 8 * time.Second}, Prepay: prepay,
 		PhoneKey: []byte(cfg.PhoneEncryptionKey),
 	}.Register(router)
+	charge.BillHTTP{Auth: identity.SessionAuthenticator{JWT: jwt, Sessions: identity.Sessions{Redis: cache}, Users: identity.UserStore{DB: userORM}},
+		Bills: charge.BillStore{DB: userORM}}.Register(router)
 	charge.UserQueryAPI{Auth: identity.SessionAuthenticator{JWT: jwt, Sessions: identity.Sessions{Redis: cache}, Users: identity.UserStore{DB: userORM}},
 		DB: userORM, GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken, Gateway: serviceclient.Client{Timeout: 8 * time.Second}}.Register(router)
 	charge.CouponAPI{Auth: identity.SessionAuthenticator{JWT: jwt, Sessions: identity.Sessions{Redis: cache}, Users: identity.UserStore{DB: userORM}},

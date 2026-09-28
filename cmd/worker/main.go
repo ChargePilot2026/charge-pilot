@@ -104,6 +104,9 @@ func run(ctx context.Context) error {
 	webhooks := webhookdelivery.WebhookDeliverer{AdminDB: orms["admin"], Stream: stream}
 	dlq := outbox.DLQ{WorkerDB: orms["worker"], Stream: stream, Consumer: "worker-dlq"}
 	internaljob.OpsAPI{WorkerDB: orms["worker"], ServiceToken: cfg.ServiceToken, DLQ: dlq}.Register(router)
+	// Refund results arrive asynchronously from the channel; the consumer posts
+	// them exactly once and records each attempt in comp_tx_log.
+	refundResults := outbox.ResultConsumer{UserDB: orms["user"], WorkerDB: orms["worker"], Stream: stream, Group: "refund-result"}
 	alertEngine := alerts.Evaluator{GatewayDB: orms["gateway"], AdminDB: orms["admin"]}
 	refundCtx, stopRefunds := context.WithCancel(ctx)
 	defer stopRefunds()
@@ -126,6 +129,9 @@ func run(ctx context.Context) error {
 				}
 				if _, err := webhooks.PublishBatch(refundCtx); err != nil && !errors.Is(err, context.Canceled) {
 					log.Printf("webhook delivery: %v", err)
+				}
+				if _, err := refundResults.ConsumeOnce(refundCtx); err != nil && !errors.Is(err, context.Canceled) {
+					log.Printf("refund result consumer: %v", err)
 				}
 			}
 		}

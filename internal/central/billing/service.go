@@ -27,6 +27,16 @@ type Service struct {
 	Orders       Orders
 	Splits       SplitResolver
 	ServiceToken string
+	// Bills issues the customer-visible bill once the fee is known. It is
+	// optional so the billing job still runs in deployments that have not
+	// migrated the bill tables yet.
+	Bills BillIssuer
+}
+
+// BillIssuer is the subset of the bill store billing needs, kept as an
+// interface so this package does not depend on the charge module.
+type BillIssuer interface {
+	Issue(ctx context.Context, chargeOrderID uint64) (uint64, error)
 }
 
 func (s Service) Run(ctx context.Context) (int, error) {
@@ -57,6 +67,13 @@ func (s Service) Run(ctx context.Context) (int, error) {
 					err = s.Store.MarkDelivered(ctx, id)
 				}
 				if err == nil {
+					// The bill is issued from the same committed fee, so what the
+					// customer is shown cannot drift from what was charged.
+					if s.Bills != nil {
+						if _, billErr := s.Bills.Issue(ctx, id); billErr != nil && first == nil {
+							first = billErr
+						}
+					}
 					// Allocation is recorded after the fee is durably known so a
 					// settlement always has a persisted calculation to attach to.
 					if splitErr := s.settleCalculation(ctx, source, result); splitErr != nil && first == nil {
