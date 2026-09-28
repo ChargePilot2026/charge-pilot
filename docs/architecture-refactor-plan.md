@@ -358,7 +358,7 @@ lint **配置**只能放 `clippy.toml`；lint **级别**用源码 `#![deny(...)]
 | **D11** | **webhook_retry 全链路未实现** | 生产者 `admin/src/stream_consumer.rs:63-68` 的 payload 是 `{alert_device_id, severity, event_id}`——**没有 `url`**；消费者 `worker/src/streams.rs:25-32` 第一件事就要求 `url`，缺失即 `BadRequest`，即便有 `url` 也固定返回 `ServiceUnavailable`。**两条路径均已复现**。且 `webhook_delivery_log` **全仓无写入方**（`/admin/webhooks/:id/deliveries` 读的一直是空表） | **已修**（本轮实现，非仅记口径）：① admin 按 `alert_subscription` 展开订阅，事件与 `alert_event` 同事务落 `event_outbox` ② 新增 `OutboxService` 发布器（`FOR UPDATE SKIP LOCKED` + 指数退避，兼补 D5 最后一环）③ worker 真实投递：HMAC-SHA256 签名 + SSRF 防护（仅 https、禁 IP 字面量、禁本地/元数据名、端口白名单 {443,8443}、**禁重定向**）+ `(subscription_id, event_id)` 幂等 ④ 结果经新增内部端点 `POST /api/v1/internal/webhooks/deliveries` 回写 admin | **P5** | 32 个新护栏：SSRF 每条规则、HMAC 已知答案向量 + 逐字节翻转全量验证、状态码分类、payload 契约、outbox 退避。**⚠️ 未做真订阅方端到端验收** |
 | **D24** | 🔴 **停机回写 URL 占位符替换空操作，计费链整条从未跑通** | `gateway/src/services/stop.rs:185` 用 `:order_no` 替换路径常量 `USER_INTERNAL_END_RESULT`（`= ".../:order_id/end-result"`）。**`:order_no` 不是该字符串的子串**，`String::replace` 静默返回原串 → 请求打到字面量 URL → user `charge_end::apply` 首行 `order != req.order_no` 必然失败 → `charge_ended` 永不发布 → **计费链从不触发**。同族 `start-result` 按 `:order_id` 替换是对的，故为单点笔误 | **已修**：常量改为 `:order_no`（该端点本就按订单号寻址）；根因是 `str::replace` 静默失效而全仓 **27 处**跨服务路径填充都依赖它，故新增 `api_contracts::fill_path()`（占位符不存在即 **panic**）并改造全部 27 处 | **P5** | 3 个护栏：常量回归、填充实参、用错占位符名必须 panic。**⚠️ 计费链端到端仍需真实设备/库验证** |
 | **D14** | **开票用预付款金额，不等实结与退款** | `user/src/invoice.rs:50` 只要求订单 `completed` + 支付 `paid` + `refunded_cents = 0`，随后以 **`paid_cents`** 校验开票金额。但 `charge_end.rs:106` 停机即标 `completed`（此时尚未计费），`charge_fee.rs:131` 的差额退款**仅登记 pending**。完整路径：**预付 1000 → 停机 → 开票 1000 → 实结 400 并退款 600**。审核侧 `invoice.rs:216` **也不重新校验**计费/支付/退款状态 | **修**：明确"可开票"状态与**金额来源为实结额**；申请与**审核两处**都校验实结与退款终态；与资金更新采用**一致的加锁顺序**。⚠️ **实结额 ≠ 可开票额**，另需规则：① 欠款订单（`charge_fee.rs:157` 允许实结 > 已付并记 `shortfall_cents`，**无补扣闭环**）**是否禁止开票**；② 实结后发生人工退款时的**金额上限**（人工退款不改写原实结费用） | **P0.5**（资金） | 覆盖：计费延迟时申请、**退款处理中**申请、审核前发生退款、**欠款订单（实结>已付）**申请、**实结后人工退款**申请 → 全部按明确规则拒绝或按上限处理。**无需强制扩建补缴功能，但必须有明确拒绝或处理路径**。与 D6（查询归属）/ D10（归零规则）**互不替代** |
-| **D16** | **跨分时电价订单根本无法计费**（数据缺失，非逻辑错误） | `metered_pricing.rs:36-42`：只要 `wh > 0` 且该分钟费率与前一分钟不同，即 `Conflict("跨分时电价缺少分段电量读数，需审核")`。而 `api-contracts/src/lib.rs:159` 的 `ChargeEndMeter` **只有** `charged_wh` / `charged_seconds` / `ended_at`，**没有任何分段读数**。故**任何跨电价订单都无法完成计费** | **需明确决策**（三选一）：A 补齐分段计量与结算；B 此类订单转入**可实际完成**的异常处理流程；C 接受功能限制并列入准入约束。**错误信息里的"需审核"目前没有任何对应流程** | **待业务决策** | 若选 C：台账与准入约束须写明，**且不得把 D10 / D4 通过当作计费闭环**（DLQ 重放补不出缺失的分段读数） |
+| **D16** | **跨分时电价订单根本无法计费**（数据缺失，非逻辑错误） | `metered_pricing.rs` 只要 `wh > 0` 且该分钟费率与前一分钟不同，即 `Conflict("跨分时电价缺少分段电量读数，需审核")`。而 `api_contracts::ChargeEndMeter` **只有** `charged_wh` / `charged_seconds` / `ended_at`，**没有任何分段读数**。故**任何跨电价订单都无法完成计费** | **已修**（本轮实做，非仅记口径）：① 契约加 `segments: Vec<ChargeMeterSegment>`（带 `#[serde(default)]` 保证存量 `meter_json` 可读）② gateway 从 `telemetry.meter_kwh` **累计读数差分**推导分段，**不依赖固件改造**（整数 mWh 运算避免浮点漂移；窗口起点改用服务端时钟）③ billing 新增 `calculate_segmented` 逐段按**段起始分钟**费率计价，硬校验 `Σ段能量 == 总电量` ④ **D10 归零判定抽成 `charge_fee::precheck()` 两条路径共用**，不会被分段路径绕过 ⑤ 失败落 `manual_fee_review` 兜底单（`billing_db/0004`），取代无落点的「需审核」 | **P5** | 13 个 gateway 推导测试（单调/回退/去重/单位换算/段数上限/守恒）+ 4 个契约兼容测试 + 11 个 billing 计价测试。**⚠️ 未做真机验收**：分段边界来自**设备时钟**（`tcp.rs` 无时钟校正），偏差幅度需真实设备验证 |
 | **D17** | **限流计数可能永不过期** | `common-redis/src/lib.rs:79-86` 的 `rate_limit` 把 `INCR` 与 `EXPIRE` 分成两次 await：若 `INCR` 已执行而 `EXPIRE` 因断连/任务取消未执行，且后续 `v > 1` 便**永不再设 TTL**，键永久残留。实际用于每用户 24 小时 5 次报修限制（`user/src/station.rs:89`） | **修**：`INCR` + 首次 `EXPIRE` 合并为 **Lua 原子操作**；并处理**已存在的无 TTL 异常键** | **P4** | 故障注入（`INCR` 成功、`EXPIRE` 失败）后键仍有 TTL；窗口到期计数自动归零、报修限制恢复。**D15 隔离连接不解决此问题** |
 | **D15** | **Redis 阻塞消费与发布共享同一连接** | `common-redis/src/lib.rs:99` `RedisStream` 只有**一个** `ConnectionManager`；XREADGROUP BLOCK（:193）、XADD、ACK、PING 全部用它的 `clone()`——**clone 共享底层连接**，阻塞命令会挡住该连接上的其它命令。gateway 的 OTA 消费组 `BLOCK 5000ms`（`gateway/src/stream_consumer.rs:17`）而 outbox 发布超时仅 3 秒（`gateway/src/outbox.rs:69`）→ 发布排在阻塞读之后即超时重复投递；健康检查同样受影响 | **修**：阻塞消费者用**独立底层连接**；发布 / ACK / 健康检查走**非阻塞连接** | **P4** | **空流长轮询期间仍能及时发布并正常探活**（并发验收）；D12（任务存活）与 D4（裁剪）**都不覆盖**此问题 |
 | **D12** | **gateway 关键 TCP 任务失败但服务仍报健康** | `gateway/src/main.rs:80-87` 把 TCP 监听放进 `tokio::spawn` 并**丢弃 `JoinHandle`**，失败仅 `tracing::error`。端口被占用或地址配置错误时 HTTP 仍正常启动；`gateway/src/api.rs:12` 的健康检查**只探 DB 与 Redis**，仍会返回 `ok` | **修**：就绪前完成 TCP bind；监听启动失败 → **进程启动失败**；关键任务异常退出 → **撤销就绪状态或退出进程**（不静默降级） | **P1a**（与启动装配同批） | 端口占用 → 启动失败且不就绪；TCP 任务异常退出 → 不再报 `ok`；健康检查需纳入关键任务存活 |
@@ -719,8 +719,10 @@ P4 改 `common-redis` 影响全部 5 个服务的消费者，**不能只跑 bill
 | `c85aa66` | DLQ 增量游标 + 原 entry id 与消费组定向 | D21 · D23 |
 | `644bca2` | 删除 4 个未注册空壳循环 | D22 |
 | `fd2b74b` | webhook 投递全链路 | **D11** |
+| `6a440fd` · `75e267e` | 分段计量与跨分时电价结算 + 兜底单表 | **D16** |
+| `123cd59` | 文档同步 | — |
 
-**当前闸口（全部实跑）**：V1 **零 error**；V2 `cargo test --workspace` **325 passed / 0 failed / 53 ignored**（实施前 273，+52 个新护栏，**零回归**）。
+**当前闸口（全部实跑）**：V1 **零 error**；V2 `cargo test --workspace` **363 passed / 0 failed / 53 ignored**（实施前 273，+90 个新护栏，**零回归**）；`node tools/check-api-consistency.ts` 通过。
 
 ### 🔴 新发现：D24 —— 停机回写从未命中，计费链整条从未跑通
 
@@ -770,7 +772,7 @@ P4 改 `common-redis` 影响全部 5 个服务的消费者，**不能只跑 bill
 
 | 项 | 状态 | 原因 |
 |---|---|---|
-| **D16** 跨分时电价 | **未做** | 需业务决策。技术前提：`ChargeEndMeter` 只来自设备 STOP ACK 的 `payload.meter`，分段读数**必须由设备固件回报**。服务端从 `telemetry.meter_kwh` 差分推导可行，但依赖设备持续上报且受时钟漂移影响（`tcp.rs:119` 无校正），**只能真机验收** |
+| **D16** 跨分时电价 | **已修**（本轮实做）。契约加 `segments`；gateway 从 `telemetry.meter_kwh` 累计读数**差分推导**分段（**不依赖固件改造**）；billing 逐段按段起始分钟费率计价，硬校验 `Σ段能量 == 总电量`；D10 归零判定抽成 `precheck()` 两条路径共用；失败落 `manual_fee_review` 兜底单。**舍入口径已裁决**（累加后 round 一次） |
 | **P3b** 垂直切片 | 未做 | user 约 367 处 / admin 约 190 处 `sqlx::query*` 仍在扁平 handler 模块；`DomainService::pool()/begin()` 仍为 `pub` |
 | **P5** 全局收口 | 未做 | lint 仍为 `allow`，未转 `deny`。**实测债务 1622 条**（`disallowed_methods` 1187 / `disallowed_types` 305 / `disallowed_macros` 130），其中 user 767 / admin 584 |
 | **D13** Argon2 | ✅ 已落地 | `services/admin/src/password.rs` + 3 处调用点 + 3 个护栏测试（本轮复核确认，此前文档误记为「顺延」） |
@@ -842,12 +844,13 @@ P4 改 `common-redis` 影响全部 5 个服务的消费者，**不能只跑 bill
 48. 🔴 **D24 占位符替换必须会失败**：`str::replace` 在名字不匹配时静默返回原串，这是「编译过、测试过、业务从不发生」的根因。跨服务路径填充一律走 `api_contracts::fill_path()`（占位符不存在即 panic）
 49. **P5 债务实测 1622 条**（原估 2–3 人日严重低估）：`disallowed_methods` 1187 / `disallowed_types` 305 / `disallowed_macros` 130；user 767 / admin 584。**1187 条 SQL 与 P3b 要搬的是同一批代码** → S8/S9/S10 合并为单一阶段，每搬完一域立即该域 deny 归零
 50. **D1 权限矩阵实测 36 条**（此前文档写「56/56」有误）：原 39 条中 3 条指向已删除的 handler，删后为 36。`invoice_approve`/`invoice_reject`/`wallet_risk_*` 走内联授权不在矩阵内
+51. **D16 分段计价的舍入口径 = 累加后 round 一次**（已裁决）。备选是「每段各自 round 后求和」；舍入不可加，两者约 30% 的组合相差 1 分（实测 20 万组随机）。选前者是因为：单费率分段与现有 `calculate` 逐分相等（关键回归），且**非跨电价订单走原路径、现有金额完全不动**。跨电价订单此前 100% 无法计费，没有已成立金额需要保持
 
-### 待确认 3 件事
+### 待确认 2 件事
 
 1. **§三 `Value` 例外清单**——现列 3 类，是否够（P5 转 deny 时需定稿）
 2. ~~提现归属~~ —— **已定整块删除（D3）**，不再需要裁决
-3. **D16 跨分时电价**——三个选项（补齐分段计量 / 转人工异常流程 / 接受限制）尚未裁决。**选项 C（按首分钟费率计价）会静默算错钱，不可无审批采用**
+3. ~~D16 跨分时电价~~ —— **已定补齐分段计量**（本轮实做），仅剩真机验收
 
 ### 本方案不做
 

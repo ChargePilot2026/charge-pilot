@@ -115,7 +115,7 @@ settings.ota.update  membership.create  export.create
 | D13 | Argon2 阻塞 Tokio 执行线程(实测 20ms 定时器被推迟到 193ms) | 已修:`spawn_blocking` + 信号量背压,见 `services/admin/src/password.rs` |
 | D14 | 预付 1000 可开票 1000(实结 400 + 退款 600) | 按实结额,且审核时复核 |
 | D15 | 阻塞消费挡住同连接的发布/探活 | 阻塞读走独立底层连接 |
-| D16 | 跨分时电价订单**无法计费**(`ChargeEndMeter` 无分段读数) | **未修复**,见 §6 |
+| D16 | 跨分时电价订单**无法计费**(`ChargeEndMeter` 无分段读数),且报错文案「需审核」无对应流程 | **已修**：gateway 从 `telemetry.meter_kwh` 累计读数差分推导分段,billing 逐段计价。无法推导的订单落 `manual_fee_review` 兜底单。**⚠️ 需真机验收**(分段边界取自设备时钟) |
 | D17 | 限流键可能永不过期 | `INCR`+`EXPIRE` 合并为 Lua 原子操作 |
 | D18 | 站点详情经纬度颠倒 | 修正 |
 | D19 | 发票双签崩溃后重试一律报「用户发票申请已处理」,审核员被永久卡死 | 补齐 `InvoiceDetailResponse` 的审核人/发票链接/拒因字段,恢复分支生效 |
@@ -129,7 +129,7 @@ settings.ota.update  membership.create  export.create
 
 | 编号 | 状态 | 需要什么 |
 |---|---|---|
-| **D16** 跨分时电价计费 | **未修复**。`api-contracts` 的 `ChargeEndMeter` 只有 `charged_wh`/`charged_seconds`/`ended_at`,**无分段读数**,因此任何跨电价订单都无法计费 | 三选一:补齐分段计量 / 转人工异常流程 / 接受限制。**分段读数只能由设备固件在 STOP ACK 中回报**;服务端从 `telemetry.meter_kwh` 差分推导可行但受设备时钟漂移影响,需真机验收 |
+| **D16** 跨分时电价计费 | **已修**，但**未在真机 + 真实库上验过**。分段读数由 gateway 从 `telemetry.meter_kwh` 累计读数**差分推导**(不需固件改造),但分段边界时间戳来自**设备时钟**(`tcp.rs` 无时钟校正),偏差幅度需真实设备测量 | 需真机跑一单跨电价订单(峰谷切换)验证金额 |
 | **D11** | 全链路已实现(32 个护栏),但**未对真实 https 订阅方做端到端投递** | 需一个测试接收端验签(HMAC-SHA256 + `X-ChargePilot-Signature`) |
 | **D24** | 计费链已修复,但**未在真实设备 + 真实库上跑通一次完整的「停机 → 计费」** | 需真机与开发库 |
 | **D4 ③b** | DLQ 重放已注册并改为增量游标,但**未在真实 Redis 上端到端验证** | 需起 `compose.dev.yaml` 跑 V8b |
