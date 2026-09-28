@@ -69,3 +69,11 @@ for schema in $targets; do
     "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA='${schema}'")"
   echo "restored ${schema}: ${tables} tables"
 done
+
+# The services read their configuration and bootstrap state at startup. A restore
+# that empties the admin tables leaves nobody able to sign in until they are
+# restarted, so this says so instead of leaving a silent lockout.
+echo ""
+echo "restart the services so they reload the restored data:"
+echo "  docker compose restart central gateway worker   # development stack"
+echo "  docker compose -f docker-compose.yml up -d    # production stack"
