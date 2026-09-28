@@ -162,7 +162,7 @@ WHERE id = ? AND current_order_id = ? AND status = 'idle';
 
 -- name: ScanPortByCode :one
 SELECT p.id, p.device_id, p.port_no, p.port_code, p.status,
-       p.current_order_id, d.last_seen_at
+       p.current_order_id, d.last_seen_at, d.station_id
 FROM device_port AS p
 JOIN device AS d ON d.device_id = p.device_id
 JOIN vendor AS v ON v.id = d.vendor_id
@@ -173,7 +173,7 @@ LIMIT 1;
 
 -- name: ScanPortsByDevice :many
 SELECT p.id, p.device_id, p.port_no, p.port_code, p.status,
-       p.current_order_id, d.last_seen_at
+       p.current_order_id, d.last_seen_at, d.station_id
 FROM device_port AS p
 JOIN device AS d ON d.device_id = p.device_id
 JOIN vendor AS v ON v.id = d.vendor_id

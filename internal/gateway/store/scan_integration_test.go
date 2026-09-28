@@ -35,7 +35,7 @@ func TestResolveScanIsReadOnlyAndHidesDisabledDevices(t *testing.T) {
 	defer db.ExecContext(ctx, "DELETE FROM vendor WHERE id = ?", vendorID)
 	defer db.ExecContext(ctx, "DELETE FROM device WHERE device_id = ?", deviceID)
 	defer db.ExecContext(ctx, "DELETE FROM device_port WHERE device_id = ?", deviceID)
-	if _, err := db.ExecContext(ctx, "INSERT INTO device (device_id,vendor_id,port_count,last_seen_at) VALUES (?,?,2,NOW(3))", deviceID, vendorID); err != nil {
+	if _, err := db.ExecContext(ctx, "INSERT INTO device (device_id,vendor_id,port_count,station_id,last_seen_at) VALUES (?,?,2,9,NOW(3))", deviceID, vendorID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.ExecContext(ctx, "INSERT INTO device_port (device_id,port_no,port_code) VALUES (?,1,?),(?,2,?)", deviceID, portCode, deviceID, deviceID+":2"); err != nil {
@@ -43,7 +43,7 @@ func TestResolveScanIsReadOnlyAndHidesDisabledDevices(t *testing.T) {
 	}
 	lookup := MySQLSink{DB: db}
 	port, err := lookup.ResolveScan(ctx, portCode)
-	if err != nil || port.Kind != "port" || port.Port == nil || !port.Port.Available || port.Port.PortID != portCode {
+	if err != nil || port.Kind != "port" || port.StationID != 9 || port.Port == nil || !port.Port.Available || port.Port.PortID != portCode {
 		t.Fatalf("port=%+v err=%v", port, err)
 	}
 	device, err := lookup.ResolveScan(ctx, deviceID)

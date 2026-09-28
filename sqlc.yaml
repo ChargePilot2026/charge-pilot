@@ -26,6 +26,22 @@ sql:
         sql_package: database/sql
   - engine: mysql
     schema: migrations/user_db
+    queries: internal/central/charge/payment_queries.sql
+    gen:
+      go:
+        package: paymentdb
+        out: internal/central/charge/paymentgenerated
+        sql_package: database/sql
+  - engine: mysql
+    schema: migrations/admin_db
+    queries: internal/central/pricing/queries.sql
+    gen:
+      go:
+        package: pricingdb
+        out: internal/central/pricing/generated
+        sql_package: database/sql
+  - engine: mysql
+    schema: migrations/user_db
     queries: internal/worker/outbox/queries.sql
     gen:
       go:

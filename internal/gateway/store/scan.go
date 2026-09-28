@@ -19,10 +19,11 @@ type ScanPort struct {
 }
 
 type ScanResult struct {
-	Kind     string     `json:"kind"`
-	DeviceID string     `json:"device_id"`
-	Port     *ScanPort  `json:"port,omitempty"`
-	Ports    []ScanPort `json:"ports,omitempty"`
+	Kind      string     `json:"kind"`
+	DeviceID  string     `json:"device_id"`
+	StationID uint64     `json:"station_id"`
+	Port      *ScanPort  `json:"port,omitempty"`
+	Ports     []ScanPort `json:"ports,omitempty"`
 }
 
 var ErrScanNotFound = errors.New("scan code not found")
@@ -32,7 +33,7 @@ func (s MySQLSink) ResolveScan(ctx context.Context, code string) (ScanResult, er
 	port, err := q.ScanPortByCode(ctx, code)
 	if err == nil {
 		view := scanPort(port.PortCode, port.DeviceID, port.PortNo, port.Status, port.CurrentOrderID, port.LastSeenAt)
-		return ScanResult{Kind: "port", DeviceID: view.DeviceID, Port: &view}, nil
+		return ScanResult{Kind: "port", DeviceID: view.DeviceID, StationID: uint64(port.StationID.Int64), Port: &view}, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return ScanResult{}, err
@@ -44,7 +45,7 @@ func (s MySQLSink) ResolveScan(ctx context.Context, code string) (ScanResult, er
 	if len(rows) == 0 {
 		return ScanResult{}, ErrScanNotFound
 	}
-	result := ScanResult{Kind: "device", DeviceID: code, Ports: make([]ScanPort, 0, len(rows))}
+	result := ScanResult{Kind: "device", DeviceID: code, StationID: uint64(rows[0].StationID.Int64), Ports: make([]ScanPort, 0, len(rows))}
 	for _, row := range rows {
 		result.Ports = append(result.Ports, scanPort(row.PortCode, row.DeviceID, row.PortNo, row.Status, row.CurrentOrderID, row.LastSeenAt))
 	}

@@ -27,10 +27,11 @@ type ScanPort struct {
 }
 
 type ScanResult struct {
-	Kind     string     `json:"kind"`
-	DeviceID string     `json:"device_id"`
-	Port     *ScanPort  `json:"port,omitempty"`
-	Ports    []ScanPort `json:"ports,omitempty"`
+	Kind      string     `json:"kind"`
+	DeviceID  string     `json:"device_id"`
+	StationID uint64     `json:"station_id"`
+	Port      *ScanPort  `json:"port,omitempty"`
+	Ports     []ScanPort `json:"ports,omitempty"`
 }
 
 type ScanAPI struct {

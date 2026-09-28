@@ -678,7 +678,7 @@ func (q *Queries) ReservePort(ctx context.Context, arg ReservePortParams) (sql.R
 
 const scanPortByCode = `-- name: ScanPortByCode :one
 SELECT p.id, p.device_id, p.port_no, p.port_code, p.status,
-       p.current_order_id, d.last_seen_at
+       p.current_order_id, d.last_seen_at, d.station_id
 FROM device_port AS p
 JOIN device AS d ON d.device_id = p.device_id
 JOIN vendor AS v ON v.id = d.vendor_id
@@ -696,6 +696,7 @@ type ScanPortByCodeRow struct {
 	Status         DevicePortStatus
 	CurrentOrderID sql.NullString
 	LastSeenAt     sql.NullTime
+	StationID      sql.NullInt64
 }
 
 func (q *Queries) ScanPortByCode(ctx context.Context, portCode string) (ScanPortByCodeRow, error) {
@@ -709,13 +710,14 @@ func (q *Queries) ScanPortByCode(ctx context.Context, portCode string) (ScanPort
 		&i.Status,
 		&i.CurrentOrderID,
 		&i.LastSeenAt,
+		&i.StationID,
 	)
 	return i, err
 }
 
 const scanPortsByDevice = `-- name: ScanPortsByDevice :many
 SELECT p.id, p.device_id, p.port_no, p.port_code, p.status,
-       p.current_order_id, d.last_seen_at
+       p.current_order_id, d.last_seen_at, d.station_id
 FROM device_port AS p
 JOIN device AS d ON d.device_id = p.device_id
 JOIN vendor AS v ON v.id = d.vendor_id
@@ -733,6 +735,7 @@ type ScanPortsByDeviceRow struct {
 	Status         DevicePortStatus
 	CurrentOrderID sql.NullString
 	LastSeenAt     sql.NullTime
+	StationID      sql.NullInt64
 }
 
 func (q *Queries) ScanPortsByDevice(ctx context.Context, deviceID string) ([]ScanPortsByDeviceRow, error) {
@@ -752,6 +755,7 @@ func (q *Queries) ScanPortsByDevice(ctx context.Context, deviceID string) ([]Sca
 			&i.Status,
 			&i.CurrentOrderID,
 			&i.LastSeenAt,
+			&i.StationID,
 		); err != nil {
 			return nil, err
 		}

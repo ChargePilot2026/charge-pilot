@@ -1,6 +1,6 @@
 # user 服务 API 详细设计
 
-> **Go 重建中的目标接口**：`user` 是 `central` 内部模块，从同一 Gin 端口 `:8080` 提供。当前已实现的扫码只读与充电生命周期契约见 [Go 充电接口](go-charge-lifecycle.md)。本文件其余旧服务路径、端口、字段或“已实现”表述尚待逐项校准；实际能力以 [Go 重建清单](../migration/go-rebuild.md) 为准。
+> **Go 重建中的目标接口**：`user` 是 `central` 内部模块，从同一 Gin 端口 `:8080` 提供。当前已实现的扫码只读与充电生命周期契约见 [Go 充电接口](go-charge-lifecycle.md)。已确认的新流程为扫码只读、发起支付时创建支付意图、验签确认成功的支付回调才创建充电订单；下文旧的扫码创建订单、独立报价和 `quote_id` 流程已废止。本文件其余旧服务路径、端口、字段或“已实现”表述尚待逐项校准；实际能力以 [Go 重建清单](../migration/go-rebuild.md) 为准。
 
 **服务**:`user`(`services/user`)
 **对外地址**:`https://<customer-domain>/api/v1/user/...`(经 Caddy 反代到 `user:8081`)

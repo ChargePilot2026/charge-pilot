@@ -60,6 +60,51 @@ func (ns NullChargeOrderStatus) Value() (driver.Value, error) {
 	return string(ns.ChargeOrderStatus), nil
 }
 
+type ChargePaymentIntentStatus string
+
+const (
+	ChargePaymentIntentStatusInitiated      ChargePaymentIntentStatus = "initiated"
+	ChargePaymentIntentStatusPaid           ChargePaymentIntentStatus = "paid"
+	ChargePaymentIntentStatusExpired        ChargePaymentIntentStatus = "expired"
+	ChargePaymentIntentStatusClosed         ChargePaymentIntentStatus = "closed"
+	ChargePaymentIntentStatusRefundRequired ChargePaymentIntentStatus = "refund_required"
+)
+
+func (e *ChargePaymentIntentStatus) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = ChargePaymentIntentStatus(s)
+	case string:
+		*e = ChargePaymentIntentStatus(s)
+	default:
+		return fmt.Errorf("unsupported scan type for ChargePaymentIntentStatus: %T", src)
+	}
+	return nil
+}
+
+type NullChargePaymentIntentStatus struct {
+	ChargePaymentIntentStatus ChargePaymentIntentStatus
+	Valid                     bool // Valid is true if ChargePaymentIntentStatus is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullChargePaymentIntentStatus) Scan(value interface{}) error {
+	if value == nil {
+		ns.ChargePaymentIntentStatus, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.ChargePaymentIntentStatus.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullChargePaymentIntentStatus) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.ChargePaymentIntentStatus), nil
+}
+
 type CouponDiscountType string
 
 const (
@@ -1307,6 +1352,35 @@ type ChargeOrderPricing struct {
 	PortCode      string
 	QuoteSnapshot json.RawMessage
 	ConfirmedAt   time.Time
+}
+
+type ChargePaymentIntent struct {
+	IntentID           string
+	ClientRequestID    string
+	MerchantOrderNo    string
+	PaymentOrderID     uint64
+	UserID             uint64
+	Openid             string
+	DeviceID           string
+	PortNo             uint8
+	PortCode           string
+	StationID          uint64
+	PricingRuleID      uint64
+	PricingRuleVersion uint32
+	PricingSnapshot    json.RawMessage
+	EstimatedKwh       string
+	EstimatedMinutes   uint16
+	ElectricCents      int64
+	ServiceCents       int64
+	TotalCents         int64
+	ChargeMode         uint8
+	ChargeQuantity     uint16
+	Status             ChargePaymentIntentStatus
+	ActivePortCode     sql.NullString
+	ExpiresAt          time.Time
+	PaidAt             sql.NullTime
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 type ChargePrepay struct {
