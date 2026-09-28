@@ -409,12 +409,15 @@ mod db_tests {
         let (status, lu) = repository_sql::account_state(&st, id).await.unwrap();
         assert_eq!(status, "locked");
         assert!(domain::is_login_blocked(&status, lu, chrono::Utc::now()));
-        let cnt: i64 = sqlx::query_scalar("SELECT failed_login_count FROM admin_user_role WHERE id = ?")
+        // 列是 `INT UNSIGNED`：sqlx 0.8 拒绝把它解成 i64，
+        // 会报 "Rust type `i64` is not compatible with SQL type `INT UNSIGNED`"。
+        // 常量本身是 i64（与 `record_login_failure` 的参数类型一致），这里显式转换。
+        let cnt: u64 = sqlx::query_scalar("SELECT failed_login_count FROM admin_user_role WHERE id = ?")
             .bind(id)
             .fetch_one(db.pool())
             .await
             .unwrap();
-        assert_eq!(cnt, domain::MAX_FAILED_LOGINS);
+        assert_eq!(cnt, domain::MAX_FAILED_LOGINS as u64);
         let _ = sqlx::query("DELETE FROM admin_user_role WHERE username = ?")
             .bind(&uname)
             .execute(db.pool())
@@ -481,7 +484,7 @@ mod db_tests {
         }
         for j in jobs { j.await.unwrap(); }
 
-        let cnt: i64 = sqlx::query_scalar("SELECT failed_login_count FROM admin_user_role WHERE id = ?")
+        let cnt: u64 = sqlx::query_scalar("SELECT failed_login_count FROM admin_user_role WHERE id = ?")
             .bind(id)
             .fetch_one(db.pool())
             .await
@@ -551,7 +554,7 @@ mod db_tests {
 
         let (status, lu) = repository_sql::account_state(&st, id).await.unwrap();
         assert_eq!(status, "active");
-        let cnt: i64 = sqlx::query_scalar("SELECT failed_login_count FROM admin_user_role WHERE id = ?")
+        let cnt: u64 = sqlx::query_scalar("SELECT failed_login_count FROM admin_user_role WHERE id = ?")
             .bind(id)
             .fetch_one(db.pool())
             .await
