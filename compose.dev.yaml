@@ -37,6 +37,11 @@ x-rust: &rust
     - ./rust-toolchain.toml:/workspace/rust-toolchain.toml:ro
     - ./crates:/workspace/crates:ro
     - ./services:/workspace/services:ro
+    # Cargo.toml 的 members 含 tools/migrate-baseline,cargo 解析 workspace 时
+    # 会加载**每一个** member 的 manifest —— 不挂 tools 的话，容器里 cargo 直接报
+    # "failed to load manifest for workspace member tools/migrate-baseline"，
+    # 5 个业务服务全部起不来（cargo run 与 docker build 的行为一致，不分场景）。
+    - ./tools:/workspace/tools:ro
     # P4:编译期 migrate! 需要 migrations/ 可见
     - ./migrations:/workspace/migrations:ro
     - ./docker/dev:/workspace/docker/dev:ro
@@ -44,9 +49,9 @@ x-rust: &rust
     - cargo-git:/usr/local/cargo/git
     - cargo-target:/cargo-target
   depends_on:
-    # P4:MySQL 的 healthcheck 依赖 admin_user_role 已存在(空数据卷时由 init 脚本建),
-    # 若把建表/迁移交给业务服务启动,就会形成"服务等 mysql healthy,mysql 等服务建表"的循环等待。
-    # 因此迁移由独立 migrate job 承担,业务服务只等它完成。
+    # P4:migrate job 成功后业务服务才启动 —— 建表/升级只有 migrate 一个执行者。
+    # mysql 不要再列进来:它会与 migrate 形成 migrate 等 mysql healthy、
+    # mysql 又等表就绪的循环等待。
     migrate: { condition: service_completed_successfully }
     redis-cache: { condition: service_healthy }
     redis-stream: { condition: service_healthy }
@@ -64,10 +69,12 @@ services:
     volumes:
       - mysql-data:/var/lib/mysql
       - ./docker/dev/init-mysql.sh:/docker-entrypoint-initdb.d/10-chargepilot.sh:ro
-      - ./migrations:/migrations:ro
+    # P4:MySQL 的 healthcheck 必须是**与业务表无关的基础可用性检查**。
+    # 原实现拿 `admin_user_role` 探测,而这张表当时由 init 脚本裸跑迁移创建 ——
+    # 表没了就不 healthy,而表是业务/迁移的产物,等于让基础设施的健康被业务逻辑绑架。
+    # 现在建表只由 migrate job 负责,这里只验「能连、能查」。
     healthcheck:
-      # TCP is unavailable during the entrypoint's temporary initialization server.
-      test: ["CMD-SHELL", "MYSQL_PWD=$$MYSQL_PASSWORD mysql --protocol=TCP -h 127.0.0.1 -u chargepilot -D admin_db -e 'SELECT 1 FROM admin_user_role LIMIT 0'"]
+      test: ["CMD-SHELL", "MYSQL_PWD=$$MYSQL_PASSWORD mysql --protocol=TCP -h 127.0.0.1 -u chargepilot -D chargepilot -e 'SELECT 1'"]
       interval: 5s
       timeout: 5s
       retries: 30
@@ -100,26 +107,36 @@ services:
     build:
       context: ./docker/dev
       dockerfile: Dockerfile.rust
+    # Dockerfile.rust 的 ENTRYPOINT 是 watchexec(它只认 gateway/user/admin/billing/worker),
+    # 不覆盖就会直接报 "Invalid SERVICE_NAME" 退出,migrate 的 command 根本不会被执行。
+    # 这里也不能沿用 x-rust 的 ./docker/dev 挂载:本服务不跑 watch 脚本,不需要它。
+    entrypoint: []
     working_dir: /workspace
-    command: >
-      sh -c "cargo run --release -p migrate-baseline --
-             --source migrations/gateway_db --probe vendor --dry-run &&
-       for db in gateway_db user_db admin_db billing_db worker_db; do :; done &&
-       echo 'baseline 登记工具就绪(按各 schema 分别执行 --probe <基准表>)'"
+    # 逻辑写在 docker/dev/migrate.sh。
+    # 不写在 command 里是因为 compose 会把 `$$1` 先归一成 `$1`,而 `sh` 的 `$1`
+    # 是位置参数 —— 容器里 db/probe 全部展开为空,migrate-baseline 拿不到 --probe
+    # 直接报错退出。这类问题只有在脚本真正跑起来时才暴露,留在 YAML 里无法 review。
+    command: ["sh", "/workspace/docker/dev/migrate.sh"]
     volumes:
       - ./Cargo.toml:/workspace/Cargo.toml:ro
       - ./Cargo.lock:/workspace/Cargo.lock:ro
+      - ./rust-toolchain.toml:/workspace/rust-toolchain.toml:ro
       - ./crates:/workspace/crates:ro
       - ./services:/workspace/services:ro
       - ./tools:/workspace/tools:ro
+      # migrate-baseline 用 Migrator::new() 运行时读这个目录,必须在容器内可见
       - ./migrations:/workspace/migrations:ro
+      # 迁移脚本本体
+      - ./docker/dev:/workspace/docker/dev:ro
       - cargo-registry:/usr/local/cargo/registry
       - cargo-git:/usr/local/cargo/git
       - cargo-target:/cargo-target
     environment:
       DATABASE_URL: mysql://chargepilot:chargepilot_dev@mysql:3306/admin_db
     depends_on:
-      mysql: { condition: service_started }
+      # 等 healthy 而不是 started:mysql 的 init 脚本与临时初始化服务器阶段
+      # 都还连不上,service_started 会直接撞上初始化竞态。
+      mysql: { condition: service_healthy }
 
   gateway:
     <<: *rust

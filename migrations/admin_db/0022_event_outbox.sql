@@ -8,7 +8,14 @@
 -- 表结构对齐 `user_db.event_outbox`,并补两列以支撑 D4 的重放:
 --   - `stream_message_id`:XADD 返回值回写,便于把 Redis 侧缺口精确映射回本行
 --     (D4 ③:无此列时,Redis 缺口无法反查,重放范围只能保守)
---   - `created_month` / `idx_status_sched`:支撑"未发布"范围查询
+--   - `idx_status_sched`:支撑"未发布"范围查询
+--
+-- 注:MySQL 8.0.13+ 允许列 DEFAULT 表达式,8.0.13 之前与 MariaDB 均不允许。
+-- 本文件曾带 `created_month VARCHAR(16) NOT NULL DEFAULT DATE_FORMAT(...,'%Y-%m')`,
+-- 在 MySQL 8.4(开发栈固定版本)上直接 1064 语法错误,整条迁移链在此中断。
+-- 该列自建表起就没有任何读写方(outbox 的读写只看 status/scheduled_at/stream_message_id),
+-- 保留一个无人使用的月份列只为分区是伪需求,故直接删除而非改成
+-- generated column —— 要分区时再随分区键一起加。
 
 CREATE TABLE IF NOT EXISTS `event_outbox` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -22,7 +29,6 @@ CREATE TABLE IF NOT EXISTS `event_outbox` (
   `scheduled_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   `published_at` DATETIME(3) DEFAULT NULL,
   `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-  `created_month` VARCHAR(16) NOT NULL DEFAULT DATE_FORMAT(CURRENT_TIMESTAMP(3),'%Y-%m'),
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_event` (`event_id`),
   KEY `idx_status_sched` (`status`, `scheduled_at`),
