@@ -33,7 +33,8 @@ const items = [
 
 const menuPermission: Record<string,string> = {
  '/':'dashboard.read','/orders':'order.read','/devices':'device.read','/stations':'station.read',
- '/users':'admin_user.read','/alerts':'alert.read','/coupons':'coupon.read','/billing':'finance.read',
+ '/users':'admin_user.read','/alerts':'alert.read','/alert-rules':'alert.read',
+  '/exports':'finance.read','/coupons':'coupon.read','/billing':'finance.read',
  '/webhooks':'webhook.read','/ota':'ota.read','/announcements':'announcement.read',
  '/customer-service':'customer_service.read','/casework':'feedback.read','/settings':'whitelabel.read',
 };
@@ -69,7 +70,13 @@ export default function MainLayout() {
           theme="dark"
           mode="inline"
           selectedKeys={[items.find(item => item.key !== '/' && (pathname === item.key || pathname.startsWith(item.key + '/')))?.key || '/']}
-          items={items.filter(item => adminInfo?.permissions?.includes(menuPermission[item.key]))}
+          items={items.filter(item => {
+            // A menu entry with no mapping hides itself for every role. That is a
+            // silent, runtime-only failure, so surface it loudly during development.
+            const perm = menuPermission[item.key];
+            if (!perm && import.meta.env.DEV) console.warn(`[menu] ${item.key} 缺少 menuPermission 映射，该菜单项对所有角色不可见`);
+            return !!perm && !!adminInfo?.permissions?.includes(perm);
+          })}
           onClick={({ key }) => navigate(key)}
         />
       </Sider>

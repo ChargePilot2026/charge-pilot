@@ -91,8 +91,12 @@ export default function ExportsPage() {
       const link = document.createElement('a');
       link.href = url;
       link.download = `${row.task_no}.csv`;
+      document.body.appendChild(link);
       link.click();
-      URL.revokeObjectURL(url);
+      link.remove();
+      // Revoking synchronously races the browser's download start-up and can
+      // silently cancel the save; give it a tick to pick the blob up first.
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (e: any) {
       message.error(e?.message || '下载失败');
     }
