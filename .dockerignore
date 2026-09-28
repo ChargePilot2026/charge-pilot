@@ -1,36 +1,19 @@
-# 构建上下文瘦身。Dockerfile 只 COPY Cargo.toml / Cargo.lock / rust-toolchain.toml /
-# crates / services / tools / migrations,其余一律不进上下文。
-#
-# 不写这个文件时是否踩坑取决于 Docker 引擎的默认排除策略:
-# OrbStack 会自动排除 target/,而 Docker Desktop 不会 —— 于是同一条
-# `docker build` 在两台机器上传的 context 相差 14GB,构建时间从 1 分钟变成十几分钟,
-# 排查时还会误以为是缓存失效。这里显式声明,不依赖引擎行为。
-
-target/
-**/target/
-node_modules/
-**/node_modules/
-
 .git/
 .github/
-.codewave/
-.codewave/temps/
-temps/
-
-# 本地环境与密钥:任何情况下都不进镜像
+.codex/
+.agents/
+node_modules/
+**/node_modules/
+admin-web/
+miniprogram/
+docs/
+examples/
+scripts/
+logs/
+target/
+**/target/
 .env
 .env.*
-!.env.example
 *.pem
 *.key
-
-# 运行期产物与日志
-logs/
 *.log
-admin-web/dist/
-admin-web/.vite/
-
-# 文档不进构建上下文
-docs/
-README.md
-*.md

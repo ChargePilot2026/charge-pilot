@@ -16,15 +16,15 @@ warn() { echo "  [WARN]  $*"; }
 err() { echo "  [ERR]   $*"; fail=1; }
 
 echo "==> Caddyfile 全局块位置检查"
-if [[ -f Caddyfile ]]; then
-    first_block=$(awk '/^[a-zA-Z]/ {print NR": "$0; exit}' Caddyfile || true)
-    if echo "$first_block" | grep -q ": {$"; then
+if [[ -f docker/Caddyfile ]]; then
+    first_block=$(awk 'NF && $1 !~ /^#/ {print; exit}' docker/Caddyfile)
+    if [[ "$first_block" == "{" ]]; then
         ok "Caddyfile 全局块在文件开头"
     else
         err "Caddyfile 全局块不在开头(必须以 '{' 起首)"
     fi
 else
-    warn "Caddyfile 不存在(尚未创建)"
+    warn "docker/Caddyfile 不存在(尚未创建)"
 fi
 
 echo ""

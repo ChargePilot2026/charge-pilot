@@ -1,57 +1,24 @@
-# Standalone local development stack; do not merge with docker-compose.yml.
-# All credentials below are for disposable local development data only.
+# Disposable Go development stack. Existing Rust-era data volume must be
+# removed or rebuilt before Goose can initialize migration history.
 name: chargepilot-dev
 
-x-rust-env: &rust-env
-  RUNTIME_ENV: dev
-  RUST_LOG: info,sqlx=warn
-  # 1 = backtrace on demand; full = verbose frames. common-error and common-telemetry
-  # read these at runtime to decide whether to capture frames in error logs.
-  RUST_BACKTRACE: "full"
-  RUST_LIB_BACKTRACE: "full"
-  CARGO_BUILD_JOBS: "2"
-  REDIS_CACHE_URL: redis://redis-cache:6379/0
-  REDIS_STREAM_URL: redis://redis-stream:6379/0
-  JWT_SECRET: local-dev-jwt-secret-do-not-use-in-production
-  SERVICE_TOKEN: local-dev-service-token-do-not-use-in-production
-  WECHAT_APPID: wx_local_dev
-  WECHAT_SECRET: local-dev-placeholder
-  WECHAT_MCH_ID: local-dev-placeholder
-  WECHAT_PAY_KEY: "0123456789abcdef0123456789abcdef"
-  WECHAT_NOTIFY_URL: http://localhost:8081/api/v1/public/payment/wechat/callback
-  GATEWAY_INTERNAL_URL: http://gateway:8083
-  USER_INTERNAL_URL: http://user:8081
-  ADMIN_INTERNAL_URL: http://admin:8082
-  BILLING_INTERNAL_URL: http://billing:8084
-
-x-rust: &rust
-  build:
-    context: ./docker/dev
-    dockerfile: Dockerfile.rust
-  init: true
+x-go: &go
+  image: golang:1.27
   working_dir: /workspace
-  stop_grace_period: 15s
+  init: true
   volumes:
-    - ./Cargo.toml:/workspace/Cargo.toml:ro
-    - ./Cargo.lock:/workspace/Cargo.lock:ro
-    - ./rust-toolchain.toml:/workspace/rust-toolchain.toml:ro
-    - ./crates:/workspace/crates:ro
-    - ./services:/workspace/services:ro
-    # Cargo.toml 的 members 含 tools/migrate-baseline,cargo 解析 workspace 时
-    # 会加载**每一个** member 的 manifest —— 不挂 tools 的话，容器里 cargo 直接报
-    # "failed to load manifest for workspace member tools/migrate-baseline"，
-    # 5 个业务服务全部起不来（cargo run 与 docker build 的行为一致，不分场景）。
-    - ./tools:/workspace/tools:ro
-    # P4:编译期 migrate! 需要 migrations/ 可见
-    - ./migrations:/workspace/migrations:ro
-    - ./docker/dev:/workspace/docker/dev:ro
-    - cargo-registry:/usr/local/cargo/registry
-    - cargo-git:/usr/local/cargo/git
-    - cargo-target:/cargo-target
+    - .:/workspace
+    - go-modules:/go/pkg/mod
+    - go-build:/root/.cache/go-build
+  environment: &go-env
+    GOTOOLCHAIN: auto
+    JWT_SECRET: local-dev-jwt-secret-do-not-use-in-production
+    SERVICE_TOKEN: local-dev-service-token-do-not-use-in-production
+    WECHAT_APPID: wx_local_dev
+    WECHAT_SECRET: local-dev-placeholder
+    REDIS_CACHE_URL: redis://redis-cache:6379/0
+    REDIS_STREAM_URL: redis://redis-stream:6379/0
   depends_on:
-    # P4:migrate job 成功后业务服务才启动 —— 建表/升级只有 migrate 一个执行者。
-    # mysql 不要再列进来:它会与 migrate 形成 migrate 等 mysql healthy、
-    # mysql 又等表就绪的循环等待。
     migrate: { condition: service_completed_successfully }
     redis-cache: { condition: service_healthy }
     redis-stream: { condition: service_healthy }
@@ -69,10 +36,6 @@ services:
     volumes:
       - mysql-data:/var/lib/mysql
       - ./docker/dev/init-mysql.sh:/docker-entrypoint-initdb.d/10-chargepilot.sh:ro
-    # P4:MySQL 的 healthcheck 必须是**与业务表无关的基础可用性检查**。
-    # 原实现拿 `admin_user_role` 探测,而这张表当时由 init 脚本裸跑迁移创建 ——
-    # 表没了就不 healthy,而表是业务/迁移的产物,等于让基础设施的健康被业务逻辑绑架。
-    # 现在建表只由 migrate job 负责,这里只验「能连、能查」。
     healthcheck:
       test: ["CMD-SHELL", "MYSQL_PWD=$$MYSQL_PASSWORD mysql --protocol=TCP -h 127.0.0.1 -u chargepilot -D chargepilot -e 'SELECT 1'"]
       interval: 5s
@@ -101,83 +64,50 @@ services:
       timeout: 3s
       retries: 10
 
-  # P4:独立迁移任务。跑在 MySQL 可连接之后、业务服务启动之前。
-  # 业务服务不再负责建表/升级,只校验版本。
   migrate:
-    build:
-      context: ./docker/dev
-      dockerfile: Dockerfile.rust
-    # Dockerfile.rust 的 ENTRYPOINT 是 watchexec(它只认 gateway/user/admin/billing/worker),
-    # 不覆盖就会直接报 "Invalid SERVICE_NAME" 退出,migrate 的 command 根本不会被执行。
-    # 这里也不能沿用 x-rust 的 ./docker/dev 挂载:本服务不跑 watch 脚本,不需要它。
-    entrypoint: []
+    image: golang:1.27
     working_dir: /workspace
-    # 逻辑写在 docker/dev/migrate.sh。
-    # 不写在 command 里是因为 compose 会把 `$$1` 先归一成 `$1`,而 `sh` 的 `$1`
-    # 是位置参数 —— 容器里 db/probe 全部展开为空,migrate-baseline 拿不到 --probe
-    # 直接报错退出。这类问题只有在脚本真正跑起来时才暴露,留在 YAML 里无法 review。
-    command: ["sh", "/workspace/docker/dev/migrate.sh"]
+    command: ["go", "run", "./cmd/migrate", "--schema", "all"]
     volumes:
-      - ./Cargo.toml:/workspace/Cargo.toml:ro
-      - ./Cargo.lock:/workspace/Cargo.lock:ro
-      - ./rust-toolchain.toml:/workspace/rust-toolchain.toml:ro
-      - ./crates:/workspace/crates:ro
-      - ./services:/workspace/services:ro
-      - ./tools:/workspace/tools:ro
-      # migrate-baseline 用 Migrator::new() 运行时读这个目录,必须在容器内可见
-      - ./migrations:/workspace/migrations:ro
-      # 迁移脚本本体
-      - ./docker/dev:/workspace/docker/dev:ro
-      - cargo-registry:/usr/local/cargo/registry
-      - cargo-git:/usr/local/cargo/git
-      - cargo-target:/cargo-target
+      - .:/workspace
+      - go-modules:/go/pkg/mod
+      - go-build:/root/.cache/go-build
     environment:
-      DATABASE_URL: mysql://chargepilot:chargepilot_dev@mysql:3306/admin_db
+      DATABASE_URL_GATEWAY: mysql://chargepilot:chargepilot_dev@mysql:3306/gateway_db
+      DATABASE_URL_USER: mysql://chargepilot:chargepilot_dev@mysql:3306/user_db
+      DATABASE_URL_ADMIN: mysql://chargepilot:chargepilot_dev@mysql:3306/admin_db
+      DATABASE_URL_BILLING: mysql://chargepilot:chargepilot_dev@mysql:3306/billing_db
+      DATABASE_URL_WORKER: mysql://chargepilot:chargepilot_dev@mysql:3306/worker_db
     depends_on:
-      # 等 healthy 而不是 started:mysql 的 init 脚本与临时初始化服务器阶段
-      # 都还连不上,service_started 会直接撞上初始化竞态。
       mysql: { condition: service_healthy }
 
   gateway:
-    <<: *rust
+    <<: *go
+    command: ["go", "run", "./cmd/gateway"]
     environment:
-      <<: *rust-env
-      SERVICE_NAME: gateway
+      <<: *go-env
       DATABASE_URL: mysql://chargepilot:chargepilot_dev@mysql:3306/gateway_db
     ports: ["127.0.0.1:8083:8083", "127.0.0.1:9100:9100"]
 
-  user:
-    <<: *rust
+  central:
+    <<: *go
+    command: ["go", "run", "./cmd/central"]
     environment:
-      <<: *rust-env
-      SERVICE_NAME: user
-      DATABASE_URL: mysql://chargepilot:chargepilot_dev@mysql:3306/user_db
-    ports: ["127.0.0.1:8081:8081"]
-
-  admin:
-    <<: *rust
-    environment:
-      <<: *rust-env
-      SERVICE_NAME: admin
-      DATABASE_URL: mysql://chargepilot:chargepilot_dev@mysql:3306/admin_db
-      ADMIN_BOOTSTRAP_USER: ${DEV_ADMIN_USER:-admin}
-      ADMIN_BOOTSTRAP_PASSWORD: ${DEV_ADMIN_PASSWORD:-DevAdmin2026!}
-    ports: ["127.0.0.1:8082:8082"]
-
-  billing:
-    <<: *rust
-    environment:
-      <<: *rust-env
-      SERVICE_NAME: billing
-      DATABASE_URL: mysql://chargepilot:chargepilot_dev@mysql:3306/billing_db
-    ports: ["127.0.0.1:8084:8084"]
+      <<: *go-env
+      DATABASE_URL_USER: mysql://chargepilot:chargepilot_dev@mysql:3306/user_db
+      DATABASE_URL_ADMIN: mysql://chargepilot:chargepilot_dev@mysql:3306/admin_db
+      DATABASE_URL_BILLING: mysql://chargepilot:chargepilot_dev@mysql:3306/billing_db
+    ports: ["127.0.0.1:8080:8080"]
 
   worker:
-    <<: *rust
+    <<: *go
+    command: ["go", "run", "./cmd/worker"]
     environment:
-      <<: *rust-env
-      SERVICE_NAME: worker
+      <<: *go-env
       DATABASE_URL: mysql://chargepilot:chargepilot_dev@mysql:3306/worker_db
+      DATABASE_URL_GATEWAY: mysql://chargepilot:chargepilot_dev@mysql:3306/gateway_db
+      DATABASE_URL_USER: mysql://chargepilot:chargepilot_dev@mysql:3306/user_db
+      DATABASE_URL_ADMIN: mysql://chargepilot:chargepilot_dev@mysql:3306/admin_db
     ports: ["127.0.0.1:8085:8085"]
 
   admin-web:
@@ -186,9 +116,8 @@ services:
     working_dir: /workspace/admin-web
     command: ["sh", "-c", "npm ci --no-audit --no-fund && exec npm run dev -- --host 0.0.0.0"]
     environment:
-      DEV_API_PROXY_TARGET: http://admin:8082
+      DEV_API_PROXY_TARGET: http://central:8080
       DEV_USE_POLLING: "true"
-      # Browser requests stay same-origin; Docker DNS names are proxy-only.
       VITE_API_BASE: ""
     ports: ["127.0.0.1:5173:5173"]
     volumes:
@@ -196,13 +125,12 @@ services:
       - node-modules:/workspace/admin-web/node_modules
       - npm-cache:/root/.npm
     depends_on:
-      admin: { condition: service_started }
+      central: { condition: service_started }
 
 volumes:
   mysql-data:
   redis-stream-data:
-  cargo-registry:
-  cargo-git:
-  cargo-target:
+  go-modules:
+  go-build:
   node-modules:
   npm-cache:
