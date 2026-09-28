@@ -29,13 +29,15 @@ type WebhookDeliverer struct {
 	Streams   []string
 }
 
+// event_types is a JSON column, so it cannot be scanned into a []string field;
+// it is loaded separately and decoded.
 type webhookSubscription struct {
-	ID         uint64
-	Name       string
-	URL        string
-	EventTypes []string
-	Secret     string
-	Enabled    bool
+	ID         uint64   `gorm:"column:id"`
+	Name       string   `gorm:"column:name"`
+	URL        string   `gorm:"column:url"`
+	Secret     string   `gorm:"column:secret"`
+	Enabled    bool     `gorm:"column:enabled"`
+	EventTypes []string `gorm:"-"`
 }
 
 func (webhookSubscription) TableName() string { return "webhook_subscription" }
@@ -189,13 +191,41 @@ func (d WebhookDeliverer) deliver(ctx context.Context, event webhookEvent) (int,
 func (d WebhookDeliverer) subscriptions(ctx context.Context, eventType string) ([]webhookSubscription, error) {
 	rows := []webhookSubscription{}
 	if err := d.AdminDB.WithContext(ctx).Table("webhook_subscription").
+		Select("id, name, url, secret, enabled").
 		Where("enabled = 1 AND deleted_at IS NULL").Find(&rows).Error; err != nil {
 		return nil, err
 	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	ids := make([]uint64, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, row.ID)
+	}
+	var types []struct {
+		ID         uint64 `gorm:"column:id"`
+		EventTypes []byte `gorm:"column:event_types"`
+	}
+	if err := d.AdminDB.WithContext(ctx).Table("webhook_subscription").
+		Select("id, CAST(event_types AS CHAR) AS event_types").
+		Where("id IN ?", ids).Find(&types).Error; err != nil {
+		return nil, err
+	}
+	byID := map[uint64][]string{}
+	for _, row := range types {
+		var decoded []string
+		if len(row.EventTypes) > 0 {
+			// A malformed payload simply matches nothing rather than blocking
+			// delivery for every other subscription.
+			_ = json.Unmarshal(row.EventTypes, &decoded)
+		}
+		byID[row.ID] = decoded
+	}
 	out := make([]webhookSubscription, 0, len(rows))
-	for _, sub := range rows {
-		if subscriptionWants(sub.EventTypes, eventType) {
-			out = append(out, sub)
+	for _, row := range rows {
+		row.EventTypes = byID[row.ID]
+		if subscriptionWants(row.EventTypes, eventType) {
+			out = append(out, row)
 		}
 	}
 	return out, nil
@@ -288,11 +318,13 @@ func (d WebhookDeliverer) log(ctx context.Context, sub webhookSubscription, even
 		"delivered_at": time.Now().UTC(),
 	}
 	err := d.AdminDB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Upsert so a retried event keeps one row per subscription instead of
-		// appending a duplicate for every attempt.
-		return tx.Table("webhook_delivery_log").
-			Where("subscription_id = ? AND event_id = ?", sub.ID, event.EventID).
-			Assign(values).Clauses(clause.OnConflict{UpdateAll: true}).Create(&values).Error
+		// One row per subscription and event, updated in place on retry. An
+		// explicit update column list is required because MySQL cannot build an
+		// ON DUPLICATE KEY clause from a map.
+		return tx.Table("webhook_delivery_log").Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "subscription_id"}, {Name: "event_id"}},
+			DoUpdates: clause.AssignmentColumns([]string{"event_type", "request_body", "response_status", "response_body", "error_msg", "attempt_count", "duration_ms", "delivered_at"}),
+		}).Create(&values).Error
 	})
 	if err != nil {
 		return err

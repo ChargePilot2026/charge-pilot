@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-sql-driver/mysql"
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
@@ -111,11 +112,13 @@ func (e Evaluator) rules(ctx context.Context) ([]rule, error) {
 	return rows, nil
 }
 
+// Column names differ from the Go field names, so they are mapped explicitly;
+// without the tags GORM scans zeros and no threshold ever matches.
 type sample struct {
-	DeviceID string
-	Metric   string
-	Value    decimal.Decimal
-	TS       time.Time
+	DeviceID string          `gorm:"column:device_id"`
+	Metric   string          `gorm:"column:metric"`
+	Value    decimal.Decimal `gorm:"column:value_num"`
+	TS       time.Time       `gorm:"column:ts"`
 }
 
 func (e Evaluator) samples(ctx context.Context, metrics map[string]bool, limit int) ([]sample, error) {
@@ -292,12 +295,29 @@ func (e Evaluator) notifySubscribers(ctx context.Context, r rule, s sample, even
 		if err != nil {
 			return err
 		}
-		if err := e.AdminDB.WithContext(ctx).Table("event_outbox").Create(map[string]any{
-			"event_id": uuid.NewSHA1(uuid.NameSpaceURL, []byte(eventID+fmt.Sprint(*target.SubscriptionID))).String(),
-			"stream":   "charge_events_stream", "envelope_json": string(envelope),
-		}).Error; err != nil {
-			return err
+		// The event id is derived from the alert and subscription, so re-running
+		// evaluation must re-use the existing outbox row instead of failing on
+		// the unique key.
+		outboxID := uuid.NewSHA1(uuid.NameSpaceURL, []byte(eventID+fmt.Sprint(*target.SubscriptionID))).String()
+		insert := e.AdminDB.WithContext(ctx).Table("event_outbox").Create(map[string]any{
+			"event_id": outboxID, "stream": "charge_events_stream", "envelope_json": string(envelope),
+		})
+		if insert.Error != nil && isDuplicateKey(insert.Error) {
+			return nil
+		}
+		if insert.Error != nil {
+			return insert.Error
 		}
 	}
 	return nil
+}
+
+// isDuplicateKey reports MySQL's unique-constraint violation, which for these
+// deterministic event ids means the notification was already queued.
+func isDuplicateKey(err error) bool {
+	if err == nil {
+		return false
+	}
+	var dup *mysql.MySQLError
+	return errors.As(err, &dup) && dup.Number == 1062
 }

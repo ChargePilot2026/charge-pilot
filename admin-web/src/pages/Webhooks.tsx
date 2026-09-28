@@ -119,6 +119,10 @@ export default function WebhooksPage() {
         footer={null} width={1000}>
         <Alert type="info" showIcon style={{ marginBottom: 12 }}
           message="每次投递都带 X-ChargePilot-Signature（HMAC-SHA256，签名覆盖「时间戳.请求体」），请据此校验来源。" />
+        {log.length === 0 && !logLoading ? (
+          <Alert type="info" showIcon message="暂无投递记录"
+            description="订阅创建后，匹配事件由 worker 异步投递；每次投递（含失败）都会在此留痕。" />
+        ) : null}
         <Table<Delivery> rowKey="id" size="small" loading={logLoading} dataSource={log} scroll={{ x: 900 }} pagination={false}
           columns={[
             { title: '事件', dataIndex: 'event_type', width: 140 },

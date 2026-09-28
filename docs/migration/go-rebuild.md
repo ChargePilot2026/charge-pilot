@@ -146,6 +146,22 @@ UI-METER-0929 从缺少分段转人工，确认 200 Wh / 800 Wh 后电费 74 分
 
 **TOTP 与 SSRF 均有单元测试**：TOTP 通过 RFC 6238 官方参考向量（6 位截断值）；SSRF 覆盖 20 个应拒绝目标与 3 个应接受的公网地址，并特意放开 `198.18.0.0/15`（多家开发 DNS 对所有公网域名返回该段，误拦会导致合法订阅被拒）。
 
+**二轮浏览器验收（提现与告警链路）新增修复**：
+
+6. `settlement_party_amount` 没有 `created_month` 列，而可提现余额的 JOIN 引用了 `p.created_month`，导致余额查询必然失败、提现创建恒返回 503；改为仅按 `settlement_id` 关联。
+7. `split_party` 没有 `deleted_at`（逻辑删除在父模板上），提现创建查询了不存在的列；改为只查父模板的 `deleted_at` 与 `status`。
+8. 提现审批与打款重算余额时把这笔自己的 pending/approved 单也算作占用，导致运营永远无法通过自己发起的提现；新增 `AvailableCentsExcluding`，审批与打款都排除当前单。
+9. `telemetry` 采样结构体的 `Value` 未映射到 `value_num`，告警引擎读到的永远是零值，任何阈值都不会触发；补显式列映射。
+10. `webhook_subscription.event_types` 是 JSON 列，无法扫入 `[]string`，投递器每次都报解析错误并跳过；改为按 ID 批量 `CAST(... AS CHAR)` 后解码。
+11. 告警通知写入 `event_outbox` 时 `event_id` 是确定性的，重放评估撞唯一键使整个评估失败；改为把 1062 视为已入队。
+12. `webhook_delivery_log` 的 upsert 用 `Where+Assign+Create`，MySQL 生成空 `ON DUPLICATE KEY UPDATE` 报语法错误；改为显式冲突列与更新列，并补唯一索引迁移 admin 0032。
+13. Webhook 投递日志为空时不显示任何内容，运营无从判断是"没事件"还是"页面坏了"；补空状态说明。
+14. SSRF 探测期间在库里遗留了指向 `localhost`、`169.254.169.254`、`metadata.google.internal` 的订阅记录，已清理。
+
+**端到端链路实测**：注入 `temperature_c=98.5` 遥测 → worker 生成 `alert_event`（critical，active）→ 写入 Outbox → 发布到 `charge_events_stream` → 投递器带 HMAC 签名发出 HTTPS 请求 → 对方返回 404 被判定为不可重试 → 投递日志记录状态、耗时与错误；随后在浏览器点「重发」，生成新的 `retry-` 事件并重新投递成功落日志。
+
+**提现全流程实测**：结算状态为 paid 的分账 → 发起提现 150.00 元（余额 200.00 元）→ 超额申请被拒 → 待审核 → 审核通过 → 待打款 → 登记打款 → 已打款，重复打款幂等。
+
 **验证**：隔离 MySQL/Redis `scripts/test-integration.sh -race` 全绿；`go vet ./...`、四个服务构建、前端 `tsc --noEmit` 与生产构建通过；浏览器完成告警规则创建、财务六个标签页、对账实际执行并核对差异明细、导出任务生成 CSV（容器内核对表头与 0600 权限）、OTA 固件登记与校验和拒绝、管理员账号创建与 MFA 注册；MFA 三条路径（口令被拦、错码拒绝、正确码签发）另行以接口验证。29 个后台只读接口全部 200。
 
 **仍未完成**：微信支付与汇付天下真实商户联调、发票自动开具与税控、`dc589` 实机与厂商 OTA 双备份回滚证明，以及小程序适配。上述任一未满足前，生产切换门禁保持关闭。

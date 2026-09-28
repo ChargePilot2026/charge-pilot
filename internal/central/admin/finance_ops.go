@@ -39,19 +39,31 @@ type WithdrawRow struct {
 // AvailableCents is the settled amount for a party that has not been withdrawn
 // or already claimed by an open request.
 func (s ResourceStore) AvailableCents(ctx context.Context, tx *gorm.DB, partyID uint64) (int64, error) {
+	return s.AvailableCentsExcluding(ctx, tx, partyID, 0)
+}
+
+// AvailableCentsExcluding is AvailableCents with one request left out of the
+// reservation. Approving or paying a request must not count that same request as
+// a competing claim, otherwise an operator could never approve what they created.
+func (s ResourceStore) AvailableCentsExcluding(ctx context.Context, tx *gorm.DB, partyID, excludeID uint64) (int64, error) {
 	if tx == nil {
 		tx = s.BillingDB.WithContext(ctx)
 	}
 	var earned int64
+	// settlement_party_amount has no partition column, so the join is on the
+	// settlement id alone; adding a created_month predicate here would fail.
 	if err := tx.Table("settlement_party_amount AS p").
-		Joins("JOIN settlement AS st ON st.id = p.settlement_id AND st.created_month = p.created_month").
+		Joins("JOIN settlement AS st ON st.id = p.settlement_id").
 		Where("p.party_id = ? AND st.status = 'paid'", partyID).
 		Select("COALESCE(SUM(p.amount_cents),0)").Scan(&earned).Error; err != nil {
 		return 0, err
 	}
+	claimedQuery := tx.Table("withdraw_request").Where("party_id = ? AND status IN ('pending','approved')", partyID)
+	if excludeID != 0 {
+		claimedQuery = claimedQuery.Where("id <> ?", excludeID)
+	}
 	var claimed int64
-	if err := tx.Table("withdraw_request").Where("party_id = ? AND status IN ('pending','approved')", partyID).
-		Select("COALESCE(SUM(amount_cents),0)").Scan(&claimed).Error; err != nil {
+	if err := claimedQuery.Select("COALESCE(SUM(amount_cents),0)").Scan(&claimed).Error; err != nil {
 		return 0, err
 	}
 	if claimed > earned {
@@ -112,33 +124,30 @@ func (a ResourceAPI) createWithdraw(c *gin.Context) {
 			return found.Error
 		}
 		var party struct {
-			ID         uint64
-			Code       string
-			Name       string
-			BankAcc    *string
-			BankName   *string
-			TemplateID uint64
-			DeletedAt  *string
+			ID         uint64  `gorm:"column:id"`
+			Code       string  `gorm:"column:party_code"`
+			Name       string  `gorm:"column:party_name"`
+			BankAcc    *string `gorm:"column:bank_account"`
+			BankName   *string `gorm:"column:bank_name"`
+			TemplateID uint64  `gorm:"column:split_template_id"`
 		}
 		// The party identity lives in admin_db; it is resolved through its own
-		// connection rather than joined into the billing transaction.
-		var bankAccount, bankName *string
+		// connection rather than joined into the billing transaction. split_party
+		// has no deleted_at: retirement is recorded on the parent template.
 		if err := a.Store.AdminDB.WithContext(c.Request.Context()).Table("split_party").
-			Select("id, party_code, party_name, bank_account, bank_name, split_template_id, deleted_at").
+			Select("id, party_code, party_name, bank_account, bank_name, split_template_id").
 			Where("id = ?", in.PartyID).Take(&party).Error; err != nil {
 			return err
 		}
-		bankAccount, bankName = party.BankAcc, party.BankName
 		var template struct {
-			Status     string
-			TemplateID uint64
-			Deleted    *string
+			Status  string  `gorm:"column:status"`
+			Deleted *string `gorm:"column:deleted_at"`
 		}
 		if err := a.Store.AdminDB.WithContext(c.Request.Context()).Table("split_template").
-			Select("status, id AS template_id, deleted_at AS deleted").Where("id = ?", party.TemplateID).Take(&template).Error; err != nil {
+			Select("status, deleted_at").Where("id = ?", party.TemplateID).Take(&template).Error; err != nil {
 			return err
 		}
-		if party.DeletedAt != nil || template.Deleted != nil || template.Status != "active" {
+		if template.Deleted != nil || template.Status != "active" {
 			return errConflict
 		}
 		available, err := a.Store.AvailableCents(c.Request.Context(), tx, in.PartyID)
@@ -150,7 +159,7 @@ func (a ResourceAPI) createWithdraw(c *gin.Context) {
 		}
 		if err := tx.Table("withdraw_request").Create(map[string]any{
 			"withdraw_no": no, "party_id": in.PartyID, "party_code": party.Code, "amount_cents": in.AmountCents,
-			"bank_account": bankAccount, "bank_name": bankName, "status": "pending", "note": in.Note,
+			"bank_account": party.BankAcc, "bank_name": party.BankName, "status": "pending", "note": in.Note,
 		}).Error; err != nil {
 			return err
 		}
@@ -206,7 +215,9 @@ func (a ResourceAPI) decideWithdraw(c *gin.Context) {
 			if row.Status != "pending" {
 				return errConflict
 			}
-			available, err := a.Store.AvailableCents(c.Request.Context(), tx, row.PartyID)
+			// This request already occupies the balance as a pending row, so it is
+			// excluded from the reservation; otherwise approving would always fail.
+			available, err := a.Store.AvailableCentsExcluding(c.Request.Context(), tx, row.PartyID, row.ID)
 			if err != nil {
 				return err
 			}
@@ -267,7 +278,9 @@ func (a ResourceAPI) payWithdraw(c *gin.Context) {
 		if row.Status != "approved" {
 			return errConflict
 		}
-		available, err := a.Store.AvailableCents(c.Request.Context(), tx, row.PartyID)
+		// The approved request is the payout being recorded, so it is excluded
+		// from the reservation just as at approval time.
+		available, err := a.Store.AvailableCentsExcluding(c.Request.Context(), tx, row.PartyID, row.ID)
 		if err != nil {
 			return err
 		}
