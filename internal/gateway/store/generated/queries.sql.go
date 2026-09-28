@@ -676,6 +676,96 @@ func (q *Queries) ReservePort(ctx context.Context, arg ReservePortParams) (sql.R
 	return q.db.ExecContext(ctx, reservePort, arg.CurrentOrderID, arg.ID)
 }
 
+const scanPortByCode = `-- name: ScanPortByCode :one
+SELECT p.id, p.device_id, p.port_no, p.port_code, p.status,
+       p.current_order_id, d.last_seen_at
+FROM device_port AS p
+JOIN device AS d ON d.device_id = p.device_id
+JOIN vendor AS v ON v.id = d.vendor_id
+WHERE p.port_code = ? AND p.deleted_at IS NULL
+  AND d.status = 'enabled' AND d.deleted_at IS NULL
+  AND v.status = 'enabled' AND v.deleted_at IS NULL
+LIMIT 1
+`
+
+type ScanPortByCodeRow struct {
+	ID             uint64
+	DeviceID       string
+	PortNo         uint8
+	PortCode       string
+	Status         DevicePortStatus
+	CurrentOrderID sql.NullString
+	LastSeenAt     sql.NullTime
+}
+
+func (q *Queries) ScanPortByCode(ctx context.Context, portCode string) (ScanPortByCodeRow, error) {
+	row := q.db.QueryRowContext(ctx, scanPortByCode, portCode)
+	var i ScanPortByCodeRow
+	err := row.Scan(
+		&i.ID,
+		&i.DeviceID,
+		&i.PortNo,
+		&i.PortCode,
+		&i.Status,
+		&i.CurrentOrderID,
+		&i.LastSeenAt,
+	)
+	return i, err
+}
+
+const scanPortsByDevice = `-- name: ScanPortsByDevice :many
+SELECT p.id, p.device_id, p.port_no, p.port_code, p.status,
+       p.current_order_id, d.last_seen_at
+FROM device_port AS p
+JOIN device AS d ON d.device_id = p.device_id
+JOIN vendor AS v ON v.id = d.vendor_id
+WHERE d.device_id = ? AND p.deleted_at IS NULL
+  AND d.status = 'enabled' AND d.deleted_at IS NULL
+  AND v.status = 'enabled' AND v.deleted_at IS NULL
+ORDER BY p.port_no
+`
+
+type ScanPortsByDeviceRow struct {
+	ID             uint64
+	DeviceID       string
+	PortNo         uint8
+	PortCode       string
+	Status         DevicePortStatus
+	CurrentOrderID sql.NullString
+	LastSeenAt     sql.NullTime
+}
+
+func (q *Queries) ScanPortsByDevice(ctx context.Context, deviceID string) ([]ScanPortsByDeviceRow, error) {
+	rows, err := q.db.QueryContext(ctx, scanPortsByDevice, deviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ScanPortsByDeviceRow
+	for rows.Next() {
+		var i ScanPortsByDeviceRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.DeviceID,
+			&i.PortNo,
+			&i.PortCode,
+			&i.Status,
+			&i.CurrentOrderID,
+			&i.LastSeenAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const setPortCharging = `-- name: SetPortCharging :execresult
 UPDATE device_port SET status = 'charging'
 WHERE id = ? AND current_order_id = ? AND status = 'idle'

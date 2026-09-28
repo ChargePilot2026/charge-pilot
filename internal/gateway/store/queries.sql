@@ -159,3 +159,25 @@ WHERE id = ? AND current_order_id = ? AND status = 'idle';
 -- name: ReleaseReservedPort :execresult
 UPDATE device_port SET current_order_id = NULL
 WHERE id = ? AND current_order_id = ? AND status = 'idle';
+
+-- name: ScanPortByCode :one
+SELECT p.id, p.device_id, p.port_no, p.port_code, p.status,
+       p.current_order_id, d.last_seen_at
+FROM device_port AS p
+JOIN device AS d ON d.device_id = p.device_id
+JOIN vendor AS v ON v.id = d.vendor_id
+WHERE p.port_code = ? AND p.deleted_at IS NULL
+  AND d.status = 'enabled' AND d.deleted_at IS NULL
+  AND v.status = 'enabled' AND v.deleted_at IS NULL
+LIMIT 1;
+
+-- name: ScanPortsByDevice :many
+SELECT p.id, p.device_id, p.port_no, p.port_code, p.status,
+       p.current_order_id, d.last_seen_at
+FROM device_port AS p
+JOIN device AS d ON d.device_id = p.device_id
+JOIN vendor AS v ON v.id = d.vendor_id
+WHERE d.device_id = ? AND p.deleted_at IS NULL
+  AND d.status = 'enabled' AND d.deleted_at IS NULL
+  AND v.status = 'enabled' AND v.deleted_at IS NULL
+ORDER BY p.port_no;
