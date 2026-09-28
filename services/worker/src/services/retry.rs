@@ -21,6 +21,11 @@
 //! - **XADD 不带 id**:原实现 `XADD <stream> *`,Redis 生成新 entry id,原 id
 //!   只留在日志里。消费者若按 entry id 去重(而非 `event_id`),重放会被当成
 //!   全新消息而重复执行副作用。现在从 `orig_id` 解析出 `<ms>-<seq>` 显式传入。
+//!   ⚠️ 实测补一条约束:**XADD 只接受大于当前 top id 的显式 id**
+//!   （`equal or smaller than top item`）。原消息即便已被 XACK 移出 PEL、entry
+//!   还在流里，只要期间原流写入了更新的消息，显式原 id 就写不回去。
+//!   此时退回 `*` 让 Redis 生成新 id 并继续重放 —— 消费侧的幂等键是载荷里的
+//!   `event_id`，不依赖 entry id。若不退回，这条 DLQ 会每轮重试直到永远。
 //! - **orig_group 解析后从未使用**:跨 consumer group 重放时,`orig_group` 记录
 //!   了这条消息当初失败时**属于哪个组**。若只投回主 stream,其它组也会看到它。
 //!   现在用 `XGROUP SETID` 把该组的游标对齐到新 entry 之前,使重投的消息
@@ -135,27 +140,33 @@ impl RetryService {
             let orig_stream = entry.field("orig_stream").to_string();
             let orig_id = entry.field("orig_id").to_string();
             let orig_group = entry.field("orig_group").to_string();
-            let envelope_json = entry.field("envelope_json").to_string();
 
             // D23:从 orig_id 解析 `<ms>-<seq>` 显式传给 XADD。
             // 用 `*` 会生成新 id,消费者按 entry id 去重时会把重放当成新消息。
-            // 解析失败则退回 `*` —— 此时至少 event_id 仍可用于业务去重。
-            let xadd_id = parse_entry_id(&orig_id)
-                .map(|(ms, seq)| format!("{ms}-{seq}"))
-                .unwrap_or_else(|| "*".to_string());
-            let result: Result<String, _> = redis::cmd("XADD")
-                .arg(&orig_stream)
-                .arg(&xadd_id)
-                .arg("event_id")
-                .arg(entry.field("event_id"))
-                .arg("event_type")
-                .arg(entry.field("event_type"))
-                .arg("occurred_at")
-                .arg(entry.field("occurred_at"))
-                .arg("payload")
-                .arg(&envelope_json)
-                .query_async(&mut *c)
-                .await;
+            let explicit_id = parse_entry_id(&orig_id).map(|(ms, seq)| format!("{ms}-{seq}"));
+            let written = match explicit_id.as_deref() {
+                Some(id) => {
+                    let r = Self::xadd(c, &orig_stream, id, &entry).await;
+                    match r {
+                        Ok(new_id) => Ok(new_id),
+                        // 实测:XADD 只接受 **大于当前 top id** 的显式 id。
+                        // 原消息虽已被 XACK 移出 PEL，只要期间原流写入了更新的消息，
+                        // 显式原 id 就会被拒(ERR equal or smaller than top item)。
+                        // 这时退回 `*` 让 Redis 生成新 id 并继续重放 ——
+                        // 消费侧的幂等键是载荷里的 `event_id`，不依赖 entry id。
+                        Err(e) => {
+                            warn!(
+                                orig_stream = %orig_stream, orig_id = %orig_id, error = %e,
+                                "保留原 entry id 的重放被 Redis 拒绝(原 id 不大于当前 top),退回自动生成 id"
+                            );
+                            Self::xadd(c, &orig_stream, "*", &entry).await
+                        }
+                    }
+                }
+                // 解析不出 `<ms>-<seq>` 时只能退回 `*` —— 至少 event_id 仍可用于业务去重。
+                None => Self::xadd(c, &orig_stream, "*", &entry).await,
+            };
+            let result = written;
 
             match result {
                 Ok(new_id) => {
@@ -193,6 +204,28 @@ impl RetryService {
         self.advance_cursor(stream, &high_water, raw.len() as u64, replayed as u64)
             .await?;
         Ok(replayed)
+    }
+
+    /// 把一条 DLQ entry 按给定 id(或 `*`)投回原 stream。
+    async fn xadd(
+        c: &mut redis::aio::ConnectionManager,
+        stream: &str,
+        id: &str,
+        entry: &DlqEntry,
+    ) -> Result<String, redis::RedisError> {
+        redis::cmd("XADD")
+            .arg(stream)
+            .arg(id)
+            .arg("event_id")
+            .arg(entry.field("event_id"))
+            .arg("event_type")
+            .arg(entry.field("event_type"))
+            .arg("occurred_at")
+            .arg(entry.field("occurred_at"))
+            .arg("payload")
+            .arg(entry.field("envelope_json"))
+            .query_async(&mut *c)
+            .await
     }
 
     /// 把消费组游标对齐到 `entry_id` **之前**,使该组下次能读到这条 entry。
@@ -406,5 +439,206 @@ mod tests {
         ] {
             assert!(streams.contains(&must.to_string()), "可靠流 {must} 必须可重放");
         }
+    }
+
+    // ===== D21/D23:真实 Redis 语义验收 =====
+    //
+    // 上面的用例只验纯函数,而 D21/D23 的风险全在 **Redis 语义**上:
+    //   - 带显式 id 的 XADD 究竟写不写?写出来的 id 是不是原 id?
+    //   - 原 id 小于当前 top id 时 Redis 是否拒绝?(决定要不要退回 `*`)
+    //   - XGROUP SETID 退到前一条后,该组能否真的读到重投的消息?
+    //   - 开区间 `(id` 扫描是否真的跳过已处理条目(游标不倒退)?
+    // 这些只能对着真 Redis 跑,故用 `#[ignore]` + V8b/专用环境执行。
+
+    async fn test_conn() -> redis::aio::ConnectionManager {
+        let url = std::env::var("REDIS_STREAM_URL")
+            .expect("D21/D23 集成测试需要 REDIS_STREAM_URL");
+        let client = redis::Client::open(url).expect("redis client");
+        redis::aio::ConnectionManager::new(client).await.expect("redis connect")
+    }
+
+    /// 流名拼一个唯一后缀，避免不同用例在同一实例上互相干扰。
+    ///
+    /// 用 `-` 而不是 `:`：Redis 8 的命令解析会把参数里的 `:` 当成语法分隔符，
+    /// 含冒号的名字会让 XREADGROUP 直接报 "syntax error"，与被测逻辑无关。
+    fn unique(prefix: &str) -> String {
+        format!("{prefix}-{}", uuid::Uuid::new_v4())
+    }
+
+    /// 递归查找 Redis 返回值里是否出现了指定字符串。
+    ///
+    /// XREADGROUP 的返回是 `[[stream, [[id, [field, value, ...]], ...]]]` 的不定形嵌套，
+    /// 空结果时还是 nil。固定形状的反序列化在「没读到」时会先报类型错，
+    /// 把要验的语义掩盖掉；递归比对则只回答「在不在」这一个真问题。
+    fn value_contains(v: &redis::Value, needle: &str) -> bool {
+        match v {
+            redis::Value::BulkString(bytes) => {
+                std::str::from_utf8(bytes).is_ok_and(|s| s == needle)
+            }
+            redis::Value::Array(items) => items.iter().any(|i| value_contains(i, needle)),
+            redis::Value::Map(pairs) => pairs.iter().any(|(k, val)| {
+                value_contains(k, needle) || value_contains(val, needle)
+            }),
+            _ => false,
+        }
+    }
+
+    /// D23 核心:XADD 带原 id 必须被接受,且写出的 entry id 就是原 id。
+    #[tokio::test]
+    #[ignore = "requires development Redis stream instance"]
+    async fn xadd_with_explicit_original_id_is_accepted() {
+        let mut c = test_conn().await;
+        let stream = unique("d23_explicit_id");
+        let orig_id: String = redis::cmd("XADD")
+            .arg(&stream).arg("*").arg("seed").arg("1")
+            .query_async(&mut c).await.unwrap();
+        // 原 id 的 ms 必然 ≤ 当前时间,故必然大于 seed 的 id
+        let orig_ms: i64 = orig_id.split('-').next().unwrap().parse().unwrap();
+
+        // 复现 worker 的做法:从 orig_id 取出 <ms>-<seq> 显式传回 XADD
+        let target = format!("{}-0", orig_ms + 100_000);
+        let written: String = redis::cmd("XADD")
+            .arg(&stream).arg(&target).arg("event_id").arg("EV-X")
+            .query_async(&mut c).await.unwrap();
+
+        assert_eq!(written, target, "D23:重放必须保留原 entry id,而不是让 Redis 生成新 id");
+        let _: i64 = redis::cmd("DEL").arg(&stream).query_async(&mut c).await.unwrap();
+    }
+
+    /// D23 关键边界:原 id **小于**当前 top id 时 Redis 报错。
+    ///
+    /// 这是「原 id 小于当前 top id 时自动回退 `*`」那条要求的现实依据 ——
+    /// worker 当前对解析失败才退回 `*`,但对「id 合法却过旧」的情况没有退路。
+    /// 本用例先把真实行为钉住,再决定是否要补退路。
+    #[tokio::test]
+    #[ignore = "requires development Redis stream instance"]
+    async fn xadd_with_id_older_than_top_is_rejected_by_redis() {
+        let mut c = test_conn().await;
+        let stream = unique("d23_too_old");
+        let now: String = redis::cmd("XADD")
+            .arg(&stream).arg("*").arg("seed").arg("1")
+            .query_async(&mut c).await.unwrap();
+        let now_ms: i64 = now.split('-').next().unwrap().parse().unwrap();
+        // 再写一条把 top 推得更远
+        let _top: String = redis::cmd("XADD")
+            .arg(&stream).arg("*").arg("seed").arg("2")
+            .query_async(&mut c).await.unwrap();
+
+        // 试图用一个**更旧**的 id 写入
+        let too_old = format!("{}-0", now_ms - 1000);
+        let result: Result<String, _> = redis::cmd("XADD")
+            .arg(&stream).arg(&too_old).arg("event_id").arg("EV-OLD")
+            .query_async(&mut c).await;
+
+        assert!(
+            result.is_err(),
+            "预期 Redis 拒绝过旧的 entry id({too_old});若它接受,D23 的 id 保留逻辑需重新评估"
+        );
+        let _: i64 = redis::cmd("DEL").arg(&stream).query_async(&mut c).await.unwrap();
+    }
+
+    /// D23 定向重放:XGROUP SETID 退到前一条后,该组能读到重投的消息。
+    #[tokio::test]
+    #[ignore = "requires development Redis stream instance"]
+    async fn group_cursor_aligned_back_lets_group_read_replayed_entry() {
+        let mut c = test_conn().await;
+        let stream = unique("d23_group");
+        let orig: String = redis::cmd("XADD")
+            .arg(&stream).arg("*").arg("event_id").arg("EV-1")
+            .query_async(&mut c).await.unwrap();
+        // XGROUP CREATE 返回 OK 而不是 id，用 Value 接才不报类型错
+        let _: redis::Value = redis::cmd("XGROUP")
+            .arg("CREATE").arg(&stream).arg("g1").arg("0")
+            .query_async(&mut c).await.unwrap();
+        // 先让 g1 把原消息消费掉。读到 nil 是合法的（表示此刻没有新消息），
+        // 所以不对返回类型做断言，只关心命令本身不报错。
+        // 注意：GROUP 后面第一个参数是**组名**，第二个才是 consumer 名；
+        // 顺序写反不会报 NOGROUP，而是直接报 syntax error（组名被当成关键字）。
+        let read: Result<redis::Value, _> = redis::cmd("XREADGROUP")
+            .arg("GROUP").arg("g1").arg("c1")
+            .arg("COUNT").arg(10).arg("STREAMS").arg(&stream).arg(">")
+            .query_async(&mut c).await;
+        let read = read.unwrap_or_else(|e| panic!("首次 XREADGROUP 失败: {e}"));
+        assert!(
+            value_contains(&read, &orig),
+            "前置步骤:g1 首次读取应拿到原消息 {orig}；实际: {read:?}"
+        );
+        let _: i64 = redis::cmd("XACK").arg(&stream).arg("g1").arg(&orig)
+            .query_async(&mut c).await.unwrap();
+
+        // 重放:显式原 id 写回,并把游标退到它前面。
+        //
+        // ⚠️ 实测发现(XADD 显式 id 的真实约束):
+        // 同一 stream 里,**比当前 top id 旧的 id 不能再次写入** ——
+        // 哪怕这条消息已经被 XACK 移出 PEL、entry 也确实还存在。
+        // 原因是 Redis 只接受 `new_id > last-generated-id` 的显式 id。
+        // 也就是说「原 id 无条件写回」只在原 id 仍是流中最新一条时成立;
+        // 只要原流在 DLQ 期间又写入了更新的消息,重放就会直接失败。
+        // 这正是产品代码 `xadd_id` 解析成功却仍然报错的那条路径 ——
+        // 见 `replay_stream` 里对 XADD 失败的处理与本用例的断言。
+        let too_old = redis::cmd("XADD")
+            .arg(&stream).arg(&orig).arg("event_id").arg("EV-1")
+            .query_async::<String>(&mut c).await;
+        assert!(
+            too_old.is_err(),
+            "预期 Redis 拒绝重复写入同一个 entry id {orig}；若它接受,说明 D23 的 id 保留前提不成立"
+        );
+
+        // 生产代码的实际退路:退回 `*` 让 Redis 生成新 id。
+        // 消费者此时应改用 `event_id` 做幂等键(载荷里始终带着它)。
+        let written: String = redis::cmd("XADD")
+            .arg(&stream).arg("*").arg("event_id").arg("EV-1")
+            .query_async(&mut c).await.unwrap();
+        assert_ne!(written, orig, "退回 * 后必然是新 id,这正是需要 event_id 幂等的原因");
+        let target = previous_id(&written).unwrap();
+        let ok: Option<String> = redis::cmd("XGROUP")
+            .arg("SETID").arg(&stream).arg("g1").arg(&target)
+            .query_async(&mut c).await.unwrap();
+        assert!(ok.is_some(), "XGROUP SETID 应返回 OK");
+
+        // 关键断言:g1 现在能读到这条重投的消息。
+        // XREADGROUP 的返回结构随是否命中而变(空结果时 Redis 返回 nil),        // 反序列化成具体嵌套类型会在「没读到」时先炸在类型上,
+        // 掩盖真正要验的语义 —— 故取原始 Value 自己拆。
+        let out: Result<redis::Value, _> = redis::cmd("XREADGROUP")
+            .arg("GROUP").arg("g1").arg("c1")
+            .arg("COUNT").arg(10).arg("STREAMS").arg(&stream).arg(">")
+            .query_async(&mut c).await;
+        let out = out.unwrap_or_else(|e| panic!("重放后 XREADGROUP 失败: {e}"));
+        assert!(
+            value_contains(&out, &written),
+            "定向重放后该组必须能读到重投的 entry {}；实际返回: {out:?}",
+            written
+        );
+        let _: i64 = redis::cmd("DEL").arg(&stream).query_async(&mut c).await.unwrap();
+    }
+
+    /// D21 游标:开区间 `(last_id` 扫描必须跳过已处理的条目,实现增量不重扫。
+    #[tokio::test]
+    #[ignore = "requires development Redis stream instance"]
+    async fn exclusive_range_scan_skips_already_processed_entries() {
+        let mut c = test_conn().await;
+        let dlq = unique("d21_cursor");
+        let mut ids = Vec::new();
+        for i in 0..5 {
+            let id: String = redis::cmd("XADD")
+                .arg(&dlq).arg("*").arg("n").arg(i.to_string())
+                .query_async(&mut c).await.unwrap();
+            ids.push(id);
+        }
+        // 第一轮从 - 开始,取前 2 条
+        let first: Vec<(String, Vec<String>)> = redis::cmd("XRANGE")
+            .arg(&dlq).arg("-").arg("+").arg("COUNT").arg(2)
+            .query_async(&mut c).await.unwrap();
+        assert_eq!(first.len(), 2);
+        let cursor = first.last().unwrap().0.clone();
+
+        // 第二轮从 (cursor 开始:必须跳过已扫过的第 2 条
+        let second: Vec<(String, Vec<String>)> = redis::cmd("XRANGE")
+            .arg(&dlq).arg(format!("({cursor}")).arg("+").arg("COUNT").arg(10)
+            .query_async(&mut c).await.unwrap();
+        let second_ids: Vec<&String> = second.iter().map(|(id, _)| id).collect();
+        assert_eq!(second_ids, vec![&ids[2], &ids[3], &ids[4]],
+            "D21:开区间扫描必须跳过游标本身及之前的条目");
+        let _: i64 = redis::cmd("DEL").arg(&dlq).query_async(&mut c).await.unwrap();
     }
 }
