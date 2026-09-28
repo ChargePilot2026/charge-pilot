@@ -49,6 +49,12 @@ func (a SessionAuthenticator) Authenticate(c *gin.Context) (userID uint64, ok bo
 		httpapi.Write(c, http.StatusUnauthorized, 1001, "access token invalid", nil)
 		return 0, false
 	}
+	if a.Users == nil {
+		// A misconfigured deployment must answer with a retryable error rather
+		// than dereferencing a nil store inside the request path.
+		httpapi.Write(c, http.StatusServiceUnavailable, 5001, "user unavailable", nil)
+		return 0, false
+	}
 	active, err := a.Users.Active(c.Request.Context(), id)
 	if err != nil {
 		httpapi.Write(c, http.StatusServiceUnavailable, 5001, "user unavailable", nil)

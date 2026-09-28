@@ -2,6 +2,7 @@ package charge
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -183,4 +184,31 @@ func isMySQLDuplicate(err error) bool {
 	}
 	var mysqlErr *mysql.MySQLError
 	return errors.As(err, &mysqlErr) && mysqlErr.Number == 1062
+}
+
+// ChargeFeeRecord is the settled fee for one order. The amounts live inside
+// result_json because they are produced by the pricing engine as one signed
+// unit; parsing them here keeps that contract in a single place.
+type ChargeFeeRecord struct {
+	ChargeOrderID  uint64 `gorm:"column:charge_order_id;primaryKey"`
+	CalculationNo  string `gorm:"column:calculation_no"`
+	ResultJSON     []byte `gorm:"column:result_json"`
+	ShortfallCents int64  `gorm:"column:shortfall_cents"`
+}
+
+func (ChargeFeeRecord) TableName() string { return "charge_fee_receipt" }
+
+// Fees decodes the stored breakdown into flat amounts.
+func (r ChargeFeeRecord) Fees() (electric, service, total int64, ok bool) {
+	// The receipt stores the full billing Result, whose fee fields sit at the
+	// top level next to the source block.
+	var flat struct {
+		ElectricCents int64 `json:"electric_cents"`
+		ServiceCents  int64 `json:"service_cents"`
+		TotalCents    int64 `json:"total_cents"`
+	}
+	if err := json.Unmarshal(r.ResultJSON, &flat); err != nil {
+		return 0, 0, 0, false
+	}
+	return flat.ElectricCents, flat.ServiceCents, flat.TotalCents, true
 }

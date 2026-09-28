@@ -108,3 +108,15 @@ GET `/settings/charge-rules` 返回规则完整时段、站点、状态、版本
 - `GET /user/coupons`：当前账号可用优惠券。
 - `POST /user/scan/start` 的 `coupon_grant_id` 为可选字段；优惠额在支付意图中冻结，响应新增 `discount_cents` 与 `payable_cents`。重放意图时必须提交相同优惠券，否则 409。
 - `GET /user/debts`、`POST /user/debts/{id}/pay`：欠费查询与补缴，金额取自服务端欠费记录，不接受客户端指定。
+
+## 用户侧充电查询接口（2026-09-29）
+
+小程序此前已在调用以下接口而后端未提供，现已补齐。认证使用用户 JWT，其余约定与后台一致。路径省略 `/api/v1`。
+
+- `GET /user/charge/ongoing`：当前进行中订单；无进行中订单时返回空 `order_no` 而非 404。
+- `GET /user/charge/ongoing/snapshot?order_id=`：订单快照，含电量、秒数与费用分项；gateway 端口状态为附加信息，取不到不影响快照本身。
+- `GET /user/charge/ongoing/curve?order_id=&window=`：实时曲线。`window` 取 `last_30min`（默认）、`last_2h`、`last_24h`，非法值回落默认值而非报错。`series` 按时间升序，每点含 `power_w`、`current_a`、`voltage_v`、`temperature_c`、`battery_soc`、`meter_kwh`；**设备未上报的指标为 `null`**，调用方应断开折线而不是画到零。gateway 侧强制 24 小时与 2000 点上限并按秒聚合。
+- `GET /user/charge/history?page=&page_size=&status=`：本人订单分页，费用取自计费回执的分项。
+- `GET /user/charge/{order_no}`：单笔详情，含分项费用、欠费、支付摘要与退款列表（无退款时为空数组而非 null）。
+
+以上接口一律先校验所有权：他���订单与不存在订单返回同样的 404。
