@@ -23,7 +23,7 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.88"
+rust-version = "1.98.1"
 license = "AGPL-3.0-or-later"
 authors = ["ChargePilot <dev@chargepilot.example>"]
 repository = "https://github.com/ChargePilot2026/charge-pilot"
