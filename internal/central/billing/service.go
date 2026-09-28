@@ -25,6 +25,7 @@ type Orders interface {
 type Service struct {
 	Store        Store
 	Orders       Orders
+	Splits       SplitResolver
 	ServiceToken string
 }
 
@@ -56,6 +57,11 @@ func (s Service) Run(ctx context.Context) (int, error) {
 					err = s.Store.MarkDelivered(ctx, id)
 				}
 				if err == nil {
+					// Allocation is recorded after the fee is durably known so a
+					// settlement always has a persisted calculation to attach to.
+					if splitErr := s.settleCalculation(ctx, source, result); splitErr != nil && first == nil {
+						first = splitErr
+					}
 					count++
 					continue
 				}
@@ -68,6 +74,13 @@ func (s Service) Run(ctx context.Context) (int, error) {
 				first = fmt.Errorf("bill order %d: %w", id, err)
 			}
 		}
+	}
+	if settled, splitErr := s.settleBacklog(ctx); splitErr != nil {
+		if first == nil {
+			first = splitErr
+		}
+	} else {
+		count += settled
 	}
 	return count, first
 }
@@ -85,6 +98,101 @@ func (s Service) Register(r *gin.Engine) {
 		}
 		httpapi.OK(c, gin.H{"completed": n})
 	})
+}
+
+// settleCalculation records the allocation for one freshly calculated fee. The
+// calculation number is derived from the order id, so the settlement no carries
+// the same deterministic identity as the fee it splits.
+func (s Service) settleCalculation(ctx context.Context, source Source, result Result) error {
+	// Settlement is an additional ledger on top of a valid fee. Without a
+	// resolver the deployment simply does not split, which must never fail the
+	// charge that was already billed correctly.
+	if source.Rule.StationID == 0 || s.Splits.AdminDB == nil {
+		return nil
+	}
+	calculationID, err := s.Store.CalculationID(ctx, source.ChargeOrderID)
+	if err != nil {
+		return err
+	}
+	template, err := s.Splits.Resolve(ctx, source.Rule.StationID)
+	if err != nil {
+		if errors.Is(err, ErrNoSplitTemplate) || errors.Is(err, gorm.ErrRecordNotFound) {
+			// A station without an active split template is a configuration gap,
+			// not a billing failure: the fee stays valid and settlement retries.
+			return nil
+		}
+		return err
+	}
+	month, err := s.Store.CalculationMonth(ctx, calculationID)
+	if err != nil {
+		return err
+	}
+	_, _, err = s.Store.Settle(ctx, calculationID, template, result.ActualFee, month)
+	return err
+}
+
+// CalculationID resolves the persisted fee_calculation primary key for an order.
+// The calculation number is derived from the order id, but the settlement ledger
+// references the real row id, so it is read from the receipt instead of guessed.
+func (s Store) CalculationID(ctx context.Context, chargeOrderID uint64) (uint64, error) {
+	var row struct {
+		CalculationID *uint64 `gorm:"column:calculation_id"`
+	}
+	if err := s.DB.WithContext(ctx).Table("fee_receipt").Select("calculation_id").Where("charge_order_id = ?", chargeOrderID).Take(&row).Error; err != nil {
+		return 0, err
+	}
+	if row.CalculationID == nil {
+		return 0, ErrConflict
+	}
+	return *row.CalculationID, nil
+}
+
+// settleBacklog covers fees calculated before settlement existed, or a station
+// that gained a split template later. It never rewrites an existing settlement.
+func (s Service) settleBacklog(ctx context.Context) (int, error) {
+	if s.Splits.AdminDB == nil {
+		return 0, nil
+	}
+	pending, err := s.Store.SettlementsDue(ctx, 50)
+	if err != nil {
+		return 0, err
+	}
+	count, first := 0, error(nil)
+	for _, row := range pending {
+		if row.StationID == nil {
+			continue
+		}
+		template, err := s.Splits.Resolve(ctx, *row.StationID)
+		if err != nil {
+			if errors.Is(err, ErrNoSplitTemplate) || errors.Is(err, gorm.ErrRecordNotFound) {
+				continue
+			}
+			if first == nil {
+				first = err
+			}
+			continue
+		}
+		month, err := s.Store.CalculationMonth(ctx, row.CalculationID)
+		if err != nil {
+			if first == nil {
+				first = err
+			}
+			continue
+		}
+		_, created, err := s.Store.Settle(ctx, row.CalculationID, template, pricing.ActualFee{
+			ElectricCents: row.ElectricCents, ServiceCents: row.ServiceCents, TotalCents: row.TotalCents,
+		}, month)
+		if err != nil {
+			if first == nil {
+				first = err
+			}
+			continue
+		}
+		if created {
+			count++
+		}
+	}
+	return count, first
 }
 
 // MarkDelivered is separated from user commit; retries recover either side.

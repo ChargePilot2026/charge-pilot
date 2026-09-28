@@ -4,7 +4,7 @@ import {
   DashboardOutlined, ShoppingOutlined, DesktopOutlined, EnvironmentOutlined,
   TeamOutlined, AlertOutlined, GiftOutlined, AccountBookOutlined,
   SettingOutlined, ApiOutlined, CloudUploadOutlined, NotificationOutlined,
-  UserOutlined, LogoutOutlined, MessageOutlined, ToolOutlined,
+  UserOutlined, LogoutOutlined, MessageOutlined, ToolOutlined, DownloadOutlined,
 } from '@ant-design/icons';
 import { useEffect, useState } from 'react';
 import { apiPost, adminSession } from '../api/client';
@@ -19,6 +19,8 @@ const items = [
   { key: '/stations', icon: <EnvironmentOutlined />, label: '站点' },
   { key: '/users', icon: <TeamOutlined />, label: '管理员' },
   { key: '/alerts', icon: <AlertOutlined />, label: '告警' },
+  { key: '/alert-rules', icon: <AlertOutlined />, label: '告警配置' },
+  { key: '/exports', icon: <DownloadOutlined />, label: '数据导出' },
   { key: '/coupons', icon: <GiftOutlined />, label: '优惠券' },
   { key: '/billing', icon: <AccountBookOutlined />, label: '财务' },
   { key: '/webhooks', icon: <ApiOutlined />, label: 'Webhook' },

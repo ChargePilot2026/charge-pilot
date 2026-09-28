@@ -59,3 +59,52 @@ GET `/settings/charge-rules` 返回规则完整时段、站点、状态、版本
 - POST `/billing/meter-reviews/{charge_order_id}/decide`：同权限，body 为 `review_id/approve/reason`。另一名财务复核；通过时核对原始来源未变且首审账号/权限仍有效。拒绝必须填写依据，之后可新建另一份核实记录。
 
 核实及决定保存在 user 的追加审计记录中。第二人通过和恢复计费任务同事务；billing 投递回写成功后将异常队列标为 resolved。设备原始回执从不覆盖。当前仅补充分段计量，损坏的价格快照不能通过本接口人工改价。
+
+## 本轮新增接口（2026-09-29）
+
+以下接口均由 central 在 `:8080` 提供，前缀 `/api/v1/admin`，认证与错误约定见上文。
+
+### 告警规则与订阅
+
+- `GET /alert-rules`、`POST /alert-rules`、`PUT /alert-rules/{id}`、`DELETE /alert-rules/{id}`：`alert.rule.read/create/update/delete`。指标限定 `voltage_v`、`current_a`、`temperature_c`、`battery_soc`、`power_w`、`meter_kwh`。`threshold` 为数字，或 `op=between` 时的 `[low, high]`；写入前会校验引擎能解析，避免存下永不触发的规则。`device_id_pattern` 支持 `*` 通配，`*` 或留空表示全部设备。
+- `POST /alert-rules/{id}/resolve`：`alert.ack`，关闭该规则下全部未处理告警。
+- `GET/POST /alert-subscriptions`、`DELETE /alert-subscriptions/{id}`：`alert.subscription.create`。规则与严重级别至少填一项，Webhook 与接收账号至少填一项，引用的规则、Webhook 与账号都必须有效。
+
+### 分账、提现与对账
+
+- `GET /billing/settlements`：`finance.read`。返回实际写入的分账记录及各方金额，`mode_b` 下 `split_pool_excluded_electric_cents` 为不参与分账的电费。
+- `GET/POST /billing/withdraws`：`finance.read` / `finance.withdraw.create`。POST 需 UUID `request_id`、参与方与正数金额（单位分），同一 `request_id` 重放返回原单；只能提现已结算（分账状态为 paid）的余额。
+- `POST /billing/withdraws/{withdraw_no}/decide`：`finance.withdraw.review`。`approve: true` 通过；带 `reason` 为拒绝且 reason 必填。通过与打款前都会在事务内重算可用余额。
+- `POST /billing/withdraws/{withdraw_no}/pay`：`finance.withdraw.review`，登记打款；重复调用返回已记录状态而不重复付款。
+- `GET/POST /billing/reconciles`、`POST /billing/reconciles/{id}/resolve`：`finance.read`。POST 需 `reconcile_type`（`wechat_refund`/`wechat_pay`/`split`/`withdraw`）、`date`（YYYY-MM-DD）与 `channel_amounts` 数组；差异逐笔记录 `ref`、内部金额、渠道金额与原因，(类型,日期) 唯一，重跑覆盖当日结果。
+
+### Webhook 投递
+
+- `GET /webhooks/{id}/deliveries`：`webhook.read`，分页投递日志。
+- `POST /webhooks/{id}/deliveries/{event_id}/retry`：`webhook.create`，把原事件重新入队并走同一签名与校验路径。
+- 创建订阅时即执行 SSRF 校验：仅接受公网 HTTPS 目标，回环、私网、链路本地、云元数据与集群内域名一律拒绝；投递前再次校验以覆盖 DNS 重绑定。
+
+### OTA
+
+- `GET/POST /ota/packages`、`DELETE /ota/packages/{id}`：`ota.read` / `ota.package.create` / `ota.package.delete`。需 code、version、HTTPS `storage_url`、`size_bytes` 与 64 位十六进制 `checksum_sha256`；进行中的计划存在时不允许归档。
+- `GET/POST /ota/schedules`、`POST /ota/schedules/{id}/trigger`、`POST /ota/schedules/{id}/cancel`：`ota.read` / `ota.schedule.create` / `ota.schedule.trigger`。固件包须为 published；`canary` 需 `batch_size`；重复触发同一计划不会重复下发。
+
+### 管理员与双因素
+
+- `GET /admin-users`、`PUT /admin-users/{id}`、`DELETE /admin-users/{id}`、`POST /admin-users/{id}/unlock`、`POST /admin-users/{id}/reset-password`：`admin_user.read/update/delete/reset_password`。改角色、改密、重置与删除都会递增 `auth_version`，既有会话立即失效；系统始终保留至少一个有效客户管理员，且不能删除或降级当前登录账号。
+- `POST /admin-users/{id}/mfa`：`admin_user.update`。`action=enrol` 生成密钥并返回 `otpauth_uri`（label 为目标账号）与当前验证码，此时密钥尚未生效；`action=confirm` 校验验证码后才启用；`action=disable` 关闭。禁止对本人账号操作。
+- `POST /auth/mfa`：口令校验通过但账号启用双因素时，`/auth/login` 只返回 `mfa_required` 与 5 分钟有效的 `mfa_challenge`，不下发令牌；`/auth/mfa` 凭正确验证码才签发会话，错误验证码计入失败锁定。
+
+### 导出
+
+- `GET /exports`、`GET /exports/resources`、`POST /exports`、`GET /exports/{id}/download`：`export.create` 写、`finance.read` 读。创建需 UUID `request_id` 与已授权的 `resource`（`orders`/`stations`/`devices`/`settlements`）。下载时重新校验归属与资源权限；文件 24 小时过期，过期请求返回 410 并删除文件。
+
+### 风控配置
+
+- `PUT /risk-config`：`alert.risk_config.update`，按 key 写入 JSON 值。
+
+## 用户侧新增接口
+
+- `GET /user/coupons`：当前账号可用优惠券。
+- `POST /user/scan/start` 的 `coupon_grant_id` 为可选字段；优惠额在支付意图中冻结，响应新增 `discount_cents` 与 `payable_cents`。重放意图时必须提交相同优惠券，否则 409。
+- `GET /user/debts`、`POST /user/debts/{id}/pay`：欠费查询与补缴，金额取自服务端欠费记录，不接受客户端指定。

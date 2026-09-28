@@ -22,6 +22,7 @@ type API struct {
 func (a API) Register(r *gin.Engine) {
 	r.GET("/api/docs/admin.openapi.json", func(c *gin.Context) { c.Data(200, "application/json; charset=utf-8", openAPIDocument) })
 	r.POST("/api/v1/admin/auth/login", a.login)
+	r.POST("/api/v1/admin/auth/mfa", a.verifyMFA)
 	r.POST("/api/v1/admin/auth/refresh", a.refresh)
 	r.POST("/api/v1/admin/auth/change-password", a.Require(""), a.changePassword)
 	r.POST("/api/v1/admin/auth/logout", a.Require(""), a.logout)
@@ -60,6 +61,48 @@ func (a API) login(c *gin.Context) {
 		a.failure(c, err)
 		return
 	}
+	if account.MFAEnabled {
+		// The password step succeeded but the login is not complete. Hand back a
+		// short-lived challenge instead of a session token.
+		challenge, err := a.Sessions.BeginMFA(c.Request.Context(), account)
+		if err != nil {
+			a.failure(c, err)
+			return
+		}
+		httpapi.OK(c, gin.H{"mfa_required": true, "mfa_challenge": challenge})
+		return
+	}
+	a.completeLogin(c, account)
+}
+
+// verifyMFA finishes a login that paused for a second factor.
+func (a API) verifyMFA(c *gin.Context) {
+	if !a.rate(c) {
+		return
+	}
+	var request struct {
+		Challenge string `json:"mfa_challenge" binding:"required,max=128"`
+		Code      string `json:"code" binding:"required,max=16"`
+	}
+	if c.ShouldBindJSON(&request) != nil {
+		httpapi.BadRequest(c, "请输入验证码")
+		return
+	}
+	accountID, err := a.Sessions.ResolveMFA(c.Request.Context(), request.Challenge)
+	if err != nil {
+		a.failure(c, err)
+		return
+	}
+	account, err := a.Store.CompleteMFA(c.Request.Context(), accountID, request.Code, c.ClientIP())
+	if err != nil {
+		a.failure(c, err)
+		return
+	}
+	_ = a.Sessions.Revoke(c.Request.Context(), request.Challenge)
+	a.completeLogin(c, account)
+}
+
+func (a API) completeLogin(c *gin.Context, account Account) {
 	profile, err := a.Store.Profile(c.Request.Context(), account.ID)
 	if err != nil {
 		a.failure(c, err)
@@ -185,8 +228,10 @@ func (a API) failure(c *gin.Context, err error) {
 		httpapi.Write(c, http.StatusUnauthorized, 1001, "用户名或密码错误，或登录已失效", nil)
 	case errors.Is(err, ErrLocked):
 		httpapi.Write(c, 423, 2006, err.Error(), nil)
-	case errors.Is(err, ErrMFA):
-		httpapi.Write(c, 403, 1003, err.Error(), nil)
+	case errors.Is(err, ErrInvalidTOTP):
+		httpapi.Write(c, http.StatusUnauthorized, 1001, "验证码无效或已过期", nil)
+	case errors.Is(err, ErrInvalidMFAChallenge):
+		httpapi.Write(c, http.StatusUnauthorized, 1001, "登录已失效，请重新登录", nil)
 	default:
 		httpapi.Write(c, 503, 5003, "登录服务暂不可用", nil)
 	}

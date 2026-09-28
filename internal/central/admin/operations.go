@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/httpapi"
+	"github.com/ChargePilot2026/charge-pilot/internal/platform/netguard"
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
@@ -42,9 +43,6 @@ func (a ResourceAPI) registerOperations(r *gin.Engine) {
 	get("announcements", "announcement.read", "announcement", "id,title,content,scope,target_ids,status,start_at,end_at", true)
 	get("customer-service", "customer_service.read", "customer_service_config", "id,agent_wechat,agent_name,path,priority,enabled,working_hours_json", false)
 	get("webhooks", "webhook.read", "webhook_subscription", "id,name,url,enabled,event_types,LEFT(secret,8) AS secret_prefix", true)
-	get("ota/packages", "ota.read", "ota_package", "id,code,version,size_bytes,status", true)
-	get("ota/schedules", "ota.read", "ota_schedule", "id,package_id,rollout_strategy,status,scheduled_at", false)
-	get("billing/settlements", "finance.read", "settled_record", "id,settlement_no,period_start,period_end,total_cents,status", false)
 	r.POST("/api/v1/admin/users", a.Auth.Require("admin_user.create"), a.createUser)
 	r.POST("/api/v1/admin/alerts/:id/ack", a.Auth.Require("alert.ack"), a.ackAlert)
 	r.POST("/api/v1/admin/announcements", a.Auth.Require("announcement.create"), a.createAnnouncement)
@@ -282,6 +280,12 @@ func (a ResourceAPI) createWebhook(c *gin.Context) {
 	}
 	if !validText(in.Name, 64) || !httpsURL(in.URL) || len(in.EventTypes) == 0 || len(in.EventTypes) > 4 {
 		httpapi.BadRequest(c, "请填写名称、HTTPS URL 和订阅事件")
+		return
+	}
+	// Reject internal targets at creation time so they never reach the table;
+	// delivery re-checks the same rule to cover DNS rebinding.
+	if err := netguard.ValidatePublicHTTPS(in.URL); err != nil {
+		httpapi.Write(c, 400, 1002, err.Error(), nil)
 		return
 	}
 	seen := map[string]bool{}

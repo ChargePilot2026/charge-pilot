@@ -43,19 +43,19 @@ type OrderBilling struct {
 }
 type SettlementView struct {
 	SettlementID   uint64      `json:"settlement_id" gorm:"column:id"`
-	SettlementNo   string      `json:"settlement_no"`
-	Mode           string      `json:"mode"`
-	Status         string      `json:"status"`
-	SplitPoolCents int64       `json:"split_pool_cents"`
+	SettlementNo   string      `json:"settlement_no" gorm:"column:settlement_no"`
+	Mode           string      `json:"mode" gorm:"column:mode"`
+	Status         string      `json:"status" gorm:"column:status"`
+	SplitPoolCents int64       `json:"split_pool_cents" gorm:"column:split_pool_cents"`
 	Parties        []PartyView `json:"parties" gorm:"-"`
 }
 type PartyView struct {
-	PartyID     uint64 `json:"party_id"`
-	PartyCode   string `json:"party_code"`
-	PartyName   string `json:"party_name"`
-	RatioBP     uint32 `json:"ratio_bp"`
-	AmountCents int64  `json:"amount_cents"`
-	Status      string `json:"status"`
+	PartyID     uint64 `json:"party_id" gorm:"column:party_id"`
+	PartyCode   string `json:"party_code" gorm:"column:party_code"`
+	PartyName   string `json:"party_name" gorm:"column:party_name"`
+	RatioBP     uint32 `json:"ratio_bp" gorm:"column:ratio_bp"`
+	AmountCents int64  `json:"amount_cents" gorm:"column:amount_cents"`
+	Status      string `json:"status" gorm:"column:status"`
 }
 type OrderQuery struct {
 	PageQuery

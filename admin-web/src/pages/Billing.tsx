@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Reconciliation, Settlements, Withdrawals } from './FinanceOps';
 import { Button, Form, Input, Modal, Space, Table, Tabs, Tag, Typography, message } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
 import { apiGet, apiPost } from '../api/client';
@@ -33,7 +34,6 @@ interface Invoice {
 const statusLabel: Record<string, string> = { pending: '待首次审核', awaiting_second: '待第二人复核', approved: '已复核并开具', rejected: '已拒绝', issued: '已开具' };
 
 export default function BillingPage() {
-  const [settlements, setSettlements] = useState<any[]>([]);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [loadingInvoices, setLoadingInvoices] = useState(false);
   const [invoiceError, setInvoiceError] = useState('');
@@ -59,7 +59,6 @@ export default function BillingPage() {
   };
 
   useEffect(() => {
-    void apiGet<{ items: any[] }>('/api/v1/admin/billing/settlements').then(data => setSettlements(data.items || [])).catch(() => {});
     void loadInvoices();
   }, []);
 
@@ -99,16 +98,9 @@ export default function BillingPage() {
       <Title level={3}>财务</Title>
       <Tabs items={[
         { key: 'wallet-risks', label: '钱包风控审核', children: <WalletRisks /> },
-        {
-          key: 'settlements', label: '分账出账', children: (
-            <Table rowKey="id" dataSource={settlements} columns={[
-              { title: '出账单号', dataIndex: 'settlement_no', width: 220 },
-              { title: '期间', render: (_: unknown, row: any) => `${row.period_start} - ${row.period_end}` },
-              { title: '金额(分)', dataIndex: 'total_cents', width: 120 },
-              { title: '状态', dataIndex: 'status', render: (status: string) => <Tag color="blue">{status}</Tag> },
-            ]} />
-          ),
-        },
+        { key: 'settlements', label: '分账明细', children: <Settlements /> },
+        { key: 'withdrawals', label: '提现打款', children: <Withdrawals /> },
+        { key: 'reconciliation', label: '对账', children: <Reconciliation /> },
         { key: 'refunds', label: '退款审核', children: <Refunds /> },
         { key: 'meter-reviews', label: '计量核实', children: <MeterReviews /> },
         {

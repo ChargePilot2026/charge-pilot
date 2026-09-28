@@ -49,6 +49,8 @@ func (a PaymentStartAPI) start(c *gin.Context) {
 		PortID           string `json:"port_id"`
 		EstimatedKWh     string `json:"estimated_kwh"`
 		EstimatedMinutes uint16 `json:"estimated_minutes"`
+		// CouponGrantID is optional; omitting it charges the full estimate.
+		CouponGrantID uint64 `json:"coupon_grant_id"`
 	}
 	decoder := json.NewDecoder(io.LimitReader(c.Request.Body, 16<<10))
 	decoder.DisallowUnknownFields()
@@ -79,9 +81,21 @@ func (a PaymentStartAPI) start(c *gin.Context) {
 		return
 	}
 	intent, err := a.Intents.Reserve(c.Request.Context(), IntentInput{UserID: userID, ClientRequestID: body.ClientRequestID,
-		Port: port, Energy: body.EstimatedKWh, Minutes: body.EstimatedMinutes, Rule: rule})
+		Port: port, Energy: body.EstimatedKWh, Minutes: body.EstimatedMinutes, Rule: rule, CouponGrantID: body.CouponGrantID})
 	if errors.Is(err, pricing.ErrInvalidPricing) {
 		httpapi.BadRequest(c, "invalid charging estimate")
+		return
+	}
+	if errors.Is(err, ErrCouponNotFound) {
+		httpapi.BadRequest(c, "优惠券不存在或未发放给该账号")
+		return
+	}
+	if errors.Is(err, ErrCouponExhausted) {
+		httpapi.Write(c, http.StatusConflict, 2001, "优惠券已过期或已使用", nil)
+		return
+	}
+	if errors.Is(err, ErrCouponThreshold) {
+		httpapi.BadRequest(c, "未达到该优惠券的使用门槛")
 		return
 	}
 	if errors.Is(err, ErrPaymentIntentConflict) {
@@ -95,7 +109,7 @@ func (a PaymentStartAPI) start(c *gin.Context) {
 	params, err := a.Intents.PrepayParams(c.Request.Context(), intent.PaymentOrderID)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		params, err = a.Provider.Prepay(c.Request.Context(), payment.PrepayRequest{MerchantOrderNo: intent.MerchantOrderNo,
-			OpenID: intent.OpenID, AmountCents: intent.Estimate.TotalCents, ExpiresAt: intent.ExpiresAt})
+			OpenID: intent.OpenID, AmountCents: intent.PayableCents, ExpiresAt: intent.ExpiresAt})
 		if err == nil {
 			err = a.Intents.SavePrepay(c.Request.Context(), intent.PaymentOrderID, params)
 		}
@@ -107,7 +121,9 @@ func (a PaymentStartAPI) start(c *gin.Context) {
 	httpapi.OK(c, gin.H{"intent_id": intent.IntentID, "merchant_order_no": intent.MerchantOrderNo,
 		"port_id": intent.PortCode, "device_id": intent.DeviceID, "station_id": intent.StationID,
 		"electric_cents": intent.Estimate.ElectricCents, "service_cents": intent.Estimate.ServiceCents,
-		"total_cents": intent.Estimate.TotalCents, "payment_params": params, "expires_at": intent.ExpiresAt.UTC()})
+		"total_cents": intent.Estimate.TotalCents, "discount_cents": intent.DiscountCents,
+		"payable_cents": intent.PayableCents, "coupon_grant_id": intent.CouponGrantID,
+		"payment_params": params, "expires_at": intent.ExpiresAt.UTC()})
 }
 
 type NotificationVerifier interface {

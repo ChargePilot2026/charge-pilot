@@ -10,6 +10,7 @@ import (
 )
 
 type ChargeOrderRecord struct {
+	DiscountCents  int64          `gorm:"column:discount_cents"`
 	ID             uint64         `gorm:"column:id;primaryKey"`
 	OrderNo        string         `gorm:"column:order_no"`
 	UserID         uint64         `gorm:"column:user_id"`
@@ -68,6 +69,8 @@ type PaymentIntentRecord struct {
 	ElectricCents      int64         `gorm:"column:electric_cents"`
 	ServiceCents       int64         `gorm:"column:service_cents"`
 	TotalCents         int64         `gorm:"column:total_cents"`
+	CouponGrantID      uint64        `gorm:"column:coupon_grant_id"`
+	DiscountCents      int64         `gorm:"column:discount_cents"`
 	ChargeMode         uint8         `gorm:"column:charge_mode"`
 	ChargeQuantity     uint16        `gorm:"column:charge_quantity"`
 	Status             string        `gorm:"column:status"`

@@ -168,3 +168,53 @@ func (s Sessions) Matches(ctx context.Context, sid string, id, version uint64) (
 	}
 	return record.AdminID == id && record.AuthVersion == version, nil
 }
+
+// ErrInvalidMFAChallenge means the login challenge is unknown, expired, or was
+// already consumed by a successful second factor.
+var ErrInvalidMFAChallenge = errors.New("invalid or expired mfa challenge")
+
+// mfaChallengeTTL bounds how long a verified password stays usable before the
+// second factor must be supplied. It is deliberately short.
+const mfaChallengeTTL = 5 * time.Minute
+
+// BeginMFA parks a half-finished login. No session exists yet, so the challenge
+// carries only the account identity and cannot be used to reach any API.
+func (s Sessions) BeginMFA(ctx context.Context, account Account) (string, error) {
+	token, err := randomPart(32)
+	if err != nil {
+		return "", err
+	}
+	record, err := json.Marshal(sessionRecord{AuthVersion: account.AuthVersion, AdminID: account.ID, Username: account.Username})
+	if err != nil {
+		return "", err
+	}
+	if err := s.Redis.Set(ctx, mfaKey(token), record, mfaChallengeTTL).Err(); err != nil {
+		return "", err
+	}
+	return token, nil
+}
+
+// ResolveMFA consumes the challenge atomically so one code cannot be replayed
+// for two sessions. A wrong code must not burn the challenge, because the
+// account owner still needs to retry; only the Lua GETDEL style consumption on
+// success happens here, so resolution returns the id and the caller revokes.
+func (s Sessions) ResolveMFA(ctx context.Context, token string) (uint64, error) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return 0, ErrInvalidMFAChallenge
+	}
+	value, err := s.Redis.Get(ctx, mfaKey(token)).Bytes()
+	if errors.Is(err, redis.Nil) {
+		return 0, ErrInvalidMFAChallenge
+	}
+	if err != nil {
+		return 0, err
+	}
+	var record sessionRecord
+	if err := json.Unmarshal(value, &record); err != nil {
+		return 0, ErrInvalidMFAChallenge
+	}
+	return record.AdminID, nil
+}
+
+func mfaKey(token string) string { return "admin:mfa:" + token }

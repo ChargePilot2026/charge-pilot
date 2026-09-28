@@ -103,7 +103,7 @@ func run(ctx context.Context) error {
 	}
 	adminAPI := admin.API{Store: adminStore, Sessions: admin.Sessions{Redis: cache}, JWT: jwt}
 	adminAPI.Register(router)
-	billing.Service{Store: billing.Store{DB: billingORM}, Orders: charge.BillingOrders{DB: userORM}, ServiceToken: cfg.ServiceToken}.Register(router)
+	billing.Service{Store: billing.Store{DB: billingORM}, Orders: charge.BillingOrders{DB: userORM}, Splits: billing.SplitResolver{AdminDB: adminORM}, ServiceToken: cfg.ServiceToken}.Register(router)
 	admin.ResourceAPI{Store: admin.ResourceStore{AdminDB: adminORM, UserDB: userORM, BillingDB: billingORM}, Auth: adminAPI, GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken}.Register(router)
 	admin.Dashboard{UserDB: userORM, AdminDB: adminORM}.Register(router, adminAPI)
 	identity.API{WeChat: identity.MiniProgram{SDK: wechat}, Users: identity.UserStore{DB: userORM}, Sessions: identity.Sessions{Redis: cache}, JWT: jwt}.Register(router)
@@ -132,6 +132,10 @@ func run(ctx context.Context) error {
 		charge.WechatCallbackAPI{Verifier: direct, Store: charge.PaymentCallbackStore{DB: userORM, ExpectedProvider: "wechat_direct", ExpectedMerchantID: cfg.WechatMchID, ExpectedAppID: cfg.WeChatAppID}}.Register(router)
 	}
 	charge.RefundAPI{Executor: charge.RefundExecutor{DB: userORM, Provider: refundProvider, ProviderName: cfg.PaymentMode}, ServiceToken: cfg.ServiceToken}.Register(router)
+	charge.CouponAPI{Auth: identity.SessionAuthenticator{JWT: jwt, Sessions: identity.Sessions{Redis: cache}, Users: identity.UserStore{DB: userORM}},
+		Coupons: charge.CouponStore{DB: userORM}}.Register(router)
+	charge.DebtAPI{Auth: identity.SessionAuthenticator{JWT: jwt, Sessions: identity.Sessions{Redis: cache}, Users: identity.UserStore{DB: userORM}},
+		Debts: charge.DebtStore{DB: userORM}, Provider: prepay}.Register(router)
 	charge.PaymentStartAPI{Auth: identity.SessionAuthenticator{JWT: jwt, Sessions: identity.Sessions{Redis: cache}, Users: identity.UserStore{DB: userORM}},
 		Scan: charge.ScanAPI{GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken}, Pricing: pricing.Store{DB: adminORM},
 		Intents: charge.PaymentIntentStore{DB: userORM}, Provider: prepay}.Register(router)

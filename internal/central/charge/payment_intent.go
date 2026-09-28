@@ -31,6 +31,11 @@ type PaymentIntent struct {
 	Estimate        pricing.Estimate `json:"estimate"`
 	ExpiresAt       time.Time        `json:"expires_at"`
 	Status          string           `json:"status"`
+	CouponGrantID   uint64           `json:"coupon_grant_id,omitempty"`
+	// DiscountCents is what the coupon removed; PayableCents is what the
+	// customer actually pays.
+	DiscountCents int64 `json:"discount_cents"`
+	PayableCents  int64 `json:"payable_cents"`
 }
 
 type IntentInput struct {
@@ -40,6 +45,9 @@ type IntentInput struct {
 	Energy          string
 	Minutes         uint16
 	Rule            pricing.Rule
+	// CouponGrantID is optional. When set, the discount is computed and frozen
+	// into the snapshot so a later replay cannot charge a different amount.
+	CouponGrantID uint64
 }
 
 type PaymentIntentStore struct{ DB *gorm.DB }
@@ -63,6 +71,16 @@ func (s PaymentIntentStore) Reserve(ctx context.Context, input IntentInput) (Pay
 	estimate, err := pricing.EstimateCharge(input.Rule, input.Energy, input.Minutes, time.Now())
 	if err != nil {
 		return PaymentIntent{}, err
+	}
+	// The discount is computed before anything is reserved so a rejected coupon
+	// leaves no payment order or port hold behind.
+	var discount int64
+	if input.CouponGrantID != 0 {
+		coupons := CouponStore{DB: s.DB}
+		discount, err = coupons.Quote(ctx, input.UserID, input.CouponGrantID, estimate.TotalCents)
+		if err != nil {
+			return PaymentIntent{}, err
+		}
 	}
 	if err := s.DB.WithContext(ctx).Model(&PaymentIntentRecord{}).Where("status = 'initiated' AND expires_at < NOW(3)").Update("status", "expired").Error; err != nil {
 		return PaymentIntent{}, err
@@ -88,8 +106,9 @@ func (s PaymentIntentStore) Reserve(ctx context.Context, input IntentInput) (Pay
 			return err
 		}
 		openid = identity.OpenID
+		payable := estimate.TotalCents - discount
 		paymentOrder := PaymentOrderRecord{OrderNo: merchantOrderNo, BizType: "charge", BizID: 0,
-			UserID: input.UserID, PayMethod: "wechat", TotalCents: estimate.TotalCents,
+			UserID: input.UserID, PayMethod: "wechat", TotalCents: payable,
 			Status: "initiated", ExpiredAt: sql.NullTime{Time: expiresAt, Valid: true}, CreatedMonth: utcDate()}
 		if err := tx.Create(&paymentOrder).Error; err != nil {
 			return err
@@ -101,6 +120,7 @@ func (s PaymentIntentStore) Reserve(ctx context.Context, input IntentInput) (Pay
 			StationID: input.Port.StationID, PricingRuleID: input.Rule.ID, PricingRuleVersion: input.Rule.Version,
 			PricingSnapshot: snapshot, EstimatedKWh: estimate.EstimatedKWh, EstimatedMinutes: estimate.EstimatedMinutes,
 			ElectricCents: estimate.ElectricCents, ServiceCents: estimate.ServiceCents, TotalCents: estimate.TotalCents,
+			CouponGrantID: input.CouponGrantID, DiscountCents: discount,
 			ChargeMode: estimate.ChargeMode, ChargeQuantity: estimate.ChargeQuantity, Status: "initiated", ExpiresAt: expiresAt}
 		if err := tx.Create(&intent).Error; err != nil {
 			if isMySQLDuplicate(err) {
@@ -118,11 +138,17 @@ func (s PaymentIntentStore) Reserve(ctx context.Context, input IntentInput) (Pay
 	}
 	return PaymentIntent{IntentID: intentID, MerchantOrderNo: merchantOrderNo, PaymentOrderID: paymentID, UserID: input.UserID,
 		OpenID: openid, DeviceID: input.Port.DeviceID, PortNo: input.Port.Port.PortNo, PortCode: input.Port.Port.PortID,
-		StationID: input.Port.StationID, Estimate: estimate, ExpiresAt: expiresAt, Status: "initiated"}, nil
+		StationID: input.Port.StationID, Estimate: estimate, ExpiresAt: expiresAt, Status: "initiated",
+		CouponGrantID: input.CouponGrantID, DiscountCents: discount, PayableCents: estimate.TotalCents - discount}, nil
 }
 
 func existingIntent(row PaymentIntentRecord, input IntentInput) (PaymentIntent, error) {
 	if row.PortCode != input.Port.Port.PortID || row.DeviceID != input.Port.DeviceID || row.EstimatedMinutes != input.Minutes || row.PricingRuleID != input.Rule.ID || row.PricingRuleVersion != input.Rule.Version || row.Status != "initiated" || time.Now().After(row.ExpiresAt) {
+		return PaymentIntent{}, ErrPaymentIntentConflict
+	}
+	// A replay must present the same coupon; otherwise the customer could switch
+	// discounts on an intent they already confirmed.
+	if row.CouponGrantID != input.CouponGrantID {
 		return PaymentIntent{}, ErrPaymentIntentConflict
 	}
 	var snapshot struct {
@@ -134,7 +160,8 @@ func existingIntent(row PaymentIntentRecord, input IntentInput) (PaymentIntent, 
 	}
 	return PaymentIntent{IntentID: row.IntentID, MerchantOrderNo: row.MerchantOrderNo, PaymentOrderID: row.PaymentOrderID,
 		UserID: row.UserID, OpenID: row.OpenID, DeviceID: row.DeviceID, PortNo: row.PortNo, PortCode: row.PortCode,
-		StationID: row.StationID, Estimate: snapshot.Estimate, ExpiresAt: row.ExpiresAt, Status: row.Status}, nil
+		StationID: row.StationID, Estimate: snapshot.Estimate, ExpiresAt: row.ExpiresAt, Status: row.Status,
+		CouponGrantID: row.CouponGrantID, DiscountCents: row.DiscountCents, PayableCents: row.TotalCents - row.DiscountCents}, nil
 }
 
 func (s PaymentIntentStore) PrepayParams(ctx context.Context, paymentOrderID uint64) (payment.PrepayParams, error) {

@@ -14,10 +14,13 @@ import (
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/config"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/dbconn"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/httpapi"
+	"github.com/ChargePilot2026/charge-pilot/internal/worker/alerts"
 	"github.com/ChargePilot2026/charge-pilot/internal/worker/billing"
 	"github.com/ChargePilot2026/charge-pilot/internal/worker/charge"
+	"github.com/ChargePilot2026/charge-pilot/internal/worker/internaljob"
 	"github.com/ChargePilot2026/charge-pilot/internal/worker/outbox"
 	"github.com/ChargePilot2026/charge-pilot/internal/worker/refund"
+	webhookdelivery "github.com/ChargePilot2026/charge-pilot/internal/worker/webhook"
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
@@ -98,6 +101,10 @@ func run(ctx context.Context) error {
 	paidStarts := charge.PaidStarter{UserDB: orms["user"], GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken}
 	billingJobs := billing.Dispatcher{CentralURL: cfg.CentralInternalURL, ServiceToken: cfg.ServiceToken}
 	refunds := refund.Dispatcher{CentralURL: cfg.CentralInternalURL, ServiceToken: cfg.ServiceToken}
+	webhooks := webhookdelivery.WebhookDeliverer{AdminDB: orms["admin"], Stream: stream}
+	dlq := outbox.DLQ{WorkerDB: orms["worker"], Stream: stream, Consumer: "worker-dlq"}
+	internaljob.OpsAPI{WorkerDB: orms["worker"], ServiceToken: cfg.ServiceToken, DLQ: dlq}.Register(router)
+	alertEngine := alerts.Evaluator{GatewayDB: orms["gateway"], AdminDB: orms["admin"]}
 	refundCtx, stopRefunds := context.WithCancel(ctx)
 	defer stopRefunds()
 	go func() {
@@ -113,6 +120,12 @@ func run(ctx context.Context) error {
 				}
 				if err := refunds.Run(refundCtx); err != nil && !errors.Is(err, context.Canceled) {
 					log.Printf("refund dispatch: %v", err)
+				}
+				if _, err := alertEngine.Evaluate(refundCtx); err != nil && !errors.Is(err, context.Canceled) {
+					log.Printf("alert evaluation: %v", err)
+				}
+				if _, err := webhooks.PublishBatch(refundCtx); err != nil && !errors.Is(err, context.Canceled) {
+					log.Printf("webhook delivery: %v", err)
 				}
 			}
 		}

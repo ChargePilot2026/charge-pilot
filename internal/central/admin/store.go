@@ -24,6 +24,7 @@ type Account struct {
 	PasswordHash     string         `json:"-"`
 	RoleID           uint64         `json:"role_id"`
 	Status           string         `json:"-"`
+	MFASecret        *string        `json:"-"`
 	MFAEnabled       bool           `json:"-"`
 	FailedLoginCount uint32         `json:"-"`
 	LockedUntil      sql.NullTime   `json:"-"`
@@ -112,7 +113,11 @@ func (s Store) Login(ctx context.Context, username, password, ip string) (Accoun
 			return audit(tx, account, "login_failed", ip)
 		}
 		if account.MFAEnabled {
-			return ErrMFA
+			// The password is correct but a second factor is required. The login
+			// is not complete yet, so no session is issued and the success state
+			// is only written once the code verifies.
+			account.Status = "active"
+			return nil
 		}
 		if err := tx.Model(&Account{}).Where("id = ?", account.ID).Updates(map[string]any{"failed_login_count": 0, "locked_until": nil, "status": "active", "last_login_at": now}).Error; err != nil {
 			return err
@@ -127,6 +132,57 @@ func (s Store) Login(ctx context.Context, username, password, ip string) (Accoun
 		return Account{}, denied
 	}
 	return account, nil
+}
+
+// CompleteMFA verifies the second factor and only then marks the login
+// successful. A wrong code counts toward the lockout so codes cannot be brute
+// forced independently of the password.
+func (s Store) CompleteMFA(ctx context.Context, accountID uint64, code, ip string) (Account, error) {
+	var account Account
+	var denied error
+	err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND deleted_at IS NULL", accountID).Take(&account).Error; err != nil {
+			return deniedMFA(tx, err, accountID, &denied, ip)
+		}
+		now := time.Now().UTC()
+		if account.Status == "disabled" || !account.MFAEnabled || account.MFASecret == nil || *account.MFASecret == "" {
+			return ErrCredentials
+		}
+		if err := VerifyTOTP(*account.MFASecret, code, now); err != nil {
+			attempts := account.FailedLoginCount + 1
+			updates := map[string]any{"failed_login_count": attempts, "status": "active", "locked_until": nil}
+			denied = ErrInvalidTOTP
+			if attempts >= 5 {
+				updates["status"] = "locked"
+				updates["locked_until"] = now.Add(30 * time.Minute)
+				denied = ErrLocked
+			}
+			if err := tx.Model(&Account{}).Where("id = ?", account.ID).Updates(updates).Error; err != nil {
+				return err
+			}
+			return audit(tx, account, "mfa_failed", ip)
+		}
+		if err := tx.Model(&Account{}).Where("id = ?", account.ID).Updates(map[string]any{"failed_login_count": 0, "locked_until": nil, "status": "active", "last_login_at": now}).Error; err != nil {
+			return err
+		}
+		account.Status = "active"
+		return audit(tx, account, "login_mfa", ip)
+	})
+	if err != nil {
+		return Account{}, err
+	}
+	if denied != nil {
+		return Account{}, denied
+	}
+	return account, nil
+}
+
+func deniedMFA(tx *gorm.DB, err error, accountID uint64, denied *error, ip string) error {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		*denied = ErrCredentials
+		return nil
+	}
+	return err
 }
 
 func (s Store) Profile(ctx context.Context, id uint64) (Profile, error) {

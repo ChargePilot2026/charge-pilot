@@ -60,6 +60,7 @@ func run(ctx context.Context) error {
 	userStops := control.UserStopService{Orders: control.CentralAuthorizer{BaseURL: cfg.CentralInternalURL, ServiceToken: cfg.ServiceToken}, Store: sink, Devices: deviceConnections}
 	control.UserStopAPI{Service: userStops, ServiceToken: cfg.ServiceToken}.Register(router)
 	control.ScanAPI{Store: sink, ServiceToken: cfg.ServiceToken}.Register(router)
+	control.OtaAPI{DB: orm, ServiceToken: cfg.ServiceToken}.Register(router)
 	router.GET("/health/live", func(c *gin.Context) { httpapi.OK(c, gin.H{"status": "live"}) })
 	router.GET("/health/ready", func(c *gin.Context) {
 		checkCtx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)

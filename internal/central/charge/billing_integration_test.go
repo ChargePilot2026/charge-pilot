@@ -147,19 +147,20 @@ func TestActualBillingPersistsAndRefundsOnce(t *testing.T) {
 	if err := executor.Execute(ctx, refund.ID); err != nil {
 		t.Fatal(err)
 	}
-	var status string
-	userDB.Table("charge_order").Where("id=?", id).Pluck("status", &status)
-	if status != "completed" {
-		t.Fatalf("partial refund must finish order: %s", status)
+	var orderStates []string
+	userDB.Table("charge_order").Where("id=?", id).Pluck("status", &orderStates)
+	if len(orderStates) != 1 || orderStates[0] != "completed" {
+		t.Fatalf("partial refund must finish order: %v", orderStates)
 	}
 	reviewID, _ := fixture(1000, true)
 	reviewService := billing.Service{Store: store, Orders: scopedBillingOrders{BillingOrders: BillingOrders{DB: userDB}, ID: reviewID}}
 	if _, err := reviewService.Run(ctx); err != nil {
 		t.Fatal(err)
 	}
-	userDB.Table("charge_billing_job").Where("charge_order_id=?", reviewID).Pluck("status", &status)
-	if status != "manual_review" {
-		t.Fatalf("missing meter not queued: %s", status)
+	var jobStates []string
+	userDB.Table("charge_billing_job").Where("charge_order_id=?", reviewID).Pluck("status", &jobStates)
+	if len(jobStates) != 1 || jobStates[0] != "manual_review" {
+		t.Fatalf("missing meter not queued: %v", jobStates)
 	}
 	billingDB.Table("fee_calculation").Where("charge_order_id=?", reviewID).Count(&count)
 	if count != 0 {
@@ -214,9 +215,11 @@ func TestActualBillingPersistsAndRefundsOnce(t *testing.T) {
 	if fee.ElectricCents != 90 || fee.ServiceCents != 25 || fee.TotalCents != 115 {
 		t.Fatalf("corrected measured fee %+v", fee)
 	}
-	billingDB.Table("manual_fee_review").Where("charge_order_id=?", reviewID).Pluck("status", &status)
-	if status != "resolved" {
-		t.Fatalf("review not resolved %s", status)
+	// Pluck requires a slice destination; scanning a scalar through it fails.
+	var reviewStates []string
+	billingDB.Table("manual_fee_review").Where("charge_order_id=?", reviewID).Pluck("status", &reviewStates)
+	if len(reviewStates) != 1 || reviewStates[0] != "resolved" {
+		t.Fatalf("review not resolved %v", reviewStates)
 	}
 	var endReceipt EndReceiptRecord
 	userDB.Where("charge_order_id=?", reviewID).Take(&endReceipt)

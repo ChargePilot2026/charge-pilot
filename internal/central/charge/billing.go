@@ -168,6 +168,24 @@ func (s BillingOrders) Apply(ctx context.Context, result billing.Result) error {
 		if err := tx.Create(&ChargeEventLogRecord{ChargeOrderID: order.ID, EventID: eventID, Event: "fee_calculated", Actor: "billing", Detail: fmt.Sprintf("electric=%d service=%d total=%d shortfall=%d", result.ElectricCents, result.ServiceCents, result.TotalCents, shortfall), OccurredAt: time.Now().UTC()}).Error; err != nil {
 			return err
 		}
+		// A shortfall becomes a collectable debt in the same transaction, so the
+		// amount billed and the amount owed can never disagree. The unique key
+		// on charge_order_id makes a replay a no-op without an empty SET clause.
+		if shortfall > 0 {
+			debtNo := fmt.Sprintf("DEBT%020d", order.ID)
+			insert := tx.Table("charge_debt").Create(map[string]any{
+				"debt_no": debtNo, "charge_order_id": order.ID, "payment_order_id": payment.ID,
+				"user_id": order.UserID, "debt_cents": shortfall, "paid_cents": 0, "status": "unpaid",
+			})
+			if insert.Error != nil && isDuplicate(insert.Error) {
+				// The debt already exists from an earlier attempt; that is the
+				// expected outcome of a replayed billing dispatch.
+				insert = nil
+			}
+			if insert != nil {
+				return insert.Error
+			}
+		}
 		return tx.Table("charge_billing_job").Where("charge_order_id=?", order.ID).Updates(map[string]any{"status": "done", "last_error": nil}).Error
 	})
 }

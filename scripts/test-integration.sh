@@ -16,9 +16,12 @@ mysql_port=$(docker port "$name-mysql" 3306/tcp | sed 's/.*://')
 redis_port=$(docker port "$name-redis" 6379/tcp | sed 's/.*://')
 for schema in gateway user admin billing worker; do
   docker exec -e MYSQL_PWD=integration-only "$name-mysql" mysql -h 127.0.0.1 -uroot -e "CREATE DATABASE ${schema}_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
-  key="DATABASE_URL_${schema^^}"
+  # macOS ships bash 3.2, which has no ${var^^}; uppercase via tr so the script
+  # runs on both the CI image and a stock macOS shell.
+  upper=$(printf '%s' "$schema" | tr '[:lower:]' '[:upper:]')
+  key="DATABASE_URL_${upper}"
   export "$key=mysql://root:integration-only@127.0.0.1:$mysql_port/${schema}_db"
-  export "TEST_${schema^^}_DATABASE_URL=${!key}"
+  export "TEST_${upper}_DATABASE_URL=${!key}"
 done
 export TEST_REDIS_URL="redis://127.0.0.1:$redis_port/0"
 export TEST_STREAM_REDIS_URL="redis://127.0.0.1:$redis_port/1"

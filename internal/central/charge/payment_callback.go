@@ -133,10 +133,20 @@ func (s PaymentCallbackStore) Apply(ctx context.Context, payment VerifiedPayment
 			return nil
 		}
 
+		// The coupon is consumed only now, when the money actually arrived, so a
+		// payment that is later refunded does not consume the customer's discount
+		// permanently.
+		if intent.CouponGrantID != 0 {
+			if err := redeemCouponInTx(tx, intent, order, chargeNoFor(order.ID)); err != nil {
+				return err
+			}
+		}
+
 		chargeNo := "CH" + strings.ReplaceAll(uuid.NewString(), "-", "")
 		chargeOrder := ChargeOrderRecord{OrderNo: chargeNo, UserID: intent.UserID, DeviceID: intent.DeviceID, PortNo: intent.PortNo,
 			PortCode: sql.NullString{String: intent.PortCode, Valid: true}, PaymentOrderID: sql.NullInt64{Int64: int64(order.ID), Valid: true},
-			Status: "paid", ChargeMode: intent.ChargeMode, ChargeQuantity: intent.ChargeQuantity, CreatedMonth: utcDate()}
+			Status: "paid", ChargeMode: intent.ChargeMode, ChargeQuantity: intent.ChargeQuantity,
+			DiscountCents: intent.DiscountCents, CreatedMonth: utcDate()}
 		if err := tx.Create(&chargeOrder).Error; err != nil {
 			return err
 		}
