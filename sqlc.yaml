@@ -56,3 +56,11 @@ sql:
         package: chargejobdb
         out: internal/worker/charge/generated
         sql_package: database/sql
+  - engine: mysql
+    schema: migrations/user_db
+    queries: internal/worker/charge/paid_queries.sql
+    gen:
+      go:
+        package: paidjobdb
+        out: internal/worker/charge/paidgenerated
+        sql_package: database/sql

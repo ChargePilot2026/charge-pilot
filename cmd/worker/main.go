@@ -86,6 +86,7 @@ func run(ctx context.Context) error {
 	}
 	startResults := charge.Synchronizer{GatewayDB: databases["gateway"], CentralURL: cfg.CentralInternalURL, GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken}
 	endResults := charge.EndSynchronizer{GatewayDB: databases["gateway"], CentralURL: cfg.CentralInternalURL, ServiceToken: cfg.ServiceToken}
+	paidStarts := charge.PaidStarter{UserDB: databases["user"], GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken}
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for {
@@ -98,6 +99,9 @@ func run(ctx context.Context) error {
 			}
 			return err
 		case <-ticker.C:
+			if _, err := paidStarts.DispatchBatch(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("paid charge starts: %v", err)
+			}
 			if _, err := startResults.SyncBatch(ctx); err != nil && !errors.Is(err, context.Canceled) {
 				log.Printf("charge start results: %v", err)
 			}
