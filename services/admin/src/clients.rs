@@ -86,6 +86,7 @@ impl ServiceClient {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_macros, clippy::disallowed_types)]
 mod tests {
     use super::*;
 

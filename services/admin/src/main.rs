@@ -4,17 +4,14 @@
 
 mod api;
 mod api_types;
-mod auth;
-mod billing;
-mod ota;
-mod services;
-mod password;
-mod webhook;
-mod alert;
 mod clients;
-mod stream_consumer;
-mod refund_task;
+mod password;
+mod services;
 mod static_serve;
+mod stream_consumer;
+
+mod capability;
+use capability::{alert, cases, config, device, finance, identity, internal, order, webhook};
 
 use axum::{
     middleware,
@@ -97,8 +94,8 @@ async fn main() -> AppResult<()> {
 
     stream_consumer::spawn_all(state.clone()).await?;
     spawn_outbox_publisher(state.clone());
-    refund_task::spawn(state.clone());
-    api::device_import::spawn_recovery(state.clone());
+    finance::refund_task::spawn(state.clone());
+    device::spawn_recovery(state.clone());
 
     let app = build_router(state);
     let addr: SocketAddr = cfg.http_bind.parse().expect("bind addr");
@@ -133,91 +130,91 @@ pub fn build_router(state: AppState) -> Router {
 
     // ===== 公开路由 =====
     let public_routes = Router::new()
-        .route(api_types::paths::AUTH_LOGIN, post(auth::login))
-        .route(api_types::paths::AUTH_REFRESH, post(auth::refresh));
+        .route(api_types::paths::AUTH_LOGIN, post(identity::login))
+        .route(api_types::paths::AUTH_REFRESH, post(identity::refresh));
 
     // ===== 内部路由(其他服务调用)=====
     let internal_routes = Router::new()
-        .route(api_contracts::paths::ADMIN_DEVICE_PRICING, get(api::pricing_reads::device))
-        .route(api_types::paths::INTERNAL_ANNOUNCEMENTS_ACTIVE, get(api::internal::announcements_active))
-        .route(api_contracts::paths::ADMIN_INTERNAL_ANNOUNCEMENTS_EXPIRE, post(api::internal::announcements_expire))
-        .route(api_contracts::paths::ADMIN_INTERNAL_CUSTOMER_SERVICE_ENTRY, get(api::internal::customer_service_entry))
-        .route(api_types::paths::INTERNAL_STATIONS_NEARBY, get(api::station_reads::nearby))
-        .route(api_types::paths::INTERNAL_STATIONS_DETAIL, get(api::station_reads::detail))
-        .route(api_types::paths::INTERNAL_PRICING_RULES_GET, get(api::internal::pricing_rule_get))
-        .route(api_types::paths::INTERNAL_SPLIT_TEMPLATES_GET, get(api::internal::split_template_get))
-        .route(api_types::paths::INTERNAL_ALERTS_ACTIVE, get(api::internal::alerts_active))
-        .route(api_types::paths::INTERNAL_DEVICES_REBOOT, post(api::internal::device_reboot))
+        .route(api_contracts::paths::ADMIN_DEVICE_PRICING, get(config::device_pricing))
+        .route(api_types::paths::INTERNAL_ANNOUNCEMENTS_ACTIVE, get(internal::active_announcements))
+        .route(api_contracts::paths::ADMIN_INTERNAL_ANNOUNCEMENTS_EXPIRE, post(internal::expire_announcements))
+        .route(api_contracts::paths::ADMIN_INTERNAL_CUSTOMER_SERVICE_ENTRY, get(internal::customer_service_entry))
+        .route(api_types::paths::INTERNAL_STATIONS_NEARBY, get(internal::stations_nearby))
+        .route(api_types::paths::INTERNAL_STATIONS_DETAIL, get(internal::stations_detail))
+        .route(api_types::paths::INTERNAL_PRICING_RULES_GET, get(internal::pricing_rule_get))
+        .route(api_types::paths::INTERNAL_SPLIT_TEMPLATES_GET, get(internal::split_template_get))
+        .route(api_types::paths::INTERNAL_ALERTS_ACTIVE, get(internal::alerts_active))
+        .route(api_types::paths::INTERNAL_DEVICES_REBOOT, post(internal::device_reboot))
         // D11:worker 投递 webhook 后的明细回写(与 worker 同表归属,故在 admin 落库)
         .route(api_contracts::paths::ADMIN_INTERNAL_WEBHOOK_DELIVERIES, post(webhook::record_delivery))
         .layer(middleware::from_fn_with_state(svc_token.clone(), common_auth::refs::internal_token_mw));
 
     // ===== PC 后台路由(需 JWT)=====
     let admin_routes = Router::new()
-        .route(api_types::paths::ADMIN_AUTH_LOGOUT, post(auth::logout))
+        .route(api_types::paths::ADMIN_AUTH_LOGOUT, post(identity::logout))
         .route(api_types::paths::ADMIN_DASHBOARD, get(api::dashboard::get))
-        .route(api_types::paths::ADMIN_USERS, get(api::users::list).post(api::users::create))
-        .route(api_types::paths::ADMIN_USER_DETAIL, get(api::users::get).put(api::users::update).delete(api::users::delete))
-        .route(api_types::paths::ADMIN_USER_RESET_PASSWORD, post(api::users::reset_password))
-        .route(api_types::paths::ADMIN_ROLES, get(api::roles::list).post(api::roles::create))
-        .route(api_types::paths::ADMIN_ROLE_DETAIL, get(api::roles::get).put(api::roles::update).delete(api::roles::delete))
-        .route(api_types::paths::ADMIN_PERMISSIONS, get(api::roles::permissions))
-        .route(api_types::paths::ADMIN_STATIONS, get(api::stations::list).post(api::stations::create))
-        .route(api_types::paths::ADMIN_STATION_DETAIL, get(api::stations::get).put(api::stations::update).delete(api::stations::delete))
-        .route(api_types::paths::ADMIN_DEVICES, get(api::devices::list))
-        .route(api_types::paths::ADMIN_DEVICE_DETAIL, get(api::devices::get))
-        .route(api_types::paths::ADMIN_DEVICE_ORDERS, get(api::devices::orders))
-        .route(api_types::paths::ADMIN_ORDERS, get(api::orders::list))
-        .route(api_types::paths::ADMIN_DEVICE_IMPORTS, get(api::device_import::list).post(api::device_import::create))
-        .route(api_types::paths::ADMIN_DEVICE_IMPORT_RETRY, post(api::device_import::retry))
-        .route(api_types::paths::ADMIN_ORDER_DETAIL, get(api::orders::get))
-        .route(api_types::paths::ADMIN_ORDER_TIMELINE, get(api::orders::timeline))
-        .route(api_types::paths::ADMIN_BILLING_SETTLEMENTS, get(billing::settlements))
-        .route("/api/v1/admin/billing/wallet-risks/:request_id/release",post(billing::wallet_risk_release))
-        .route("/api/v1/admin/billing/wallet-risks",get(billing::wallet_risks))
-        .route("/api/v1/admin/billing/wallet-risks/:request_id/review",post(billing::wallet_risk_review))
-        .route(api_types::paths::ADMIN_BILLING_REFUNDS, get(billing::refunds))
-        .route(api_types::paths::ADMIN_BILLING_REFUND_RETRY, post(billing::refund_retry))
-        .route("/api/v1/admin/billing/refunds/:id/approve",post(billing::refund_approve))
-        .route("/api/v1/admin/billing/refunds/:id/reject",post(billing::refund_reject))
-        .route("/api/v1/admin/orders/:id/refunds",post(billing::refund_create))
-        .route(api_types::paths::ADMIN_BILLING_INVOICES, get(billing::invoices))
-        .route(api_types::paths::ADMIN_BILLING_INVOICE_APPROVE, post(billing::invoice_approve))
-        .route(api_types::paths::ADMIN_BILLING_INVOICE_REJECT, post(billing::invoice_reject))
-        .route(api_types::paths::ADMIN_BILLING_RECONCILE_LOGS, get(billing::reconcile_logs))
+        .route(api_types::paths::ADMIN_USERS, get(identity::list).post(identity::create))
+        .route(api_types::paths::ADMIN_USER_DETAIL, get(identity::get).put(identity::update).delete(identity::delete))
+        .route(api_types::paths::ADMIN_USER_RESET_PASSWORD, post(identity::reset_password))
+        .route(api_types::paths::ADMIN_ROLES, get(identity::roles_list).post(identity::roles_create))
+        .route(api_types::paths::ADMIN_ROLE_DETAIL, get(identity::roles_get).put(identity::roles_update).delete(identity::roles_delete))
+        .route(api_types::paths::ADMIN_PERMISSIONS, get(identity::permissions))
+        .route(api_types::paths::ADMIN_STATIONS, get(device::stations).post(device::station_create))
+        .route(api_types::paths::ADMIN_STATION_DETAIL, get(device::station_detail).put(device::station_update).delete(device::station_delete))
+        .route(api_types::paths::ADMIN_DEVICES, get(device::device_list))
+        .route(api_types::paths::ADMIN_DEVICE_DETAIL, get(device::device_get))
+        .route(api_types::paths::ADMIN_DEVICE_ORDERS, get(device::device_orders))
+        .route(api_types::paths::ADMIN_ORDERS, get(order::list))
+        .route(api_types::paths::ADMIN_DEVICE_IMPORTS, get(device::import_list).post(device::import_create))
+        .route(api_types::paths::ADMIN_DEVICE_IMPORT_RETRY, post(device::import_retry))
+        .route(api_types::paths::ADMIN_ORDER_DETAIL, get(order::get))
+        .route(api_types::paths::ADMIN_ORDER_TIMELINE, get(order::timeline))
+        .route(api_types::paths::ADMIN_BILLING_SETTLEMENTS, get(finance::settlements))
+        .route("/api/v1/admin/billing/wallet-risks/:request_id/release",post(finance::wallet_risk_release))
+        .route("/api/v1/admin/billing/wallet-risks",get(finance::wallet_risks))
+        .route("/api/v1/admin/billing/wallet-risks/:request_id/review",post(finance::wallet_risk_review))
+        .route(api_types::paths::ADMIN_BILLING_REFUNDS, get(finance::refunds))
+        .route(api_types::paths::ADMIN_BILLING_REFUND_RETRY, post(finance::refund_retry))
+        .route("/api/v1/admin/billing/refunds/:id/approve",post(finance::refund_approve))
+        .route("/api/v1/admin/billing/refunds/:id/reject",post(finance::refund_reject))
+        .route("/api/v1/admin/orders/:id/refunds",post(finance::refund_create))
+        .route(api_types::paths::ADMIN_BILLING_INVOICES, get(finance::invoices))
+        .route(api_types::paths::ADMIN_BILLING_INVOICE_APPROVE, post(finance::invoice_approve))
+        .route(api_types::paths::ADMIN_BILLING_INVOICE_REJECT, post(finance::invoice_reject))
+        .route(api_types::paths::ADMIN_BILLING_RECONCILE_LOGS, get(finance::reconcile_logs))
         .route(api_types::paths::ADMIN_ALERTS, get(alert::list))
         .route(api_types::paths::ADMIN_ALERT_ACK, post(alert::ack))
         .route(api_types::paths::ADMIN_ALERT_RULES, get(alert::rules_list).post(alert::rules_create))
         .route(api_types::paths::ADMIN_ALERT_RULE_DETAIL, get(alert::rules_get).put(alert::rules_update).delete(alert::rules_delete))
         .route(api_types::paths::ADMIN_ALERT_SUBSCRIPTIONS, get(alert::subs_list).post(alert::subs_create))
         .route(api_types::paths::ADMIN_RISK_CONFIG, get(alert::risk_config_get).put(alert::risk_config_put))
-        .route(api_types::paths::ADMIN_COUPONS, get(api::coupons::list).post(api::coupons::create))
-        .route(api_types::paths::ADMIN_COUPON_DETAIL, get(api::coupons::get).put(api::coupons::update).delete(api::coupons::delete))
-        .route(api_types::paths::ADMIN_COUPON_STATS, get(api::coupons::stats))
-        .route(api_types::paths::ADMIN_COUPON_GRANTS, post(api::coupons::grant))
-        .route(api_types::paths::ADMIN_CHARGE_RULES, get(api::settings::charge_rules).post(api::settings::charge_rule_create))
-        .route(api_types::paths::ADMIN_PRICING_TEMPLATES, get(api::settings::pricing_templates).post(api::settings::pricing_template_create))
-        .route(api_types::paths::ADMIN_SPLIT_TEMPLATES, get(api::settings::split_templates).post(api::settings::split_template_create))
-        .route(api_types::paths::ADMIN_SPLIT_TEMPLATE_PARTIES, get(api::settings::split_parties).post(api::settings::split_party_create))
-        .route(api_types::paths::ADMIN_OTA, get(api::settings::ota_get).put(api::settings::ota_put))
-        .route(api_types::paths::ADMIN_ANNOUNCEMENTS, get(api::announcements::list).post(api::announcements::create))
-        .route(api_types::paths::ADMIN_ANNOUNCEMENT_DETAIL, get(api::announcements::get).put(api::announcements::update).delete(api::announcements::delete))
-        .route(api_types::paths::ADMIN_CUSTOMER_SERVICE, get(api::customer_service::list).post(api::customer_service::create))
-        .route(api_types::paths::ADMIN_CUSTOMER_SERVICE_DETAIL, get(api::customer_service::get).put(api::customer_service::update).delete(api::customer_service::delete))
-        .route(api_types::paths::ADMIN_FEEDBACK, get(api::casework::feedback_list))
-        .route(api_types::paths::ADMIN_FEEDBACK_REPLY, post(api::casework::feedback_reply))
-        .route(api_types::paths::ADMIN_DEVICE_FAULT_REPORTS, get(api::casework::fault_list))
-        .route(api_types::paths::ADMIN_DEVICE_FAULT_HISTORY, get(api::casework::fault_history))
-        .route(api_types::paths::ADMIN_DEVICE_FAULT_DISPATCH, post(api::casework::fault_dispatch))
-        .route(api_types::paths::ADMIN_DEVICE_FAULT_RESOLVE, post(api::casework::fault_resolve))
-        .route(api_types::paths::ADMIN_WHITELABEL, get(api::whitelabel::get).put(api::whitelabel::put))
+        .route(api_types::paths::ADMIN_COUPONS, get(cases::coupon_list).post(cases::coupon_create))
+        .route(api_types::paths::ADMIN_COUPON_DETAIL, get(cases::coupon_get).put(cases::coupon_update).delete(cases::coupon_delete))
+        .route(api_types::paths::ADMIN_COUPON_STATS, get(cases::coupon_stats))
+        .route(api_types::paths::ADMIN_COUPON_GRANTS, post(cases::coupon_grant))
+        .route(api_types::paths::ADMIN_CHARGE_RULES, get(config::charge_rules).post(config::charge_rule_create))
+        .route(api_types::paths::ADMIN_PRICING_TEMPLATES, get(config::pricing_templates).post(config::pricing_template_create))
+        .route(api_types::paths::ADMIN_SPLIT_TEMPLATES, get(config::split_templates).post(config::split_template_create))
+        .route(api_types::paths::ADMIN_SPLIT_TEMPLATE_PARTIES, get(config::split_parties).post(config::split_party_create))
+        .route(api_types::paths::ADMIN_OTA, get(config::ota_get).put(config::ota_put))
+        .route(api_types::paths::ADMIN_ANNOUNCEMENTS, get(config::announcements).post(config::announcement_create))
+        .route(api_types::paths::ADMIN_ANNOUNCEMENT_DETAIL, get(config::announcement_get).put(config::announcement_update).delete(config::announcement_delete))
+        .route(api_types::paths::ADMIN_CUSTOMER_SERVICE, get(config::customer_service_list).post(config::customer_service_create))
+        .route(api_types::paths::ADMIN_CUSTOMER_SERVICE_DETAIL, get(config::customer_service_get).put(config::customer_service_update).delete(config::customer_service_delete))
+        .route(api_types::paths::ADMIN_FEEDBACK, get(cases::feedback_list))
+        .route(api_types::paths::ADMIN_FEEDBACK_REPLY, post(cases::feedback_reply))
+        .route(api_types::paths::ADMIN_DEVICE_FAULT_REPORTS, get(cases::fault_list))
+        .route(api_types::paths::ADMIN_DEVICE_FAULT_HISTORY, get(cases::fault_history))
+        .route(api_types::paths::ADMIN_DEVICE_FAULT_DISPATCH, post(cases::fault_dispatch))
+        .route(api_types::paths::ADMIN_DEVICE_FAULT_RESOLVE, post(cases::fault_resolve))
+        .route(api_types::paths::ADMIN_WHITELABEL, get(config::whitelabel_get).put(config::whitelabel_put))
         .route(api_types::paths::ADMIN_WEBHOOKS, get(webhook::list).post(webhook::create))
         .route(api_types::paths::ADMIN_WEBHOOK_DETAIL, get(webhook::get).put(webhook::update).delete(webhook::delete))
         .route(api_types::paths::ADMIN_WEBHOOK_DELIVERIES, get(webhook::deliveries))
-        .route(api_types::paths::ADMIN_OTA_PACKAGES, get(ota::packages_list).post(ota::packages_create))
-        .route(api_types::paths::ADMIN_OTA_PACKAGE_DETAIL, get(ota::packages_get).delete(ota::packages_delete))
-        .route(api_types::paths::ADMIN_OTA_SCHEDULES, get(ota::schedules_list).post(ota::schedules_create))
-        .route(api_types::paths::ADMIN_OTA_SCHEDULE_DETAIL, get(ota::schedules_get).post(ota::schedules_trigger))
+        .route(api_types::paths::ADMIN_OTA_PACKAGES, get(device::packages_list).post(device::packages_create))
+        .route(api_types::paths::ADMIN_OTA_PACKAGE_DETAIL, get(device::packages_get).delete(device::packages_delete))
+        .route(api_types::paths::ADMIN_OTA_SCHEDULES, get(device::schedules_list).post(device::schedules_create))
+        .route(api_types::paths::ADMIN_OTA_SCHEDULE_DETAIL, get(device::schedules_get).post(device::schedules_trigger))
         .route(api_types::paths::ADMIN_EXPORT, post(api::export::create))
         .route(api_types::paths::ADMIN_EXPORT_TASKS, get(api::export::tasks))
         .route(api_types::paths::ADMIN_EXPORT_TASK, get(api::export::task))

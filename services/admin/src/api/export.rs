@@ -1,8 +1,13 @@
 //! 导出任务(简化为创建一个 worker 任务)
+//!
+//! **`serde_json::Value` 豁免理由**（方案 §三 例外清单第 2 类）：
+//! `filters_json` 是导出任务的筛选条件，由运营在 PC 后台自由填写，
+//! **无固定 schema 可枚举**。四个端点本身均为未接入的桩。
+#![allow(clippy::disallowed_types)]
 
 use crate::AppState;
 use axum::{extract::{Path, State}, Json};
-use crate::auth::ActiveAdmin;
+use crate::capability::identity::ActiveAdmin;
 use common_error::{AppError, AppResult};
 use serde::Deserialize;
 use serde_json::Value;
@@ -25,7 +30,7 @@ pub async fn create(
     actor: ActiveAdmin,
     Json(req): Json<ExportCreateReq>,
  ) -> AppResult<Unavailable> {
-    crate::auth::require_permission(&st,&actor,"export.create").await?;
+    crate::capability::identity::require_permission(&st,&actor,"export.create").await?;
     let _ = (st, actor, req);
     Err(AppError::ServiceUnavailable(
         "导出执行器与文件存储尚未接入，未创建导出任务".into(),

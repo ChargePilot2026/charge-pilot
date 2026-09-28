@@ -1,10 +1,15 @@
 //! admin Stream 消费者
 //!
+//! **`serde_json::Value` 豁免理由**（方案 §三 例外清单第 1 类）：
+//! Stream 事件载荷是**跨服务的线缆格式** —— 生产者可能是任何服务，
+//! 且 `webhook_subscription.headers_json` 由运营自由配置、无固定 schema。
+//! 载荷在 handler 边界解析完即转成具名字段，不向下游传播 `Value`。
+#![allow(clippy::disallowed_types)]
+//!
 //! 订阅:
-//!   - alert_stream.admin-cg → 落库到 alert_event
+//!   - alert_stream.admin-cg → 落库到 alert_event + 展开 webhook 订阅
 //!   - refund_required_stream.admin-cg → claim + 调微信退款 + 写结果
 //!   - invoice_required_stream.admin-cg → 写 invoice_review 待审核
-//!   - webhook_retry_stream.admin-cg → 投递(本期由 worker 兜底,admin 只入队)
 //!   - device_event_stream.admin-cg → 设备状态 UI 推送(本期仅记账)
 
 use crate::AppState;
@@ -12,7 +17,6 @@ use async_trait::async_trait;
 use common_error::{AppError, AppResult};
 use common_redis::{StreamEntry, StreamEnvelope};
 use common_stream::{ConsumerGroup, StreamHandler};
-use serde_json::json;
 use tracing::info;
 
 pub async fn spawn_all(state: AppState) -> AppResult<()> {
@@ -78,17 +82,10 @@ impl StreamHandler for AlertHandler {
         let mut tx = self.state.alert.begin().await?;
         // `alert_event` 上只有非唯一索引 `idx_event(event_id, created_month)`,
         // INSERT IGNORE 并不能去重 —— 幂等仍靠 EXISTS 判定。
-        let already_recorded: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM alert_event WHERE event_id = ?)"
-        ).bind(&event_id).fetch_one(tx.executor()).await?;
+        let already_recorded = crate::capability::alert::repository_sql::alert_already_recorded(&mut tx, &event_id).await?;
         if !already_recorded {
             let now_month = chrono::Utc::now().format("%Y-%m-01").to_string();
-            sqlx::query(
-                "INSERT INTO alert_event (device_id, severity, metric, status, event_id, created_at, created_month)
-                 VALUES (?, ?, ?, 'active', ?, NOW(3), ?)"
-            )
-            .bind(&device_id).bind(&severity).bind(&metric).bind(&event_id).bind(&now_month)
-            .execute(tx.executor()).await?;
+            crate::capability::alert::repository_sql::insert_alert_event(&mut tx, &device_id, &severity, &metric, &event_id, &now_month).await?;
         }
 
         let targets = if already_recorded {
@@ -107,13 +104,9 @@ impl StreamHandler for AlertHandler {
             let outbox_event_id = format!("{event_id}:{}", target.id);
             // IGNORE 只用于吞掉并发重放撞唯一键的情况;上一轮的 EXISTS 判定已把
             // 正常重放挡掉,走到这里的重复必然是竞态,不值得为它让整条消息进 DLQ。
-            sqlx::query(
-                "INSERT IGNORE INTO event_outbox (event_id, stream, envelope_json) VALUES (?, ?, ?)"
-            )
-            .bind(&outbox_event_id)
-            .bind(common_redis::streams::WEBHOOK_RETRY)
-            .bind(serde_json::to_value(&env)?)
-            .execute(tx.executor()).await?;
+            crate::capability::alert::repository_sql::enqueue_webhook_delivery(
+                &mut tx, &outbox_event_id, &env,
+            ).await?;
         }
         tx.commit().await?;
         info!(device_id, severity, targets = queued, "alert recorded");
@@ -130,31 +123,7 @@ async fn load_alert_targets(
     rule_id: Option<u64>,
     severity: &str,
 ) -> AppResult<Vec<AlertSubscriptionTarget>> {
-    let rows = sqlx::query(
-        "SELECT DISTINCT s.id, s.url, s.secret, s.headers_json, s.event_types
-         FROM alert_subscription a
-         JOIN webhook_subscription s ON s.id = a.webhook_subscription_id
-         WHERE a.enabled = 1
-           AND s.enabled = 1
-           AND s.deleted_at IS NULL
-           AND (a.rule_id IS NULL OR a.rule_id = ?)
-           AND (a.severity IS NULL OR a.severity = ?)"
-    )
-    .bind(rule_id).bind(severity)
-    .fetch_all(tx.executor()).await?;
-    let mut out = Vec::with_capacity(rows.len());
-    for r in rows.iter() {
-        let event_types: serde_json::Value = sqlx::Row::try_get(r, "event_types")?;
-        out.push(AlertSubscriptionTarget {
-            id: sqlx::Row::try_get(r, "id")?,
-            url: sqlx::Row::try_get(r, "url")?,
-            secret: sqlx::Row::try_get(r, "secret")?,
-            headers: sqlx::Row::try_get(r, "headers_json")?,
-            // 列是 NOT NULL,但历史数据可能是 `null` 而非 `[]`;都按"订阅全部"处理。
-            event_types: serde_json::from_value(event_types).unwrap_or_default(),
-        });
-    }
-    Ok(out)
+    crate::capability::alert::repository_sql::load_alert_targets(tx, rule_id, severity).await
 }
 
 /// 组装投给 worker 的投递事件。
@@ -169,16 +138,16 @@ pub fn build_alert_delivery_envelope(
     device_id: &str,
     severity: &str,
 ) -> StreamEnvelope {
-    let mut payload = json!({
-        "subscription_id": target.id,
-        "url": target.url,
-        "secret": target.secret,
-        "event_id": alert_event_id,
-        "event_type": ALERT_RECORDED_EVENT,
-        "alert_device_id": device_id,
-        "severity": severity,
-        "occurred_at": chrono::Utc::now().to_rfc3339(),
-    });
+    let mut payload = serde_json::to_value(AlertDeliveryPayload {
+        subscription_id: target.id,
+        url: &target.url,
+        secret: &target.secret,
+        event_id: alert_event_id,
+        event_type: ALERT_RECORDED_EVENT,
+        alert_device_id: device_id,
+        severity,
+        occurred_at: &chrono::Utc::now().to_rfc3339(),
+    }).unwrap_or_else(|_| serde_json::Value::Null);
     // headers 为空对象或非对象时省略该键,免得 worker 拿到 `{}` 还以为
     // 运营显式配了空 header。
     if let Some(obj @ serde_json::Value::Object(_)) = &target.headers {
@@ -187,12 +156,26 @@ pub fn build_alert_delivery_envelope(
     StreamEnvelope::new(ALERT_RECORDED_EVENT, "admin", payload)
 }
 
+/// 投给 worker 的投递事件载荷。键集合固定且是跨服务硬契约,
+/// 故用具名结构体而非 `json!`(方案 §三:生产代码零 `json!`)。
+#[derive(serde::Serialize)]
+struct AlertDeliveryPayload<'a> {
+    subscription_id: u64,
+    url: &'a str,
+    secret: &'a str,
+    event_id: &'a str,
+    event_type: &'a str,
+    alert_device_id: &'a str,
+    severity: &'a str,
+    occurred_at: &'a str,
+}
+
 pub struct RefundRequiredHandler { pub state: AppState }
 
 #[async_trait]
 impl StreamHandler for RefundRequiredHandler {
     async fn handle(&self, entry: &StreamEntry) -> AppResult<()> {
-        crate::refund_task::enqueue(&self.state,entry).await
+        crate::capability::finance::refund_task::enqueue(&self.state,entry).await
     }
 }
 
@@ -205,8 +188,7 @@ impl StreamHandler for InvoiceRequiredHandler {
         let invoice_request_id = p.get("invoice_request_id").and_then(|v| v.as_u64())
             .filter(|id| *id > 0)
             .ok_or_else(|| AppError::BadRequest("invoice event is missing invoice_request_id".into()))?;
-        sqlx::query("INSERT IGNORE INTO invoice_review (invoice_request_id, review_status) VALUES (?, 'pending')")
-            .bind(invoice_request_id).execute(self.state.config.pool()).await?;
+        crate::capability::config::repository_sql::ensure_invoice_review(&self.state, invoice_request_id).await?;
         info!(invoice_request_id, "invoice required recorded");
         Ok(())
     }
@@ -221,15 +203,13 @@ impl StreamHandler for DeviceEventHandler {
         let device_id = p.get("device_id").and_then(|v| v.as_str()).filter(|v| !v.is_empty())
             .ok_or_else(|| AppError::BadRequest("device event is missing device_id".into()))?.to_string();
         // 更新设备最近一次遥测时间(可选:便于 PC 后台看板上显示)
-        sqlx::query("UPDATE device_meta SET last_seen_at = NOW(3) WHERE device_id = ?")
-            .bind(&device_id)
-            .execute(self.state.config.pool())
-            .await?;
+        crate::capability::device::repository_sql::touch_device_seen(&self.state, &device_id).await?;
         Ok(())
     }
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_macros, clippy::disallowed_types)]
 mod tests {
     use super::*;
 

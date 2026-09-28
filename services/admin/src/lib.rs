@@ -4,26 +4,31 @@
 //! 主入口在 `bin/admin.rs`。
 
 
-// 分层与序列化约束(P1a 建立;随 P3 逐服务迁移完成转 deny)
-// 说明:配置在仓库根 clippy.toml,级别在这里。测试模块豁免。
-#![allow(
+// 分层与序列化约束(P1a 建立;P5 admin 已完成迁移)
+// 说明:配置在仓库根 clippy.toml,级别在这里。
+// 生产代码禁 SQL / `json!`;豁免只在 `repository_sql.rs` 与少数具名函数上。
+#![deny(
     clippy::disallowed_macros,
     clippy::disallowed_types,
     clippy::disallowed_methods,
 )]
+pub mod capability;
 pub mod api;
 pub mod api_types;
 pub mod clients;
-pub mod auth;
-pub mod billing;
-pub mod ota;
 pub mod services;
 pub mod password;
-pub mod webhook;
-pub mod alert;
 pub mod stream_consumer;
-mod refund_task;
 pub mod static_serve;
+
+/// 鉴权与账号:HTTP handler 入口在 `capability::identity`,
+/// 这里只是**历史路径**的兼容再导出,新代码请直接用
+/// `crate::capability::identity::{ActiveAdmin, require_permission, …}`。
+pub mod auth {
+    pub use crate::capability::identity::{
+        require_permission, require_permission_by_id, ActiveAdmin, LoginReq, LoginResp,
+    };
+}
 
 use common_auth::JwtCodec;
 use common_config::AppConfig;

@@ -1,23 +1,23 @@
-//! Authenticated dashboard aggregation across data owners.
+//! 运营仪表盘 —— 跨数据源的聚合读
+//!
+//! 指标本体归 user 服务,admin 只做三件事:复核 `dashboard.read` 权限、
+//! 取 user 侧指标、追加 admin 库自己的活跃告警数。
+//! 聚合本身没有业务归属(它横跨 order / alert),故留在 [`crate::api`] 下,
+//! 不硬塞进某一个能力域。
 
 use crate::AppState;
 use axum::{extract::State, Json};
-use crate::auth::ActiveAdmin;
+use crate::capability::identity::ActiveAdmin;
 use common_error::{AppError, AppResult};
-use serde_json::{json, Value};
 
 pub async fn get(State(st): State<AppState>, c: ActiveAdmin) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::admin::AdminDashboard>>> {
-    let allowed: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM admin_user_role a JOIN role r ON r.id=a.role_id AND r.deleted_at IS NULL
-         JOIN role_permission rp ON rp.role_id=r.id JOIN permission p ON p.id=rp.permission_id
-         WHERE a.id=? AND a.username=? AND a.status='active' AND a.deleted_at IS NULL AND p.code='dashboard.read')",
-    ).bind(c.admin_user_id).bind(&c.sub).fetch_one(st.order.pool()).await?;
-    if !allowed { return Err(AppError::Forbidden("缺少 dashboard.read 权限".into())); }
+    if !crate::capability::alert::repository_sql::has_dashboard_permission(&st, &c).await? {
+        return Err(AppError::Forbidden("缺少 dashboard.read 权限".into()));
+    }
     let user_metrics: api_contracts::admin::UserChargeMetrics = common_http::internal::ApiClient::new(st.http.clone(), st.service_token.clone())
         .get(st.cfg.service_urls.user.as_deref(), api_contracts::paths::USER_INTERNAL_DASHBOARD_METRICS, &()).await?;
-    let active_alerts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM alert_event WHERE status='active'")
-        .fetch_one(st.order.pool()).await?;
     // 告警数由 admin 侧查 alert_event 后追加,user 侧不提供
+    let active_alerts = crate::capability::alert::repository_sql::active_alert_count(&st).await?;
     let data = api_contracts::admin::AdminDashboard {
         charging_orders: user_metrics.charging_orders,
         today_order_users: user_metrics.today_order_users,

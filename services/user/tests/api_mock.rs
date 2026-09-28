@@ -4,6 +4,10 @@
 //!   - DTO 序列化往返
 //!   - 路径常量冻结
 //!   - envelope 一致性
+//!
+//! 方案 §三:生产代码零 `json!`、禁 `serde_json::Value`,**测试放行**。
+//! 下面的断言需要把结构体转成 `Value` 才能按 key 逐项检查。
+#![allow(clippy::disallowed_macros, clippy::disallowed_types)]
 
 use serde_json;
 use user::api_types;

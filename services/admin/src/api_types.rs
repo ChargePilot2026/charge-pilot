@@ -2,6 +2,12 @@
 //!
 //! 路径常量、请求/响应类型集中在 [`paths`] 和顶层结构体;
 //! handler 只做参数提取 + 业务调用,禁止直接拼字符串或 `json!{}` 宏。
+//!
+//! **`serde_json::Value` 豁免理由**（方案 §三 例外清单第 2 类）：
+//! 本文件的两处 `Value` 都是**数据库 JSON 列的原样透出**——
+//! `filters_json`(导出任务的筛选条件)与 `risk_config.extra`(风控扩展项)
+//! 都由运营在 PC 后台自由配置,**无固定 schema 可枚举**。
+#![allow(clippy::disallowed_types)]
 
 use serde::{Deserialize, Serialize};
 

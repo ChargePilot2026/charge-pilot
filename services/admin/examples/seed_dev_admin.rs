@@ -1,5 +1,11 @@
 //! Explicit development-only seed, invoked by the Docker development runner.
 //! Existing credentials are preserved on subsequent container / watcher restarts.
+//!
+//! seed 脚本，SQL 属于脚本本身职责 —— 它一次性地铺角色、权限与首个管理员，
+//! 不属于任何能力域，因此不适用 `disallowed-methods`（SQL 只能在
+//! `repository_sql.rs`）那条约束。
+#![allow(clippy::disallowed_methods)]
+
 use common_auth::hash_password;
 use common_error::{AppError, AppResult};
 use sqlx::mysql::MySqlPoolOptions;

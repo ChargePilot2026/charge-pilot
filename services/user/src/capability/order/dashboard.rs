@@ -1,0 +1,62 @@
+//! Dashboard charge metrics calculated from the user-owned charge_order table.
+//!
+//! ── repository 层豁免(order 域)──
+//! 看板指标聚合(今日 + 近 7 日趋势),属统计读路径。
+#![allow(clippy::disallowed_methods)]
+
+
+use crate::AppState;
+use axum::{extract::State, Json};
+use common_error::AppResult;
+use sqlx::Row;
+use std::collections::HashMap;
+
+pub async fn metrics(State(st): State<AppState>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::admin::UserChargeMetrics>>> {
+    let today = chrono::Utc::now().date_naive();
+    let today_start = today.and_hms_opt(0, 0, 0).expect("midnight");
+    let tomorrow_start = (today + chrono::Duration::days(1)).and_hms_opt(0, 0, 0).expect("midnight");
+    let trend_start = (today - chrono::Duration::days(6)).and_hms_opt(0, 0, 0).expect("midnight");
+
+    let charging_orders: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM charge_order WHERE status='charging' AND deleted_at IS NULL",
+    ).fetch_one(st.order.pool()).await?;
+    let today_order_users: i64 = sqlx::query_scalar(
+        "SELECT COUNT(DISTINCT user_id) FROM charge_order WHERE created_at>=? AND created_at<? AND deleted_at IS NULL",
+    ).bind(today_start).bind(tomorrow_start).fetch_one(st.order.pool()).await?;
+    let today_summary = sqlx::query(
+        "SELECT COUNT(*) AS completed_orders,CAST(COALESCE(SUM(total_cents),0) AS SIGNED) AS settled_cents
+         FROM charge_order WHERE status='completed' AND ended_at>=? AND ended_at<? AND deleted_at IS NULL",
+    ).bind(today_start).bind(tomorrow_start).fetch_one(st.order.pool()).await?;
+    let trend_rows = sqlx::query(
+        "SELECT DATE(ended_at) AS day,COUNT(*) AS completed_orders,CAST(COALESCE(SUM(total_cents),0) AS SIGNED) AS settled_cents
+         FROM charge_order WHERE status='completed' AND ended_at>=? AND ended_at<? AND deleted_at IS NULL
+         GROUP BY DATE(ended_at) ORDER BY day",
+    ).bind(trend_start).bind(tomorrow_start).fetch_all(st.order.pool()).await?;
+    let mut by_day = HashMap::with_capacity(trend_rows.len());
+    for row in &trend_rows {
+        by_day.insert(
+            row.try_get::<chrono::NaiveDate, _>("day")?,
+            (row.try_get::<i64, _>("completed_orders")?, row.try_get::<i64, _>("settled_cents")?),
+        );
+    }
+    // 固定 7 天:无数据的日期也要补零,否则后台折线断裂
+    let mut trend = Vec::with_capacity(7);
+    for offset in 0..7 {
+        let day = today - chrono::Duration::days(6 - offset);
+        let (completed_orders, settled_cents) = by_day.get(&day).copied().unwrap_or_default();
+        trend.push(api_contracts::admin::DailyTrendPoint {
+            day: day.to_string(),
+            completed_orders: completed_orders.max(0) as u64,
+            settled_cents,
+        });
+    }
+    let data = api_contracts::admin::UserChargeMetrics {
+        charging_orders: charging_orders.max(0) as u64,
+        today_order_users: today_order_users.max(0) as u64,
+        today_completed_orders: today_summary.try_get::<i64,_>("completed_orders")?.max(0) as u64,
+        today_settled_cents: today_summary.try_get::<i64,_>("settled_cents")?,
+        daily_trend: trend,
+        updated_at: chrono::Utc::now().to_rfc3339(),
+    };
+    Ok(Json(common_error::ApiEnvelope::ok(data, common_error::current_request_id())))
+}

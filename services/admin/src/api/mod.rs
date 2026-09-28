@@ -1,29 +1,15 @@
-//! admin 服务 — 通用 API 容器
+//! admin 服务 — HTTP 层薄壳
 //!
-//! 拆分:
-//! - 子模块: users / stations / devices / orders / coupons /
-//!   settings / announcements / customer_service / whitelabel / export / internal
+//! P5 迁移后,业务代码全部住在 [`crate::capability::<域>`]:
+//! `capability::identity::list` / `capability::device::device_list` / ……
 //!
-//! D3:会员卡与提现两个跨库视图的调用方已整块删除(admin-web 零调用),
-//! `membership` 模块与相关 DTO/路径常量一并清除,不留编译期死代码。
+//! 保留本模块的只有两类东西:
+//! - **无业务归属的通用容器**:[`health`] / [`ok_envelope`]。
+//! - **未接入的桩**:导出任务([`export`])四个端点全部是
+//!   `ServiceUnavailable`,不属于任何已完成的能力域。
 
-pub mod users;
-pub mod roles;
-pub mod stations;
-pub mod station_reads;
-pub mod pricing_reads;
-pub mod devices;
-pub mod orders;
-pub mod device_import;
-pub mod coupons;
-pub mod settings;
-pub mod announcements;
-pub mod customer_service;
-pub mod whitelabel;
-pub mod export;
-pub mod internal;
-pub mod casework;
 pub mod dashboard;
+pub mod export;
 
 use axum::{extract::State, Json};
 use common_error::AppResult;
@@ -35,12 +21,8 @@ pub async fn health(State(st): State<crate::AppState>) -> AppResult<&'static str
     Ok("ok")
 }
 
+/// 本文件四个端点全部是**未接入的桩**,永远走 `Err(ServiceUnavailable)`。
 #[allow(dead_code)]
 pub fn ok_envelope<T: serde::Serialize>(data: T) -> Json<common_error::ApiEnvelope<T>> {
     Json(common_error::ApiEnvelope::ok(data, common_error::current_request_id()))
-}
-
-#[allow(dead_code)]
-pub fn json_envelope(v: serde_json::Value) -> Json<common_error::ApiEnvelope<serde_json::Value>> {
-    Json(common_error::ApiEnvelope::ok(v, common_error::current_request_id()))
 }

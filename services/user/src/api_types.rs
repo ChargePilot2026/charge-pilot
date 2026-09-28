@@ -5,6 +5,15 @@
 //!   - 禁止在 handler 里直接拼字符串路径或 `serde_json::json!{}` 宏构造响应。
 //!   - 跨服务调用统一走 [`crate::clients`],自动补充 service token + request id。
 
+// ── 豁免:微信 `wx.requestPayment` 签名参数透传 ──
+// `ScanStartResponse.payment_params` 是微信 SDK 要求的**小驼峰**定形载荷
+// (`appId` / `timeStamp` / `nonceStr` / `package` / `signType` / `paySign`),
+// 由 `common_wechat::sign_jsapi_pay` 生成后原样透传给小程序。字段集由微信定义,
+// 不能改成具名 DTO(会破坏小驼峰契约),也不能复用 `api_contracts::charge::JsapiPaySign`
+// —— 两者 serde 归一化方式不同,混用会让签名参数在两端解析不一致。
+// 全文件仅此一处使用 `serde_json::Value`。
+#![allow(clippy::disallowed_types)]
+
 use serde::{Deserialize, Serialize};
 
 // ===== 路径常量 =====
@@ -127,6 +136,12 @@ pub struct ScanStartResponse {
     pub order_no: String,
     pub payment_order_no: String,
     pub hold_expires_at: String,
+    // 方案 §三 正用途:微信 `wx.requestPayment` 的签名参数由微信 SDK 定义
+    // (appId / timeStamp / nonceStr / package / signType / paySign,小驼峰,
+    //  不可改名),本服务只做 `to_value` 后原样透传给小程序。
+    // 该字段与 `api_contracts::charge::JsapiPaySign` 形状相同,但**不能**直接
+    // 复用那个类型:此处字段名是契约冻结的小驼峰,与仓内 snake_case 规范不同。
+    #[serde(default)]
     pub payment_params: serde_json::Value,
 }
 

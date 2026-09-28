@@ -3,54 +3,54 @@
 //! 暴露 DTO + 类型化客户端 + AppState + 子模块,便于跨服务集成测试与单测。
 //! 主入口在 `bin/user.rs`。
 
-
-// 分层与序列化约束(P1a 建立;随 P3 逐服务迁移完成转 deny)
-// 说明:配置在仓库根 clippy.toml,级别在这里。测试模块豁免。
-#![allow(
+// 分层与序列化约束(P1a 建立;P5 user 侧已转 deny)
+// 说明:配置在仓库根 clippy.toml,级别在这里。
+//   - 生产代码零 `json!`(`disallowed_macros` deny)
+//   - `serde_json::Value` 仅限方案 §三 的三类正用途(Stream 载荷 / DB JSON 列
+//     原样透出 / 动态 WHERE 拼装),各自文件级豁免已写明理由
+//   - `sqlx::query*` 只出现在本域 repository 文件,豁免精确到文件
+#![deny(
     clippy::disallowed_macros,
     clippy::disallowed_types,
     clippy::disallowed_methods,
 )]
-pub mod api;
-pub mod services;
-pub mod checkout;
-mod charge_start;
-mod charge_end;
-mod charge_fee;
-mod refund_result;
-mod refund_execution;
-mod refund_review;
-mod manual_refund;
-mod prepay;
-mod wallet_refund;
-pub mod quote_confirmation;
-pub mod login;
-pub mod session;
-pub mod profile;
 pub mod api_envelope;
 pub mod api_types;
+pub mod capability;
 pub mod clients;
-pub mod payment;
-mod payment_receipt;
-mod outbox;
-pub mod refund;
-pub mod wallet;
-pub mod wallet_reads;
-pub mod coupon;
-pub mod coupon_admin;
-pub mod invoice;
-pub mod station;
-pub mod stream_consumer;
-pub mod orders;
-pub mod order_events;
-pub mod casework;
-pub mod dashboard;
+mod services;
 
 use common_auth::JwtCodec;
 use common_config::AppConfig;
 use common_db::Db;
 use common_redis::{RedisCache, RedisStream};
 use std::sync::Arc;
+
+// ===================== 按域转出(保持搬迁前的 crate 短名) =====================
+//
+// handler / usecase 的实现全部落在 `capability/<domain>/` 下;这里只做再导出,
+// 让路由表、测试与跨模块调用不必因为目录搬迁而大面积改路径。
+// 路由注册与 handler 函数名**一字未改**。
+
+// order
+pub use capability::order::{
+    api, charge_end, charge_fee, charge_start, checkout, dashboard, order_events, orders, outbox,
+    payment, payment_receipt, prepay, quote_confirmation, stream_consumer,
+};
+// wallet
+pub use capability::wallet::wallet as wallet;
+pub use capability::wallet::{
+    wallet_reads, wallet_recharge, wallet_refund, wallet_risk_release,
+};
+// coupon / invoice / casework / station / identity
+pub use capability::casework::casework;
+pub use capability::coupon::{coupon, coupon_admin};
+pub use capability::identity::{login, profile, session};
+pub use capability::invoice::invoice;
+pub use capability::refund::{
+    manual_refund, refund, refund_execution, refund_result, refund_review,
+};
+pub use capability::station::station;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -70,7 +70,3 @@ impl std::ops::Deref for AppState {
         &self.services
     }
 }
-
-mod wallet_recharge;
-
-mod wallet_risk_release;

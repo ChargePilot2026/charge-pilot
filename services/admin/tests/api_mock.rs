@@ -1,4 +1,8 @@
 //! admin API mock 集成测试 —— 不依赖真实数据库
+//!
+//! 方案 §三:生产代码零 `json!`、禁 `serde_json::Value`,**测试放行**。
+//! 下面的断言需要把结构体转成 `Value` 才能按 key 逐项检查。
+#![allow(clippy::disallowed_types)]
 
 use admin::api_types;
 use serde_json;

@@ -1,38 +1,13 @@
 //! user 服务:小程序侧 API + 微信支付 + 退款编排 + Stream 消费者
 
 // 主模块文件(与 lib.rs 共用,各自 mod 声明各自一份,这样 bin 与 lib 都能独立编译)
-mod api;
-mod services;
-mod quote_confirmation;
-mod checkout;
-mod charge_start;
-mod charge_end;
-mod charge_fee;
-mod refund_result;
-mod refund_execution;
-mod refund_review;
-mod manual_refund;
-mod prepay;
-mod wallet_refund;
-mod login;
-mod session;
-mod profile;
+// P5:实现已按能力域归入 `capability/<domain>/`,这里只声明 `capability`;
+// `api_types` / `api_envelope` / `clients` 仍是 crate 根的共享 DTO 与客户端。
 mod api_envelope;
 mod api_types;
+mod capability;
 mod clients;
-mod payment;
-mod payment_receipt;
-mod outbox;
-mod refund;
-mod wallet;
-mod wallet_reads;
-mod coupon;
-mod coupon_admin;
-mod invoice;
-mod station;
-mod stream_consumer;
-mod orders;
-mod order_events;
+mod services;
 
 use axum::{
     middleware,
@@ -49,6 +24,24 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tower_http::trace::TraceLayer;
 use tracing::info;
+
+// 路由表引用的 handler 全部从能力域转出;`build_router` 的注册项一字未改。
+use capability::order::{
+    api, charge_end, charge_fee, charge_start, checkout, dashboard, order_events, orders, outbox,
+    payment, payment_receipt, prepay, quote_confirmation, stream_consumer,
+};
+use capability::refund::{
+    manual_refund, refund, refund_execution, refund_result, refund_review,
+};
+use capability::station::station;
+use capability::wallet::wallet;
+use capability::wallet::{
+    wallet_reads, wallet_recharge, wallet_refund, wallet_risk_release,
+};
+use capability::casework::casework;
+use capability::invoice::invoice;
+use capability::coupon::{coupon, coupon_admin};
+use capability::identity::{profile, session};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -221,8 +214,4 @@ pub fn build_router(state: AppState) -> Router {
         .with_state(state)
 }
 
-mod wallet_recharge;
 
-mod wallet_risk_release;
-mod casework;
-mod dashboard;

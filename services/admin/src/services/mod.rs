@@ -13,6 +13,12 @@
 //! 所以 handler 理论上仍能拿到连接 —— 只是必须点名某个能力域。
 //! 那一步需要逐域搬迁 SQL,风险面比换连接来源大得多,单独排期。
 //!
+//! P5 已补上后一半:`pool()` / `begin()` 现为 `pub(crate)`,而 `capability/`
+//! 下的切片全部在 admin 内部,于是"哪段 SQL 属于哪个域"由目录结构回答,
+//! 不再依赖调用方自觉。仓库根 clippy.toml 的 `disallowed-methods`
+//! (`sqlx::query*`) 把这条约定变成编译期约束:
+//! SQL 只允许出现在各域的 `repository_sql.rs` 里。
+//!
 //! `outbox` 域与其它八个并列:它不是"业务域"而是**基础设施域** ——
 //! 持有 `ServiceBase` + `RedisStream`,负责把同事务落库的 `event_outbox`
 //! 行投递到 Redis Stream(D11)。
@@ -37,14 +43,18 @@ pub struct DomainService {
 }
 
 impl DomainService {
-    pub fn pool(&self) -> &sqlx::MySqlPool {
+    /// 取连接句柄。`pub(crate)` 是刻意的:admin 的 HTTP handler 一律经
+    /// `capability/<域>` 的 usecase 方法拿连接,不允许在 handler 里直接开查询。
+    /// crate 之外(集成测试)也不需要它 —— 测试要么走 usecase,要么自己建 `Db`。
+    pub(crate) fn pool(&self) -> &sqlx::MySqlPool {
         self.base.pool()
     }
 
-    pub async fn begin(&self) -> AppResult2<common_db::Tx<'_>> {
+    pub(crate) async fn begin(&self) -> AppResult2<common_db::Tx<'_>> {
         self.base.begin().await
     }
 
+    /// 健康检查。admin 之外(如集成测试)可能需要探测能力域是否可用。
     pub async fn ping(&self) -> AppResult2<()> {
         self.base.ping().await
     }
