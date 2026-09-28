@@ -88,7 +88,7 @@ func (s PaymentCallbackStore) Apply(ctx context.Context, payment VerifiedPayment
 			return ErrPaymentCallbackConflict
 		}
 
-		if order.Status == "paid" {
+		if order.Status == "paid" || order.Status == "partial_refunded" || order.Status == "refunded" {
 			if digestErr != nil || !order.WechatTransactionID.Valid || order.WechatTransactionID.String != payment.TransactionID || order.PaidCents != payment.PaidCents {
 				return ErrPaymentCallbackConflict
 			}
@@ -126,7 +126,11 @@ func (s PaymentCallbackStore) Apply(ctx context.Context, payment VerifiedPayment
 		}
 
 		if intent.Status != "initiated" || time.Now().After(intent.ExpiresAt) || paidAt.After(intent.ExpiresAt) {
-			return queueLatePaymentRefund(tx, intent, order, payment, digest, paidAt)
+			if err := queueLatePaymentRefund(tx, intent, order, payment, digest, paidAt); err != nil {
+				return err
+			}
+			callbackResult = PaymentCallbackResult{RefundRequired: true}
+			return nil
 		}
 
 		chargeNo := "CH" + strings.ReplaceAll(uuid.NewString(), "-", "")
@@ -187,7 +191,7 @@ func queueLatePaymentRefund(tx *gorm.DB, intent PaymentIntentRecord, order Payme
 		return ErrPaymentCallbackConflict
 	}
 	refundNo := "REF" + digest[:32]
-	if err := tx.Create(&RefundRecord{RefundNo: refundNo, PaymentOrderID: order.ID, UserID: intent.UserID, BizType: "charge",
+	if err := tx.Create(&RefundRecord{ExecutionPolicy: "automatic", RefundNo: refundNo, PaymentOrderID: order.ID, UserID: intent.UserID, BizType: "charge",
 		BizID: 0, RefundCents: payment.PaidCents, Reason: sql.NullString{String: "payment arrived after intent expired", Valid: true},
 		Status: "pending", CreatedMonth: utcDate()}).Error; err != nil {
 		return err

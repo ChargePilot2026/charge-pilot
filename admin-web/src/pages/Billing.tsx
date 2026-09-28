@@ -3,6 +3,7 @@ import { Button, Form, Input, Modal, Space, Table, Tabs, Tag, Typography, messag
 import { ReloadOutlined } from '@ant-design/icons';
 import { apiGet, apiPost } from '../api/client';
 import Refunds from './Refunds';
+import MeterReviews from './MeterReviews';
 import WalletRisks from './WalletRisks';
 
 const { Title, Text } = Typography;
@@ -40,8 +41,9 @@ export default function BillingPage() {
   const [decision, setDecision] = useState<'approve' | 'reject' | null>(null);
   const [saving, setSaving] = useState(false);
   const [form] = Form.useForm();
+  let currentRole = '';
   let currentAdminId = '';
-  try { currentAdminId = String(JSON.parse(localStorage.getItem('cp_admin') || 'null')?.admin_user_id || ''); } catch { currentAdminId = ''; }
+  try { const profile = JSON.parse(localStorage.getItem('cp_admin') || 'null'); currentAdminId = String(profile?.admin_user_id || ''); currentRole = profile?.role || ''; } catch { currentAdminId = ''; }
 
   const loadInvoices = async () => {
     setLoadingInvoices(true);
@@ -108,6 +110,7 @@ export default function BillingPage() {
           ),
         },
         { key: 'refunds', label: '退款审核', children: <Refunds /> },
+        { key: 'meter-reviews', label: '计量核实', children: <MeterReviews /> },
         {
           key: 'invoices', label: '发票审核', children: (
             <>
@@ -126,6 +129,7 @@ export default function BillingPage() {
                 { title: '拒绝原因', width: 180, render: (_: unknown, row: Invoice) => row.queue_reject_reason || row.reject_reason },
                 { title: '操作', fixed: 'right', width: 190, render: (_: unknown, row: Invoice) => {
                   const status = row.queue_review_status || row.review_status;
+                  if (['pending','awaiting_second'].includes(status) && currentRole !== 'customer_finance') return <Text type="secondary">等待财务审核</Text>;
                   if (status === 'pending') return <Space><Button type="link" onClick={() => openDecision(row, 'approve')}>首次审核</Button><Button type="link" danger onClick={() => openDecision(row, 'reject')}>拒绝</Button></Space>;
                   if (status === 'awaiting_second') return row.first_reviewer_id === currentAdminId
                     ? <Text type="secondary">等待其他财务复核</Text>

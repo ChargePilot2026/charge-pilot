@@ -13,6 +13,7 @@ import (
 	"github.com/wechatpay-apiv3/wechatpay-go/core/option"
 	"github.com/wechatpay-apiv3/wechatpay-go/services/payments"
 	"github.com/wechatpay-apiv3/wechatpay-go/services/payments/jsapi"
+	"github.com/wechatpay-apiv3/wechatpay-go/services/refunddomestic"
 	"github.com/wechatpay-apiv3/wechatpay-go/utils"
 )
 
@@ -57,9 +58,10 @@ type Config struct {
 }
 
 type WechatDirect struct {
-	config Config
-	jsapi  jsapi.JsapiApiService
-	notify *notify.Handler
+	config  Config
+	refunds refunddomestic.RefundsApiService
+	jsapi   jsapi.JsapiApiService
+	notify  *notify.Handler
 }
 
 func NewWechatDirect(ctx context.Context, config Config) (*WechatDirect, error) {
@@ -76,7 +78,7 @@ func NewWechatDirect(ctx context.Context, config Config) (*WechatDirect, error) 
 		return nil, err
 	}
 	visitor := downloader.MgrInstance().GetCertificateVisitor(config.MerchantID)
-	return &WechatDirect{config: config, jsapi: jsapi.JsapiApiService{Client: client},
+	return &WechatDirect{config: config, refunds: refunddomestic.RefundsApiService{Client: client}, jsapi: jsapi.JsapiApiService{Client: client},
 		notify: notify.NewNotifyHandler(config.APIv3Key, verifiers.NewSHA256WithRSAVerifier(visitor))}, nil
 }
 

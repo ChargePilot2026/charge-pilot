@@ -4,8 +4,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
-	"database/sql"
 	"errors"
+	"gorm.io/gorm"
 	"net/http"
 
 	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol"
@@ -26,10 +26,10 @@ type UserStopService struct {
 
 func (s UserStopService) Stop(ctx context.Context, orderNo string, userID uint64) (store.StopReservation, error) {
 	reservation, err := s.Store.ExistingUserStop(ctx, orderNo, userID)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return store.StopReservation{}, err
 	}
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		active, err := s.Orders.ActiveStop(ctx, orderNo, userID)
 		if err != nil {
 			return store.StopReservation{}, err

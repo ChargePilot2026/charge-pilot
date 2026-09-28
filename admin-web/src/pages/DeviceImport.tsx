@@ -26,7 +26,7 @@ export default function DeviceImport({ onComplete }: { onComplete: () => void })
     <Modal title="批量导入设备" open={open} width={900} footer={null} onCancel={() => { if (!busy) setOpen(false); }}>
       <Space direction="vertical" style={{ width: '100%' }}>
         <Typography.Paragraph>选择 UTF-8 CSV 文件，每批最多 100 台。站点和启用的厂商须已存在；重复导入相同配置不会新增设备。</Typography.Paragraph>
-        <a download="devices.csv" href={'data:text/csv;charset=utf-8,' + encodeURIComponent('device_id,vendor_id,station_id,port_count,model\nDEVICE_001,1,1,2,\n')}>下载 CSV 模板</a>
+        <a download="devices.csv" href={`${import.meta.env.BASE_URL}device-import-template.csv`}>下载 CSV 模板</a>
         <input aria-label="选择设备 CSV" type="file" accept=".csv" disabled={busy} onChange={async event => {
           const file = event.target.files?.[0]; event.target.value = ''; setDevices([]); setError(''); if (!file) return;
           try { if (file.size > 256 * 1024) throw new Error('文件不能超过 256 KB'); setDevices(parseCsv(await file.text())); setId(crypto.randomUUID()); }

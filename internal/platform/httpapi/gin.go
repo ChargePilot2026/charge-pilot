@@ -27,8 +27,13 @@ type FieldErr struct {
 
 func NewRouter() *gin.Engine {
 	router := gin.New()
+	_ = router.SetTrustedProxies(nil)
 	router.Use(gin.Recovery(), Trace())
 	router.HandleMethodNotAllowed = true
+	router.NoRoute(func(c *gin.Context) {
+		Write(c, http.StatusNotFound, 1004, "接口尚未提供，请确认服务版本", nil)
+	})
+	router.NoMethod(func(c *gin.Context) { Write(c, http.StatusMethodNotAllowed, 1005, "请求方法不支持", nil) })
 	return router
 }
 

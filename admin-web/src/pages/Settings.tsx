@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Typography, Card, Form, Input, Button, Space, Tabs, message } from 'antd';
+import PricingRules from './PricingRules';
 import { SaveOutlined } from '@ant-design/icons';
 import { apiGet, apiPut } from '../api/client';
 
@@ -7,7 +8,6 @@ const { Title } = Typography;
 
 export default function SettingsPage() {
   const [whitelabel, setWhitelabel] = useState<Record<string, unknown>>({});
-  const [pricingRules, setPricingRules] = useState<any[]>([]);
   const [form] = Form.useForm();
 
   useEffect(() => {
@@ -16,7 +16,6 @@ export default function SettingsPage() {
       setWhitelabel(config);
       form.setFieldsValue(config);
     }).catch((error: any) => message.error(error?.message || '白标配置读取失败'));
-    apiGet<{ items: any[] }>('/api/v1/admin/settings/charge-rules').then(d => setPricingRules(d.items || [])).catch(() => {});
   }, [form]);
 
   const onSave = async (vals: any) => {
@@ -63,19 +62,7 @@ export default function SettingsPage() {
           {
             key: 'pricing',
             label: '计费规则',
-            children: (
-              <Card>
-                {pricingRules.map(r => (
-                  <Card.Grid key={r.id} style={{ width: '33.33%' }}>
-                    <Title level={5}>{r.name}</Title>
-                    <p>模式: {r.mode}</p>
-                    <p>服务费: {r.service_fee_cents_per_kwh} 分/kWh</p>
-                    <p>起步价: {r.min_charge_cents} 分</p>
-                    <p>版本: v{r.version}</p>
-                  </Card.Grid>
-                ))}
-              </Card>
-            ),
+            children: <PricingRules />,
           },
         ]}
       />

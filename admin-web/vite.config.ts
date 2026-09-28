@@ -31,11 +31,11 @@ export default defineConfig({
       : undefined,
     proxy: {
       '/api/v1/admin': {
-        target: process.env.DEV_API_PROXY_TARGET || process.env.VITE_API_BASE || 'http://localhost:8082',
+        target: process.env.DEV_API_PROXY_TARGET || process.env.VITE_API_BASE || 'http://localhost:8080',
         changeOrigin: true,
       },
       '/api/v1/internal': {
-        target: process.env.DEV_API_PROXY_TARGET || process.env.VITE_API_BASE || 'http://localhost:8082',
+        target: process.env.DEV_API_PROXY_TARGET || process.env.VITE_API_BASE || 'http://localhost:8080',
         changeOrigin: true,
       },
     },

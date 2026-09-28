@@ -47,6 +47,7 @@ type Event struct {
 	// event is durably stored. RawPayload remains available for audit/replay.
 	OrderNumber    string
 	ChargedSeconds uint32
+	StartedAt      time.Time
 	EndedAt        time.Time
 	VoltageV       uint16
 	TemperatureC   int16

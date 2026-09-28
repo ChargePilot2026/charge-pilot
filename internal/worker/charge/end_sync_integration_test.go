@@ -42,8 +42,19 @@ func TestEndKeepsPortOwnedUntilCentralAcceptsMeter(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.ExecContext(ctx, "DELETE FROM charge_command WHERE command_id = ?", commandID)
+	defer db.ExecContext(ctx, "DELETE FROM charge_end_delivery WHERE charge_order_id=?", chargeOrderID)
+	start := time.Now().UTC().Truncate(time.Second).Add(-10 * time.Minute)
+	if _, err := db.ExecContext(ctx, "UPDATE charge_command SET ack_at=? WHERE command_id=?", start, commandID); err != nil {
+		t.Fatal(err)
+	}
+	heartbeat := protocol.Event{Protocol: "dc589", DeviceID: deviceID, Type: protocol.Heartbeat, ReceivedAt: start.Add(5 * time.Minute), ChargingPorts: []protocol.PortTelemetry{{Port: 1, ChargedSeconds: 300, ChargedMWh: 50000}}}
+	heartbeatJSON, _ := json.Marshal(heartbeat)
+	if _, err := db.ExecContext(ctx, "INSERT INTO device_event(event_key,protocol_name,device_id,event_type,event_json,received_at) VALUES(?,'dc589',?,'heartbeat',?,?)", uuid.NewString(), deviceID, heartbeatJSON, heartbeat.ReceivedAt); err != nil {
+		t.Fatal(err)
+	}
+	defer db.ExecContext(ctx, "DELETE FROM device_event WHERE device_id=?", deviceID)
 	eventKey := uuid.NewString()
-	event := protocol.Event{Protocol: "dc589", DeviceID: deviceID, Port: 1, Type: protocol.ChargeEnd, OrderNumber: fmt.Sprintf("%016d", chargeOrderID), ConsumerType: 2, EnergyMilliKWh: 125, ChargedSeconds: 600, EndedAt: time.Now().UTC(), ReceivedAt: time.Now().UTC()}
+	event := protocol.Event{Protocol: "dc589", DeviceID: deviceID, Port: 1, Type: protocol.ChargeEnd, OrderNumber: fmt.Sprintf("%016d", chargeOrderID), ConsumerType: 2, EnergyMilliKWh: 125, ChargedSeconds: 600, StartedAt: start, EndedAt: start.Add(10 * time.Minute), ReceivedAt: start.Add(10 * time.Minute)}
 	data, _ := json.Marshal(event)
 	if _, err := db.ExecContext(ctx, "INSERT INTO device_event (event_key,protocol_name,device_id,event_type,port_no,event_json,received_at) VALUES (?,'dc589',?,'charge_end',1,?,?)", eventKey, deviceID, data, event.ReceivedAt); err != nil {
 		t.Fatal(err)
@@ -57,7 +68,7 @@ func TestEndKeepsPortOwnedUntilCentralAcceptsMeter(t *testing.T) {
 			return
 		}
 		var result endResult
-		if err := json.NewDecoder(r.Body).Decode(&result); err != nil || result.Meter.ChargedWh != 125 || result.PortID != uint64(portID) {
+		if err := json.NewDecoder(r.Body).Decode(&result); err != nil || result.Meter.ChargedWh != 125 || result.PortID != uint64(portID) || len(result.Meter.Segments) != 2 || result.Meter.Segments[0].EnergyWh != 50 || result.Meter.Segments[1].EnergyWh != 75 {
 			t.Errorf("bad meter: %+v %v", result, err)
 			w.WriteHeader(400)
 			return
@@ -76,6 +87,16 @@ func TestEndKeepsPortOwnedUntilCentralAcceptsMeter(t *testing.T) {
 	var state string
 	if err := db.QueryRowContext(ctx, "SELECT status FROM device_port WHERE id = ?", portID).Scan(&state); err != nil || state != "charging" {
 		t.Fatalf("port released early: %s %v", state, err)
+	}
+	// Stored request also survives removal of the original measurements.
+	if _, err := db.ExecContext(ctx, "DELETE FROM device_event WHERE device_id=? AND event_type='heartbeat'", deviceID); err != nil {
+		t.Fatal(err)
+	}
+	// A late report with an earlier receipt timestamp must not change retry data.
+	heartbeat.ChargingPorts[0].ChargedMWh = 60000
+	heartbeatJSON, _ = json.Marshal(heartbeat)
+	if _, err := db.ExecContext(ctx, "INSERT INTO device_event(event_key,protocol_name,device_id,event_type,event_json,received_at) VALUES(?,'dc589',?,'heartbeat',?,?)", uuid.NewString(), deviceID, heartbeatJSON, heartbeat.ReceivedAt); err != nil {
+		t.Fatal(err)
 	}
 	if count, err := syncer.SyncBatch(ctx); count != 1 || err != nil {
 		t.Fatalf("retry end: %d %v", count, err)

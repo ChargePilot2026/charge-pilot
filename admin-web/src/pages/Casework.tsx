@@ -130,7 +130,7 @@ export default function CaseworkPage() {
   const openDispatch = async (item: Fault) => {
     setAssigning(item);
     dispatchForm.resetFields();
-    dispatchForm.setFieldsValue({ assigned_to: item.assigned_to || undefined });
+    dispatchForm.setFieldsValue({ assigned_to: item.assigned_to ? Number(item.assigned_to) : undefined });
     try {
       const result = await apiGet<{ items: AdminUser[] }>('/api/v1/admin/users');
       setAdmins((result.items || []).filter((user) => user.status === 'active'));

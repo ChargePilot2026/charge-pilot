@@ -71,6 +71,7 @@ services:
       DATABASE_URL: mysql://chargepilot:${DB_PASSWORD}@chargepilot-mysql:3306/gateway_db
       SERVICE_TOKEN: ${SERVICE_TOKEN:?required}
       DC589_ADDR: :9100
+      CENTRAL_INTERNAL_URL: http://chargepilot-central:8080
     ports: ["9100:9100"]
     expose: ["8083"]
     depends_on:
@@ -91,6 +92,9 @@ services:
       SERVICE_TOKEN: ${SERVICE_TOKEN:?required}
       WECHAT_APPID: ${WECHAT_APPID:?required}
       WECHAT_SECRET: ${WECHAT_SECRET:?required}
+      GATEWAY_INTERNAL_URL: http://chargepilot-gateway:8083
+      ADMIN_BOOTSTRAP_USER: ${ADMIN_BOOTSTRAP_USER:-}
+      ADMIN_BOOTSTRAP_PASSWORD: ${ADMIN_BOOTSTRAP_PASSWORD:-}
     expose: ["8080"]
     depends_on:
       chargepilot-migrate: { condition: service_completed_successfully }
@@ -109,6 +113,8 @@ services:
       DATABASE_URL_ADMIN: mysql://chargepilot:${DB_PASSWORD}@chargepilot-mysql:3306/admin_db
       REDIS_STREAM_URL: redis://:${REDIS_STREAM_PASSWORD}@chargepilot-redis-stream:6379/0
       SERVICE_TOKEN: ${SERVICE_TOKEN:?required}
+      CENTRAL_INTERNAL_URL: http://chargepilot-central:8080
+      GATEWAY_INTERNAL_URL: http://chargepilot-gateway:8083
     expose: ["8085"]
     depends_on:
       chargepilot-migrate: { condition: service_completed_successfully }

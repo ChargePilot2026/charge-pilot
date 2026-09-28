@@ -40,3 +40,33 @@ func TestEstimateRejectsIncompleteOrOverlappingTariff(t *testing.T) {
 		t.Fatalf("sub-Wh input: %v", err)
 	}
 }
+
+func TestValidatePublishedRule(t *testing.T) {
+	base := Rule{Mode: "kwh", Periods: []Period{{Start: "00:00", End: "24:00", ElectricPriceCents: 50}}, ServiceCentsPerKWh: 20}
+	if err := ValidateRule(base); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name    string
+		periods []Period
+	}{
+		{"gap", []Period{{Start: "01:00", End: "24:00", ElectricPriceCents: 50}}},
+		{"overlap", []Period{{Start: "00:00", End: "13:00"}, {Start: "12:00", End: "24:00"}}},
+		{"negative", []Period{{Start: "00:00", End: "24:00", ElectricPriceCents: -1}}},
+		{"oversized", []Period{{Start: "00:00", End: "24:00", ElectricPriceCents: 1000001}}},
+		{"signed-clock", []Period{{Start: "+0:00", End: "24:00", ElectricPriceCents: 50}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rule := base
+			rule.Periods = tc.periods
+			if ValidateRule(rule) == nil {
+				t.Fatal("invalid tariff accepted")
+			}
+		})
+	}
+	negative := int64(-1)
+	base.Periods[0].ServicePriceCents = &negative
+	if ValidateRule(base) == nil {
+		t.Fatal("negative period service price accepted")
+	}
+}

@@ -31,9 +31,10 @@ export default function CouponsPage() {
   const onCreate = async () => {
     try {
       const v = await form.validateFields();
-      if (v.discount_type === 'amount') v.discount_percent = undefined;
-      else if (v.discount_type === 'percentage') v.discount_value_cents = undefined;
+      if (v.discount_type === 'amount') { v.discount_percent = undefined; v.free_minutes = undefined; }
+      else if (v.discount_type === 'percentage') { v.discount_value_cents = undefined; v.free_minutes = undefined; }
       else { v.discount_percent = undefined; v.discount_value_cents = undefined; }
+      if (!v.start_at) delete v.start_at; if (!v.end_at) delete v.end_at;
       await apiPost('/api/v1/admin/coupons', v);
       message.success('已创建'); setOpen(false); form.resetFields(); load();
     } catch (e: any) { if (e?.errorFields) return; message.error(e?.message || '失败'); }
@@ -91,7 +92,7 @@ export default function CouponsPage() {
         ]}
       />
       <Modal title="新建优惠券" open={open} onCancel={() => setOpen(false)} onOk={onCreate}>
-        <Form form={form} layout="vertical">
+        <Form name="coupon_create" form={form} layout="vertical">
           <Form.Item name="code" label="编码" rules={[{ required: true }]}><Input /></Form.Item>
           <Form.Item name="name" label="名称" rules={[{ required: true }]}><Input /></Form.Item>
           <Form.Item name="discount_type" label="类型" rules={[{ required: true }]}>
@@ -103,6 +104,7 @@ export default function CouponsPage() {
           </Form.Item>
           <Form.Item name="discount_value_cents" label="满减值(分)"><InputNumber style={{ width: '100%' }} /></Form.Item>
           <Form.Item name="discount_percent" label="折扣百分比"><InputNumber style={{ width: '100%' }} step="0.1" /></Form.Item>
+          <Form.Item name="free_minutes" label="免费时长（分钟，仅免费时长类型）"><InputNumber min={1} max={1440} precision={0} /></Form.Item>
           <Form.Item name="min_charge_cents" label="最低消费(分)" initialValue={0}><InputNumber style={{ width: '100%' }} /></Form.Item>
           <Form.Item name="valid_hours" label="有效小时" initialValue={24}><InputNumber style={{ width: '100%' }} /></Form.Item>
           <Form.Item name="total_quota" label="总发放量（0 表示不限）" initialValue={0}><InputNumber min={0} style={{ width: '100%' }} /></Form.Item>
@@ -112,13 +114,13 @@ export default function CouponsPage() {
         </Form>
       </Modal>
       <Modal title={`发放优惠券${grantCoupon ? `：${grantCoupon.name}` : ''}`} open={!!grantCoupon} onCancel={() => { setGrantCoupon(null); grantForm.resetFields(); }} onOk={onGrant}>
-        <Form form={grantForm} layout="vertical">
+        <Form name="coupon_grant" form={grantForm} layout="vertical">
           <Form.Item name="user_id" label="用户编号" rules={[{ required: true }, { type: 'number', min: 1 }]}><InputNumber precision={0} style={{ width: '100%' }} /></Form.Item>
           <Typography.Text type="secondary">服务端会检查用户状态、模板有效期、总发放量和每人额度。网络结果不确定时保持此弹窗并重试，避免重复发券。</Typography.Text>
         </Form>
       </Modal>
       <Modal title={`编辑优惠券${editCoupon ? `：${editCoupon.name}` : ''}`} open={!!editCoupon} onCancel={() => setEditCoupon(null)} onOk={onUpdate}>
-        <Form form={editForm} layout="vertical">
+        <Form name="coupon_edit" form={editForm} layout="vertical">
           <Form.Item name="name" label="名称" rules={[{ required: true }]}><Input /></Form.Item>
           <Form.Item name="status" label="状态" rules={[{ required: true }]}><Select options={[{ value: 'active', label: '启用' }, { value: 'disabled', label: '停用' }]} /></Form.Item>
         </Form>

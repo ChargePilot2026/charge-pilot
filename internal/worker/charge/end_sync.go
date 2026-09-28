@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ChargePilot2026/charge-pilot/internal/central/pricing"
 	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol"
 	"gorm.io/gorm"
 )
@@ -34,10 +35,11 @@ type endResult struct {
 	PortNo         uint8  `json:"port_no"`
 	PortID         uint64 `json:"port_id"`
 	Meter          struct {
-		ChargedWh      uint32    `json:"charged_wh"`
-		ChargedSeconds uint32    `json:"charged_seconds"`
-		EndedAt        time.Time `json:"ended_at"`
-		StopReason     uint8     `json:"stop_reason"`
+		ChargedWh      uint32                 `json:"charged_wh"`
+		ChargedSeconds uint32                 `json:"charged_seconds"`
+		EndedAt        time.Time              `json:"ended_at"`
+		StopReason     uint8                  `json:"stop_reason"`
+		Segments       []pricing.MeterSegment `json:"segments,omitempty"`
 	} `json:"meter"`
 }
 
@@ -95,6 +97,13 @@ func (s EndSynchronizer) SyncBatch(ctx context.Context) (int, error) {
 		result := endResult{OrderNo: command.OrderNo, ChargeOrderID: orderID, StartCommandID: command.CommandID, StopCommandID: command.StopCommandID, DeviceID: event.DeviceID, PortNo: event.Port, PortID: uint64(command.PortID.Int64)}
 		result.Meter.ChargedWh, result.Meter.ChargedSeconds = event.EnergyMilliKWh, event.ChargedSeconds
 		result.Meter.EndedAt, result.Meter.StopReason = event.EndedAt, event.StopReason
+		result, err = s.freezeEndResult(ctx, command, item.ID, event, result)
+		if err != nil {
+			if first == nil {
+				first = err
+			}
+			continue
+		}
 		if err := postEndResult(ctx, client, *base, s.ServiceToken, result); err != nil {
 			if first == nil {
 				first = err

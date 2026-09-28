@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ChargePilot2026/charge-pilot/internal/central/admin"
+	"github.com/ChargePilot2026/charge-pilot/internal/central/billing"
 	"github.com/ChargePilot2026/charge-pilot/internal/central/charge"
 	"github.com/ChargePilot2026/charge-pilot/internal/central/identity"
 	"github.com/ChargePilot2026/charge-pilot/internal/central/payment"
@@ -56,6 +58,15 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	billingDB, err := dbconn.Open(ctx, cfg.BillingDatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer billingDB.Close()
+	billingORM, err := dbconn.WrapGORM(billingDB)
+	if err != nil {
+		return err
+	}
 	redisOptions, err := redis.ParseURL(cfg.RedisCacheURL)
 	if err != nil {
 		return err
@@ -80,12 +91,21 @@ func run(ctx context.Context) error {
 	router.GET("/health/ready", func(c *gin.Context) {
 		check, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
 		defer cancel()
-		if db.PingContext(check) != nil || adminDB.PingContext(check) != nil || cache.Ping(check).Err() != nil {
+		if db.PingContext(check) != nil || adminDB.PingContext(check) != nil || billingDB.PingContext(check) != nil || cache.Ping(check).Err() != nil {
 			httpapi.Write(c, http.StatusServiceUnavailable, 5003, "storage unavailable", nil)
 			return
 		}
 		httpapi.OK(c, gin.H{"status": "identity_storage_ready"})
 	})
+	adminStore := admin.Store{DB: adminORM}
+	if err := adminStore.Bootstrap(ctx, cfg.AdminBootstrapUser, cfg.AdminBootstrapPassword); err != nil {
+		return err
+	}
+	adminAPI := admin.API{Store: adminStore, Sessions: admin.Sessions{Redis: cache}, JWT: jwt}
+	adminAPI.Register(router)
+	billing.Service{Store: billing.Store{DB: billingORM}, Orders: charge.BillingOrders{DB: userORM}, ServiceToken: cfg.ServiceToken}.Register(router)
+	admin.ResourceAPI{Store: admin.ResourceStore{AdminDB: adminORM, UserDB: userORM, BillingDB: billingORM}, Auth: adminAPI, GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken}.Register(router)
+	admin.Dashboard{UserDB: userORM, AdminDB: adminORM}.Register(router, adminAPI)
 	identity.API{WeChat: identity.MiniProgram{SDK: wechat}, Users: identity.UserStore{DB: userORM}, Sessions: identity.Sessions{Redis: cache}, JWT: jwt}.Register(router)
 	charge.StartAuthorization{DB: userORM, ServiceToken: cfg.ServiceToken}.Register(router)
 	charge.StartResultAPI{Store: charge.StartResultStore{DB: userORM}, ServiceToken: cfg.ServiceToken}.Register(router)
@@ -94,9 +114,11 @@ func run(ctx context.Context) error {
 	charge.UserStopAPI{JWT: jwt, Sessions: identity.Sessions{Redis: cache}, Users: identity.UserStore{DB: userORM}, GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken}.Register(router)
 	charge.ScanAPI{Auth: identity.SessionAuthenticator{JWT: jwt, Sessions: identity.Sessions{Redis: cache}, Users: identity.UserStore{DB: userORM}}, GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken}.Register(router)
 	var prepay charge.PrepayProvider
+	var refundProvider payment.RefundProvider
 	switch cfg.PaymentMode {
 	case "simulation":
 		prepay = payment.Simulator{}
+		refundProvider = payment.Simulator{}
 		charge.SimulationCallbackAPI{DB: userORM, Store: charge.PaymentCallbackStore{DB: userORM, ExpectedProvider: "simulation", ExpectedMerchantID: "local-simulation", ExpectedAppID: cfg.WeChatAppID}, ServiceToken: cfg.ServiceToken}.Register(router)
 	case "wechat_direct":
 		direct, err := payment.NewWechatDirect(ctx, payment.Config{AppID: cfg.WeChatAppID, MerchantID: cfg.WechatMchID,
@@ -106,8 +128,10 @@ func run(ctx context.Context) error {
 			return err
 		}
 		prepay = direct
+		refundProvider = direct
 		charge.WechatCallbackAPI{Verifier: direct, Store: charge.PaymentCallbackStore{DB: userORM, ExpectedProvider: "wechat_direct", ExpectedMerchantID: cfg.WechatMchID, ExpectedAppID: cfg.WeChatAppID}}.Register(router)
 	}
+	charge.RefundAPI{Executor: charge.RefundExecutor{DB: userORM, Provider: refundProvider, ProviderName: cfg.PaymentMode}, ServiceToken: cfg.ServiceToken}.Register(router)
 	charge.PaymentStartAPI{Auth: identity.SessionAuthenticator{JWT: jwt, Sessions: identity.Sessions{Redis: cache}, Users: identity.UserStore{DB: userORM}},
 		Scan: charge.ScanAPI{GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken}, Pricing: pricing.Store{DB: adminORM},
 		Intents: charge.PaymentIntentStore{DB: userORM}, Provider: prepay}.Register(router)

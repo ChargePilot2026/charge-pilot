@@ -3,6 +3,8 @@ package charge
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"github.com/ChargePilot2026/charge-pilot/internal/central/payment"
 	"os"
 	"testing"
 	"time"
@@ -33,13 +35,13 @@ func TestRejectedStartQueuesRefundAtomicallyAndIdempotently(t *testing.T) {
 		t.Fatal(err)
 	}
 	month := time.Date(time.Now().UTC().Year(), time.Now().UTC().Month(), 1, 0, 0, 0, 0, time.UTC)
-	payment, err := db.ExecContext(ctx, `INSERT INTO payment_order
+	paymentInsert, err := db.ExecContext(ctx, `INSERT INTO payment_order
 		(order_no,biz_type,biz_id,user_id,pay_method,total_cents,paid_cents,wechat_transaction_id,status,paid_at,created_month)
 		VALUES (?,'charge',0,?,'wechat',250,250,?,'paid',UTC_TIMESTAMP(3),?)`, "PAY-"+unique, userID, "wx-"+unique, month)
 	if err != nil {
 		t.Fatal(err)
 	}
-	paymentID, err := payment.LastInsertId()
+	paymentID, err := paymentInsert.LastInsertId()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,6 +65,9 @@ func TestRejectedStartQueuesRefundAtomicallyAndIdempotently(t *testing.T) {
 		_, _ = db.ExecContext(ctx, "DELETE FROM event_outbox WHERE event_id = ?", commandID)
 		_, _ = db.ExecContext(ctx, "DELETE FROM charge_event_log WHERE charge_order_id = ?", orderID)
 		_, _ = db.ExecContext(ctx, "DELETE FROM charge_start_receipt WHERE command_id = ?", commandID)
+		_, _ = db.ExecContext(ctx, "DELETE FROM refund_success_receipt WHERE refund_record_id IN (SELECT id FROM refund_record WHERE payment_order_id = ?)", paymentID)
+		_, _ = db.ExecContext(ctx, "DELETE FROM charge_prepay WHERE payment_order_id = ?", paymentID)
+		_, _ = db.ExecContext(ctx, "DELETE FROM event_outbox WHERE stream = 'refund_succeeded_stream' AND JSON_EXTRACT(envelope_json, '$.payment_order_id') = ?", paymentID)
 		_, _ = db.ExecContext(ctx, "DELETE FROM refund_record WHERE payment_order_id = ?", paymentID)
 		_, _ = db.ExecContext(ctx, "DELETE FROM charge_order WHERE id = ? AND created_month = ?", orderID, month)
 		_, _ = db.ExecContext(ctx, "DELETE FROM payment_order WHERE id = ? AND created_month = ?", paymentID, month)
@@ -120,4 +125,69 @@ func TestRejectedStartQueuesRefundAtomicallyAndIdempotently(t *testing.T) {
 	if envelope.RefundNo == "" || envelope.PaymentID != uint64(paymentID) || envelope.ChargeID != uint64(orderID) || envelope.AmountCents != refundCents {
 		t.Fatalf("refund outbox envelope=%s", envelopeJSON)
 	}
+	// Drive the automatically queued refund through unknown outcome recovery.
+	orm := testGORMDB(t, db)
+	if err := orm.Create(&ChargePrepayRecord{PaymentOrderID: uint64(paymentID), ParamsJSON: []byte(`{"provider":"simulation"}`)}).Error; err != nil {
+		t.Fatal(err)
+	}
+	var refund RefundRecord
+	if err := orm.Where("payment_order_id = ?", paymentID).Take(&refund).Error; err != nil {
+		t.Fatal(err)
+	}
+	provider := &lostRefundResponse{}
+	executor := RefundExecutor{DB: orm, Provider: provider, ProviderName: "simulation"}
+	if err := executor.Execute(ctx, refund.ID); err == nil {
+		t.Fatal("lost response should remain unknown")
+	}
+	var paid PaymentOrderRecord
+	if err := orm.Where("id = ?", paymentID).Take(&paid).Error; err != nil || paid.RefundedCents != 0 {
+		t.Fatal("unknown outcome credited", paid, err)
+	}
+	if err := orm.Model(&RefundRecord{}).Where("id = ?", refund.ID).Update("next_attempt_at", time.Now().Add(-time.Minute)).Error; err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := executor.Execute(ctx, refund.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if provider.creates != 1 {
+		t.Fatal("refund submitted more than once", provider.creates)
+	}
+	if err := orm.Where("id = ?", paymentID).Take(&paid).Error; err != nil || paid.RefundedCents != 250 || paid.Status != "refunded" {
+		t.Fatal("refund accounting", paid, err)
+	}
+	var refunded ChargeOrderRecord
+	if err := orm.Where("id = ?", orderID).Take(&refunded).Error; err != nil || refunded.Status != "refunded" {
+		t.Fatal("order refund", refunded, err)
+	}
+	var receiptCount int64
+	if err := orm.Table("refund_success_receipt").Where("refund_record_id = ?", refund.ID).Count(&receiptCount).Error; err != nil || receiptCount != 1 {
+		t.Fatal("refund receipt", receiptCount, err)
+	}
+	bad := provider.result
+	bad.RefundCents++
+	if err := executor.apply(ctx, refund, payment.RefundRequest{RefundNo: refund.RefundNo, MerchantOrderNo: paid.OrderNo, TransactionID: paid.WechatTransactionID.String, TotalCents: paid.TotalCents, RefundCents: refund.RefundCents}, bad); !errors.Is(err, ErrRefundConflict) {
+		t.Fatal("mismatched result accepted", err)
+	}
+
+}
+
+// A provider can accept the refund and lose the HTTP response. Recovery must
+// query that same refund, without issuing a second money movement.
+type lostRefundResponse struct {
+	result  payment.RefundResult
+	creates int
+}
+
+func (p *lostRefundResponse) QueryRefund(context.Context, payment.RefundRequest) (payment.RefundResult, error) {
+	if p.creates == 0 {
+		return payment.RefundResult{}, payment.ErrRefundNotFound
+	}
+	return p.result, nil
+}
+func (p *lostRefundResponse) CreateRefund(ctx context.Context, r payment.RefundRequest) (payment.RefundResult, error) {
+	p.creates++
+	p.result, _ = (payment.Simulator{}).CreateRefund(ctx, r)
+	return payment.RefundResult{}, errors.New("connection lost after accept")
 }

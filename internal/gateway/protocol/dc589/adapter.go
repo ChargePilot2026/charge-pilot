@@ -129,7 +129,7 @@ func (a TCPAdapter) ServeConn(ctx context.Context, conn net.Conn, sink protocol.
 			event.OrderNumber = end.OrderNumber
 			event.EnergyMilliKWh = end.ChargedMWh / 1000
 			event.ChargedSeconds = end.ChargedSeconds
-			event.EndedAt = end.EndedAt
+			event.StartedAt, event.EndedAt = end.StartedAt, end.EndedAt
 			event.PowerDeciWatts = end.PowerDeciWatts
 			event.StopReason = end.StopReason
 			event.ConsumerType = end.ConsumerType

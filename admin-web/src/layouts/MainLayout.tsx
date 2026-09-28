@@ -6,7 +6,8 @@ import {
   SettingOutlined, ApiOutlined, CloudUploadOutlined, NotificationOutlined,
   UserOutlined, LogoutOutlined, MessageOutlined, ToolOutlined,
 } from '@ant-design/icons';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { apiPost, adminSession } from '../api/client';
 
 const { Header, Sider, Content } = Layout;
 const { Text } = Typography;
@@ -28,15 +29,24 @@ const items = [
   { key: '/settings', icon: <SettingOutlined />, label: '设置' },
 ];
 
+const menuPermission: Record<string,string> = {
+ '/':'dashboard.read','/orders':'order.read','/devices':'device.read','/stations':'station.read',
+ '/users':'admin_user.read','/alerts':'alert.read','/coupons':'coupon.read','/billing':'finance.read',
+ '/webhooks':'webhook.read','/ota':'ota.read','/announcements':'announcement.read',
+ '/customer-service':'customer_service.read','/casework':'feedback.read','/settings':'whitelabel.read',
+};
+
 export default function MainLayout() {
   const [collapsed, setCollapsed] = useState(false);
+  const [, sessionChanged] = useState(0);
+  useEffect(() => { const update = () => sessionChanged(v => v + 1); window.addEventListener('cp-session', update); window.addEventListener('storage', update); return () => { window.removeEventListener('cp-session', update); window.removeEventListener('storage', update); }; }, []);
   const navigate = useNavigate();
   const { pathname } = useLocation();
 
-  const onLogout = () => {
-    localStorage.removeItem('cp_token');
-    localStorage.removeItem('cp_admin');
-    navigate('/login', { replace: true });
+  const onLogout = async () => {
+    const epoch = adminSession.epoch();
+    await apiPost('/api/v1/admin/auth/logout').catch(() => undefined);
+    if (await adminSession.clear(epoch)) navigate('/login', { replace: true });
   };
 
   const adminInfo = (() => {
@@ -57,7 +67,7 @@ export default function MainLayout() {
           theme="dark"
           mode="inline"
           selectedKeys={[items.find(item => item.key !== '/' && (pathname === item.key || pathname.startsWith(item.key + '/')))?.key || '/']}
-          items={items}
+          items={items.filter(item => adminInfo?.permissions?.includes(menuPermission[item.key]))}
           onClick={({ key }) => navigate(key)}
         />
       </Sider>

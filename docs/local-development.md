@@ -29,3 +29,33 @@ go test -count=1 ./internal/central/identity
 ```
 
 微信小程序登录需要真实 `WECHAT_APPID` 和 `WECHAT_SECRET` 才能与微信联调；开发占位值只允许用假交换器执行本地 HTTP 集成测试。支付、OTA 实机及完整运营页面仍处于待实现或待联调状态，以 [Go 重建清单](migration/go-rebuild.md) 为准。
+
+## 后台登录（Go）
+
+`central` 提供 `/api/v1/admin/auth/login`、`refresh`、`logout`、`me`、`change-password`。
+开发 Compose 首次启动使用 `admin / ChangeMe!Admin2026`，可用 `.env` 中的
+`ADMIN_BOOTSTRAP_USER` / `ADMIN_BOOTSTRAP_PASSWORD` 覆盖。初始化只在后台账号表为空时执行，
+重启服务不会重置已有密码。生产 Compose 没有默认密码，切换门禁仍关闭。
+
+已有开发库升级（保留数据）：
+
+```bash
+docker compose -f compose.dev.yaml run --rm migrate
+docker compose -f compose.dev.yaml up -d --no-deps --force-recreate central gateway worker
+```
+
+登录页地址为 `http://localhost:5173/admin/login`。Vite 默认将后台 API 代理到
+`localhost:8080`；容器内通过 `DEV_API_PROXY_TARGET=http://central:8080` 转发。
+若登录接口返回 404，请检查是否仍运行旧的 central 进程；Go 的 `go run` 不自动热重载。
+
+## 一次性集成验收
+
+```bash
+scripts/test-integration.sh
+# 含竞争检测
+scripts/test-integration.sh -race
+```
+
+脚本创建独立 MySQL 8.4 和 Redis 8 容器、随机本机端口、从空库迁移五个 schema，
+设置全部 `TEST_*_DATABASE_URL` 与 Redis 测试变量，顺序运行各包集成测试并清理测试容器。
+不复用或清空正在运行的开发库。单独 `go test ./...` 未配置这些变量时会跳过集成测试。

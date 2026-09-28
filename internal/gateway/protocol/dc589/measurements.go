@@ -57,7 +57,7 @@ func ParseHeartbeat(frame Frame) (HeartbeatData, error) {
 	seen := make(map[uint8]bool)
 	for len(remaining) > 0 {
 		port := remaining[0]
-		if port == 0 || int(port) > portCount || seen[port] {
+		if port == 0 || int(port) > portCount || seen[port] || remaining[3] > 59 || remaining[6] > 59 {
 			return HeartbeatData{}, ErrPayload
 		}
 		seen[port] = true

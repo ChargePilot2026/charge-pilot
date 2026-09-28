@@ -98,6 +98,8 @@ services:
       DATABASE_URL_USER: mysql://chargepilot:chargepilot_dev@mysql:3306/user_db
       DATABASE_URL_ADMIN: mysql://chargepilot:chargepilot_dev@mysql:3306/admin_db
       DATABASE_URL_BILLING: mysql://chargepilot:chargepilot_dev@mysql:3306/billing_db
+      ADMIN_BOOTSTRAP_USER: ${ADMIN_BOOTSTRAP_USER:-admin}
+      ADMIN_BOOTSTRAP_PASSWORD: ${ADMIN_BOOTSTRAP_PASSWORD:-ChangeMe!Admin2026}
     ports: ["127.0.0.1:8080:8080"]
 
   worker:

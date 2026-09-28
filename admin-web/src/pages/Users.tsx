@@ -8,6 +8,7 @@ const { Title } = Typography;
 interface AdminUser { id: number; username: string; display_name?: string; role_id?: number; status: string; }
 
 export default function UsersPage() {
+  const [roles, setRoles] = useState<{id: number; name: string}[]>([]);
   const [data, setData] = useState<AdminUser[]>([]);
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
@@ -19,7 +20,7 @@ export default function UsersPage() {
     catch { setData([]); } finally { setLoading(false); }
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); apiGet<{items: {id: number; name: string}[]}>('/api/v1/admin/roles').then(d => setRoles(d.items)).catch(e => message.error(e.message)); }, []);
 
   const onCreate = async () => {
     try {
@@ -55,14 +56,9 @@ export default function UsersPage() {
         <Form form={form} layout="vertical">
           <Form.Item name="username" label="用户名" rules={[{ required: true }]}><Input /></Form.Item>
           <Form.Item name="display_name" label="显示名"><Input /></Form.Item>
-          <Form.Item name="password" label="密码" rules={[{ required: true, min: 8 }]}><Input.Password /></Form.Item>
-          <Form.Item name="role_id" label="角色">
-            <Select options={[
-              { value: 1, label: '超级管理员' },
-              { value: 2, label: '运营' },
-              { value: 3, label: '客服' },
-              { value: 4, label: '财务' },
-            ]} />
+          <Form.Item name="password" label="密码" rules={[{ required: true, min: 12 }]}><Input.Password /></Form.Item>
+          <Form.Item name="role_id" label="角色" rules={[{ required: true }]}>
+            <Select options={roles.map(r => ({ value: r.id, label: r.name }))} />
           </Form.Item>
           <Form.Item name="phone" label="手机号"><Input /></Form.Item>
         </Form>

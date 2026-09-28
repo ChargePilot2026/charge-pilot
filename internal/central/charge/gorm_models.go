@@ -132,16 +132,19 @@ type EventOutboxRecord struct {
 func (EventOutboxRecord) TableName() string { return "event_outbox" }
 
 type RefundRecord struct {
-	ID             uint64         `gorm:"column:id;primaryKey"`
-	RefundNo       string         `gorm:"column:refund_no"`
-	PaymentOrderID uint64         `gorm:"column:payment_order_id"`
-	UserID         uint64         `gorm:"column:user_id"`
-	BizType        string         `gorm:"column:biz_type"`
-	BizID          uint64         `gorm:"column:biz_id"`
-	RefundCents    int64          `gorm:"column:refund_cents"`
-	Reason         sql.NullString `gorm:"column:reason"`
-	Status         string         `gorm:"column:status"`
-	CreatedMonth   time.Time      `gorm:"column:created_month;primaryKey"`
+	ExecutionPolicy string         `gorm:"column:execution_policy;default:manual_review"`
+	NextAttemptAt   time.Time      `gorm:"column:next_attempt_at;default:CURRENT_TIMESTAMP(3)"`
+	RetryCount      uint32         `gorm:"column:retry_count"`
+	ID              uint64         `gorm:"column:id;primaryKey"`
+	RefundNo        string         `gorm:"column:refund_no"`
+	PaymentOrderID  uint64         `gorm:"column:payment_order_id"`
+	UserID          uint64         `gorm:"column:user_id"`
+	BizType         string         `gorm:"column:biz_type"`
+	BizID           uint64         `gorm:"column:biz_id"`
+	RefundCents     int64          `gorm:"column:refund_cents"`
+	Reason          sql.NullString `gorm:"column:reason"`
+	Status          string         `gorm:"column:status"`
+	CreatedMonth    time.Time      `gorm:"column:created_month;primaryKey"`
 }
 
 func (RefundRecord) TableName() string { return "refund_record" }

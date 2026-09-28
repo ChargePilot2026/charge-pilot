@@ -197,7 +197,7 @@ func compilePeriods(periods []Period) ([1440]Period, error) {
 }
 
 func clockMinute(value string) (int, error) {
-	if len(value) != 5 || value[2] != ':' {
+	if len(value) != 5 || value[2] != ':' || value[0] < '0' || value[0] > '9' || value[1] < '0' || value[1] > '9' || value[3] < '0' || value[3] > '9' || value[4] < '0' || value[4] > '9' {
 		return 0, ErrInvalidPricing
 	}
 	hour, err := strconv.Atoi(value[:2])
@@ -209,4 +209,27 @@ func clockMinute(value string) (int, error) {
 		return 0, ErrInvalidPricing
 	}
 	return hour*60 + minute, nil
+}
+
+// ValidateRule is shared by publication and pricing so an accepted tariff can
+// actually be used for payment estimates. Limits keep all monetary products safe.
+func ValidateRule(rule Rule) error {
+	if rule.Mode != "kwh" && rule.Mode != "minute" && rule.Mode != "mixed" {
+		return ErrInvalidPricing
+	}
+	for _, amount := range []int64{rule.ServiceCentsPerKWh, rule.ServiceCentsPerMinute, rule.MinimumCents} {
+		if amount < 0 || amount > 1000000 {
+			return ErrInvalidPricing
+		}
+	}
+	if len(rule.Periods) == 0 || len(rule.Periods) > 48 {
+		return ErrInvalidPricing
+	}
+	for _, period := range rule.Periods {
+		if period.ElectricPriceCents > 1000000 || period.ServicePriceCents != nil && *period.ServicePriceCents > 1000000 {
+			return ErrInvalidPricing
+		}
+	}
+	_, err := compilePeriods(rule.Periods)
+	return err
 }

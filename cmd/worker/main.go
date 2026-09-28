@@ -14,8 +14,10 @@ import (
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/config"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/dbconn"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/httpapi"
+	"github.com/ChargePilot2026/charge-pilot/internal/worker/billing"
 	"github.com/ChargePilot2026/charge-pilot/internal/worker/charge"
 	"github.com/ChargePilot2026/charge-pilot/internal/worker/outbox"
+	"github.com/ChargePilot2026/charge-pilot/internal/worker/refund"
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
@@ -94,6 +96,27 @@ func run(ctx context.Context) error {
 	startResults := charge.Synchronizer{GatewayDB: orms["gateway"], CentralURL: cfg.CentralInternalURL, GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken}
 	endResults := charge.EndSynchronizer{GatewayDB: orms["gateway"], CentralURL: cfg.CentralInternalURL, ServiceToken: cfg.ServiceToken}
 	paidStarts := charge.PaidStarter{UserDB: orms["user"], GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken}
+	billingJobs := billing.Dispatcher{CentralURL: cfg.CentralInternalURL, ServiceToken: cfg.ServiceToken}
+	refunds := refund.Dispatcher{CentralURL: cfg.CentralInternalURL, ServiceToken: cfg.ServiceToken}
+	refundCtx, stopRefunds := context.WithCancel(ctx)
+	defer stopRefunds()
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-refundCtx.Done():
+				return
+			case <-ticker.C:
+				if err := billingJobs.Run(refundCtx); err != nil && !errors.Is(err, context.Canceled) {
+					log.Printf("billing dispatch: %v", err)
+				}
+				if err := refunds.Run(refundCtx); err != nil && !errors.Is(err, context.Canceled) {
+					log.Printf("refund dispatch: %v", err)
+				}
+			}
+		}
+	}()
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for {

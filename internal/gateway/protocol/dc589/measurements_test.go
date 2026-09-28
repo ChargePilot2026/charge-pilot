@@ -28,6 +28,13 @@ func TestHeartbeatWithChargingPortAndShortForm(t *testing.T) {
 	if err != nil || !got.HasPortStatus || got.VoltageV != 220 || got.TemperatureC != 50 || len(got.ChargingPorts) != 1 || got.ChargingPorts[0].Port != 15 || got.ChargingPorts[0].ChargedMWh != 69000 || got.ChargingPorts[0].PowerDeciWatts != 1295 {
 		t.Fatalf("parsed heartbeat: %+v, %v", got, err)
 	}
+	for _, offset := range []int{3, 6} {
+		invalid := append([]byte(nil), data...)
+		invalid[len(invalid)-13+offset] = 60
+		if _, err := ParseHeartbeat(Frame{Command: Heartbeat, Data: invalid}); !errors.Is(err, ErrPayload) {
+			t.Fatal("invalid second field accepted")
+		}
+	}
 	if _, err := ParseHeartbeat(Frame{Command: Heartbeat, Data: data[:len(data)-1]}); !errors.Is(err, ErrPayload) {
 		t.Fatalf("truncated charging record accepted: %v", err)
 	}

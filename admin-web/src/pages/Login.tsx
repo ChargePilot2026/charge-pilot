@@ -2,12 +2,13 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Form, Input, Button, Typography, App, Card } from 'antd';
 import { UserOutlined, LockOutlined } from '@ant-design/icons';
-import { apiPost } from '../api/client';
+import { apiPost, adminSession } from '../api/client';
 
 const { Title } = Typography;
 
 interface LoginResp {
   token: string;
+  refresh_token: string;
   admin_user_id: number;
   role: string;
   permissions: string[];
@@ -22,8 +23,7 @@ export default function LoginPage() {
     setLoading(true);
     try {
       const data = await apiPost<LoginResp>('/api/v1/admin/auth/login', vals);
-      localStorage.setItem('cp_token', data.token);
-      localStorage.setItem('cp_admin', JSON.stringify({ username: vals.username, role: data.role, admin_user_id: data.admin_user_id, permissions: data.permissions }));
+      await adminSession.login(data, vals.username);
       message.success('登录成功');
       nav('/', { replace: true });
     } catch (e: any) {

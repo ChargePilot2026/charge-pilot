@@ -28,6 +28,7 @@ interface Risk {
   freeze_status?: string | null;
   freeze_linked: boolean;
   can_release: boolean;
+  can_review?: boolean;
 }
 
 type QueueStatus = 'pending' | 'reviewed';
@@ -85,7 +86,7 @@ export default function WalletRisks() {
   }, [page, reload, status]);
 
   const open = (item: Risk, action: Action) => {
-    session.current = localStorage.getItem('cp_token') || '';
+    session.current = localStorage.getItem('cp_session_epoch') || '';
     setSelected({ item, action });
     setComment('');
     setSubmitError('');
@@ -106,7 +107,7 @@ export default function WalletRisks() {
       setSubmitError('依据不得超过 255 个字符或包含控制字符');
       return;
     }
-    if (session.current !== (localStorage.getItem('cp_token') || '')) {
+    if (session.current !== (localStorage.getItem('cp_session_epoch') || '')) {
       setSubmitError('登录账号已变化，请关闭窗口后刷新');
       return;
     }
@@ -124,7 +125,7 @@ export default function WalletRisks() {
           comment: reason,
         });
       }
-      if (alive.current && session.current === (localStorage.getItem('cp_token') || '')) {
+      if (alive.current && session.current === (localStorage.getItem('cp_session_epoch') || '')) {
         setSelected(null);
         setNotice(action === 'release'
           ? '已解除该退款频次冻结，钱包余额和退款预留保持不变。'
@@ -134,7 +135,7 @@ export default function WalletRisks() {
         setReload(value => value + 1);
       }
     } catch (cause) {
-      if (alive.current && session.current === (localStorage.getItem('cp_token') || '')) {
+      if (alive.current && session.current === (localStorage.getItem('cp_session_epoch') || '')) {
         setSubmitError(cause instanceof Error ? cause.message : '操作结果未确认，请使用相同依据重试');
       }
     } finally {
@@ -171,7 +172,7 @@ export default function WalletRisks() {
     {
       title: '操作', width: 230, fixed: 'right', render: (_, item) => (
         <Space size={4}>
-          {!item.review && status === 'pending' && <>
+          {!item.review && status === 'pending' && item.can_review !== false && <>
             <Button type="link" disabled={busy} onClick={() => open(item, 'approve')}>通过</Button>
             <Button type="link" danger disabled={busy} onClick={() => open(item, 'reject')}>拒绝</Button>
           </>}

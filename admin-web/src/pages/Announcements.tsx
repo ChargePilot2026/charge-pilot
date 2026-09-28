@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Table, Typography, Space, Button, Modal, Form, Input, DatePicker, Select, message } from 'antd';
 import { PlusOutlined, ReloadOutlined } from '@ant-design/icons';
-import dayjs from 'dayjs';
 import { apiGet, apiPost } from '../api/client';
 
 const { Title } = Typography;
@@ -27,11 +26,12 @@ export default function AnnouncementsPage() {
       const v = await form.validateFields();
       const payload = {
         ...v,
+        target_ids: v.scope === 'global' ? [] : (v.target_ids || '').split(',').map((s: string) => s.trim()).filter(Boolean),
         start_at: v.start_at?.toISOString(),
         end_at: v.end_at?.toISOString(),
       };
       await apiPost('/api/v1/admin/announcements', payload);
-      message.success('已创建'); setOpen(false); form.resetFields(); load();
+      message.success('公告已发布'); setOpen(false); form.resetFields(); load();
     } catch (e: any) { if (e?.errorFields) return; message.error(e?.message || '失败'); }
   };
 
@@ -60,6 +60,7 @@ export default function AnnouncementsPage() {
               { value: 'city', label: '城市' },
             ]} />
           </Form.Item>
+          <Form.Item name="target_ids" label="目标站点 ID / 城市编码（逗号分隔；全局可留空）"><Input /></Form.Item>
           <Form.Item name="start_at" label="开始时间" rules={[{ required: true }]}>
             <DatePicker showTime />
           </Form.Item>

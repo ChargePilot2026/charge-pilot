@@ -2,6 +2,8 @@
 
 > **Go 重建中的目标接口**：`admin` 是 `central` 内部模块，最终从同一 Gin 端口 `:8080` 提供。本文件旧服务路径、端口、字段或“已实现”表述尚待逐项校准；当前实际能力以 [Go 重建清单](../migration/go-rebuild.md) 为准。
 
+> 2026-09-29 已接入的 Go 后台认证及仪表盘契约见 [Go 后台认证](go-admin-auth.md)。现有 PC 页面的 Go 接口见 [Go 后台业务页面](go-admin-pages.md)；下文未在该清单登记的接口仍是目标设计。
+
 **服务**:`admin`(`services/admin`)
 **对外地址**:`https://<customer-domain>/api/v1/admin/...`(经 Caddy 反代到 `admin:8082`)
 **鉴权**:JWT(HS256,§ 7.3.2)+ 角色权限(`permission_codes`)

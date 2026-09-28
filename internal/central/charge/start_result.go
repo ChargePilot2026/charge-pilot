@@ -96,7 +96,7 @@ func (s StartResultStore) Apply(ctx context.Context, result StartResult) (bool, 
 				return ErrStartResultConflict
 			}
 		} else {
-			stream, eventName = "refund_required_stream", "start_rejected"
+			stream, eventName = "charge_start_rejected_stream", "start_rejected"
 			failureReason := fmt.Sprintf("device START rejected: %d", result.ResultCode)
 			updated := tx.Model(&ChargeOrderRecord{}).Where("id = ? AND order_no = ? AND status = 'paid' AND deleted_at IS NULL", result.ChargeOrderID, result.OrderNo).
 				Updates(map[string]any{"failure_reason": failureReason, "status": "refunding"})
@@ -128,7 +128,7 @@ func (s StartResultStore) Apply(ctx context.Context, result StartResult) (bool, 
 				return ErrStartResultConflict
 			}
 			month := utcDate()
-			refund := RefundRecord{RefundNo: refundNo, PaymentOrderID: payment.ID, UserID: payment.UserID,
+			refund := RefundRecord{ExecutionPolicy: "automatic", RefundNo: refundNo, PaymentOrderID: payment.ID, UserID: payment.UserID,
 				BizType: "charge", BizID: result.ChargeOrderID, RefundCents: refundCents,
 				Reason: sql.NullString{String: failureReason, Valid: true}, Status: "pending", CreatedMonth: month}
 			if err := tx.Create(&refund).Error; err != nil {

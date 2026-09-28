@@ -1,0 +1,2887 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "ChargePilot Go admin API",
+    "version": "2026-09-29",
+    "description": "已接线的 Go 后台认证、仪表盘和现有 PC 页面接口。字段与工作流见 docs/api/go-admin-pages.md；不代表目标设计中的全部后台能力。"
+  },
+  "paths": {
+    "/api/v1/admin/auth/login": {
+      "post": {
+        "operationId": "auth_login",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/LoginResult"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data",
+                    "request_id",
+                    "trace_id"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "失败；见 code/message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "失败；见 code/message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "失败；见 code/message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "失败；见 code/message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "失败；见 code/message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "失败；见 code/message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/auth/refresh": {
+      "post": {
+        "operationId": "auth_refresh",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/LoginResult"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data",
+                    "request_id",
+                    "trace_id"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "失败；见 code/message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "失败；见 code/message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "失败；见 code/message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "失败；见 code/message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "失败；见 code/message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "失败；见 code/message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefreshRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/auth/logout": {
+      "post": {
+        "operationId": "auth_logout",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/Revoked"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data",
+                    "request_id",
+                    "trace_id"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "失败；见 code/message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "失败；见 code/message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "失败；见 code/message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "失败；见 code/message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "失败；见 code/message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "失败；见 code/message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/auth/me": {
+      "get": {
+        "operationId": "auth_me",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/Profile"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data",
+                    "request_id",
+                    "trace_id"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "失败；见 code/message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "失败；见 code/message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "失败；见 code/message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "失败；见 code/message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "失败；见 code/message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "失败；见 code/message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/auth/change-password": {
+      "post": {
+        "operationId": "auth_change_password",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/Changed"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data",
+                    "request_id",
+                    "trace_id"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "失败；见 code/message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "失败；见 code/message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "失败；见 code/message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "失败；见 code/message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "失败；见 code/message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "失败；见 code/message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/dashboard": {
+      "get": {
+        "operationId": "dashboard",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/Metrics"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data",
+                    "request_id",
+                    "trace_id"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "失败；见 code/message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "失败；见 code/message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "失败；见 code/message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "失败；见 code/message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "失败；见 code/message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "失败；见 code/message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/feedback": {
+      "get": {
+        "summary": "GET /api/v1/admin/feedback",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "feedback.read",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "未登录或会话失效"
+          },
+          "403": {
+            "description": "当前实时权限不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "业务状态或幂等冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/feedback/{id}/reply": {
+      "post": {
+        "summary": "POST /api/v1/admin/feedback/{id}/reply",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "feedback.reply",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "未登录或会话失效"
+          },
+          "403": {
+            "description": "当前实时权限不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "业务状态或幂等冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/device-fault-reports": {
+      "get": {
+        "summary": "GET /api/v1/admin/device-fault-reports",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "fault.read",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "未登录或会话失效"
+          },
+          "403": {
+            "description": "当前实时权限不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "业务状态或幂等冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/device-fault-reports/{id}/history": {
+      "get": {
+        "summary": "GET /api/v1/admin/device-fault-reports/{id}/history",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "fault.read",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "未登录或会话失效"
+          },
+          "403": {
+            "description": "当前实时权限不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "业务状态或幂等冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/device-fault-reports/{id}/dispatch": {
+      "post": {
+        "summary": "POST /api/v1/admin/device-fault-reports/{id}/dispatch",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "fault.dispatch",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "未登录或会话失效"
+          },
+          "403": {
+            "description": "当前实时权限不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "业务状态或幂等冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/device-fault-reports/{id}/resolve": {
+      "post": {
+        "summary": "POST /api/v1/admin/device-fault-reports/{id}/resolve",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "fault.resolve",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "未登录或会话失效"
+          },
+          "403": {
+            "description": "当前实时权限不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "业务状态或幂等冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/coupons": {
+      "get": {
+        "summary": "GET /api/v1/admin/coupons",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "coupon.read",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "未登录或会话失效"
+          },
+          "403": {
+            "description": "当前实时权限不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "业务状态或幂等冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        }
+      },
+      "post": {
+        "summary": "POST /api/v1/admin/coupons",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "coupon.create",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "未登录或会话失效"
+          },
+          "403": {
+            "description": "当前实时权限不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "业务状态或幂等冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/coupons/{id}": {
+      "put": {
+        "summary": "PUT /api/v1/admin/coupons/{id}",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "coupon.update",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "未登录或会话失效"
+          },
+          "403": {
+            "description": "当前实时权限不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "业务状态或幂等冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/coupons/{id}/stats": {
+      "get": {
+        "summary": "GET /api/v1/admin/coupons/{id}/stats",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "coupon.read",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "未登录或会话失效"
+          },
+          "403": {
+            "description": "当前实时权限不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "业务状态或幂等冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/coupons/{id}/grants": {
+      "post": {
+        "summary": "POST /api/v1/admin/coupons/{id}/grants",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "coupon.grant",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "未登录或会话失效"
+          },
+          "403": {
+            "description": "当前实时权限不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "业务状态或幂等冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/stations": {
+      "get": {
+        "summary": "GET /api/v1/admin/stations",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "station.read",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "未登录或会话失效"
+          },
+          "403": {
+            "description": "当前实时权限不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "业务状态或幂等冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        }
+      },
+      "post": {
+        "summary": "POST /api/v1/admin/stations",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "station.create",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "未登录或会话失效"
+          },
+          "403": {
+            "description": "当前实时权限不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "业务状态或幂等冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/stations/{id}": {
+      "get": {
+        "summary": "GET /api/v1/admin/stations/{id}",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "station.read",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "未登录或会话失效"
+          },
+          "403": {
+            "description": "当前实时权限不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "业务状态或幂等冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "put": {
+        "summary": "PUT /api/v1/admin/stations/{id}",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "station.update",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "未登录或会话失效"
+          },
+          "403": {
+            "description": "当前实时权限不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "业务状态或幂等冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/devices": {
+      "get": {
+        "summary": "GET /api/v1/admin/devices",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "device.read",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "未登录或会话失效"
+          },
+          "403": {
+            "description": "当前实时权限不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "业务状态或幂等冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/devices/{id}": {
+      "get": {
+        "summary": "GET /api/v1/admin/devices/{id}",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "device.read",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "未登录或会话失效"
+          },
+          "403": {
+            "description": "当前实时权限不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "业务状态或幂等冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/orders": {
+      "get": {
+        "summary": "GET /api/v1/admin/orders",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "order.read",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "未登录或会话失效"
+          },
+          "403": {
+            "description": "当前实时权限不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "业务状态或幂等冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/orders/{id}": {
+      "get": {
+        "summary": "GET /api/v1/admin/orders/{id}",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "order.read",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "未登录或会话失效"
+          },
+          "403": {
+            "description": "当前实时权限不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "业务状态或幂等冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/orders/{id}/timeline": {
+      "get": {
+        "summary": "GET /api/v1/admin/orders/{id}/timeline",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "order.read",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "未登录或会话失效"
+          },
+          "403": {
+            "description": "当前实时权限不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "业务状态或幂等冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/device-imports": {
+      "get": {
+        "summary": "GET /api/v1/admin/device-imports",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "device.import",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "未登录或会话失效"
+          },
+          "403": {
+            "description": "当前实时权限不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "业务状态或幂等冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        }
+      },
+      "post": {
+        "summary": "POST /api/v1/admin/device-imports",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "device.import",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "未登录或会话失效"
+          },
+          "403": {
+            "description": "当前实时权限不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "业务状态或幂等冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/device-imports/{import_id}/retry": {
+      "post": {
+        "summary": "POST /api/v1/admin/device-imports/{import_id}/retry",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "device.import",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "未登录或会话失效"
+          },
+          "403": {
+            "description": "当前实时权限不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "业务状态或幂等冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        },
+        "parameters": [
+          {
+            "name": "import_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/users": {
+      "get": {
+        "summary": "读取 users",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "admin_user.read",
+        "responses": {
+          "200": {
+            "description": "data.items 为实际数据库记录"
+          },
+          "401": {
+            "description": "会话失效"
+          },
+          "403": {
+            "description": "权限不足"
+          },
+          "503": {
+            "description": "数据库不可用"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/alerts/{id}/ack": {
+      "post": {
+        "summary": "POST /api/v1/admin/alerts/{id}/ack",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "alert.ack",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "未登录或会话失效"
+          },
+          "403": {
+            "description": "当前实时权限不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "业务状态或幂等冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/announcements": {
+      "get": {
+        "summary": "读取 announcements",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "announcement.read",
+        "responses": {
+          "200": {
+            "description": "data.items 为实际数据库记录"
+          },
+          "401": {
+            "description": "会话失效"
+          },
+          "403": {
+            "description": "权限不足"
+          },
+          "503": {
+            "description": "数据库不可用"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/customer-service": {
+      "get": {
+        "summary": "读取 customer-service",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "customer_service.read",
+        "responses": {
+          "200": {
+            "description": "data.items 为实际数据库记录"
+          },
+          "401": {
+            "description": "会话失效"
+          },
+          "403": {
+            "description": "权限不足"
+          },
+          "503": {
+            "description": "数据库不可用"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/customer-service/{id}": {
+      "put": {
+        "summary": "PUT /api/v1/admin/customer-service/{id}",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "customer_service.update",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "未登录或会话失效"
+          },
+          "403": {
+            "description": "当前实时权限不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "业务状态或幂等冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "delete": {
+        "summary": "DELETE /api/v1/admin/customer-service/{id}",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "customer_service.delete",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "未登录或会话失效"
+          },
+          "403": {
+            "description": "当前实时权限不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "业务状态或幂等冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/webhooks": {
+      "get": {
+        "summary": "读取 webhooks",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "webhook.read",
+        "responses": {
+          "200": {
+            "description": "data.items 为实际数据库记录"
+          },
+          "401": {
+            "description": "会话失效"
+          },
+          "403": {
+            "description": "权限不足"
+          },
+          "503": {
+            "description": "数据库不可用"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/whitelabel": {
+      "get": {
+        "summary": "GET /api/v1/admin/whitelabel",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "whitelabel.read",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "未登录或会话失效"
+          },
+          "403": {
+            "description": "当前实时权限不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "业务状态或幂等冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        }
+      },
+      "put": {
+        "summary": "PUT /api/v1/admin/whitelabel",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "whitelabel.update",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "未登录或会话失效"
+          },
+          "403": {
+            "description": "当前实时权限不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "业务状态或幂等冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/billing/invoices": {
+      "get": {
+        "summary": "GET /api/v1/admin/billing/invoices",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "finance.read",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "未登录或会话失效"
+          },
+          "403": {
+            "description": "当前实时权限不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "业务状态或幂等冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/billing/invoices/{id}/approve": {
+      "post": {
+        "summary": "POST /api/v1/admin/billing/invoices/{id}/approve",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "invoice.review",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "未登录或会话失效"
+          },
+          "403": {
+            "description": "当前实时权限不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "业务状态或幂等冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/billing/invoices/{id}/reject": {
+      "post": {
+        "summary": "POST /api/v1/admin/billing/invoices/{id}/reject",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "invoice.review",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "未登录或会话失效"
+          },
+          "403": {
+            "description": "当前实时权限不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "业务状态或幂等冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/billing/wallet-risks": {
+      "get": {
+        "summary": "GET /api/v1/admin/billing/wallet-risks",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "finance.wallet_risk.review",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "未登录或会话失效"
+          },
+          "403": {
+            "description": "当前实时权限不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "业务状态或幂等冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/billing/wallet-risks/{request_id}/review": {
+      "post": {
+        "summary": "POST /api/v1/admin/billing/wallet-risks/{request_id}/review",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "finance.wallet_risk.review",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "未登录或会话失效"
+          },
+          "403": {
+            "description": "当前实时权限不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "业务状态或幂等冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        },
+        "parameters": [
+          {
+            "name": "request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/billing/wallet-risks/{request_id}/release": {
+      "post": {
+        "summary": "POST /api/v1/admin/billing/wallet-risks/{request_id}/release",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "finance.wallet_risk.release",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "未登录或会话失效"
+          },
+          "403": {
+            "description": "当前实时权限不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "业务状态或幂等冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        },
+        "parameters": [
+          {
+            "name": "request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/orders/{id}/refunds": {
+      "post": {
+        "summary": "POST /api/v1/admin/orders/{id}/refunds",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "order.refund.create",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "未登录或会话失效"
+          },
+          "403": {
+            "description": "当前实时权限不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "业务状态或幂等冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/billing/refunds": {
+      "get": {
+        "summary": "GET /api/v1/admin/billing/refunds",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "finance.refund.read",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "未登录或会话失效"
+          },
+          "403": {
+            "description": "当前实时权限不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "业务状态或幂等冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/billing/refunds/{refund_no}/approve": {
+      "post": {
+        "summary": "POST /api/v1/admin/billing/refunds/{refund_no}/approve",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "order.refund.review",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "未登录或会话失效"
+          },
+          "403": {
+            "description": "当前实时权限不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "业务状态或幂等冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        },
+        "parameters": [
+          {
+            "name": "refund_no",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/billing/refunds/{refund_no}/reject": {
+      "post": {
+        "summary": "POST /api/v1/admin/billing/refunds/{refund_no}/reject",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "order.refund.review",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "未登录或会话失效"
+          },
+          "403": {
+            "description": "当前实时权限不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "业务状态或幂等冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        },
+        "parameters": [
+          {
+            "name": "refund_no",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/billing/refunds/{refund_no}/retry": {
+      "post": {
+        "summary": "POST /api/v1/admin/billing/refunds/{refund_no}/retry",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "finance.refund.retry",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "未登录或会话失效"
+          },
+          "403": {
+            "description": "当前实时权限不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "业务状态或幂等冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        },
+        "parameters": [
+          {
+            "name": "refund_no",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/roles": {
+      "get": {
+        "summary": "读取 roles",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "admin_user.read",
+        "responses": {
+          "200": {
+            "description": "data.items 为实际数据库记录"
+          },
+          "401": {
+            "description": "会话失效"
+          },
+          "403": {
+            "description": "权限不足"
+          },
+          "503": {
+            "description": "数据库不可用"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/alerts": {
+      "get": {
+        "summary": "读取 alerts",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "alert.read",
+        "responses": {
+          "200": {
+            "description": "data.items 为实际数据库记录"
+          },
+          "401": {
+            "description": "会话失效"
+          },
+          "403": {
+            "description": "权限不足"
+          },
+          "503": {
+            "description": "数据库不可用"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/ota/packages": {
+      "get": {
+        "summary": "读取 ota/packages",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "ota.read",
+        "responses": {
+          "200": {
+            "description": "data.items 为实际数据库记录"
+          },
+          "401": {
+            "description": "会话失效"
+          },
+          "403": {
+            "description": "权限不足"
+          },
+          "503": {
+            "description": "数据库不可用"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/ota/schedules": {
+      "get": {
+        "summary": "读取 ota/schedules",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "ota.read",
+        "responses": {
+          "200": {
+            "description": "data.items 为实际数据库记录"
+          },
+          "401": {
+            "description": "会话失效"
+          },
+          "403": {
+            "description": "权限不足"
+          },
+          "503": {
+            "description": "数据库不可用"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/settings/charge-rules": {
+      "get": {
+        "summary": "读取 settings/charge-rules",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "pricing.read",
+        "responses": {
+          "200": {
+            "description": "data.items 为实际数据库记录"
+          },
+          "401": {
+            "description": "会话失效"
+          },
+          "403": {
+            "description": "权限不足"
+          },
+          "503": {
+            "description": "数据库不可用"
+          }
+        }
+      },
+      "post": {
+        "summary": "发布站点计费新版本",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "pricing.rule.create",
+        "description": "UUID request_id 幂等，expected_version 乐观锁；自动停用同站点旧版，保留历史快照。",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "request_id",
+                  "name",
+                  "station_id",
+                  "expected_version",
+                  "mode",
+                  "time_of_use"
+                ],
+                "properties": {
+                  "request_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "name": {
+                    "type": "string",
+                    "maxLength": 128
+                  },
+                  "station_id": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "expected_version": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "kwh",
+                      "minute",
+                      "mixed"
+                    ]
+                  },
+                  "time_of_use": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 48,
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "start",
+                        "end",
+                        "electric_price_cents"
+                      ],
+                      "properties": {
+                        "period": {
+                          "type": "string"
+                        },
+                        "start": {
+                          "type": "string"
+                        },
+                        "end": {
+                          "type": "string"
+                        },
+                        "electric_price_cents": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 1000000
+                        },
+                        "service_price_cents": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 1000000
+                        }
+                      }
+                    }
+                  },
+                  "service_fee_cents_per_kwh": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1000000
+                  },
+                  "service_fee_cents_per_min": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1000000
+                  },
+                  "min_charge_cents": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1000000
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "data.id/version/replayed"
+          },
+          "400": {
+            "description": "时段/金额无效"
+          },
+          "403": {
+            "description": "无发布权限"
+          },
+          "409": {
+            "description": "当前版本或幂等内容冲突"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/billing/settlements": {
+      "get": {
+        "summary": "读取 billing/settlements",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "finance.read",
+        "responses": {
+          "200": {
+            "description": "data.items 为实际数据库记录"
+          },
+          "401": {
+            "description": "会话失效"
+          },
+          "403": {
+            "description": "权限不足"
+          },
+          "503": {
+            "description": "数据库不可用"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/settings/charge-rules/{id}/disable": {
+      "post": {
+        "summary": "停用计费规则",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "pricing.rule.update",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "已停用（重复调用幂等）"
+          },
+          "403": {
+            "description": "权限不足"
+          },
+          "404": {
+            "description": "规则不存在"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    },
+    "schemas": {
+      "LoginRequest": {
+        "type": "object",
+        "properties": {
+          "username": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "password": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 72
+          }
+        },
+        "required": [
+          "username",
+          "password"
+        ]
+      },
+      "RefreshRequest": {
+        "type": "object",
+        "properties": {
+          "refresh_token": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "refresh_token"
+        ]
+      },
+      "PasswordRequest": {
+        "type": "object",
+        "properties": {
+          "old_password": {
+            "type": "string"
+          },
+          "new_password": {
+            "type": "string",
+            "minLength": 12,
+            "maxLength": 72
+          }
+        },
+        "required": [
+          "old_password",
+          "new_password"
+        ]
+      },
+      "LoginResult": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string"
+          },
+          "access_token": {
+            "type": "string"
+          },
+          "refresh_token": {
+            "type": "string"
+          },
+          "expires_in": {
+            "type": "integer",
+            "enum": [
+              900
+            ]
+          },
+          "admin_user_id": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1
+          },
+          "username": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "token",
+          "access_token",
+          "refresh_token",
+          "expires_in",
+          "admin_user_id",
+          "username",
+          "role",
+          "permissions"
+        ]
+      },
+      "Profile": {
+        "type": "object",
+        "properties": {
+          "admin_user_id": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1
+          },
+          "username": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "role_id": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "admin_user_id",
+          "username",
+          "display_name",
+          "role",
+          "role_id",
+          "permissions"
+        ]
+      },
+      "Revoked": {
+        "type": "object",
+        "properties": {
+          "revoked": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "revoked"
+        ]
+      },
+      "Changed": {
+        "type": "object",
+        "properties": {
+          "changed": {
+            "type": "boolean"
+          },
+          "sessions_revoked": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "changed",
+          "sessions_revoked"
+        ]
+      },
+      "TrendDay": {
+        "type": "object",
+        "properties": {
+          "day": {
+            "type": "string",
+            "format": "date"
+          },
+          "completed_orders": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "settled_cents": {
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "required": [
+          "day",
+          "completed_orders",
+          "settled_cents"
+        ]
+      },
+      "Metrics": {
+        "type": "object",
+        "properties": {
+          "charging_orders": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "today_order_users": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "today_completed_orders": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "today_settled_cents": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "active_alerts": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "daily_trend": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TrendDay"
+            }
+          }
+        },
+        "required": [
+          "charging_orders",
+          "today_order_users",
+          "today_completed_orders",
+          "today_settled_cents",
+          "active_alerts",
+          "updated_at",
+          "daily_trend"
+        ]
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer"
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {},
+          "request_id": {
+            "type": "string"
+          },
+          "trace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data",
+          "request_id",
+          "trace_id"
+        ]
+      }
+    }
+  }
+}

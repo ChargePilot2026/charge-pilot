@@ -14,6 +14,7 @@ import (
 	"github.com/ChargePilot2026/charge-pilot/internal/gateway/control"
 	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol"
 	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol/dc589"
+	"github.com/ChargePilot2026/charge-pilot/internal/gateway/provision"
 	"github.com/ChargePilot2026/charge-pilot/internal/gateway/store"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/config"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/dbconn"
@@ -48,6 +49,7 @@ func run(ctx context.Context) error {
 	sink := store.MySQLSink{DB: orm}
 	gin.SetMode(gin.ReleaseMode)
 	router := httpapi.NewRouter()
+	provision.API{DB: orm, ServiceToken: cfg.ServiceToken}.Register(router)
 	deviceConnections := &protocol.Registry{}
 	control.StartAPI{Service: control.StartService{
 		Orders: control.CentralAuthorizer{BaseURL: cfg.CentralInternalURL, ServiceToken: cfg.ServiceToken},

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/ChargePilot2026/charge-pilot/internal/central/pricing"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/httpapi"
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
@@ -21,10 +22,11 @@ import (
 var ErrEndResultConflict = errors.New("charge end result conflicts with order state")
 
 type EndMeter struct {
-	ChargedWh      uint32    `json:"charged_wh"`
-	ChargedSeconds uint32    `json:"charged_seconds"`
-	EndedAt        time.Time `json:"ended_at"`
-	StopReason     uint8     `json:"stop_reason"`
+	Segments       []pricing.MeterSegment `json:"segments,omitempty"`
+	ChargedWh      uint32                 `json:"charged_wh"`
+	ChargedSeconds uint32                 `json:"charged_seconds"`
+	EndedAt        time.Time              `json:"ended_at"`
+	StopReason     uint8                  `json:"stop_reason"`
 }
 
 type EndResult struct {
@@ -66,7 +68,7 @@ func (s EndResultStore) Apply(ctx context.Context, result EndResult) (bool, erro
 		err = tx.Where("charge_order_id = ?", result.ChargeOrderID).Take(&existing).Error
 		if err == nil {
 			var previous EndMeter
-			if json.Unmarshal(existing.MeterJSON, &previous) != nil || existing.StopCommandID != result.StopCommandID || previous.ChargedWh != result.Meter.ChargedWh || previous.ChargedSeconds != result.Meter.ChargedSeconds || previous.StopReason != result.Meter.StopReason || !previous.EndedAt.Equal(result.Meter.EndedAt) {
+			if json.Unmarshal(existing.MeterJSON, &previous) != nil || existing.StopCommandID != result.StopCommandID || previous.ChargedWh != result.Meter.ChargedWh || previous.ChargedSeconds != result.Meter.ChargedSeconds || previous.StopReason != result.Meter.StopReason || !sameSegments(previous.Segments, result.Meter.Segments) || !previous.EndedAt.Equal(result.Meter.EndedAt) {
 				return ErrEndResultConflict
 			}
 			replayed = true
@@ -109,6 +111,9 @@ func (s EndResultStore) Apply(ctx context.Context, result EndResult) (bool, erro
 		if err != nil {
 			return err
 		}
+		if err := tx.Table("charge_billing_job").Create(map[string]any{"charge_order_id": result.ChargeOrderID}).Error; err != nil {
+			return err
+		}
 		return tx.Create(&EventOutboxRecord{EventID: result.StopCommandID, Stream: "charge_ended_stream", EnvelopeJSON: envelope}).Error
 	}, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	return replayed, err
@@ -145,4 +150,16 @@ func (a EndResultAPI) handle(c *gin.Context) {
 		return
 	}
 	httpapi.OK(c, gin.H{"accepted": true, "replayed": replayed})
+}
+
+func sameSegments(a, b []pricing.MeterSegment) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].EnergyWh != b[i].EnergyWh || !a[i].StartedAt.Equal(b[i].StartedAt) || !a[i].EndedAt.Equal(b[i].EndedAt) {
+			return false
+		}
+	}
+	return true
 }

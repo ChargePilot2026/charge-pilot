@@ -16,23 +16,25 @@ type Gateway struct {
 }
 
 type Central struct {
-	HTTPAddr           string `env:"CENTRAL_HTTP_ADDR" envDefault:":8080"`
-	UserDatabaseURL    string `env:"DATABASE_URL_USER,required"`
-	AdminDatabaseURL   string `env:"DATABASE_URL_ADMIN,required"`
-	BillingDatabaseURL string `env:"DATABASE_URL_BILLING,required"`
-	RedisCacheURL      string `env:"REDIS_CACHE_URL,required"`
-	RedisStreamURL     string `env:"REDIS_STREAM_URL,required"`
-	JWTSecret          string `env:"JWT_SECRET,required"`
-	ServiceToken       string `env:"SERVICE_TOKEN,required"`
-	GatewayInternalURL string `env:"GATEWAY_INTERNAL_URL" envDefault:"http://gateway:8083"`
-	WeChatAppID        string `env:"WECHAT_APPID,required"`
-	WeChatAppSecret    string `env:"WECHAT_SECRET,required"`
-	PaymentMode        string `env:"PAYMENT_MODE" envDefault:"disabled"`
-	WechatMchID        string `env:"WECHAT_MCH_ID"`
-	WechatCertSerial   string `env:"WECHAT_CERT_SERIAL"`
-	WechatAPIv3Key     string `env:"WECHAT_APIV3_KEY"`
-	WechatPrivateKey   string `env:"WECHAT_PRIVATE_KEY_PATH"`
-	WechatNotifyURL    string `env:"WECHAT_NOTIFY_URL"`
+	AdminBootstrapUser     string `env:"ADMIN_BOOTSTRAP_USER"`
+	AdminBootstrapPassword string `env:"ADMIN_BOOTSTRAP_PASSWORD"`
+	HTTPAddr               string `env:"CENTRAL_HTTP_ADDR" envDefault:":8080"`
+	UserDatabaseURL        string `env:"DATABASE_URL_USER,required"`
+	AdminDatabaseURL       string `env:"DATABASE_URL_ADMIN,required"`
+	BillingDatabaseURL     string `env:"DATABASE_URL_BILLING,required"`
+	RedisCacheURL          string `env:"REDIS_CACHE_URL,required"`
+	RedisStreamURL         string `env:"REDIS_STREAM_URL,required"`
+	JWTSecret              string `env:"JWT_SECRET,required"`
+	ServiceToken           string `env:"SERVICE_TOKEN,required"`
+	GatewayInternalURL     string `env:"GATEWAY_INTERNAL_URL" envDefault:"http://gateway:8083"`
+	WeChatAppID            string `env:"WECHAT_APPID,required"`
+	WeChatAppSecret        string `env:"WECHAT_SECRET,required"`
+	PaymentMode            string `env:"PAYMENT_MODE" envDefault:"disabled"`
+	WechatMchID            string `env:"WECHAT_MCH_ID"`
+	WechatCertSerial       string `env:"WECHAT_CERT_SERIAL"`
+	WechatAPIv3Key         string `env:"WECHAT_APIV3_KEY"`
+	WechatPrivateKey       string `env:"WECHAT_PRIVATE_KEY_PATH"`
+	WechatNotifyURL        string `env:"WECHAT_NOTIFY_URL"`
 }
 
 type Worker struct {
