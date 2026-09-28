@@ -41,22 +41,33 @@ export default function ExportsPage() {
   const [saving, setSaving] = useState(false);
   const [form] = Form.useForm();
 
+  // Listing needs finance.read while creating and downloading need the separate
+  // export.create, so the two calls are settled independently: a role that may
+  // read the history but not egress the data still gets its list.
+  const canCreate = (() => {
+    try {
+      return !!JSON.parse(localStorage.getItem('cp_admin') || 'null')?.permissions?.includes('export.create');
+    } catch {
+      return false;
+    }
+  })();
+
   const load = useCallback(async () => {
     setLoading(true);
     setError('');
-    try {
-      const [tasks, resources] = await Promise.all([
-        apiGet<{ items: ExportTask[] }>(`${endpoint}?page=1&page_size=50`),
-        apiGet<{ items: string[]; max_rows: number }>(`${endpoint}/resources`),
-      ]);
-      setRows(tasks.items || []);
-      setAllowed(resources.items || []);
-      setMaxRows(resources.max_rows || 0);
-    } catch (e: any) {
-      setError(e?.message || '导出记录读取失败');
-    } finally {
-      setLoading(false);
+    const [tasks, resources] = await Promise.allSettled([
+      apiGet<{ items: ExportTask[] }>(`${endpoint}?page=1&page_size=50`),
+      apiGet<{ items: string[]; max_rows: number }>(`${endpoint}/resources`),
+    ]);
+    if (tasks.status === 'fulfilled') setRows(tasks.value.items || []);
+    else setError(tasks.reason?.message || '导出记录读取失败');
+    if (resources.status === 'fulfilled') {
+      setAllowed(resources.value.items || []);
+      setMaxRows(resources.value.max_rows || 0);
+    } else {
+      setAllowed([]);
     }
+    setLoading(false);
   }, []);
 
   useEffect(() => { void load(); }, [load]);
@@ -107,10 +118,12 @@ export default function ExportsPage() {
       <Space style={{ marginBottom: 12 }} wrap>
         <Title level={3} style={{ margin: 0 }}>数据导出</Title>
         <Button icon={<ReloadOutlined />} onClick={() => void load()} loading={loading}>刷新</Button>
-        <Button type="primary" disabled={allowed.length === 0} onClick={() => setCreating(true)}>创建导出</Button>
+        <Button type="primary" disabled={!canCreate || allowed.length === 0} onClick={() => setCreating(true)}>创建导出</Button>
         {error && <Text type="danger">{error}</Text>}
       </Space>
-      {allowed.length === 0 ? (
+      {!canCreate ? (
+        <Alert type="info" showIcon message="当前账号可查看导出记录，但无导出权限" description="创建与下载需要 export.create，导出属于批量数据出域操作，仅授予客户管理员。请联系客户管理员开通。" />
+      ) : allowed.length === 0 ? (
         <Alert type="warning" showIcon message="当前账号没有任何导出权限" description="请联系客户管理员授予 export.create 及对应资源权限。" />
       ) : (
         <Paragraph type="secondary">导出文件 24 小时后过期，下载时会再次校验权限。</Paragraph>
@@ -126,7 +139,7 @@ export default function ExportsPage() {
           { title: '过期时间', dataIndex: 'expires_at', width: 180, render: (v: string | null) => v || '—' },
           {
             title: '操作', width: 120, render: (_, row) => (
-              row.status === 'completed'
+              row.status === 'completed' && canCreate
                 ? <Button type="link" icon={<DownloadOutlined />} onClick={() => void download(row)}>下载</Button>
                 : <Text type="secondary">—</Text>
             ),
