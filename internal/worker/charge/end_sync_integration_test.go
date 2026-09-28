@@ -69,7 +69,7 @@ func TestEndKeepsPortOwnedUntilCentralAcceptsMeter(t *testing.T) {
 		_, _ = w.Write([]byte(`{"code":0}`))
 	}))
 	defer server.Close()
-	syncer := EndSynchronizer{GatewayDB: db, CentralURL: server.URL, ServiceToken: "test-token"}
+	syncer := EndSynchronizer{GatewayDB: testGORMDB(t, db), CentralURL: server.URL, ServiceToken: "test-token"}
 	if count, err := syncer.SyncBatch(ctx); count != 0 || err == nil {
 		t.Fatalf("failed end accepted: %d %v", count, err)
 	}

@@ -42,7 +42,7 @@ func TestPaidStartDispatchRequiresCallbackCreatedOrder(t *testing.T) {
 		_, _ = db.ExecContext(ctx, "DELETE FROM payment_callback_idempotent WHERE wechat_transaction_id = ?", transactionID)
 		_, _ = db.ExecContext(ctx, "DELETE FROM user WHERE id = ?", userID)
 	}()
-	intent, err := (centralcharge.PaymentIntentStore{DB: db}).Reserve(ctx, centralcharge.IntentInput{
+	intent, err := (centralcharge.PaymentIntentStore{DB: testGORMDB(t, db)}).Reserve(ctx, centralcharge.IntentInput{
 		UserID: uint64(userID), ClientRequestID: uuid.NewString(),
 		Port: centralcharge.ScanResult{Kind: "port", DeviceID: "dispatch-device", StationID: 9,
 			Port: &centralcharge.ScanPort{PortID: "dispatch-device:1", DeviceID: "dispatch-device", PortNo: 1, Online: true, Available: true}},
@@ -73,11 +73,11 @@ func TestPaidStartDispatchRequiresCallbackCreatedOrder(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"order_no": body.OrderNo, "status": "pending"}})
 	}))
 	defer server.Close()
-	starter := PaidStarter{UserDB: db, GatewayURL: server.URL, ServiceToken: "test-service-token"}
+	starter := PaidStarter{UserDB: testGORMDB(t, db), GatewayURL: server.URL, ServiceToken: "test-service-token"}
 	if _, err := starter.DispatchBatch(ctx); err != nil || calls != 0 {
 		t.Fatalf("before callback: calls=%d err=%v", calls, err)
 	}
-	callback := centralcharge.PaymentCallbackStore{DB: db, ExpectedProvider: "simulation", ExpectedMerchantID: "test-merchant", ExpectedAppID: "test-app"}
+	callback := centralcharge.PaymentCallbackStore{DB: testGORMDB(t, db), ExpectedProvider: "simulation", ExpectedMerchantID: "test-merchant", ExpectedAppID: "test-app"}
 	confirmed, err := callback.Apply(ctx, centralcharge.VerifiedPayment{Provider: "simulation", MerchantID: "test-merchant", AppID: "test-app",
 		MerchantOrderNo: intent.MerchantOrderNo, TransactionID: transactionID, OpenID: intent.OpenID,
 		PaidCents: intent.Estimate.TotalCents, PaidAt: time.Now().UTC()})

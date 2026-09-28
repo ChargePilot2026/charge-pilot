@@ -7,8 +7,9 @@ import (
 	"fmt"
 	"time"
 
-	userdb "github.com/ChargePilot2026/charge-pilot/internal/central/identity/generated"
 	"github.com/go-sql-driver/mysql"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var ErrUserFrozen = errors.New("user account frozen")
@@ -33,7 +34,7 @@ type Profile struct {
 	MembershipCard    any   `json:"membership_card"`
 }
 
-type UserStore struct{ DB *sql.DB }
+type UserStore struct{ DB *gorm.DB }
 
 func (s UserStore) Login(ctx context.Context, openID, unionID string) (User, error) {
 	if openID == "" || len(openID) > 64 || len(unionID) > 64 {
@@ -61,79 +62,115 @@ func retryableMySQL(err error) bool {
 func (s UserStore) loginOnce(ctx context.Context, openID, unionID string) (User, error) {
 	// Create the identity row in autocommit mode. Concurrent INSERT IGNORE
 	// inside transactions can deadlock on the missing-key gap before FOR UPDATE.
-	if err := userdb.New(s.DB).CreateLoginIdentity(ctx, []byte(openID)); err != nil {
+	if err := s.DB.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&LoginIdentity{OpenID: []byte(openID)}).Error; err != nil {
 		return User{}, err
 	}
-	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
-	if err != nil {
-		return User{}, err
-	}
-	defer tx.Rollback()
-	q := userdb.New(tx)
-	if _, err := q.LockLoginIdentity(ctx, []byte(openID)); err != nil {
-		return User{}, err
-	}
-	current, err := q.FindActiveUserByOpenID(ctx, openID)
-	if err == nil {
-		if current.Status != userdb.UserStatusActive {
-			return User{}, ErrUserFrozen
+	var user User
+	err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var identity LoginIdentity
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("openid = ?", []byte(openID)).Take(&identity).Error; err != nil {
+			return err
 		}
-		if err := q.TouchUserLogin(ctx, userdb.TouchUserLoginParams{ID: current.ID, LastLoginAt: sql.NullTime{Time: time.Now().UTC(), Valid: true}}); err != nil {
-			return User{}, err
+		var current UserAccount
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("openid = ? AND deleted_at IS NULL", openID).Order("id ASC").Take(&current).Error
+		if err == nil {
+			if current.Status != "active" {
+				return ErrUserFrozen
+			}
+			now := time.Now().UTC()
+			if err := tx.Model(&UserAccount{}).Where("id = ?", current.ID).Update("last_login_at", now).Error; err != nil {
+				return err
+			}
+			user = User{ID: current.ID, OpenID: openID}
+			return nil
 		}
-		if err := tx.Commit(); err != nil {
-			return User{}, err
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
 		}
-		return User{ID: current.ID, OpenID: openID}, nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return User{}, err
-	}
-	result, err := q.CreateUser(ctx, userdb.CreateUserParams{Openid: openID, Unionid: sql.NullString{String: unionID, Valid: unionID != ""}, LastLoginAt: sql.NullTime{Time: time.Now().UTC(), Valid: true}})
-	if err != nil {
-		return User{}, err
-	}
-	id, err := result.LastInsertId()
-	if err != nil {
-		return User{}, err
-	}
-	if err := q.CreateWallet(ctx, uint64(id)); err != nil {
-		return User{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return User{}, err
-	}
-	return User{ID: uint64(id), OpenID: openID, IsNew: true}, nil
+		now := time.Now().UTC()
+		created := UserAccount{OpenID: openID, Status: "active", LastLoginAt: sql.NullTime{Time: now, Valid: true}}
+		if unionID != "" {
+			created.UnionID = sql.NullString{String: unionID, Valid: true}
+		}
+		if err := tx.Create(&created).Error; err != nil {
+			return err
+		}
+		if err := tx.Create(&WalletAccount{UserID: created.ID}).Error; err != nil {
+			return err
+		}
+		user = User{ID: created.ID, OpenID: openID, IsNew: true}
+		return nil
+	})
+	return user, err
 }
 
 func (s UserStore) Active(ctx context.Context, id uint64) (bool, error) {
-	status, err := userdb.New(s.DB).GetUserStatus(ctx, id)
-	if errors.Is(err, sql.ErrNoRows) {
+	var user UserAccount
+	err := s.DB.WithContext(ctx).Select("status").Where("id = ? AND deleted_at IS NULL", id).Take(&user).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return false, nil
 	}
 	if err != nil {
 		return false, fmt.Errorf("user status: %w", err)
 	}
-	return status == userdb.UserStatusActive, nil
+	return user.Status == "active", nil
 }
 
 func (s UserStore) Profile(ctx context.Context, id uint64) (Profile, error) {
-	row, err := userdb.New(s.DB).GetProfile(ctx, id)
-	if err != nil {
-		return Profile{}, err
+	var row profileRow
+	result := s.DB.WithContext(ctx).Raw(`SELECT u.id, u.nickname, u.avatar_url, u.phone_hash, u.first_seen_at,
+		w.balance_cents, w.frozen_cents,
+		(SELECT COUNT(*) FROM coupon_grant AS g WHERE g.user_id = u.id AND g.status = 'unused' AND g.expired_at > NOW(3) AND g.deleted_at IS NULL) AS coupon_unused_count,
+		COALESCE(CAST((SELECT card_type FROM membership_card AS m WHERE m.user_id = u.id AND m.status = 'active' AND m.end_at > NOW(3) AND m.deleted_at IS NULL ORDER BY m.end_at DESC LIMIT 1) AS CHAR(16)), '') AS card_type
+		FROM user AS u JOIN wallet_account AS w ON w.user_id = u.id AND w.deleted_at IS NULL
+		WHERE u.id = ? AND u.status = 'active' AND u.deleted_at IS NULL LIMIT 1`, id).Scan(&row)
+	if result.Error != nil {
+		return Profile{}, result.Error
 	}
-	profile := Profile{UserID: row.ID, Nickname: row.Nickname.String, AvatarURL: row.AvatarUrl.String, PhoneBound: row.PhoneHash.Valid, RegisteredAt: row.FirstSeenAt.UTC(), CouponUnusedCount: row.CouponUnusedCount}
+	if result.RowsAffected != 1 {
+		return Profile{}, gorm.ErrRecordNotFound
+	}
+	profile := Profile{UserID: row.ID, Nickname: row.Nickname.String, AvatarURL: row.AvatarURL.String, PhoneBound: row.PhoneHash.Valid, RegisteredAt: row.FirstSeenAt.UTC(), CouponUnusedCount: row.CouponUnusedCount}
 	profile.Wallet.AvailableCents = row.BalanceCents
 	profile.Wallet.FrozenCents = row.FrozenCents
-	var cardType string
-	switch value := row.CardType.(type) {
-	case string:
-		cardType = value
-	case []byte:
-		cardType = string(value)
-	}
+	cardType := row.CardType
 	if cardType != "" {
 		profile.MembershipCard = map[string]string{"card_type": cardType}
 	}
 	return profile, nil
+}
+
+type LoginIdentity struct {
+	OpenID []byte `gorm:"column:openid;primaryKey"`
+}
+
+func (LoginIdentity) TableName() string { return "user_login_identity" }
+
+type UserAccount struct {
+	ID          uint64         `gorm:"column:id;primaryKey"`
+	OpenID      string         `gorm:"column:openid"`
+	UnionID     sql.NullString `gorm:"column:unionid"`
+	Status      string         `gorm:"column:status"`
+	LastLoginAt sql.NullTime   `gorm:"column:last_login_at"`
+}
+
+func (UserAccount) TableName() string { return "user" }
+
+type WalletAccount struct {
+	ID     uint64 `gorm:"column:id;primaryKey"`
+	UserID uint64 `gorm:"column:user_id"`
+}
+
+func (WalletAccount) TableName() string { return "wallet_account" }
+
+type profileRow struct {
+	ID                uint64
+	Nickname          sql.NullString
+	AvatarURL         sql.NullString
+	PhoneHash         sql.NullString
+	FirstSeenAt       time.Time
+	BalanceCents      int64
+	FrozenCents       int64
+	CouponUnusedCount int64
+	CardType          string
 }

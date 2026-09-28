@@ -4,20 +4,19 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"time"
 
-	paymentdb "github.com/ChargePilot2026/charge-pilot/internal/central/charge/paymentgenerated"
 	"github.com/ChargePilot2026/charge-pilot/internal/central/identity"
 	"github.com/ChargePilot2026/charge-pilot/internal/central/payment"
 	"github.com/ChargePilot2026/charge-pilot/internal/central/pricing"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/httpapi"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 )
 
 type PrepayProvider interface {
@@ -94,7 +93,7 @@ func (a PaymentStartAPI) start(c *gin.Context) {
 		return
 	}
 	params, err := a.Intents.PrepayParams(c.Request.Context(), intent.PaymentOrderID)
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		params, err = a.Provider.Prepay(c.Request.Context(), payment.PrepayRequest{MerchantOrderNo: intent.MerchantOrderNo,
 			OpenID: intent.OpenID, AmountCents: intent.Estimate.TotalCents, ExpiresAt: intent.ExpiresAt})
 		if err == nil {
@@ -149,7 +148,7 @@ func (a WechatCallbackAPI) callback(c *gin.Context) {
 }
 
 type SimulationCallbackAPI struct {
-	DB           *sql.DB
+	DB           *gorm.DB
 	Store        PaymentCallbackStore
 	ServiceToken string
 }
@@ -172,8 +171,9 @@ func (a SimulationCallbackAPI) callback(c *gin.Context) {
 		httpapi.BadRequest(c, "invalid simulation request")
 		return
 	}
-	intent, err := paymentdb.New(a.DB).IntentForSimulation(c.Request.Context(), body.MerchantOrderNo)
-	if errors.Is(err, sql.ErrNoRows) {
+	var intent PaymentIntentRecord
+	err := a.DB.WithContext(c.Request.Context()).Where("merchant_order_no = ?", body.MerchantOrderNo).Take(&intent).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		httpapi.Write(c, http.StatusNotFound, 1004, "payment intent not found", nil)
 		return
 	}
@@ -183,7 +183,7 @@ func (a SimulationCallbackAPI) callback(c *gin.Context) {
 	}
 	result, err := a.Store.Apply(c.Request.Context(), VerifiedPayment{Provider: "simulation", MerchantID: "local-simulation",
 		AppID: a.Store.ExpectedAppID, MerchantOrderNo: intent.MerchantOrderNo,
-		TransactionID: "SIMTX" + intent.IntentID, OpenID: intent.Openid,
+		TransactionID: "SIMTX" + intent.IntentID, OpenID: intent.OpenID,
 		PaidCents: intent.TotalCents, PaidAt: time.Now().UTC()})
 	if errors.Is(err, ErrPaymentCallbackConflict) {
 		httpapi.Write(c, http.StatusConflict, 3001, "simulation payment conflict", nil)

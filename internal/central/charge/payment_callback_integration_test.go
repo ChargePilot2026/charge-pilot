@@ -45,7 +45,7 @@ func TestVerifiedPaymentCreatesOneChargeOrderAfterCallback(t *testing.T) {
 		Energy: "1", Minutes: 60,
 		Rule: pricing.Rule{ID: 3, StationID: 9, Version: 1, Mode: "kwh", ServiceCentsPerKWh: 40,
 			Periods: []pricing.Period{{Start: "00:00", End: "24:00", ElectricPriceCents: 100}}}}
-	intent, err := (PaymentIntentStore{DB: db}).Reserve(ctx, input)
+	intent, err := (PaymentIntentStore{DB: testGORMDB(t, db)}).Reserve(ctx, input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestVerifiedPaymentCreatesOneChargeOrderAfterCallback(t *testing.T) {
 	}
 	verified := VerifiedPayment{Provider: "simulation", MerchantID: "test-merchant", AppID: "test-app", MerchantOrderNo: intent.MerchantOrderNo,
 		TransactionID: transactionID, OpenID: intent.OpenID, PaidCents: intent.Estimate.TotalCents, PaidAt: time.Now().UTC()}
-	store := PaymentCallbackStore{DB: db, ExpectedProvider: "simulation", ExpectedMerchantID: "test-merchant", ExpectedAppID: "test-app"}
+	store := PaymentCallbackStore{DB: testGORMDB(t, db), ExpectedProvider: "simulation", ExpectedMerchantID: "test-merchant", ExpectedAppID: "test-app"}
 	first, err := store.Apply(ctx, verified)
 	if err != nil || first.ChargeOrderID == 0 || first.RefundRequired {
 		t.Fatalf("first=%+v err=%v", first, err)
@@ -114,7 +114,7 @@ func TestLateVerifiedPaymentQueuesRefundWithoutChargeOrder(t *testing.T) {
 		Energy: "1", Minutes: 60,
 		Rule: pricing.Rule{ID: 3, StationID: 9, Version: 1, Mode: "kwh", ServiceCentsPerKWh: 40,
 			Periods: []pricing.Period{{Start: "00:00", End: "24:00", ElectricPriceCents: 100}}}}
-	intent, err := (PaymentIntentStore{DB: db}).Reserve(ctx, input)
+	intent, err := (PaymentIntentStore{DB: testGORMDB(t, db)}).Reserve(ctx, input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func TestLateVerifiedPaymentQueuesRefundWithoutChargeOrder(t *testing.T) {
 	}
 	verified := VerifiedPayment{Provider: "simulation", MerchantID: "test-merchant", AppID: "test-app", MerchantOrderNo: intent.MerchantOrderNo,
 		TransactionID: transactionID, OpenID: intent.OpenID, PaidCents: intent.Estimate.TotalCents, PaidAt: time.Now().UTC()}
-	store := PaymentCallbackStore{DB: db, ExpectedProvider: "simulation", ExpectedMerchantID: "test-merchant", ExpectedAppID: "test-app"}
+	store := PaymentCallbackStore{DB: testGORMDB(t, db), ExpectedProvider: "simulation", ExpectedMerchantID: "test-merchant", ExpectedAppID: "test-app"}
 	result, err := store.Apply(ctx, verified)
 	if err != nil || !result.RefundRequired || result.ChargeOrderID != 0 {
 		t.Fatalf("late result=%+v err=%v", result, err)

@@ -18,6 +18,7 @@ import (
 	"github.com/ChargePilot2026/charge-pilot/internal/worker/outbox"
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
+	"gorm.io/gorm"
 )
 
 func main() {
@@ -36,6 +37,7 @@ func run(ctx context.Context) error {
 	}
 	databaseURLs := map[string]string{"gateway": cfg.GatewayDatabaseURL, "user": cfg.UserDatabaseURL, "admin": cfg.AdminDatabaseURL, "worker": cfg.DatabaseURL}
 	databases := make(map[string]*sql.DB, len(databaseURLs))
+	orms := make(map[string]*gorm.DB, len(databaseURLs))
 	for name, url := range databaseURLs {
 		db, err := dbconn.Open(ctx, url)
 		if err != nil {
@@ -43,6 +45,11 @@ func run(ctx context.Context) error {
 		}
 		defer db.Close()
 		databases[name] = db
+		orm, err := dbconn.WrapGORM(db)
+		if err != nil {
+			return err
+		}
+		orms[name] = orm
 	}
 	streamOptions, err := redis.ParseURL(cfg.RedisStreamURL)
 	if err != nil {
@@ -80,13 +87,13 @@ func run(ctx context.Context) error {
 		_ = server.Shutdown(shutdown)
 	}()
 	publishers := []outbox.Publisher{
-		{Source: "gateway", DB: databases["gateway"], Stream: stream},
-		{Source: "user", DB: databases["user"], Stream: stream},
-		{Source: "admin", DB: databases["admin"], Stream: stream},
+		{Source: "gateway", DB: orms["gateway"], Stream: stream},
+		{Source: "user", DB: orms["user"], Stream: stream},
+		{Source: "admin", DB: orms["admin"], Stream: stream},
 	}
-	startResults := charge.Synchronizer{GatewayDB: databases["gateway"], CentralURL: cfg.CentralInternalURL, GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken}
-	endResults := charge.EndSynchronizer{GatewayDB: databases["gateway"], CentralURL: cfg.CentralInternalURL, ServiceToken: cfg.ServiceToken}
-	paidStarts := charge.PaidStarter{UserDB: databases["user"], GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken}
+	startResults := charge.Synchronizer{GatewayDB: orms["gateway"], CentralURL: cfg.CentralInternalURL, GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken}
+	endResults := charge.EndSynchronizer{GatewayDB: orms["gateway"], CentralURL: cfg.CentralInternalURL, ServiceToken: cfg.ServiceToken}
+	paidStarts := charge.PaidStarter{UserDB: orms["user"], GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken}
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for {

@@ -50,7 +50,7 @@ func TestStartAuthorizationRequiresMatchingPaidRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 	router := httpapi.NewRouter()
-	StartAuthorization{DB: db, ServiceToken: "test-service-token"}.Register(router)
+	StartAuthorization{DB: testGORMDB(t, db), ServiceToken: "test-service-token"}.Register(router)
 	request := func(token string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/internal/charge-orders/"+orderNo+"/start-authorization", nil)
 		req.Header.Set("X-Service-Token", token)

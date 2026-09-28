@@ -43,7 +43,7 @@ func TestStartResultChangesPaidOrderOnlyOnce(t *testing.T) {
 	defer db.ExecContext(ctx, "DELETE FROM event_outbox WHERE event_id = ?", commandID)
 	defer db.ExecContext(ctx, "DELETE FROM charge_start_receipt WHERE command_id = ?", commandID)
 	result := StartResult{CommandID: commandID, ChargeOrderID: uint64(orderID), OrderNo: orderNo, DeviceID: "BOARD-TEST", PortNo: 1, PortID: uint64(orderID) + 1000000, Success: true, ResultCode: 0, OccurredAt: time.Now().UTC()}
-	store := StartResultStore{DB: db}
+	store := StartResultStore{DB: testGORMDB(t, db)}
 	replay, err := store.Apply(ctx, result)
 	if err != nil || replay {
 		t.Fatalf("first result: replay=%v err=%v", replay, err)
@@ -73,11 +73,11 @@ func TestStartResultChangesPaidOrderOnlyOnce(t *testing.T) {
 	end := EndResult{OrderNo: orderNo, ChargeOrderID: uint64(orderID), StartCommandID: commandID,
 		StopCommandID: stopID, DeviceID: "BOARD-TEST", PortNo: 1, PortID: uint64(orderID) + 1000000,
 		Meter: EndMeter{ChargedWh: 125, ChargedSeconds: 600, EndedAt: time.Now().UTC().Add(time.Minute)}}
-	ended, err := (EndResultStore{DB: db}).Apply(ctx, end)
+	ended, err := (EndResultStore{DB: testGORMDB(t, db)}).Apply(ctx, end)
 	if err != nil || ended {
 		t.Fatalf("first end: replay=%v err=%v", ended, err)
 	}
-	ended, err = (EndResultStore{DB: db}).Apply(ctx, end)
+	ended, err = (EndResultStore{DB: testGORMDB(t, db)}).Apply(ctx, end)
 	if err != nil || !ended {
 		t.Fatalf("end replay: replay=%v err=%v", ended, err)
 	}
@@ -88,7 +88,7 @@ func TestStartResultChangesPaidOrderOnlyOnce(t *testing.T) {
 		t.Fatalf("active after end=%d err=%v", active, err)
 	}
 	end.Meter.ChargedWh++
-	if _, err := (EndResultStore{DB: db}).Apply(ctx, end); !errors.Is(err, ErrEndResultConflict) {
+	if _, err := (EndResultStore{DB: testGORMDB(t, db)}).Apply(ctx, end); !errors.Is(err, ErrEndResultConflict) {
 		t.Fatalf("changed meter accepted: %v", err)
 	}
 }

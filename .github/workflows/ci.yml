@@ -17,10 +17,8 @@ jobs:
           cache: true
       - name: Formatting
         run: test -z "$(gofmt -l cmd internal)"
-      - name: Generate SQL and verify committed output
-        run: |
-          go tool sqlc generate
-          git diff --exit-code -- internal/gateway/store/generated internal/central/identity/generated internal/worker/outbox/generated
+      - name: Check Go module graph
+        run: go mod tidy -diff
       - name: Unit tests
         run: go test ./...
       - name: Static checks

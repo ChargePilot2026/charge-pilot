@@ -11,6 +11,9 @@ import (
 	"time"
 
 	"github.com/go-sql-driver/mysql"
+	gormmysql "gorm.io/driver/mysql"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 // DSN converts the deployment URL to a database/sql MySQL DSN. The URL is
@@ -62,4 +65,20 @@ func Open(ctx context.Context, raw string) (*sql.DB, error) {
 		return nil, fmt.Errorf("MySQL ping: %w", err)
 	}
 	return db, nil
+}
+
+// WrapGORM configures the application ORM over an already validated and
+// pinged MySQL pool. Goose continues to use Open's database/sql handle.
+func WrapGORM(db *sql.DB) (*gorm.DB, error) {
+	if db == nil {
+		return nil, errors.New("nil MySQL pool")
+	}
+	return gorm.Open(gormmysql.New(gormmysql.Config{
+		Conn:                      db,
+		SkipInitializeWithVersion: true,
+	}), &gorm.Config{
+		DisableAutomaticPing:                     true,
+		DisableForeignKeyConstraintWhenMigrating: true,
+		Logger:                                   logger.Default.LogMode(logger.Silent),
+	})
 }

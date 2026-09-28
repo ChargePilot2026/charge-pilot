@@ -13,11 +13,11 @@ import (
 	"strings"
 	"time"
 
-	chargejobdb "github.com/ChargePilot2026/charge-pilot/internal/worker/charge/generated"
+	"gorm.io/gorm"
 )
 
 type Synchronizer struct {
-	GatewayDB     *sql.DB
+	GatewayDB     *gorm.DB
 	CentralURL    string
 	GatewayURL    string
 	CommandFilter string
@@ -49,8 +49,13 @@ func (s Synchronizer) SyncBatch(ctx context.Context) (int, error) {
 	if err != nil || base.Host == "" || base.User != nil || base.Scheme != "http" && base.Scheme != "https" {
 		return 0, errors.New("invalid central URL")
 	}
-	queries := chargejobdb.New(s.GatewayDB)
-	rows, err := queries.UnreportedStartResults(ctx, chargejobdb.UnreportedStartResultsParams{CommandFilter: s.CommandFilter})
+	query := s.GatewayDB.WithContext(ctx).Model(&workerChargeCommandRow{}).
+		Where("status IN ('acked','rejected') AND result_reported = FALSE AND result_code IS NOT NULL AND ack_at IS NOT NULL")
+	if s.CommandFilter != "" {
+		query = query.Where("command_id = ?", s.CommandFilter)
+	}
+	var rows []workerChargeCommandRow
+	err = query.Order("updated_at").Limit(50).Find(&rows).Error
 	if err != nil {
 		return 0, err
 	}
@@ -67,7 +72,7 @@ func (s Synchronizer) SyncBatch(ctx context.Context) (int, error) {
 		}
 		result := startResult{CommandID: row.CommandID, ChargeOrderID: row.ChargeOrderID,
 			OrderNo: row.OrderNo, DeviceID: row.DeviceID, PortNo: row.PortNo,
-			PortID: uint64(row.PortID.Int64), Success: row.Status == chargejobdb.ChargeCommandStatusAcked,
+			PortID: uint64(row.PortID.Int64), Success: row.Status == "acked",
 			ResultCode: uint8(row.ResultCode.Int16), OccurredAt: row.AckAt.Time.UTC()}
 		if result.Success != (result.ResultCode == 0) {
 			firstError = errors.New("inconsistent persisted start result")
@@ -85,13 +90,30 @@ func (s Synchronizer) SyncBatch(ctx context.Context) (int, error) {
 			}
 			continue
 		}
-		if err := queries.MarkStartResultReported(ctx, row.CommandID); err != nil {
+		if err := s.GatewayDB.WithContext(ctx).Model(&workerChargeCommandRow{}).Where("command_id = ? AND status IN ('acked','rejected') AND result_reported = FALSE", row.CommandID).
+			Update("result_reported", true).Error; err != nil {
 			return count, err
 		}
 		count++
 	}
 	return count, firstError
 }
+
+type workerChargeCommandRow struct {
+	CommandID      string        `gorm:"column:command_id;primaryKey"`
+	StopCommandID  string        `gorm:"column:stop_command_id"`
+	ChargeOrderID  uint64        `gorm:"column:charge_order_id"`
+	OrderNo        string        `gorm:"column:order_no"`
+	DeviceID       string        `gorm:"column:device_id"`
+	PortNo         uint8         `gorm:"column:port_no"`
+	PortID         sql.NullInt64 `gorm:"column:port_id"`
+	Status         string        `gorm:"column:status"`
+	ResultReported bool          `gorm:"column:result_reported"`
+	ResultCode     sql.NullInt16 `gorm:"column:result_code"`
+	AckAt          sql.NullTime  `gorm:"column:ack_at"`
+}
+
+func (workerChargeCommandRow) TableName() string { return "charge_command" }
 
 func postStartResult(ctx context.Context, client *http.Client, base url.URL, token string, result startResult) error {
 	payload, err := json.Marshal(result)

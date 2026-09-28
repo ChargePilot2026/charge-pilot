@@ -40,7 +40,7 @@ func TestPaymentIntentHoldsPortWithoutCreatingChargeOrder(t *testing.T) {
 		Energy: "1", Minutes: 60,
 		Rule: pricing.Rule{ID: 3, StationID: 9, Version: 1, Mode: "kwh", ServiceCentsPerKWh: 40,
 			Periods: []pricing.Period{{Start: "00:00", End: "24:00", ElectricPriceCents: 100}}}}
-	store := PaymentIntentStore{DB: db}
+	store := PaymentIntentStore{DB: testGORMDB(t, db)}
 	first, err := store.Reserve(ctx, input)
 	if err != nil || first.PaymentOrderID == 0 || first.Estimate.TotalCents != 140 {
 		t.Fatalf("first=%+v err=%v", first, err)

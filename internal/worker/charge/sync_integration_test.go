@@ -53,7 +53,7 @@ func TestStartResultRetriesUntilCentralPersists(t *testing.T) {
 		_, _ = w.Write([]byte(`{"code":0}`))
 	}))
 	defer server.Close()
-	syncer := Synchronizer{GatewayDB: db, CentralURL: server.URL, ServiceToken: "test-service-token", CommandFilter: commandID}
+	syncer := Synchronizer{GatewayDB: testGORMDB(t, db), CentralURL: server.URL, ServiceToken: "test-service-token", CommandFilter: commandID}
 	if count, err := syncer.SyncBatch(ctx); count != 0 || err == nil {
 		t.Fatalf("failed central call reported: %d %v", count, err)
 	}

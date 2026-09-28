@@ -39,13 +39,17 @@ func TestLoginAndRefreshIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
+	userORM, err := dbconn.WrapGORM(db)
+	if err != nil {
+		t.Fatal(err)
+	}
 	options, err := redis.ParseURL(redisURL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	cache := redis.NewClient(options)
 	defer cache.Close()
-	store := UserStore{DB: db}
+	store := UserStore{DB: userORM}
 	openid := "go-test-login-identity-20260928"
 	_, _ = db.ExecContext(ctx, "DELETE FROM wallet_account WHERE user_id IN (SELECT id FROM user WHERE openid = ?)", openid)
 	_, _ = db.ExecContext(ctx, "DELETE FROM user WHERE openid = ?", openid)
@@ -125,6 +129,10 @@ func TestAuthHTTPIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
+	userORM, err := dbconn.WrapGORM(db)
+	if err != nil {
+		t.Fatal(err)
+	}
 	options, err := redis.ParseURL(redisURL)
 	if err != nil {
 		t.Fatal(err)
@@ -140,7 +148,7 @@ func TestAuthHTTPIntegration(t *testing.T) {
 	defer db.ExecContext(ctx, "DELETE FROM user WHERE openid = ?", openid)
 	defer db.ExecContext(ctx, "DELETE FROM user_login_identity WHERE openid = ?", []byte(openid))
 	router := httpapi.NewRouter()
-	API{WeChat: fakeExchange{openid}, Users: UserStore{DB: db}, Sessions: Sessions{Redis: cache}, JWT: jwt}.Register(router)
+	API{WeChat: fakeExchange{openid}, Users: UserStore{DB: userORM}, Sessions: Sessions{Redis: cache}, JWT: jwt}.Register(router)
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/public/auth/login", strings.NewReader(`{"code":"test-code"}`))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()

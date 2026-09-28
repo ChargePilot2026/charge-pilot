@@ -37,6 +37,10 @@ func TestSimulationHTTPPaymentCreatesChargeOnlyAfterCallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer adminDB.Close()
+	adminORM, err := dbconn.WrapGORM(adminDB)
+	if err != nil {
+		t.Fatal(err)
+	}
 	station, err := adminDB.ExecContext(ctx, "INSERT INTO station (code,name,longitude,latitude) VALUES (?,?,113.90000000,22.50000000)", "pay-"+uuid.NewString(), "Payment Test")
 	if err != nil {
 		t.Fatal(err)
@@ -91,11 +95,11 @@ func TestSimulationHTTPPaymentCreatesChargeOnlyAfterCallback(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := httpapi.NewRouter()
 	serviceToken := "test-service-token"
-	callbackStore := PaymentCallbackStore{DB: userDB, ExpectedProvider: "simulation", ExpectedMerchantID: "local-simulation", ExpectedAppID: "wx_local_dev"}
+	callbackStore := PaymentCallbackStore{DB: testGORMDB(t, userDB), ExpectedProvider: "simulation", ExpectedMerchantID: "local-simulation", ExpectedAppID: "wx_local_dev"}
 	PaymentStartAPI{Auth: identity.SessionAuthenticator{JWT: jwt, Sessions: scanSession{}, Users: scanUser{}},
-		Scan: ScanAPI{GatewayURL: gateway.URL, ServiceToken: serviceToken}, Pricing: pricing.Store{DB: adminDB},
-		Intents: PaymentIntentStore{DB: userDB}, Provider: payment.Simulator{}}.Register(router)
-	SimulationCallbackAPI{DB: userDB, Store: callbackStore, ServiceToken: serviceToken}.Register(router)
+		Scan: ScanAPI{GatewayURL: gateway.URL, ServiceToken: serviceToken}, Pricing: pricing.Store{DB: adminORM},
+		Intents: PaymentIntentStore{DB: testGORMDB(t, userDB)}, Provider: payment.Simulator{}}.Register(router)
+	SimulationCallbackAPI{DB: testGORMDB(t, userDB), Store: callbackStore, ServiceToken: serviceToken}.Register(router)
 	requestBody, _ := json.Marshal(map[string]any{"client_request_id": uuid.NewString(), "port_id": portCode, "estimated_kwh": "1.000", "estimated_minutes": 60})
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/user/scan/start", bytes.NewReader(requestBody))
 	request.Header.Set("Authorization", "Bearer "+access)

@@ -2,7 +2,6 @@ package pricing
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"math"
@@ -10,9 +9,9 @@ import (
 	"strconv"
 	"time"
 
-	pricingdb "github.com/ChargePilot2026/charge-pilot/internal/central/pricing/generated"
 	"github.com/ChargePilot2026/charge-pilot/internal/finance"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
 )
 
 var (
@@ -51,26 +50,47 @@ type Estimate struct {
 	ChargeQuantity   uint16 `json:"charge_quantity"`
 }
 
-type Store struct{ DB *sql.DB }
+type Store struct{ DB *gorm.DB }
 
 func (s Store) ActiveStationRule(ctx context.Context, stationID uint64) (Rule, error) {
 	if s.DB == nil || stationID == 0 || stationID > math.MaxInt64 {
 		return Rule{}, ErrRuleUnavailable
 	}
-	row, err := pricingdb.New(s.DB).ActiveStationRule(ctx, sql.NullInt64{Int64: int64(stationID), Valid: true})
-	if errors.Is(err, sql.ErrNoRows) {
+	var row pricingRuleRow
+	result := s.DB.WithContext(ctx).Table("pricing_rule AS r").
+		Select(`r.id, r.station_id, r.mode, r.time_of_use_json,
+			r.service_fee_cents_per_kwh, r.service_fee_cents_per_min,
+			r.min_charge_cents, r.version`).
+		Joins("JOIN station AS s ON s.id = r.station_id").
+		Where(`r.station_id = ? AND s.status = 'active' AND s.deleted_at IS NULL
+			AND r.status = 'active' AND r.deleted_at IS NULL
+			AND (r.effective_from IS NULL OR r.effective_from <= NOW(3))
+			AND (r.effective_to IS NULL OR r.effective_to > NOW(3))`, stationID).
+		Order("r.version DESC").Order("r.id DESC").Take(&row)
+	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 		return Rule{}, ErrRuleUnavailable
 	}
-	if err != nil {
-		return Rule{}, err
+	if result.Error != nil {
+		return Rule{}, result.Error
 	}
 	var periods []Period
-	if json.Unmarshal(row.TimeOfUseJson, &periods) != nil || len(periods) == 0 {
+	if json.Unmarshal(row.TimeOfUseJSON, &periods) != nil || len(periods) == 0 {
 		return Rule{}, ErrInvalidPricing
 	}
-	return Rule{ID: row.ID, StationID: stationID, Version: row.Version, Mode: string(row.Mode), Periods: periods,
-		ServiceCentsPerKWh: row.ServiceFeeCentsPerKwh, ServiceCentsPerMinute: row.ServiceFeeCentsPerMin,
+	return Rule{ID: row.ID, StationID: stationID, Version: row.Version, Mode: row.Mode, Periods: periods,
+		ServiceCentsPerKWh: row.ServiceFeeCentsPerKWh, ServiceCentsPerMinute: row.ServiceFeeCentsPerMinute,
 		MinimumCents: row.MinChargeCents}, nil
+}
+
+type pricingRuleRow struct {
+	ID                       uint64 `gorm:"column:id"`
+	StationID                uint64 `gorm:"column:station_id"`
+	Mode                     string `gorm:"column:mode"`
+	TimeOfUseJSON            []byte `gorm:"column:time_of_use_json"`
+	ServiceFeeCentsPerKWh    int64  `gorm:"column:service_fee_cents_per_kwh"`
+	ServiceFeeCentsPerMinute int64  `gorm:"column:service_fee_cents_per_min"`
+	MinChargeCents           int64  `gorm:"column:min_charge_cents"`
+	Version                  uint32 `gorm:"column:version"`
 }
 
 func EstimateCharge(rule Rule, energy string, minutes uint16, start time.Time) (Estimate, error) {

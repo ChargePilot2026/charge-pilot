@@ -10,35 +10,39 @@ import (
 	"fmt"
 
 	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol"
-	"github.com/ChargePilot2026/charge-pilot/internal/gateway/store/generated"
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var ErrDeviceNotProvisioned = errors.New("device is not provisioned for this protocol")
 
-type MySQLSink struct{ DB *sql.DB }
+type MySQLSink struct{ DB *gorm.DB }
 
 func (s MySQLSink) Register(ctx context.Context, registration protocol.Registration) error {
 	if s.DB == nil {
 		return errors.New("gateway database is unavailable")
 	}
-	queries := gatewaydb.New(s.DB)
-	id, err := queries.GetEnabledDevice(ctx, gatewaydb.GetEnabledDeviceParams{DeviceID: registration.DeviceID, VendorCode: registration.Protocol})
-	if errors.Is(err, sql.ErrNoRows) {
+	var device deviceRow
+	err := s.DB.WithContext(ctx).Table("device AS d").Select("d.id").
+		Joins("JOIN vendor AS v ON v.id = d.vendor_id").
+		Where("d.device_id = ? AND d.status = 'enabled' AND d.deleted_at IS NULL AND v.vendor_code = ? AND v.status = 'enabled' AND v.deleted_at IS NULL", registration.DeviceID, registration.Protocol).
+		Take(&device).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return ErrDeviceNotProvisioned
 	}
 	if err != nil {
 		return fmt.Errorf("verify device: %w", err)
 	}
-	err = queries.TouchDevice(ctx, gatewaydb.TouchDeviceParams{
-		FirmwareVersion: sql.NullString{String: registration.SoftwareVersion, Valid: true},
-		RegisteredAt:    sql.NullTime{Time: registration.ReceivedAt.UTC(), Valid: true},
-		LastSeenAt:      sql.NullTime{Time: registration.ReceivedAt.UTC(), Valid: true},
-		ID:              id,
+	now := registration.ReceivedAt.UTC()
+	result := s.DB.WithContext(ctx).Model(&deviceRow{}).Where("id = ?", device.ID).Updates(map[string]any{
+		"firmware_version": registration.SoftwareVersion,
+		"registered_at":    gorm.Expr("COALESCE(registered_at, ?)", now),
+		"last_seen_at":     now,
 	})
-	if err != nil {
-		return fmt.Errorf("record device registration: %w", err)
+	if result.Error != nil {
+		return fmt.Errorf("record device registration: %w", result.Error)
 	}
 	return nil
 }
@@ -52,60 +56,50 @@ func (s MySQLSink) Record(ctx context.Context, event protocol.Event) error {
 		return fmt.Errorf("marshal device event: %w", err)
 	}
 	key := eventKey(event)
-	tx, err := s.DB.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	queries := gatewaydb.New(tx)
-	inserted, err := queries.InsertDeviceEvent(ctx, gatewaydb.InsertDeviceEventParams{
-		EventKey:     key,
-		ProtocolName: event.Protocol,
-		DeviceID:     event.DeviceID,
-		EventType:    string(event.Type),
-		PortNo:       event.Port,
-		EventJson:    data,
-		ReceivedAt:   event.ReceivedAt.UTC(),
-	})
-	if err != nil {
-		return fmt.Errorf("persist device event: %w", err)
-	}
-	rows, err := inserted.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("check device event persistence: %w", err)
-	}
-	if err := queries.InsertDeviceOutbox(ctx, gatewaydb.InsertDeviceOutboxParams{EventID: key, EnvelopeJson: data}); err != nil {
-		return fmt.Errorf("queue device event: %w", err)
-	}
-	if rows == 1 && event.Type == protocol.StartResult {
-		if err := applyStartAck(ctx, queries, event); err != nil {
-			return fmt.Errorf("apply start acknowledgement: %w", err)
+	return s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		inserted := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&deviceEventRow{
+			EventKey: key, Protocol: event.Protocol, DeviceID: event.DeviceID,
+			EventType: string(event.Type), PortNo: event.Port, EventJSON: data, ReceivedAt: event.ReceivedAt.UTC(),
+		})
+		if inserted.Error != nil {
+			return fmt.Errorf("persist device event: %w", inserted.Error)
 		}
-	}
-	if rows == 1 && event.Type == protocol.StopResult {
-		if err := applyStopAck(ctx, queries, event); err != nil {
-			return fmt.Errorf("apply stop acknowledgement: %w", err)
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&deviceOutboxRow{EventID: key, Stream: "device_event_stream", EnvelopeJSON: data}).Error; err != nil {
+			return fmt.Errorf("queue device event: %w", err)
 		}
-		if err := applyUserStopAck(ctx, queries, event); err != nil {
-			return fmt.Errorf("apply user stop acknowledgement: %w", err)
+		if inserted.RowsAffected == 1 && event.Type == protocol.StartResult {
+			if err := applyStartAck(ctx, tx, event); err != nil {
+				return fmt.Errorf("apply start acknowledgement: %w", err)
+			}
 		}
-	}
-	if event.Type == protocol.Heartbeat {
-		if err := queries.TouchDeviceSeen(ctx, gatewaydb.TouchDeviceSeenParams{LastSeenAt: sql.NullTime{Time: event.ReceivedAt.UTC(), Valid: true}, DeviceID: event.DeviceID}); err != nil {
-			return fmt.Errorf("touch device heartbeat: %w", err)
+		if inserted.RowsAffected == 1 && event.Type == protocol.StopResult {
+			if err := applyStopAck(ctx, tx, event); err != nil {
+				return fmt.Errorf("apply stop acknowledgement: %w", err)
+			}
+			if err := applyUserStopAck(ctx, tx, event); err != nil {
+				return fmt.Errorf("apply user stop acknowledgement: %w", err)
+			}
 		}
-	}
-	if rows == 1 {
-		if err := insertMeasurements(ctx, queries, event); err != nil {
-			return fmt.Errorf("persist device telemetry: %w", err)
+		if event.Type == protocol.Heartbeat {
+			if err := tx.Model(&deviceRow{}).Where("device_id = ? AND status = 'enabled' AND deleted_at IS NULL", event.DeviceID).
+				Update("last_seen_at", event.ReceivedAt.UTC()).Error; err != nil {
+				return fmt.Errorf("touch device heartbeat: %w", err)
+			}
 		}
-	}
-	return tx.Commit()
+		if inserted.RowsAffected == 1 {
+			if err := insertMeasurements(ctx, tx, event); err != nil {
+				return fmt.Errorf("persist device telemetry: %w", err)
+			}
+		}
+		return nil
+	}, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 }
 
-func applyUserStopAck(ctx context.Context, queries *gatewaydb.Queries, event protocol.Event) error {
-	command, err := queries.LockUserStopForAck(ctx, gatewaydb.LockUserStopForAckParams{DeviceID: event.DeviceID, PortNo: event.Port, SessionID: sql.NullString{String: hex.EncodeToString(event.SessionID[:]), Valid: true}})
-	if errors.Is(err, sql.ErrNoRows) {
+func applyUserStopAck(ctx context.Context, tx *gorm.DB, event protocol.Event) error {
+	var command chargeStopCommandRow
+	err := tx.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("device_id = ? AND port_no = ? AND session_id = ?", event.DeviceID, event.Port, hex.EncodeToString(event.SessionID[:])).Take(&command).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil
 	}
 	if err != nil {
@@ -114,18 +108,17 @@ func applyUserStopAck(ctx context.Context, queries *gatewaydb.Queries, event pro
 	if event.ResultCode != 0x10 && event.ResultCode != 0x01 {
 		return nil
 	}
-	if command.Status == gatewaydb.ChargeStopCommandStatusSent {
-		_, err = queries.MarkUserStopAcked(ctx, command.CommandID)
+	if command.Status == "sent" {
+		return tx.Model(&chargeStopCommandRow{}).Where("command_id = ? AND status = 'sent'", command.CommandID).Update("status", "acked").Error
 	}
-	return err
+	return nil
 }
 
-func applyStartAck(ctx context.Context, queries *gatewaydb.Queries, event protocol.Event) error {
-	command, err := queries.LockStartForAck(ctx, gatewaydb.LockStartForAckParams{
-		DeviceID: event.DeviceID, PortNo: event.Port,
-		SessionID: sql.NullString{String: hex.EncodeToString(event.SessionID[:]), Valid: true},
-	})
-	if errors.Is(err, sql.ErrNoRows) {
+func applyStartAck(ctx context.Context, tx *gorm.DB, event protocol.Event) error {
+	var command chargeCommandRow
+	err := tx.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("device_id = ? AND port_no = ? AND session_id = ?", event.DeviceID, event.Port, hex.EncodeToString(event.SessionID[:])).Take(&command).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		// Preserve unmatched ACKs for investigation; they cannot change an order.
 		return nil
 	}
@@ -135,41 +128,34 @@ func applyStartAck(ctx context.Context, queries *gatewaydb.Queries, event protoc
 	if !command.PortID.Valid || command.PortID.Int64 <= 0 {
 		return ErrOrderConflict
 	}
-	if event.ResultCode == 0 && command.Status == gatewaydb.ChargeCommandStatusSent {
-		changed, err := queries.MarkStartAcked(ctx, gatewaydb.MarkStartAckedParams{CommandID: command.CommandID, AckAt: sql.NullTime{Time: event.ReceivedAt.UTC(), Valid: true}})
-		if err != nil {
-			return err
-		}
-		count, err := changed.RowsAffected()
-		if err != nil || count != 1 {
+	if event.ResultCode == 0 && command.Status == "sent" {
+		changed := tx.Model(&chargeCommandRow{}).Where("command_id = ? AND status = 'sent'", command.CommandID).
+			Updates(map[string]any{"status": "acked", "error": nil, "result_code": 0, "ack_at": event.ReceivedAt.UTC()})
+		if err := requireOne(changed); err != nil {
 			return ErrOrderConflict
 		}
-		port, err := queries.SetPortCharging(ctx, gatewaydb.SetPortChargingParams{ID: uint64(command.PortID.Int64), CurrentOrderID: sql.NullString{String: command.OrderNo, Valid: true}})
-		if err != nil {
-			return err
-		}
-		count, err = port.RowsAffected()
-		if err != nil || count != 1 {
+		port := tx.Model(&devicePortRow{}).Where("id = ? AND current_order_id = ? AND status = 'idle'", command.PortID.Int64, command.OrderNo).Update("status", "charging")
+		if err := requireOne(port); err != nil {
 			return ErrPortUnavailable
 		}
 	}
-	if event.ResultCode != 0 && (command.Status == gatewaydb.ChargeCommandStatusSent || command.Status == gatewaydb.ChargeCommandStatusStopping) {
-		if _, err := queries.MarkStartRejected(ctx, gatewaydb.MarkStartRejectedParams{CommandID: command.CommandID, Error: sql.NullString{String: fmt.Sprintf("device rejected START code %d", event.ResultCode), Valid: true}, ResultCode: sql.NullInt16{Int16: int16(event.ResultCode), Valid: true}, AckAt: sql.NullTime{Time: event.ReceivedAt.UTC(), Valid: true}}); err != nil {
-			return err
+	if event.ResultCode != 0 && (command.Status == "sent" || command.Status == "stopping") {
+		updated := tx.Model(&chargeCommandRow{}).Where("command_id = ? AND status IN ('sent','stopping')", command.CommandID).
+			Updates(map[string]any{"status": "rejected", "error": fmt.Sprintf("device rejected START code %d", event.ResultCode), "result_code": event.ResultCode, "ack_at": event.ReceivedAt.UTC()})
+		if updated.Error != nil {
+			return updated.Error
 		}
-		if _, err := queries.ReleaseReservedPort(ctx, gatewaydb.ReleaseReservedPortParams{ID: uint64(command.PortID.Int64), CurrentOrderID: sql.NullString{String: command.OrderNo, Valid: true}}); err != nil {
-			return err
-		}
+		return tx.Model(&devicePortRow{}).Where("id = ? AND current_order_id = ? AND status = 'idle'", command.PortID.Int64, command.OrderNo).
+			Update("current_order_id", nil).Error
 	}
 	return nil
 }
 
-func applyStopAck(ctx context.Context, queries *gatewaydb.Queries, event protocol.Event) error {
-	command, err := queries.LockStartForStopAck(ctx, gatewaydb.LockStartForStopAckParams{
-		DeviceID: event.DeviceID, PortNo: event.Port,
-		StopSessionID: sql.NullString{String: hex.EncodeToString(event.SessionID[:]), Valid: true},
-	})
-	if errors.Is(err, sql.ErrNoRows) {
+func applyStopAck(ctx context.Context, tx *gorm.DB, event protocol.Event) error {
+	var command chargeCommandRow
+	err := tx.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("device_id = ? AND port_no = ? AND stop_session_id = ? AND status = 'stopping'", event.DeviceID, event.Port, hex.EncodeToString(event.SessionID[:])).Take(&command).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil
 	}
 	if err != nil {
@@ -182,31 +168,23 @@ func applyStopAck(ctx context.Context, queries *gatewaydb.Queries, event protoco
 	if !command.PortID.Valid || command.PortID.Int64 <= 0 {
 		return ErrOrderConflict
 	}
-	result, err := queries.MarkStartCompensated(ctx, gatewaydb.MarkStartCompensatedParams{CommandID: command.CommandID, AckAt: sql.NullTime{Time: event.ReceivedAt.UTC(), Valid: true}})
-	if err != nil {
-		return err
-	}
-	count, err := result.RowsAffected()
-	if err != nil || count != 1 {
+	changed := tx.Model(&chargeCommandRow{}).Where("command_id = ? AND status = 'stopping'", command.CommandID).
+		Updates(map[string]any{"status": "rejected", "result_code": 254, "ack_at": event.ReceivedAt.UTC(), "error": "STOP compensation confirmed"})
+	if err := requireOne(changed); err != nil {
 		return ErrOrderConflict
 	}
-	port, err := queries.ReleasePortAfterStop(ctx, gatewaydb.ReleasePortAfterStopParams{ID: uint64(command.PortID.Int64), CurrentOrderID: sql.NullString{String: command.OrderNo, Valid: true}})
-	if err != nil {
-		return err
-	}
-	count, err = port.RowsAffected()
-	if err != nil || count != 1 {
+	port := tx.Model(&devicePortRow{}).Where("id = ? AND current_order_id = ? AND status IN ('idle','charging')", command.PortID.Int64, command.OrderNo).
+		Updates(map[string]any{"status": "idle", "current_order_id": nil})
+	if err := requireOne(port); err != nil {
 		return ErrPortUnavailable
 	}
 	return nil
 }
 
-func insertMeasurements(ctx context.Context, queries *gatewaydb.Queries, event protocol.Event) error {
+func insertMeasurements(ctx context.Context, tx *gorm.DB, event protocol.Event) error {
 	insert := func(port sql.NullInt16, metric, value string) error {
-		return queries.InsertTelemetry(ctx, gatewaydb.InsertTelemetryParams{
-			DeviceID: event.DeviceID, PortNo: port, Metric: metric,
-			ValueNum: value, Ts: event.ReceivedAt.UTC(),
-		})
+		return tx.WithContext(ctx).Create(&telemetryRow{DeviceID: event.DeviceID, PortNo: port, Metric: metric,
+			ValueNum: value, TS: event.ReceivedAt.UTC()}).Error
 	}
 	if event.Type == protocol.Heartbeat {
 		if err := insert(sql.NullInt16{}, "signal", decimal.NewFromInt(int64(event.Signal)).String()); err != nil {
@@ -235,6 +213,16 @@ func insertMeasurements(ctx context.Context, queries *gatewaydb.Queries, event p
 	if event.Type == protocol.ChargeEnd {
 		id := sql.NullInt16{Int16: int16(event.Port), Valid: true}
 		return insert(id, "meter_kwh", decimal.NewFromInt(int64(event.EnergyMilliKWh)).Shift(-3).StringFixed(3))
+	}
+	return nil
+}
+
+func requireOne(result *gorm.DB) error {
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return gorm.ErrRecordNotFound
 	}
 	return nil
 }

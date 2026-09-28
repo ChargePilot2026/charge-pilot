@@ -70,7 +70,7 @@ func TestPaidStartIsDurableAndRequiresMatchedDeviceACK(t *testing.T) {
 	session := &recordingSession{}
 	detach := registry.Attach(deviceID, session)
 	defer detach()
-	service := StartService{Orders: fixedPaidOrder{paid}, Store: store.MySQLSink{DB: db}, Devices: registry}
+	service := StartService{Orders: fixedPaidOrder{paid}, Store: store.MySQLSink{DB: testGORMDB(t, db)}, Devices: registry}
 	first, err := service.Start(ctx, orderNo)
 	if err != nil || first.Status != "sent" || len(session.commands) != 1 {
 		t.Fatalf("first start: %+v sends=%d err=%v", first, len(session.commands), err)
@@ -81,17 +81,17 @@ func TestPaidStartIsDurableAndRequiresMatchedDeviceACK(t *testing.T) {
 	}
 	wrongSession := first.Wire.SessionID
 	wrongSession[0] ^= 1
-	if err := (store.MySQLSink{DB: db}).Record(ctx, protocol.Event{Protocol: "dc589", DeviceID: deviceID, Port: 1, Type: protocol.StartResult, SessionID: wrongSession, RawPayload: []byte{0, 1}, ReceivedAt: time.Now().UTC()}); err != nil {
+	if err := (store.MySQLSink{DB: testGORMDB(t, db)}).Record(ctx, protocol.Event{Protocol: "dc589", DeviceID: deviceID, Port: 1, Type: protocol.StartResult, SessionID: wrongSession, RawPayload: []byte{0, 1}, ReceivedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
-	status, err := (store.MySQLSink{DB: db}).StartStatus(ctx, orderNo)
+	status, err := (store.MySQLSink{DB: testGORMDB(t, db)}).StartStatus(ctx, orderNo)
 	if err != nil || status != "sent" {
 		t.Fatalf("unmatched ACK changed state: %s %v", status, err)
 	}
-	if err := (store.MySQLSink{DB: db}).Record(ctx, protocol.Event{Protocol: "dc589", DeviceID: deviceID, Port: 1, Type: protocol.StartResult, SessionID: first.Wire.SessionID, RawPayload: []byte{0, 1}, ReceivedAt: time.Now().UTC()}); err != nil {
+	if err := (store.MySQLSink{DB: testGORMDB(t, db)}).Record(ctx, protocol.Event{Protocol: "dc589", DeviceID: deviceID, Port: 1, Type: protocol.StartResult, SessionID: first.Wire.SessionID, RawPayload: []byte{0, 1}, ReceivedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
-	status, err = (store.MySQLSink{DB: db}).StartStatus(ctx, orderNo)
+	status, err = (store.MySQLSink{DB: testGORMDB(t, db)}).StartStatus(ctx, orderNo)
 	if err != nil || status != "acked" {
 		t.Fatalf("matched ACK not applied: %s %v", status, err)
 	}
@@ -103,28 +103,28 @@ func TestPaidStartIsDurableAndRequiresMatchedDeviceACK(t *testing.T) {
 	if err := db.QueryRowContext(ctx, "SELECT id FROM device_port WHERE device_id = ? AND port_no = 1", deviceID).Scan(&portID); err != nil {
 		t.Fatal(err)
 	}
-	stopService := UserStopService{Orders: fixedActiveOrder{store.ActiveOrder{ChargeOrderID: paid.ChargeOrderID, OrderNo: orderNo, UserID: paid.UserID, DeviceID: deviceID, PortNo: 1, PortID: portID, StartCommandID: first.CommandID}}, Store: store.MySQLSink{DB: db}, Devices: registry}
+	stopService := UserStopService{Orders: fixedActiveOrder{store.ActiveOrder{ChargeOrderID: paid.ChargeOrderID, OrderNo: orderNo, UserID: paid.UserID, DeviceID: deviceID, PortNo: 1, PortID: portID, StartCommandID: first.CommandID}}, Store: store.MySQLSink{DB: testGORMDB(t, db)}, Devices: registry}
 	userStop, err := stopService.Stop(ctx, orderNo, paid.UserID)
 	if err != nil || userStop.Status != "sent" || len(session.commands) != 2 || session.commands[1].Kind != protocol.CommandStop {
 		t.Fatalf("user STOP: %+v sends=%d err=%v", userStop, len(session.commands), err)
 	}
-	if err := (store.MySQLSink{DB: db}).Record(ctx, protocol.Event{Protocol: "dc589", DeviceID: deviceID, Port: 1, Type: protocol.StopResult, ResultCode: 0x10, SessionID: userStop.Wire.SessionID, RawPayload: []byte{0x10, 1}, ReceivedAt: time.Now().UTC()}); err != nil {
+	if err := (store.MySQLSink{DB: testGORMDB(t, db)}).Record(ctx, protocol.Event{Protocol: "dc589", DeviceID: deviceID, Port: 1, Type: protocol.StopResult, ResultCode: 0x10, SessionID: userStop.Wire.SessionID, RawPayload: []byte{0x10, 1}, ReceivedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
-	userStop, err = (store.MySQLSink{DB: db}).ExistingUserStop(ctx, orderNo, paid.UserID)
+	userStop, err = (store.MySQLSink{DB: testGORMDB(t, db)}).ExistingUserStop(ctx, orderNo, paid.UserID)
 	if err != nil || userStop.Status != "acked" {
 		t.Fatalf("user stop ACK: %+v %v", userStop, err)
 	}
-	if err := (Compensation{Store: store.MySQLSink{DB: db}, Devices: registry}).Request(ctx, orderNo, first.CommandID); err != nil {
+	if err := (Compensation{Store: store.MySQLSink{DB: testGORMDB(t, db)}, Devices: registry}).Request(ctx, orderNo, first.CommandID); err != nil {
 		t.Fatal(err)
 	}
 	if len(session.commands) != 3 || session.commands[2].Kind != protocol.CommandStop {
 		t.Fatalf("STOP not dispatched after conflict: %+v", session.commands)
 	}
-	if err := (store.MySQLSink{DB: db}).Record(ctx, protocol.Event{Protocol: "dc589", DeviceID: deviceID, Port: 1, Type: protocol.StopResult, ResultCode: 0x10, SessionID: first.StopWire.SessionID, RawPayload: []byte{0x10, 1}, ReceivedAt: time.Now().UTC()}); err != nil {
+	if err := (store.MySQLSink{DB: testGORMDB(t, db)}).Record(ctx, protocol.Event{Protocol: "dc589", DeviceID: deviceID, Port: 1, Type: protocol.StopResult, ResultCode: 0x10, SessionID: first.StopWire.SessionID, RawPayload: []byte{0x10, 1}, ReceivedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
-	status, err = (store.MySQLSink{DB: db}).StartStatus(ctx, orderNo)
+	status, err = (store.MySQLSink{DB: testGORMDB(t, db)}).StartStatus(ctx, orderNo)
 	if err != nil || status != "rejected" {
 		t.Fatalf("STOP compensation not completed: %s %v", status, err)
 	}

@@ -32,7 +32,7 @@ func TestDeviceEventOutboxIntegration(t *testing.T) {
 	stream := redis.NewClient(options)
 	defer stream.Close()
 	deviceID := uuid.NewString()
-	if err := (store.MySQLSink{DB: db}).Record(ctx, protocol.Event{Protocol: "dc589", DeviceID: deviceID, Type: protocol.Heartbeat, ReceivedAt: time.Now().UTC()}); err != nil {
+	if err := (store.MySQLSink{DB: testGORMDB(t, db)}).Record(ctx, protocol.Event{Protocol: "dc589", DeviceID: deviceID, Type: protocol.Heartbeat, ReceivedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
 	var eventKey string
@@ -41,7 +41,7 @@ func TestDeviceEventOutboxIntegration(t *testing.T) {
 	}
 	defer db.ExecContext(ctx, "DELETE FROM device_event WHERE event_key = ?", eventKey)
 	defer db.ExecContext(ctx, "DELETE FROM event_outbox WHERE event_id = ?", eventKey)
-	count, err := (outbox.Publisher{Source: "gateway", DB: db, Stream: stream}).PublishBatch(ctx)
+	count, err := (outbox.Publisher{Source: "gateway", DB: testGORMDB(t, db), Stream: stream}).PublishBatch(ctx)
 	if err != nil || count < 1 {
 		t.Fatalf("publish count=%d err=%v", count, err)
 	}

@@ -17,7 +17,6 @@ docker compose -f compose.dev.yaml up --build
 ```bash
 go test ./...
 go vet ./...
-go tool sqlc generate
 docker compose -f compose.dev.yaml config --quiet
 ```
 

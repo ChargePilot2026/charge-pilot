@@ -3,21 +3,20 @@ package charge
 import (
 	"crypto/sha256"
 	"crypto/subtle"
-	"database/sql"
 	"errors"
 	"net/http"
 	"strings"
 
-	chargedb "github.com/ChargePilot2026/charge-pilot/internal/central/charge/generated"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/httpapi"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 // StartAuthorization is a read-only guard for the device gateway. It returns
 // an order only after both the charge order and its payment record are marked
 // paid. The payment callback implementation must perform that transition.
 type StartAuthorization struct {
-	DB           *sql.DB
+	DB           *gorm.DB
 	ServiceToken string
 }
 
@@ -37,12 +36,23 @@ func (a StartAuthorization) handle(c *gin.Context) {
 		httpapi.BadRequest(c, "invalid order number")
 		return
 	}
-	order, err := chargedb.New(a.DB).PaidStartAuthorization(c.Request.Context(), orderNo)
-	if errors.Is(err, sql.ErrNoRows) {
+	var order paidStartAuthorizationRow
+	result := a.DB.WithContext(c.Request.Context()).Table("charge_order AS c").
+		Select(`c.id AS charge_order_id, c.order_no, c.user_id, c.device_id, c.port_no,
+			p.id AS payment_order_id, c.charge_mode, c.charge_quantity`).
+		Joins(`JOIN payment_order AS p ON p.id = c.payment_order_id
+			AND p.biz_type = 'charge' AND p.biz_id = c.id AND p.user_id = c.user_id`).
+		Where(`c.order_no = ? AND c.status = 'paid' AND c.deleted_at IS NULL
+			AND p.status = 'paid' AND p.paid_cents >= p.total_cents
+			AND p.total_cents > 0 AND p.deleted_at IS NULL
+			AND ((c.charge_mode IN (0,4,10,12) AND c.charge_quantity BETWEEN 1 AND 600)
+			OR (c.charge_mode IN (1,11) AND c.charge_quantity BETWEEN 1 AND 65535))`, orderNo).
+		Take(&order)
+	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 		httpapi.Write(c, http.StatusConflict, 2000, "order is not fully paid", nil)
 		return
 	}
-	if err != nil {
+	if result.Error != nil {
 		httpapi.Write(c, http.StatusServiceUnavailable, 5001, "order storage unavailable", nil)
 		return
 	}
@@ -53,7 +63,18 @@ func (a StartAuthorization) handle(c *gin.Context) {
 		"device_id":        order.DeviceID,
 		"port_no":          order.PortNo,
 		"payment_order_id": order.PaymentOrderID,
-		"charge_mode":      order.ChargeMode.Int16,
-		"charge_quantity":  order.ChargeQuantity.Int16,
+		"charge_mode":      order.ChargeMode,
+		"charge_quantity":  order.ChargeQuantity,
 	})
+}
+
+type paidStartAuthorizationRow struct {
+	ChargeOrderID  uint64
+	OrderNo        string
+	UserID         uint64
+	DeviceID       string
+	PortNo         uint8
+	PaymentOrderID uint64
+	ChargeMode     uint8
+	ChargeQuantity uint16
 }

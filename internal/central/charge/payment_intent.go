@@ -5,16 +5,15 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 
-	paymentdb "github.com/ChargePilot2026/charge-pilot/internal/central/charge/paymentgenerated"
 	"github.com/ChargePilot2026/charge-pilot/internal/central/payment"
 	"github.com/ChargePilot2026/charge-pilot/internal/central/pricing"
-	"github.com/go-sql-driver/mysql"
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var ErrPaymentIntentConflict = errors.New("payment intent conflicts with another request or active port")
@@ -43,7 +42,7 @@ type IntentInput struct {
 	Rule            pricing.Rule
 }
 
-type PaymentIntentStore struct{ DB *sql.DB }
+type PaymentIntentStore struct{ DB *gorm.DB }
 
 // Reserve creates a payment record and a short-lived port hold. It deliberately
 // does not insert charge_order; only verified payment callbacks may do that.
@@ -54,17 +53,18 @@ func (s PaymentIntentStore) Reserve(ctx context.Context, input IntentInput) (Pay
 		input.Port.Port.PortID == "" || input.Port.Port.DeviceID != input.Port.DeviceID || input.Port.Port.PortNo == 0 {
 		return PaymentIntent{}, ErrPaymentIntentConflict
 	}
-	q := paymentdb.New(s.DB)
-	if previous, err := q.PaymentIntentByRequest(ctx, paymentdb.PaymentIntentByRequestParams{UserID: input.UserID, ClientRequestID: input.ClientRequestID}); err == nil {
+	var previous PaymentIntentRecord
+	err := s.DB.WithContext(ctx).Where("user_id = ? AND client_request_id = ?", input.UserID, input.ClientRequestID).Take(&previous).Error
+	if err == nil {
 		return existingIntent(previous, input)
-	} else if !errors.Is(err, sql.ErrNoRows) {
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return PaymentIntent{}, err
 	}
 	estimate, err := pricing.EstimateCharge(input.Rule, input.Energy, input.Minutes, time.Now())
 	if err != nil {
 		return PaymentIntent{}, err
 	}
-	if err := q.ExpireStaleIntents(ctx); err != nil {
+	if err := s.DB.WithContext(ctx).Model(&PaymentIntentRecord{}).Where("status = 'initiated' AND expires_at < NOW(3)").Update("status", "expired").Error; err != nil {
 		return PaymentIntent{}, err
 	}
 	intentID := uuid.NewString()
@@ -78,53 +78,51 @@ func (s PaymentIntentStore) Reserve(ctx context.Context, input IntentInput) (Pay
 	if err != nil {
 		return PaymentIntent{}, err
 	}
-	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
-	if err != nil {
-		return PaymentIntent{}, err
-	}
-	defer tx.Rollback()
-	txq := paymentdb.New(tx)
-	openid, err := txq.UserOpenID(ctx, input.UserID)
-	if err != nil {
-		return PaymentIntent{}, err
-	}
-	payment, err := txq.InsertPaymentOrderForIntent(ctx, paymentdb.InsertPaymentOrderForIntentParams{OrderNo: merchantOrderNo, UserID: input.UserID, TotalCents: estimate.TotalCents, ExpiredAt: sql.NullTime{Time: expiresAt, Valid: true}})
-	if err != nil {
-		return PaymentIntent{}, err
-	}
-	paymentID, err := payment.LastInsertId()
-	if err != nil {
-		return PaymentIntent{}, fmt.Errorf("payment order id unavailable: %w", err)
-	}
-	if paymentID <= 0 {
-		return PaymentIntent{}, ErrPaymentIntentConflict
-	}
-	err = txq.InsertChargePaymentIntent(ctx, paymentdb.InsertChargePaymentIntentParams{
-		IntentID: intentID, ClientRequestID: input.ClientRequestID, MerchantOrderNo: merchantOrderNo,
-		PaymentOrderID: uint64(paymentID), UserID: input.UserID, Openid: openid,
-		DeviceID: input.Port.DeviceID, PortNo: input.Port.Port.PortNo, PortCode: input.Port.Port.PortID,
-		StationID: input.Port.StationID, PricingRuleID: input.Rule.ID, PricingRuleVersion: input.Rule.Version,
-		PricingSnapshot: snapshot, EstimatedKwh: estimate.EstimatedKWh, EstimatedMinutes: estimate.EstimatedMinutes,
-		ElectricCents: estimate.ElectricCents, ServiceCents: estimate.ServiceCents, TotalCents: estimate.TotalCents,
-		ChargeMode: estimate.ChargeMode, ChargeQuantity: estimate.ChargeQuantity, ExpiresAt: expiresAt,
-	})
-	if err != nil {
-		var mysqlErr *mysql.MySQLError
-		if errors.As(err, &mysqlErr) && mysqlErr.Number == 1062 {
-			return PaymentIntent{}, ErrPaymentIntentConflict
+	var openid string
+	var paymentID uint64
+	err = s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var identity struct {
+			OpenID string `gorm:"column:openid"`
 		}
+		if err := tx.Table("user").Select("openid").Where("id = ? AND status = 'active' AND deleted_at IS NULL", input.UserID).Take(&identity).Error; err != nil {
+			return err
+		}
+		openid = identity.OpenID
+		paymentOrder := PaymentOrderRecord{OrderNo: merchantOrderNo, BizType: "charge", BizID: 0,
+			UserID: input.UserID, PayMethod: "wechat", TotalCents: estimate.TotalCents,
+			Status: "initiated", ExpiredAt: sql.NullTime{Time: expiresAt, Valid: true}, CreatedMonth: utcDate()}
+		if err := tx.Create(&paymentOrder).Error; err != nil {
+			return err
+		}
+		paymentID = paymentOrder.ID
+		intent := PaymentIntentRecord{IntentID: intentID, ClientRequestID: input.ClientRequestID,
+			MerchantOrderNo: merchantOrderNo, PaymentOrderID: paymentID, UserID: input.UserID, OpenID: openid,
+			DeviceID: input.Port.DeviceID, PortNo: input.Port.Port.PortNo, PortCode: input.Port.Port.PortID,
+			StationID: input.Port.StationID, PricingRuleID: input.Rule.ID, PricingRuleVersion: input.Rule.Version,
+			PricingSnapshot: snapshot, EstimatedKWh: estimate.EstimatedKWh, EstimatedMinutes: estimate.EstimatedMinutes,
+			ElectricCents: estimate.ElectricCents, ServiceCents: estimate.ServiceCents, TotalCents: estimate.TotalCents,
+			ChargeMode: estimate.ChargeMode, ChargeQuantity: estimate.ChargeQuantity, Status: "initiated", ExpiresAt: expiresAt}
+		if err := tx.Create(&intent).Error; err != nil {
+			if isMySQLDuplicate(err) {
+				return ErrPaymentIntentConflict
+			}
+			return err
+		}
+		return nil
+	}, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
 		return PaymentIntent{}, err
 	}
-	if err := tx.Commit(); err != nil {
+	if paymentID == 0 {
 		return PaymentIntent{}, err
 	}
-	return PaymentIntent{IntentID: intentID, MerchantOrderNo: merchantOrderNo, PaymentOrderID: uint64(paymentID), UserID: input.UserID,
+	return PaymentIntent{IntentID: intentID, MerchantOrderNo: merchantOrderNo, PaymentOrderID: paymentID, UserID: input.UserID,
 		OpenID: openid, DeviceID: input.Port.DeviceID, PortNo: input.Port.Port.PortNo, PortCode: input.Port.Port.PortID,
 		StationID: input.Port.StationID, Estimate: estimate, ExpiresAt: expiresAt, Status: "initiated"}, nil
 }
 
-func existingIntent(row paymentdb.PaymentIntentByRequestRow, input IntentInput) (PaymentIntent, error) {
-	if row.PortCode != input.Port.Port.PortID || row.DeviceID != input.Port.DeviceID || row.EstimatedMinutes != input.Minutes || row.PricingRuleID != input.Rule.ID || row.PricingRuleVersion != input.Rule.Version || row.Status != paymentdb.ChargePaymentIntentStatusInitiated || time.Now().After(row.ExpiresAt) {
+func existingIntent(row PaymentIntentRecord, input IntentInput) (PaymentIntent, error) {
+	if row.PortCode != input.Port.Port.PortID || row.DeviceID != input.Port.DeviceID || row.EstimatedMinutes != input.Minutes || row.PricingRuleID != input.Rule.ID || row.PricingRuleVersion != input.Rule.Version || row.Status != "initiated" || time.Now().After(row.ExpiresAt) {
 		return PaymentIntent{}, ErrPaymentIntentConflict
 	}
 	var snapshot struct {
@@ -135,17 +133,17 @@ func existingIntent(row paymentdb.PaymentIntentByRequestRow, input IntentInput) 
 		return PaymentIntent{}, ErrPaymentIntentConflict
 	}
 	return PaymentIntent{IntentID: row.IntentID, MerchantOrderNo: row.MerchantOrderNo, PaymentOrderID: row.PaymentOrderID,
-		UserID: row.UserID, OpenID: row.Openid, DeviceID: row.DeviceID, PortNo: row.PortNo, PortCode: row.PortCode,
-		StationID: row.StationID, Estimate: snapshot.Estimate, ExpiresAt: row.ExpiresAt, Status: string(row.Status)}, nil
+		UserID: row.UserID, OpenID: row.OpenID, DeviceID: row.DeviceID, PortNo: row.PortNo, PortCode: row.PortCode,
+		StationID: row.StationID, Estimate: snapshot.Estimate, ExpiresAt: row.ExpiresAt, Status: row.Status}, nil
 }
 
 func (s PaymentIntentStore) PrepayParams(ctx context.Context, paymentOrderID uint64) (payment.PrepayParams, error) {
-	data, err := paymentdb.New(s.DB).PrepayByPaymentOrder(ctx, paymentOrderID)
-	if err != nil {
+	var record ChargePrepayRecord
+	if err := s.DB.WithContext(ctx).Where("payment_order_id = ?", paymentOrderID).Take(&record).Error; err != nil {
 		return payment.PrepayParams{}, err
 	}
 	var params payment.PrepayParams
-	if err := json.Unmarshal(data, &params); err != nil || params.PrepayID == "" || params.Provider == "" {
+	if err := json.Unmarshal(record.ParamsJSON, &params); err != nil || params.PrepayID == "" || params.Provider == "" {
 		return payment.PrepayParams{}, ErrPaymentIntentConflict
 	}
 	return params, nil
@@ -159,6 +157,6 @@ func (s PaymentIntentStore) SavePrepay(ctx context.Context, paymentOrderID uint6
 	if err != nil {
 		return err
 	}
-	return paymentdb.New(s.DB).SavePrepay(ctx, paymentdb.SavePrepayParams{PaymentOrderID: paymentOrderID,
-		ParamsJson: data, PrepayID: sql.NullString{String: params.PrepayID, Valid: true}})
+	record := ChargePrepayRecord{PaymentOrderID: paymentOrderID, ParamsJSON: data, PrepayID: sql.NullString{String: params.PrepayID, Valid: true}}
+	return s.DB.WithContext(ctx).Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "payment_order_id"}}, DoNothing: true}).Create(&record).Error
 }

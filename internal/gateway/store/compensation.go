@@ -7,7 +7,8 @@ import (
 	"errors"
 
 	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol"
-	gatewaydb "github.com/ChargePilot2026/charge-pilot/internal/gateway/store/generated"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type StopJob struct {
@@ -19,56 +20,59 @@ type StopJob struct {
 }
 
 func (s MySQLSink) CompensateStart(ctx context.Context, orderNo, commandID string) (StopJob, bool, error) {
-	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
-	if err != nil {
-		return StopJob{}, false, err
-	}
-	defer tx.Rollback()
-	q := gatewaydb.New(tx)
-	row, err := q.LockStartForCompensation(ctx, orderNo)
-	if errors.Is(err, sql.ErrNoRows) {
-		return StopJob{}, false, ErrOrderConflict
-	}
-	if err != nil {
-		return StopJob{}, false, err
-	}
-	if row.CommandID != commandID || !row.PortID.Valid || row.PortID.Int64 <= 0 {
-		return StopJob{}, false, ErrOrderConflict
-	}
-	if row.Status == gatewaydb.ChargeCommandStatusPending {
-		changed, err := q.MarkPendingStartRejected(ctx, commandID)
-		if err != nil {
-			return StopJob{}, false, err
+	var job StopJob
+	shouldSend := false
+	err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var row chargeCommandRow
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("order_no = ?", orderNo).Take(&row).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrOrderConflict
 		}
-		count, err := changed.RowsAffected()
 		if err != nil {
-			return StopJob{}, false, err
+			return err
 		}
-		if count == 1 {
-			if _, err := q.ReleaseReservedPort(ctx, gatewaydb.ReleaseReservedPortParams{ID: uint64(row.PortID.Int64), CurrentOrderID: sql.NullString{String: orderNo, Valid: true}}); err != nil {
-				return StopJob{}, false, err
+		if row.CommandID != commandID || !row.PortID.Valid || row.PortID.Int64 <= 0 {
+			return ErrOrderConflict
+		}
+		if row.Status == "pending" {
+			changed := tx.Model(&chargeCommandRow{}).Where("command_id = ? AND status = 'pending'", commandID).
+				Updates(map[string]any{"status": "rejected", "result_code": 254, "ack_at": gorm.Expr("CURRENT_TIMESTAMP(3)"), "error": "start authorization revoked before send"})
+			if err := changed.Error; err != nil {
+				return err
 			}
-			return StopJob{}, false, tx.Commit()
+			if changed.RowsAffected != 1 {
+				return ErrOrderConflict
+			}
+			return tx.Model(&devicePortRow{}).Where("id = ? AND current_order_id = ? AND status = 'idle'", row.PortID.Int64, orderNo).
+				Update("current_order_id", nil).Error
 		}
-		return StopJob{}, false, ErrOrderConflict
-	}
-	if row.Status == gatewaydb.ChargeCommandStatusRejected {
-		return StopJob{}, false, tx.Commit()
-	}
-	if row.Status != gatewaydb.ChargeCommandStatusStopping {
-		if err := q.MarkStartStopping(ctx, gatewaydb.MarkStartStoppingParams{CommandID: commandID, Error: sql.NullString{String: "central rejected device start", Valid: true}}); err != nil {
-			return StopJob{}, false, err
+		if row.Status == "rejected" {
+			return nil
 		}
-	}
-	job, err := stopJob(row.CommandID, row.OrderNo, row.DeviceID, row.PortNo, row.StopSessionID)
+		if row.Status != "stopping" {
+			if err := tx.Model(&chargeCommandRow{}).Where("command_id = ? AND status IN ('sent','acked')", commandID).
+				Updates(map[string]any{"status": "stopping", "error": "central rejected device start"}).Error; err != nil {
+				return err
+			}
+		}
+		job, err = stopJob(row.CommandID, row.OrderNo, row.DeviceID, row.PortNo, row.StopSessionID)
+		if err != nil {
+			return err
+		}
+		shouldSend = true
+		return nil
+	}, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return StopJob{}, false, err
 	}
-	return job, true, tx.Commit()
+	return job, shouldSend, nil
 }
 
 func (s MySQLSink) StoppingJobs(ctx context.Context) ([]StopJob, error) {
-	rows, err := gatewaydb.New(s.DB).StoppingCommands(ctx)
+	var rows []chargeCommandRow
+	err := s.DB.WithContext(ctx).Select("command_id, order_no, device_id, port_no, stop_session_id").
+		Where("status = 'stopping' AND (stop_sent_at IS NULL OR stop_sent_at < DATE_SUB(NOW(3), INTERVAL 10 SECOND))").
+		Order("updated_at").Limit(50).Find(&rows).Error
 	if err != nil {
 		return nil, err
 	}
@@ -84,7 +88,8 @@ func (s MySQLSink) StoppingJobs(ctx context.Context) ([]StopJob, error) {
 }
 
 func (s MySQLSink) MarkStopSent(ctx context.Context, commandID string) error {
-	return gatewaydb.New(s.DB).MarkStopSent(ctx, commandID)
+	return s.DB.WithContext(ctx).Model(&chargeCommandRow{}).Where("command_id = ? AND status = 'stopping'", commandID).
+		Update("stop_sent_at", gorm.Expr("CURRENT_TIMESTAMP(3)")).Error
 }
 
 func stopJob(commandID, orderNo, deviceID string, port uint8, encoded sql.NullString) (StopJob, error) {

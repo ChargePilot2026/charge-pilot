@@ -6,7 +6,7 @@ import (
 	"errors"
 	"time"
 
-	gatewaydb "github.com/ChargePilot2026/charge-pilot/internal/gateway/store/generated"
+	"gorm.io/gorm"
 )
 
 type ScanPort struct {
@@ -29,16 +29,25 @@ type ScanResult struct {
 var ErrScanNotFound = errors.New("scan code not found")
 
 func (s MySQLSink) ResolveScan(ctx context.Context, code string) (ScanResult, error) {
-	q := gatewaydb.New(s.DB)
-	port, err := q.ScanPortByCode(ctx, code)
+	var port scanPortRow
+	err := s.DB.WithContext(ctx).Table("device_port AS p").
+		Select("p.id, p.device_id, p.port_no, p.port_code, p.status, p.current_order_id, d.last_seen_at, d.station_id").
+		Joins("JOIN device AS d ON d.device_id = p.device_id").Joins("JOIN vendor AS v ON v.id = d.vendor_id").
+		Where("p.port_code = ? AND p.deleted_at IS NULL AND d.status = 'enabled' AND d.deleted_at IS NULL AND v.status = 'enabled' AND v.deleted_at IS NULL", code).
+		Take(&port).Error
 	if err == nil {
 		view := scanPort(port.PortCode, port.DeviceID, port.PortNo, port.Status, port.CurrentOrderID, port.LastSeenAt)
 		return ScanResult{Kind: "port", DeviceID: view.DeviceID, StationID: uint64(port.StationID.Int64), Port: &view}, nil
 	}
-	if !errors.Is(err, sql.ErrNoRows) {
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return ScanResult{}, err
 	}
-	rows, err := q.ScanPortsByDevice(ctx, code)
+	var rows []scanPortRow
+	err = s.DB.WithContext(ctx).Table("device_port AS p").
+		Select("p.id, p.device_id, p.port_no, p.port_code, p.status, p.current_order_id, d.last_seen_at, d.station_id").
+		Joins("JOIN device AS d ON d.device_id = p.device_id").Joins("JOIN vendor AS v ON v.id = d.vendor_id").
+		Where("d.device_id = ? AND p.deleted_at IS NULL AND d.status = 'enabled' AND d.deleted_at IS NULL AND v.status = 'enabled' AND v.deleted_at IS NULL", code).
+		Order("p.port_no").Find(&rows).Error
 	if err != nil {
 		return ScanResult{}, err
 	}
@@ -52,8 +61,19 @@ func (s MySQLSink) ResolveScan(ctx context.Context, code string) (ScanResult, er
 	return result, nil
 }
 
-func scanPort(code, deviceID string, number uint8, status gatewaydb.DevicePortStatus, current sql.NullString, seen sql.NullTime) ScanPort {
+type scanPortRow struct {
+	ID             uint64         `gorm:"column:id"`
+	DeviceID       string         `gorm:"column:device_id"`
+	PortNo         uint8          `gorm:"column:port_no"`
+	PortCode       string         `gorm:"column:port_code"`
+	Status         string         `gorm:"column:status"`
+	CurrentOrderID sql.NullString `gorm:"column:current_order_id"`
+	LastSeenAt     sql.NullTime   `gorm:"column:last_seen_at"`
+	StationID      sql.NullInt64  `gorm:"column:station_id"`
+}
+
+func scanPort(code, deviceID string, number uint8, status string, current sql.NullString, seen sql.NullTime) ScanPort {
 	online := seen.Valid && time.Since(seen.Time) <= 2*time.Minute && time.Since(seen.Time) >= -time.Minute
 	return ScanPort{PortID: code, DeviceID: deviceID, PortNo: number, Status: string(status), Online: online,
-		Available: status == gatewaydb.DevicePortStatusIdle && !current.Valid && online}
+		Available: status == "idle" && !current.Valid && online}
 }

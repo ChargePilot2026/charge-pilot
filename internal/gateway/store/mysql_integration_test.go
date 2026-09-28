@@ -33,7 +33,7 @@ func TestChargeEndReplayStoresOneMeterAndOutboxEvent(t *testing.T) {
 	key := eventKey(keyEvent)
 	defer db.ExecContext(ctx, "DELETE FROM event_outbox WHERE event_id = ?", key)
 	for range 2 {
-		if err := (MySQLSink{DB: db}).Record(ctx, keyEvent); err != nil {
+		if err := (MySQLSink{DB: testGORMDB(t, db)}).Record(ctx, keyEvent); err != nil {
 			t.Fatal(err)
 		}
 	}

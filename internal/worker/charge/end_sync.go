@@ -15,11 +15,11 @@ import (
 	"time"
 
 	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol"
-	chargejobdb "github.com/ChargePilot2026/charge-pilot/internal/worker/charge/generated"
+	"gorm.io/gorm"
 )
 
 type EndSynchronizer struct {
-	GatewayDB    *sql.DB
+	GatewayDB    *gorm.DB
 	CentralURL   string
 	ServiceToken string
 	Client       *http.Client
@@ -51,8 +51,9 @@ func (s EndSynchronizer) SyncBatch(ctx context.Context) (int, error) {
 	if err != nil || base.Host == "" || base.User != nil || base.Scheme != "http" && base.Scheme != "https" {
 		return 0, errors.New("invalid central URL")
 	}
-	q := chargejobdb.New(s.GatewayDB)
-	events, err := q.PendingChargeEnds(ctx)
+	var events []workerDeviceEventRow
+	err = s.GatewayDB.WithContext(ctx).Where("event_type = 'charge_end' AND processed_at IS NULL AND JSON_EXTRACT(event_json, '$.ConsumerType') = 2").
+		Order("id").Limit(50).Find(&events).Error
 	if err != nil {
 		return 0, err
 	}
@@ -64,7 +65,7 @@ func (s EndSynchronizer) SyncBatch(ctx context.Context) (int, error) {
 	var first error
 	for _, item := range events {
 		var event protocol.Event
-		if err := json.Unmarshal(item.EventJson, &event); err != nil {
+		if err := json.Unmarshal(item.EventJSON, &event); err != nil {
 			if first == nil {
 				first = err
 			}
@@ -77,14 +78,15 @@ func (s EndSynchronizer) SyncBatch(ctx context.Context) (int, error) {
 			}
 			continue
 		}
-		command, err := q.StartCommandForEnd(ctx, orderID)
+		var command workerChargeCommandRow
+		err = s.GatewayDB.WithContext(ctx).Where("charge_order_id = ?", orderID).Take(&command).Error
 		if err != nil {
 			if first == nil {
 				first = err
 			}
 			continue
 		}
-		if command.DeviceID != event.DeviceID || command.PortNo != event.Port || command.Status != chargejobdb.ChargeCommandStatusAcked || !command.PortID.Valid || command.PortID.Int64 <= 0 {
+		if command.DeviceID != event.DeviceID || command.PortNo != event.Port || command.Status != "acked" || !command.PortID.Valid || command.PortID.Int64 <= 0 {
 			if first == nil {
 				first = errors.New("charge end does not match an acknowledged START")
 			}
@@ -99,27 +101,44 @@ func (s EndSynchronizer) SyncBatch(ctx context.Context) (int, error) {
 			}
 			continue
 		}
-		released, err := q.ReleasePortAfterFinalizedEnd(ctx, chargejobdb.ReleasePortAfterFinalizedEndParams{ID: uint64(command.PortID.Int64), CurrentOrderID: sql.NullString{String: command.OrderNo, Valid: true}})
-		if err != nil {
-			return count, err
+		released := s.GatewayDB.WithContext(ctx).Model(&workerDevicePortRow{}).
+			Where("id = ? AND current_order_id = ? AND status = 'charging'", uint64(command.PortID.Int64), command.OrderNo).
+			Updates(map[string]any{"status": "idle", "current_order_id": nil})
+		if released.Error != nil {
+			return count, released.Error
 		}
-		changed, err := released.RowsAffected()
-		if err != nil {
-			return count, err
-		}
-		if changed == 0 {
-			port, err := q.PortEndState(ctx, uint64(command.PortID.Int64))
-			if err != nil || port.Status != chargejobdb.DevicePortStatusIdle || port.CurrentOrderID.Valid {
+		if released.RowsAffected == 0 {
+			var port workerDevicePortRow
+			err := s.GatewayDB.WithContext(ctx).Select("status, current_order_id").Where("id = ?", uint64(command.PortID.Int64)).Take(&port).Error
+			if err != nil || port.Status != "idle" || port.CurrentOrderID.Valid {
 				return count, errors.New("gateway port could not be released after settlement")
 			}
 		}
-		if err := q.MarkChargeEndProcessed(ctx, item.ID); err != nil {
+		if err := s.GatewayDB.WithContext(ctx).Model(&workerDeviceEventRow{}).Where("id = ? AND processed_at IS NULL", item.ID).
+			Update("processed_at", gorm.Expr("CURRENT_TIMESTAMP(3)")).Error; err != nil {
 			return count, err
 		}
 		count++
 	}
 	return count, first
 }
+
+type workerDeviceEventRow struct {
+	ID          uint64       `gorm:"column:id;primaryKey"`
+	EventType   string       `gorm:"column:event_type"`
+	EventJSON   []byte       `gorm:"column:event_json"`
+	ProcessedAt sql.NullTime `gorm:"column:processed_at"`
+}
+
+func (workerDeviceEventRow) TableName() string { return "device_event" }
+
+type workerDevicePortRow struct {
+	ID             uint64         `gorm:"column:id;primaryKey"`
+	Status         string         `gorm:"column:status"`
+	CurrentOrderID sql.NullString `gorm:"column:current_order_id"`
+}
+
+func (workerDevicePortRow) TableName() string { return "device_port" }
 
 func postEndResult(ctx context.Context, client *http.Client, base url.URL, token string, result endResult) error {
 	data, err := json.Marshal(result)

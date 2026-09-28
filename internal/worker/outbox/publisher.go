@@ -6,50 +6,71 @@ import (
 	"fmt"
 	"time"
 
-	outboxdb "github.com/ChargePilot2026/charge-pilot/internal/worker/outbox/generated"
 	"github.com/redis/go-redis/v9"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type Publisher struct {
 	Source string
-	DB     *sql.DB
+	DB     *gorm.DB
 	Stream *redis.Client
 }
+
+type eventOutboxRow struct {
+	ID           uint64         `gorm:"column:id;primaryKey"`
+	EventID      string         `gorm:"column:event_id"`
+	Stream       string         `gorm:"column:stream"`
+	EnvelopeJSON []byte         `gorm:"column:envelope_json"`
+	RetryCount   uint32         `gorm:"column:retry_count"`
+	LastError    sql.NullString `gorm:"column:last_error"`
+}
+
+func (eventOutboxRow) TableName() string { return "event_outbox" }
 
 // PublishBatch keeps MySQL rows locked until Redis acknowledges the publish.
 // Redis may receive a duplicate if MySQL commit fails; consumers must dedupe event_id.
 func (p Publisher) PublishBatch(ctx context.Context) (int, error) {
-	tx, err := p.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback()
-	q := outboxdb.New(tx)
-	rows, err := q.LockPending(ctx)
-	if err != nil {
-		return 0, err
+	if p.DB == nil || p.Stream == nil || p.Source == "" {
+		return 0, fmt.Errorf("outbox publisher is not configured")
 	}
 	published := 0
-	for _, row := range rows {
-		pushCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-		_, pushErr := p.Stream.XAdd(pushCtx, &redis.XAddArgs{Stream: row.Stream, Values: map[string]any{
-			"event_id": row.EventID, "source": p.Source, "payload": string(row.EnvelopeJson),
-		}}).Result()
-		cancel()
-		if pushErr != nil {
-			backoff := 1 << min(row.RetryCount, 8)
-			if err := q.MarkRetry(ctx, outboxdb.MarkRetryParams{LastError: sql.NullString{String: truncate(pushErr.Error(), 255), Valid: true}, Column2: backoff, ID: row.ID}); err != nil {
-				return published, err
+	err := p.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var rows []eventOutboxRow
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).
+			Where("status IN ('pending','failed') AND scheduled_at <= NOW(3)").Order("id").Limit(100).Find(&rows).Error; err != nil {
+			return err
+		}
+		for _, row := range rows {
+			pushCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+			_, pushErr := p.Stream.XAdd(pushCtx, &redis.XAddArgs{Stream: row.Stream, Values: map[string]any{
+				"event_id": row.EventID, "source": p.Source, "payload": string(row.EnvelopeJSON),
+			}}).Result()
+			cancel()
+			if pushErr != nil {
+				backoff := 1 << min(row.RetryCount, 8)
+				update := tx.Model(&eventOutboxRow{}).Where("id = ?", row.ID).Updates(map[string]any{
+					"status": "failed", "retry_count": gorm.Expr("retry_count + 1"),
+					"last_error":   truncate(pushErr.Error(), 255),
+					"scheduled_at": gorm.Expr("DATE_ADD(NOW(3), INTERVAL ? SECOND)", backoff),
+				})
+				if update.Error != nil {
+					return update.Error
+				}
+				continue
 			}
-			continue
+			update := tx.Model(&eventOutboxRow{}).Where("id = ?", row.ID).Updates(map[string]any{
+				"status": "published", "published_at": gorm.Expr("NOW(3)"), "last_error": nil,
+			})
+			if update.Error != nil {
+				return update.Error
+			}
+			published++
 		}
-		if err := q.MarkPublished(ctx, row.ID); err != nil {
-			return published, err
-		}
-		published++
-	}
-	if err := tx.Commit(); err != nil {
-		return published, fmt.Errorf("commit outbox: %w", err)
+		return nil
+	}, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return published, fmt.Errorf("publish outbox batch: %w", err)
 	}
 	return published, nil
 }

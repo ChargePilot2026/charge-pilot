@@ -41,7 +41,7 @@ func TestResolveScanIsReadOnlyAndHidesDisabledDevices(t *testing.T) {
 	if _, err := db.ExecContext(ctx, "INSERT INTO device_port (device_id,port_no,port_code) VALUES (?,1,?),(?,2,?)", deviceID, portCode, deviceID, deviceID+":2"); err != nil {
 		t.Fatal(err)
 	}
-	lookup := MySQLSink{DB: db}
+	lookup := MySQLSink{DB: testGORMDB(t, db)}
 	port, err := lookup.ResolveScan(ctx, portCode)
 	if err != nil || port.Kind != "port" || port.StationID != 9 || port.Port == nil || !port.Port.Available || port.Port.PortID != portCode {
 		t.Fatalf("port=%+v err=%v", port, err)

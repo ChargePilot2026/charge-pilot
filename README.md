@@ -25,7 +25,7 @@ docs/              需求、接口、数据库和迁移验收记录
 
 ```bash
 go test ./...
-go tool sqlc generate
+go vet ./...
 docker compose -f compose.dev.yaml config --quiet
 ```
 

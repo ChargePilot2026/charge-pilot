@@ -41,18 +41,23 @@ func run(ctx context.Context) error {
 		return err
 	}
 	defer db.Close()
+	orm, err := dbconn.WrapGORM(db)
+	if err != nil {
+		return err
+	}
+	sink := store.MySQLSink{DB: orm}
 	gin.SetMode(gin.ReleaseMode)
 	router := httpapi.NewRouter()
 	deviceConnections := &protocol.Registry{}
 	control.StartAPI{Service: control.StartService{
 		Orders: control.CentralAuthorizer{BaseURL: cfg.CentralInternalURL, ServiceToken: cfg.ServiceToken},
-		Store:  store.MySQLSink{DB: db}, Devices: deviceConnections,
+		Store:  sink, Devices: deviceConnections,
 	}, ServiceToken: cfg.ServiceToken}.Register(router)
-	compensation := control.Compensation{Store: store.MySQLSink{DB: db}, Devices: deviceConnections}
+	compensation := control.Compensation{Store: sink, Devices: deviceConnections}
 	control.CompensationAPI{Service: compensation, ServiceToken: cfg.ServiceToken}.Register(router)
-	userStops := control.UserStopService{Orders: control.CentralAuthorizer{BaseURL: cfg.CentralInternalURL, ServiceToken: cfg.ServiceToken}, Store: store.MySQLSink{DB: db}, Devices: deviceConnections}
+	userStops := control.UserStopService{Orders: control.CentralAuthorizer{BaseURL: cfg.CentralInternalURL, ServiceToken: cfg.ServiceToken}, Store: sink, Devices: deviceConnections}
 	control.UserStopAPI{Service: userStops, ServiceToken: cfg.ServiceToken}.Register(router)
-	control.ScanAPI{Store: store.MySQLSink{DB: db}, ServiceToken: cfg.ServiceToken}.Register(router)
+	control.ScanAPI{Store: sink, ServiceToken: cfg.ServiceToken}.Register(router)
 	router.GET("/health/live", func(c *gin.Context) { httpapi.OK(c, gin.H{"status": "live"}) })
 	router.GET("/health/ready", func(c *gin.Context) {
 		checkCtx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
@@ -73,7 +78,7 @@ func run(ctx context.Context) error {
 		return err
 	})
 	group.Go(func() error {
-		err := protocol.Serve(groupCtx, []protocol.Endpoint{{Address: cfg.DC589Addr, Adapter: dc589.TCPAdapter{Registry: deviceConnections}}}, store.MySQLSink{DB: db}, cfg.MaxConnections)
+		err := protocol.Serve(groupCtx, []protocol.Endpoint{{Address: cfg.DC589Addr, Adapter: dc589.TCPAdapter{Registry: deviceConnections}}}, sink, cfg.MaxConnections)
 		if errors.Is(err, context.Canceled) {
 			return nil
 		}

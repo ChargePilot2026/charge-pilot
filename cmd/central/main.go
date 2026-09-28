@@ -43,11 +43,19 @@ func run(ctx context.Context) error {
 		return err
 	}
 	defer db.Close()
+	userORM, err := dbconn.WrapGORM(db)
+	if err != nil {
+		return err
+	}
 	adminDB, err := dbconn.Open(ctx, cfg.AdminDatabaseURL)
 	if err != nil {
 		return err
 	}
 	defer adminDB.Close()
+	adminORM, err := dbconn.WrapGORM(adminDB)
+	if err != nil {
+		return err
+	}
 	redisOptions, err := redis.ParseURL(cfg.RedisCacheURL)
 	if err != nil {
 		return err
@@ -78,18 +86,18 @@ func run(ctx context.Context) error {
 		}
 		httpapi.OK(c, gin.H{"status": "identity_storage_ready"})
 	})
-	identity.API{WeChat: identity.MiniProgram{SDK: wechat}, Users: identity.UserStore{DB: db}, Sessions: identity.Sessions{Redis: cache}, JWT: jwt}.Register(router)
-	charge.StartAuthorization{DB: db, ServiceToken: cfg.ServiceToken}.Register(router)
-	charge.StartResultAPI{Store: charge.StartResultStore{DB: db}, ServiceToken: cfg.ServiceToken}.Register(router)
-	charge.EndResultAPI{Store: charge.EndResultStore{DB: db}, ServiceToken: cfg.ServiceToken}.Register(router)
-	charge.StopAuthorization{DB: db, ServiceToken: cfg.ServiceToken}.Register(router)
-	charge.UserStopAPI{JWT: jwt, Sessions: identity.Sessions{Redis: cache}, Users: identity.UserStore{DB: db}, GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken}.Register(router)
-	charge.ScanAPI{Auth: identity.SessionAuthenticator{JWT: jwt, Sessions: identity.Sessions{Redis: cache}, Users: identity.UserStore{DB: db}}, GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken}.Register(router)
+	identity.API{WeChat: identity.MiniProgram{SDK: wechat}, Users: identity.UserStore{DB: userORM}, Sessions: identity.Sessions{Redis: cache}, JWT: jwt}.Register(router)
+	charge.StartAuthorization{DB: userORM, ServiceToken: cfg.ServiceToken}.Register(router)
+	charge.StartResultAPI{Store: charge.StartResultStore{DB: userORM}, ServiceToken: cfg.ServiceToken}.Register(router)
+	charge.EndResultAPI{Store: charge.EndResultStore{DB: userORM}, ServiceToken: cfg.ServiceToken}.Register(router)
+	charge.StopAuthorization{DB: userORM, ServiceToken: cfg.ServiceToken}.Register(router)
+	charge.UserStopAPI{JWT: jwt, Sessions: identity.Sessions{Redis: cache}, Users: identity.UserStore{DB: userORM}, GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken}.Register(router)
+	charge.ScanAPI{Auth: identity.SessionAuthenticator{JWT: jwt, Sessions: identity.Sessions{Redis: cache}, Users: identity.UserStore{DB: userORM}}, GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken}.Register(router)
 	var prepay charge.PrepayProvider
 	switch cfg.PaymentMode {
 	case "simulation":
 		prepay = payment.Simulator{}
-		charge.SimulationCallbackAPI{DB: db, Store: charge.PaymentCallbackStore{DB: db, ExpectedProvider: "simulation", ExpectedMerchantID: "local-simulation", ExpectedAppID: cfg.WeChatAppID}, ServiceToken: cfg.ServiceToken}.Register(router)
+		charge.SimulationCallbackAPI{DB: userORM, Store: charge.PaymentCallbackStore{DB: userORM, ExpectedProvider: "simulation", ExpectedMerchantID: "local-simulation", ExpectedAppID: cfg.WeChatAppID}, ServiceToken: cfg.ServiceToken}.Register(router)
 	case "wechat_direct":
 		direct, err := payment.NewWechatDirect(ctx, payment.Config{AppID: cfg.WeChatAppID, MerchantID: cfg.WechatMchID,
 			CertificateSerial: cfg.WechatCertSerial, APIv3Key: cfg.WechatAPIv3Key,
@@ -98,11 +106,11 @@ func run(ctx context.Context) error {
 			return err
 		}
 		prepay = direct
-		charge.WechatCallbackAPI{Verifier: direct, Store: charge.PaymentCallbackStore{DB: db, ExpectedProvider: "wechat_direct", ExpectedMerchantID: cfg.WechatMchID, ExpectedAppID: cfg.WeChatAppID}}.Register(router)
+		charge.WechatCallbackAPI{Verifier: direct, Store: charge.PaymentCallbackStore{DB: userORM, ExpectedProvider: "wechat_direct", ExpectedMerchantID: cfg.WechatMchID, ExpectedAppID: cfg.WeChatAppID}}.Register(router)
 	}
-	charge.PaymentStartAPI{Auth: identity.SessionAuthenticator{JWT: jwt, Sessions: identity.Sessions{Redis: cache}, Users: identity.UserStore{DB: db}},
-		Scan: charge.ScanAPI{GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken}, Pricing: pricing.Store{DB: adminDB},
-		Intents: charge.PaymentIntentStore{DB: db}, Provider: prepay}.Register(router)
+	charge.PaymentStartAPI{Auth: identity.SessionAuthenticator{JWT: jwt, Sessions: identity.Sessions{Redis: cache}, Users: identity.UserStore{DB: userORM}},
+		Scan: charge.ScanAPI{GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken}, Pricing: pricing.Store{DB: adminORM},
+		Intents: charge.PaymentIntentStore{DB: userORM}, Provider: prepay}.Register(router)
 	server := &http.Server{Addr: cfg.HTTPAddr, Handler: router, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 90 * time.Second}
 	go func() {
 		<-ctx.Done()

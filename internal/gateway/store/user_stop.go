@@ -8,8 +8,9 @@ import (
 	"errors"
 
 	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol"
-	gatewaydb "github.com/ChargePilot2026/charge-pilot/internal/gateway/store/generated"
 	"github.com/google/uuid"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type ActiveOrder struct {
@@ -32,8 +33,8 @@ type StopReservation struct {
 }
 
 func (s MySQLSink) ExistingUserStop(ctx context.Context, orderNo string, userID uint64) (StopReservation, error) {
-	row, err := gatewaydb.New(s.DB).GetStopCommandByOrder(ctx, orderNo)
-	if err != nil {
+	var row chargeStopCommandRow
+	if err := s.DB.WithContext(ctx).Where("order_no = ?", orderNo).Take(&row).Error; err != nil {
 		return StopReservation{}, err
 	}
 	if row.UserID != userID {
@@ -48,49 +49,58 @@ func (s MySQLSink) ReserveUserStop(ctx context.Context, active ActiveOrder) (Sto
 	}
 	if existing, err := s.ExistingUserStop(ctx, active.OrderNo, active.UserID); err == nil {
 		return existing, nil
-	} else if !errors.Is(err, sql.ErrNoRows) {
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return StopReservation{}, err
 	}
-	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	var reservation StopReservation
+	err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var start chargeCommandRow
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("charge_order_id = ? AND order_no = ? AND user_id = ?", active.ChargeOrderID, active.OrderNo, active.UserID).Take(&start).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrOrderConflict
+		}
+		if err != nil {
+			return err
+		}
+		if start.Status != "acked" || start.CommandID != active.StartCommandID || start.DeviceID != active.DeviceID || start.PortNo != active.PortNo || !start.PortID.Valid || uint64(start.PortID.Int64) != active.PortID {
+			return ErrOrderConflict
+		}
+		var port devicePortRow
+		err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND device_id = ? AND port_no = ? AND current_order_id = ? AND status = 'charging'", active.PortID, active.DeviceID, active.PortNo, active.OrderNo).Take(&port).Error
+		if err != nil {
+			return ErrPortUnavailable
+		}
+		var session [6]byte
+		if _, err := rand.Read(session[:]); err != nil {
+			return err
+		}
+		commandID := uuid.NewString()
+		command := chargeStopCommandRow{CommandID: commandID, StartCommandID: active.StartCommandID, ChargeOrderID: active.ChargeOrderID,
+			OrderNo: active.OrderNo, UserID: active.UserID, DeviceID: active.DeviceID, PortNo: active.PortNo,
+			PortID: sql.NullInt64{Int64: int64(active.PortID), Valid: true}, Status: "pending",
+			SessionID: sql.NullString{String: hex.EncodeToString(session[:]), Valid: true}}
+		if err := tx.Create(&command).Error; err != nil {
+			return err
+		}
+		reservation = StopReservation{CommandID: commandID, OrderNo: active.OrderNo, DeviceID: active.DeviceID, PortNo: active.PortNo,
+			Status: "pending", Wire: protocol.Command{Kind: protocol.CommandStop, SessionID: session, Port: active.PortNo}}
+		return nil
+	}, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return StopReservation{}, err
 	}
-	defer tx.Rollback()
-	q := gatewaydb.New(tx)
-	start, err := q.LockStartForUserStop(ctx, gatewaydb.LockStartForUserStopParams{ChargeOrderID: active.ChargeOrderID, OrderNo: active.OrderNo, UserID: active.UserID})
-	if errors.Is(err, sql.ErrNoRows) {
-		return StopReservation{}, ErrOrderConflict
-	}
-	if err != nil {
-		return StopReservation{}, err
-	}
-	if start.Status != gatewaydb.ChargeCommandStatusAcked || start.CommandID != active.StartCommandID || start.DeviceID != active.DeviceID || start.PortNo != active.PortNo || !start.PortID.Valid || uint64(start.PortID.Int64) != active.PortID {
-		return StopReservation{}, ErrOrderConflict
-	}
-	if _, err := q.LockOwnedChargingPort(ctx, gatewaydb.LockOwnedChargingPortParams{ID: active.PortID, DeviceID: active.DeviceID, PortNo: active.PortNo, CurrentOrderID: sql.NullString{String: active.OrderNo, Valid: true}}); err != nil {
-		return StopReservation{}, ErrPortUnavailable
-	}
-	var session [6]byte
-	if _, err := rand.Read(session[:]); err != nil {
-		return StopReservation{}, err
-	}
-	commandID := uuid.NewString()
-	if err := q.InsertUserStopCommand(ctx, gatewaydb.InsertUserStopCommandParams{CommandID: commandID, StartCommandID: active.StartCommandID, ChargeOrderID: active.ChargeOrderID, OrderNo: active.OrderNo, UserID: active.UserID, DeviceID: active.DeviceID, PortNo: active.PortNo, PortID: active.PortID, SessionID: sql.NullString{String: hex.EncodeToString(session[:]), Valid: true}}); err != nil {
-		return StopReservation{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return StopReservation{}, err
-	}
-	return StopReservation{CommandID: commandID, OrderNo: active.OrderNo, DeviceID: active.DeviceID, PortNo: active.PortNo, Status: "pending", Wire: protocol.Command{Kind: protocol.CommandStop, SessionID: session, Port: active.PortNo}}, nil
+	return reservation, nil
 }
 
 func (s MySQLSink) MarkUserStopSent(ctx context.Context, commandID string) error {
-	_, err := gatewaydb.New(s.DB).MarkUserStopSent(ctx, commandID)
-	return err
+	return s.DB.WithContext(ctx).Model(&chargeStopCommandRow{}).Where("command_id = ? AND status IN ('pending','sent')", commandID).
+		Updates(map[string]any{"status": "sent", "sent_at": gorm.Expr("CURRENT_TIMESTAMP(3)")}).Error
 }
 
 func (s MySQLSink) PendingUserStops(ctx context.Context) ([]StopReservation, error) {
-	rows, err := gatewaydb.New(s.DB).PendingUserStops(ctx)
+	var rows []chargeStopCommandRow
+	err := s.DB.WithContext(ctx).Where("status = 'pending' OR (status = 'sent' AND sent_at < DATE_SUB(NOW(3), INTERVAL 10 SECOND))").
+		Order("created_at").Limit(50).Find(&rows).Error
 	if err != nil {
 		return nil, err
 	}
@@ -105,10 +115,11 @@ func (s MySQLSink) PendingUserStops(ctx context.Context) ([]StopReservation, err
 	return result, nil
 }
 
-func stopReservationFromRow(row gatewaydb.GetStopCommandByOrderRow) (StopReservation, error) {
+func stopReservationFromRow(row chargeStopCommandRow) (StopReservation, error) {
 	job, err := stopJob(row.CommandID, row.OrderNo, row.DeviceID, row.PortNo, row.SessionID)
 	if err != nil {
 		return StopReservation{}, err
 	}
-	return StopReservation{CommandID: row.CommandID, OrderNo: row.OrderNo, DeviceID: row.DeviceID, PortNo: row.PortNo, Status: string(row.Status), Wire: job.Wire}, nil
+	return StopReservation{CommandID: row.CommandID, OrderNo: row.OrderNo, DeviceID: row.DeviceID,
+		PortNo: row.PortNo, Status: row.Status, Wire: job.Wire}, nil
 }
