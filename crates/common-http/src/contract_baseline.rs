@@ -51,6 +51,7 @@ pub const EXCLUDED: &[(&str, &str)] = &[
     ("D1", "账号/角色管理无操作授权:基线不含'任意登录态管理员可提权'这一行为"),
     ("D2", "停用/撤权后仍可续命:基线不含'旧 token 可续命'这一行为"),
     ("D3", "提现经跨库视图直写 billing 域;admin-web 零调用 —— 整块删除,不进基线"),
+    ("D24", "停机回写 URL 的路径占位符名与常量不匹配,replace 静默失效 → 端点永不命中、计费链不触发；基线不含'正常工作的停机回写'这一事实"),
     ("D4", "Stream 裁剪丢未消费事件;ACK≠业务完成 —— 属可靠性缺陷,不作契约"),
     ("D5", "规则变更事件 DB 成功但事件永久丢失"),
     ("D6", "billing 查 user_db 的表:端点恒报错,不进基线"),
@@ -90,5 +91,29 @@ mod tests {
         for must in ["D1", "D2", "D9", "D10", "D14"] {
             assert!(ids.contains(&must), "{must} 必须登记在排除清单中");
         }
+    }
+
+    /// **D3：已删除的 6 条路由在基线里必须留痕**。
+    ///
+    /// 基线是「改造前实际注册」的历史快照。`withdraw` / `membership` 的
+    /// 6 条路由**故意保留** —— 删掉它们等于篡改历史证据，日后就无法回答
+    /// 「这批接口到底什么时候没的、为什么没的」。对账依据是 `EXCLUDED` 的 D3 条目
+    /// 与 `docs/api-change-list.md` §1。
+    #[test]
+    fn d3_removed_routes_remain_in_baseline() {
+        let removed: Vec<&str> = crate::contract_baseline_data::BASELINE
+            .iter()
+            .map(|r| r.path)
+            .filter(|p| p.contains("withdraw") || p.contains("membership"))
+            .collect();
+        assert_eq!(
+            removed.len(),
+            6,
+            "D3 应留下 6 条历史路由痕迹（admin 提现 3 + admin 会员卡 2 + billing 提现 1），实际 {removed:?}"
+        );
+        assert!(
+            EXCLUDED.iter().any(|(id, _)| *id == "D3"),
+            "D3 必须在 EXCLUDED 中有登记，否则快照与变更清单无法对账"
+        );
     }
 }

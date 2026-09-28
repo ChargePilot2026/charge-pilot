@@ -20,7 +20,7 @@ pub mod paths {
     pub use api_contracts::paths::BILLING_SETTLEMENT_DETAIL as SETTLEMENT_DETAIL;
     pub use api_contracts::paths::BILLING_INVOICE_SETTLE_DETAIL as INVOICE_SETTLE_DETAIL;
     pub use api_contracts::paths::BILLING_REFUND_CALC as REFUND_CALC;
-    pub use api_contracts::paths::BILLING_WITHDRAW_REQUESTS as WITHDRAW_REQUESTS;
+    // D3:提现端点与跨库视图已整块删除，不再有 withdraw 路径常量。
     pub use api_contracts::paths::HEALTH;
 }
 
@@ -61,12 +61,6 @@ pub struct SplitRequest {
 pub struct RefundCalcRequest {
     pub payment_order_id: u64,
     pub actual_paid_cents: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WithdrawCreateRequest {
-    pub party_id: u64,
-    pub amount_cents: i64,
 }
 
 // ===== DTO:响应 =====
@@ -145,11 +139,6 @@ pub struct InvoiceSettleDetailResponse {
 pub struct RefundCalcResponse {
     pub refund_cents: i64,
     pub note: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WithdrawCreateResponse {
-    pub withdraw_no: String,
 }
 
 // ===== DTO:其它(被本服务使用) =====

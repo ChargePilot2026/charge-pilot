@@ -90,7 +90,14 @@ pub mod paths {
     pub const USER_INTERNAL_DEVICE_FAULT_DISPATCH: &str = "/api/v1/internal/device-fault-reports/:id/dispatch";
     pub const USER_INTERNAL_DEVICE_FAULT_RESOLVE: &str = "/api/v1/internal/device-fault-reports/:id/resolve";
     pub const USER_INTERNAL_START_RESULT: &str = "/api/v1/internal/charge-orders/:order_id/start-result";
-    pub const USER_INTERNAL_END_RESULT: &str = "/api/v1/internal/charge-orders/:order_id/end-result";
+    // D24:占位符必须是 `order_no` 而非 `order_id`。
+    // 该端点按**订单号**寻址(`user/src/charge_end.rs` 的 `Path<String> order` +
+    // `apply()` 首行校验 `order != req.order_no`),与 START_RESULT 族按数字订单
+    // ID 寻址不同。原先写成 `:order_id` 而调用方 `gateway/src/services/stop.rs`
+    // 按 `:order_no` 替换 → `String::replace` 找不到子串,静默返回原串,
+    // 于是 URL 里残留字面量 `:order_id`,user 侧必然 Conflict,
+    // `charge_ended` 永不发布、计费链从不触发。
+    pub const USER_INTERNAL_END_RESULT: &str = "/api/v1/internal/charge-orders/:order_no/end-result";
     pub const USER_INTERNAL_METERED_ORDER: &str = "/api/v1/internal/charge-orders/:order_id/metered";
     pub const USER_INTERNAL_FEE_RESULT: &str = "/api/v1/internal/charge-orders/:order_id/fee-result";
 
@@ -104,7 +111,7 @@ pub mod paths {
     pub const BILLING_SETTLEMENT_DETAIL: &str = "/api/v1/internal/settlements/:settlement_id";
     pub const BILLING_INVOICE_SETTLE_DETAIL: &str = "/api/v1/internal/invoices/:invoice_id/settle-detail";
     pub const BILLING_REFUND_CALC: &str = "/api/v1/internal/refunds/:refund_id/calc";
-    pub const BILLING_WITHDRAW_REQUESTS: &str = "/api/v1/internal/withdraw-requests";
+    // D3:提现端点与两个跨库视图已整块删除，不再有 withdraw 路径常量。
 
     // -------- admin 内部 --------
     pub const ADMIN_INTERNAL_ANNOUNCEMENTS_ACTIVE: &str = "/api/v1/internal/announcements/active";
@@ -146,8 +153,6 @@ pub mod paths {
     pub const ADMIN_ORDER_DETAIL: &str = "/api/v1/admin/orders/:id";
     pub const ADMIN_ORDER_TIMELINE: &str = "/api/v1/admin/orders/:id/timeline";
     pub const ADMIN_BILLING_SETTLEMENTS: &str = "/api/v1/admin/billing/settlements";
-    pub const ADMIN_BILLING_WITHDRAW: &str = "/api/v1/admin/billing/withdraw";
-    pub const ADMIN_BILLING_WITHDRAW_REVIEW: &str = "/api/v1/admin/billing/withdraw/:id/review";
     pub const ADMIN_BILLING_REFUNDS: &str = "/api/v1/admin/billing/refunds";
     pub const ADMIN_BILLING_REFUND_RETRY: &str = "/api/v1/admin/billing/refunds/:id/retry";
     pub const ADMIN_BILLING_INVOICES: &str = "/api/v1/admin/billing/invoices";
@@ -164,7 +169,6 @@ pub mod paths {
     pub const ADMIN_COUPON_DETAIL: &str = "/api/v1/admin/coupons/:id";
     pub const ADMIN_COUPON_STATS: &str = "/api/v1/admin/coupons/:id/stats";
     pub const ADMIN_COUPON_GRANTS: &str = "/api/v1/admin/coupons/:id/grants";
-    pub const ADMIN_MEMBERSHIP: &str = "/api/v1/admin/membership";
     pub const ADMIN_CHARGE_RULES: &str = "/api/v1/admin/settings/charge-rules";
     pub const ADMIN_PRICING_TEMPLATES: &str = "/api/v1/admin/settings/pricing-templates";
     pub const ADMIN_SPLIT_TEMPLATES: &str = "/api/v1/admin/settings/split-templates";
@@ -426,6 +430,57 @@ pub struct OrderListResponse {
 
 impl OrderListResponse {
     pub fn empty() -> Self { Self::default() }
+}
+
+// ===================== 路径占位符填充 =====================
+
+/// 把路径模板里的某个占位符替换成实际值。
+///
+/// **为什么必须有这个函数**：D24 的根因就是 `str::replace` 在占位符名不匹配时
+/// **静默返回原串**——常量写 `:order_id`、调用方替换 `:order_no`，
+/// 于是 URL 里残留字面量 `:order_id`，跨服务调用打到不存在的路由，
+/// 表现为「对方 404 / 业务校验失败」，而本地**没有任何编译或测试错误**。
+///
+/// 规则：占位符不存在于模板中时**直接 panic**。这类错误属于
+/// 「契约与调用方对不上」的编程错误，必须在第一次运行时炸出来，
+/// 而不是带着坏 URL 跑完整条业务链。替换值里的 `/` 保持原样(交给上层校验)。
+pub fn fill_path(template: &str, placeholder: &str, value: &str) -> String {
+    let token = format!(":{placeholder}");
+    assert!(
+        template.contains(&token),
+        "D24: 路径模板 {template} 不含占位符 {token}(调用方用错了占位符名?)"
+    );
+    template.replace(&token, value)
+}
+
+#[cfg(test)]
+mod fill_path_tests {
+    use super::fill_path;
+    use crate::paths::{USER_INTERNAL_END_RESULT, USER_INTERNAL_START_RESULT};
+
+    /// 回归护栏(D24):end-result 按订单号寻址,占位符必须是 `:order_no`。
+    /// 若有人把常量改回 `:order_id`,本测试的 fill 调用会 panic —— 这正是要拦的。
+    #[test]
+    fn end_result_is_keyed_by_order_no() {
+        let url = fill_path(USER_INTERNAL_END_RESULT, "order_no", "CP20260928001");
+        assert_eq!(url, "/api/v1/internal/charge-orders/CP20260928001/end-result");
+        assert!(!url.contains(':'), "填充后不得残留占位符:{url}");
+    }
+
+    /// start-result 按数字订单 ID 寻址,占位符是 `:order_id`。
+    /// 两者占位符名**刻意不同** —— 这正是 D24 能静默发生的原因。
+    #[test]
+    fn start_result_is_keyed_by_order_id() {
+        let url = fill_path(USER_INTERNAL_START_RESULT, "order_id", "42");
+        assert_eq!(url, "/api/v1/internal/charge-orders/42/start-result");
+    }
+
+    /// 用错占位符名必须 panic,而不是返回带占位符的坏 URL。
+    #[test]
+    #[should_panic(expected = "D24")]
+    fn wrong_placeholder_name_panics() {
+        let _ = fill_path(USER_INTERNAL_END_RESULT, "order_id", "42");
+    }
 }
 
 #[cfg(test)]

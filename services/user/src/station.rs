@@ -61,7 +61,7 @@ pub async fn detail(
     Path(station_id): Path<u64>,
 ) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::StationPublicDetail>>> {
     let cli = common_http::internal::ApiClient::new(st.http.clone(), st.service_token.clone());
-    let path = p::ADMIN_INTERNAL_STATIONS_DETAIL.replace(":station_id", &station_id.to_string());
+    let path = api_contracts::fill_path(p::ADMIN_INTERNAL_STATIONS_DETAIL, "station_id", &station_id.to_string());
     let resp = cli.get(st.cfg.service_urls.admin.as_deref(), &path, &()).await?;
     Ok(Json(common_error::ApiEnvelope::ok(resp, common_error::current_request_id())))
 }
@@ -83,7 +83,7 @@ pub async fn report_fault(
     if req.images.as_ref().is_some_and(|images| images.len() > 5 || images.iter().any(|url| url.len() > 512 || !url.starts_with("https://") || url.chars().any(char::is_control))) {
         return Err(common_error::AppError::BadRequest("故障图片链接无效".into()));
     }
-    let device_path = p::GW_DEVICE_GET.replace(":id", device_id);
+    let device_path = api_contracts::fill_path(p::GW_DEVICE_GET, "id", device_id);
     let _: serde_json::Value = common_http::internal::ApiClient::new(st.http.clone(), st.service_token.clone())
         .get(st.cfg.service_urls.gateway.as_deref(), &device_path, &()).await?;
     if !st.redis_cache.rate_limit(&format!("rate:device-fault:{}", claims.user_id), 5, 86_400).await? {

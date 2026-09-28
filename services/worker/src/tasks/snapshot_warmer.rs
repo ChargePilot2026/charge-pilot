@@ -49,7 +49,7 @@ pub async fn run(state: AppState) {
             let order_no = order.order_no;
             let device_id = order.device_id;
             let port_no = order.port_no;
-            let path = api_contracts::paths::GW_DEVICE_SNAPSHOT.replace(":id", &device_id);
+            let path = api_contracts::fill_path(api_contracts::paths::GW_DEVICE_SNAPSHOT, "id", &device_id);
             let query = SnapshotQuery { order_id: order_no.clone(), port_no };
             let result: AppResult<Value> = common_http::internal::ApiClient::new(state.http.clone(), state.service_token.clone())
                 .get(state.cfg.service_urls.gateway.as_deref(), &path, &query).await;

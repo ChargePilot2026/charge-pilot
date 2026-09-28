@@ -1,8 +1,11 @@
 //! admin 服务 — 通用 API 容器
 //!
 //! 拆分:
-//! - 子模块: users / stations / devices / orders / coupons / membership /
+//! - 子模块: users / stations / devices / orders / coupons /
 //!   settings / announcements / customer_service / whitelabel / export / internal
+//!
+//! D3:会员卡与提现两个跨库视图的调用方已整块删除(admin-web 零调用),
+//! `membership` 模块与相关 DTO/路径常量一并清除,不留编译期死代码。
 
 pub mod users;
 pub mod roles;
@@ -13,7 +16,6 @@ pub mod devices;
 pub mod orders;
 pub mod device_import;
 pub mod coupons;
-pub mod membership;
 pub mod settings;
 pub mod announcements;
 pub mod customer_service;

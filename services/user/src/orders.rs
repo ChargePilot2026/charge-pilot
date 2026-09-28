@@ -386,8 +386,11 @@ pub async fn user_detail(
         common_http::internal::ApiClient::new(state.http.clone(), state.service_token.clone())
             .get(
                 state.cfg.service_urls.billing.as_deref(),
-                &api_contracts::paths::BILLING_ORDER_SUMMARY
-                    .replace(":order_id", &order.order_id.to_string()),
+                &api_contracts::fill_path(
+                    api_contracts::paths::BILLING_ORDER_SUMMARY,
+                    "order_id",
+                    &order.order_id.to_string(),
+                ),
                 &(),
             )
             .await?;

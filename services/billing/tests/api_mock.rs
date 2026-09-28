@@ -33,7 +33,6 @@ fn paths_match_legacy_spec() {
     assert_eq!(api_types::paths::SETTLEMENT_DETAIL, "/api/v1/internal/settlements/:settlement_id");
     assert_eq!(api_types::paths::INVOICE_SETTLE_DETAIL, "/api/v1/internal/invoices/:invoice_id/settle-detail");
     assert_eq!(api_types::paths::REFUND_CALC, "/api/v1/internal/refunds/:refund_id/calc");
-    assert_eq!(api_types::paths::WITHDRAW_REQUESTS, "/api/v1/internal/withdraw-requests");
 }
 
 #[test]

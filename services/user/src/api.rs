@@ -317,7 +317,7 @@ pub async fn charge_snapshot(
     let mut telemetry_available = false;
     let mut telemetry_ts = None;
     if status=="charging" {
-        let path = p::GW_DEVICE_SNAPSHOT.replace(":id", &device_id);
+        let path = api_contracts::fill_path(p::GW_DEVICE_SNAPSHOT, "id", &device_id);
         let query = DeviceSnapshotQuery { order_id: order_no.clone(), port_no };
         let snapshot: api_contracts::gateway_devices::DeviceSnapshotResponse =
             common_http::internal::ApiClient::new(st.http.clone(), st.service_token.clone())
@@ -397,7 +397,7 @@ pub async fn charge_curve(
     let device_id: String = row.try_get("device_id")?;
     let port_no: u8 = row.try_get("port_no")?;
     let started_at: Option<chrono::DateTime<chrono::Utc>> = row.try_get("started_at")?;
-    let path = p::GW_DEVICE_CURVE.replace(":id", &device_id);
+    let path = api_contracts::fill_path(p::GW_DEVICE_CURVE, "id", &device_id);
     let device_query = DeviceCurveQuery {
         order_id: order_no,
         port_no,
@@ -527,7 +527,7 @@ pub async fn charge_historical_curve(
     if started_at < chrono::Utc::now() - chrono::Duration::days(365 * 3) {
         return Err(AppError::business(2018, "订单曲线已超过聚合数据保留期限"));
     }
-    let path = p::GW_DEVICE_HIST_CURVE.replace(":id", &device_id);
+    let path = api_contracts::fill_path(p::GW_DEVICE_HIST_CURVE, "id", &device_id);
     let device_query = DeviceHistoricalCurveQuery {
         order_id: row.try_get("order_no")?,
         port_no,

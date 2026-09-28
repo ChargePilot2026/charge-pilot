@@ -31,7 +31,7 @@ impl InvoiceService {
             .new_client()
             .get(
                 self.base.cfg().service_urls.user.as_deref(),
-                &api_contracts::paths::USER_INTERNAL_INVOICE_DETAIL.replace(":invoice_id", &invoice_id.to_string()),
+                &api_contracts::fill_path(api_contracts::paths::USER_INTERNAL_INVOICE_DETAIL, "invoice_id", &invoice_id.to_string()),
                 &(),
             )
             .await;

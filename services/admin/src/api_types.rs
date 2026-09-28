@@ -24,8 +24,6 @@ pub mod paths {
     pub use api_contracts::paths::ADMIN_BILLING_REFUNDS;
     pub use api_contracts::paths::ADMIN_BILLING_REFUND_RETRY;
     pub use api_contracts::paths::ADMIN_BILLING_SETTLEMENTS;
-    pub use api_contracts::paths::ADMIN_BILLING_WITHDRAW;
-    pub use api_contracts::paths::ADMIN_BILLING_WITHDRAW_REVIEW;
     pub use api_contracts::paths::ADMIN_CHARGE_RULES;
     pub use api_contracts::paths::ADMIN_COUPONS;
     pub use api_contracts::paths::ADMIN_COUPON_DETAIL;
@@ -49,7 +47,6 @@ pub mod paths {
     pub use api_contracts::paths::ADMIN_EXPORT_TASKS;
     pub use api_contracts::paths::ADMIN_FEEDBACK;
     pub use api_contracts::paths::ADMIN_FEEDBACK_REPLY;
-    pub use api_contracts::paths::ADMIN_MEMBERSHIP;
     pub use api_contracts::paths::ADMIN_ORDERS;
     pub use api_contracts::paths::ADMIN_ORDER_DETAIL;
     pub use api_contracts::paths::ADMIN_ORDER_TIMELINE;
@@ -264,7 +261,6 @@ mod tests {
         assert_eq!(paths::AUTH_LOGIN, "/api/v1/admin/auth/login");
         assert_eq!(paths::ADMIN_USERS, "/api/v1/admin/users");
         assert_eq!(paths::ADMIN_EXPORT, "/api/v1/admin/export");
-        assert_eq!(paths::ADMIN_BILLING_WITHDRAW, "/api/v1/admin/billing/withdraw");
     }
 
     #[test]

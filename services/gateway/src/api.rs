@@ -90,7 +90,7 @@ pub async fn device_orders(
 ) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::orders::DeviceOrdersResponse>>> {
     // 透传 user 服务的类型化结果:客户端已解包信封,这里不再手工取 `data`
     let cli = crate::clients::ServiceClient::new(st.http.clone(), st.service_token.clone());
-    let path = api_contracts::paths::USER_INTERNAL_DEVICE_ORDERS.replace(":device_id", &id);
+    let path = api_contracts::fill_path(api_contracts::paths::USER_INTERNAL_DEVICE_ORDERS, "device_id", &id);
     let orders: api_contracts::orders::DeviceOrdersResponse = cli
         .get_typed(st.cfg.service_urls.user.as_deref(), &path)
         .await?;

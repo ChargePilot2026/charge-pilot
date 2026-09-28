@@ -512,6 +512,11 @@ mod permission_tests {
 
     /// D1 覆盖矩阵:本次接线的写端点与其权限码。
     /// 与 `migrations/admin_db/0021_admin_write_permissions.sql` 一一对应。
+    ///
+    /// D3:原先列有 `billing::withdraw_create` / `billing::withdraw_review` /
+    /// `membership::create` 三条，但对应 handler 已随跨库视图整块删除 ——
+    /// 矩阵项指向不存在的函数，等于给不存在的端点发权限。
+    /// 由 `no_dangling_matrix_entries` 守护：新增条目必须真有对应 handler。
     pub const MATRIX: &[(&str, &str)] = &[
         ("users::create", "admin_user.create"),
         ("users::update", "admin_user.update"),
@@ -524,15 +529,12 @@ mod permission_tests {
         ("settings::pricing_template_create", "pricing.template.create"),
         ("settings::split_template_create", "finance.split_template.create"),
         ("settings::split_party_create", "finance.split_party.create"),
-        ("billing::withdraw_create", "finance.withdraw.create"),
-        ("billing::withdraw_review", "finance.withdraw.review"),
         ("alert::ack", "alert.ack"),
         ("alert::rules_create", "alert.rule.create"),
         ("alert::rules_update", "alert.rule.update"),
         ("alert::rules_delete", "alert.rule.delete"),
         ("alert::subs_create", "alert.subscription.create"),
         ("alert::risk_config_put", "alert.risk_config.update"),
-        ("membership::create", "membership.create"),
         ("announcements::create", "announcement.create"),
         ("announcements::update", "announcement.update"),
         ("announcements::delete", "announcement.delete"),
@@ -566,6 +568,51 @@ mod permission_tests {
             if n == 0 { missing.push(*code); }
         }
         assert!(missing.is_empty(), "以下权限码在 permission 表中不存在:{missing:?}");
+    }
+
+    /// 防回潮(D3):矩阵左侧的 `模块::函数` 必须真能解析到本 crate 的函数。
+    ///
+    /// 之前 `billing::withdraw_create` 等三条指向已删除的 handler，
+    /// 编译能过、测试也能过，只有“给不存在的端点发权限”这件事是静默的。
+    /// 纯源码文本判定：不引入编译期依赖，也能在 handler 被删时立即失败。
+    #[test]
+    fn no_dangling_matrix_entries() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        // handler 可能位于 src/ 或 src/api/（admin 的 api 子模块层），
+        // 两处都算存在 —— 本测试只关心「函数还在不在」，不关心文件怎么分。
+        let read_any = |stem: &str| -> Option<String> {
+            for dir in [root.clone(), root.join("api")] {
+                let p = dir.join(format!("{stem}.rs"));
+                if let Ok(s) = std::fs::read_to_string(&p) {
+                    return Some(s);
+                }
+            }
+            None
+        };
+        let mut dangling = Vec::new();
+        for (entry, code) in MATRIX {
+            let (module, func) = entry
+                .split_once("::")
+                .unwrap_or_else(|| panic!("矩阵条目格式应为 `模块::函数`,实际 {entry}"));
+            match read_any(module) {
+                None => dangling.push(format!(
+                    "{entry} → {code}（src/{module}.rs 与 src/api/{module}.rs 均不存在）"
+                )),
+                Some(src) => {
+                    let needle = format!("pub async fn {func}");
+                    if !src.contains(&needle) {
+                        dangling.push(format!(
+                            "{entry} → {code}（{module}.rs 中无 `pub async fn {func}`）"
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(
+            dangling.is_empty(),
+            "以下权限矩阵条目指向已不存在的 handler（会给不存在的端点发权限）:\n  {}",
+            dangling.join("\n  ")
+        );
     }
 
     /// D1 验收:无权限账号被拒(403),且数据库零变更。

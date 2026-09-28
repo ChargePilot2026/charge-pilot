@@ -50,8 +50,7 @@ impl FeeService {
         let source: MeteredOrder = client
             .get(
                 self.base.cfg().service_urls.user.as_deref(),
-                &api_contracts::paths::USER_INTERNAL_METERED_ORDER
-                    .replace(":order_id", &cid.to_string()),
+                &api_contracts::fill_path(api_contracts::paths::USER_INTERNAL_METERED_ORDER, "order_id", &cid.to_string()),
                 &(),
             )
             .await?;
@@ -156,7 +155,7 @@ impl FeeService {
         let result: AppResult<serde_json::Value> = client
             .post(
                 self.base.cfg().service_urls.user.as_deref(),
-                &api_contracts::paths::USER_INTERNAL_FEE_RESULT.replace(":order_id", &cid.to_string()),
+                &api_contracts::fill_path(api_contracts::paths::USER_INTERNAL_FEE_RESULT, "order_id", &cid.to_string()),
                 &payload,
             )
             .await;

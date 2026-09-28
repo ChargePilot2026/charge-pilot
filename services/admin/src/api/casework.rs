@@ -49,7 +49,7 @@ pub async fn feedback_reply(
     if id.parse::<u64>().is_err() { return Err(AppError::BadRequest("反馈编号无效".into())); }
     let body = json!({"actor_id":c.admin_user_id,"action":req.action,"reply_content":req.reply_content});
     let result: api_contracts::common::ProcessedResponse = common_http::internal::ApiClient::new(st.http.clone(), st.service_token.clone())
-        .post(st.cfg.service_urls.user.as_deref(), &api_contracts::paths::USER_INTERNAL_FEEDBACK_REPLY.replace(":id", &id), &body).await?;
+        .post(st.cfg.service_urls.user.as_deref(), &api_contracts::fill_path(api_contracts::paths::USER_INTERNAL_FEEDBACK_REPLY, "id", &id), &body).await?;
     // 幂等重放不重复写审计 —— 判定依据是上游显式的 already_processed 标记。
     if !result.already_processed {
         sqlx::query("INSERT INTO audit_log(actor_id,module,action,target_type,target_id,after_json,created_month) VALUES (?,'customer_service',?,'feedback',?,?,DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))")
@@ -73,7 +73,7 @@ pub async fn fault_history(
 ) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::PagedResponse<api_contracts::charge::FaultHistoryEvent>>>> {
     require_permission(&st, &c, "fault.read").await?;
     if id.parse::<u64>().is_err() { return Err(AppError::BadRequest("报修编号无效".into())); }
-    let path = api_contracts::paths::USER_INTERNAL_DEVICE_FAULT_HISTORY.replace(":id", &id);
+    let path = api_contracts::fill_path(api_contracts::paths::USER_INTERNAL_DEVICE_FAULT_HISTORY, "id", &id);
     let result: api_contracts::common::PagedResponse<api_contracts::charge::FaultHistoryEvent> = common_http::internal::ApiClient::new(st.http.clone(), st.service_token.clone())
         .get(st.cfg.service_urls.user.as_deref(), &path, &q).await?;
     Ok(Json(common_error::ApiEnvelope::ok(result, common_error::current_request_id())))
@@ -96,7 +96,7 @@ pub async fn fault_dispatch(
         .bind(req.assigned_to).fetch_one(st.cases.pool()).await?;
     if !target_active { return Err(AppError::BadRequest("指派的管理员账号无效或已停用".into())); }
     let result: api_contracts::common::DispatchedResponse = common_http::internal::ApiClient::new(st.http.clone(), st.service_token.clone())
-        .post(st.cfg.service_urls.user.as_deref(), &api_contracts::paths::USER_INTERNAL_DEVICE_FAULT_DISPATCH.replace(":id", &id),
+        .post(st.cfg.service_urls.user.as_deref(), &api_contracts::fill_path(api_contracts::paths::USER_INTERNAL_DEVICE_FAULT_DISPATCH, "id", &id),
             &json!({"actor_id":c.admin_user_id,"assigned_to":req.assigned_to,"note":req.note})).await?;
     if !result.already_processed {
         sqlx::query("INSERT INTO audit_log(actor_id,module,action,target_type,target_id,after_json,created_month) VALUES (?,'inspection','fault.dispatch','device_fault_report',?,?,DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))")
@@ -122,7 +122,7 @@ pub async fn fault_resolve(
         return Err(AppError::BadRequest("报修编号或处理状态无效".into()));
     }
     let result: api_contracts::common::ProcessedResponse = common_http::internal::ApiClient::new(st.http.clone(), st.service_token.clone())
-        .post(st.cfg.service_urls.user.as_deref(), &api_contracts::paths::USER_INTERNAL_DEVICE_FAULT_RESOLVE.replace(":id", &id),
+        .post(st.cfg.service_urls.user.as_deref(), &api_contracts::fill_path(api_contracts::paths::USER_INTERNAL_DEVICE_FAULT_RESOLVE, "id", &id),
             &json!({"actor_id":c.admin_user_id,"status":req.status,"note":req.note})).await?;
     if !result.already_processed {
         sqlx::query("INSERT INTO audit_log(actor_id,module,action,target_type,target_id,after_json,created_month) VALUES (?,'inspection',?,'device_fault_report',?,?,DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))")

@@ -65,8 +65,11 @@ impl SettlementService {
             tx.commit().await?;
             return Ok(SplitResponse { settlement_id, settlement_no, allocations });
         }
-        let template_path = api_contracts::paths::ADMIN_INTERNAL_SPLIT_TEMPLATES_GET
-            .replace(":id", &req.split_template_id.to_string());
+        let template_path = api_contracts::fill_path(
+            api_contracts::paths::ADMIN_INTERNAL_SPLIT_TEMPLATES_GET,
+            "id",
+            &req.split_template_id.to_string(),
+        );
         let template: SplitTemplateView = self.base.new_client()
             .get(self.base.cfg().service_urls.admin.as_deref(), &template_path, &()).await?;
         if template.id != req.split_template_id || template.parties.is_empty()

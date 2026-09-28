@@ -83,7 +83,7 @@ async fn advance(
         let ack: serde_json::Value = client
             .post(
                 st.cfg.service_urls.user.as_deref(),
-                &api_contracts::paths::USER_INTERNAL_REFUND_RESULT.replace(":refund_id", no),
+                &api_contracts::fill_path(api_contracts::paths::USER_INTERNAL_REFUND_RESULT, "refund_id", no),
                 &payload,
             )
             .await?;

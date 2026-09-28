@@ -31,18 +31,6 @@ pub async fn settlements(State(st): State<AppState>, _c: ActiveAdmin) -> AppResu
     )))
 }
 
-#[derive(Debug, Deserialize)]
-pub struct WithdrawCreateReq {
-    pub party_id: u64,
-    pub amount_cents: i64,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct WithdrawReviewReq {
-    pub approved: bool,
-    pub note: Option<String>,
-}
-
 pub async fn refunds(State(st): State<AppState>, c: ActiveAdmin, axum::extract::Query(q):axum::extract::Query<api_contracts::refunds::RefundQuery>) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::PagedResponse<api_contracts::admin::AdminRefundRow>>>> {
     let allowed:i64=sqlx::query_scalar("SELECT COUNT(*) FROM admin_user_role a JOIN role r ON r.id=a.role_id JOIN role_permission rp ON rp.role_id=r.id JOIN permission p ON p.id=rp.permission_id WHERE a.id=? AND a.status='active' AND a.deleted_at IS NULL AND r.deleted_at IS NULL AND p.code='finance.refund.read'").bind(c.admin_user_id).fetch_one(st.finance.pool()).await?;
     if allowed==0{return Err(AppError::Forbidden("缺少 finance.refund.read 权限".into()));}
@@ -107,7 +95,7 @@ pub async fn refund_create(State(st):State<AppState>,c:ActiveAdmin,Path(id):Path
     let mut tx=st.finance.begin().await?;
     let grants:Vec<String>=sqlx::query_scalar("SELECT p.code FROM admin_user_role a JOIN role r ON r.id=a.role_id JOIN role_permission rp ON rp.role_id=r.id JOIN permission p ON p.id=rp.permission_id WHERE a.id=? AND a.status='active' AND a.deleted_at IS NULL AND r.deleted_at IS NULL AND r.code='customer_finance' AND p.code IN ('order.read','order.refund.create','order.refund.review') FOR SHARE").bind(c.admin_user_id).fetch_all(tx.executor()).await?;
     if grants.len()!=3{return Err(AppError::Forbidden("发起退款需客户财务角色及订单查看、退款申请、退款审核权限".into()));}
-    let result:api_contracts::charge::ManualRefundCreated=common_http::internal::ApiClient::new(st.http.clone(),st.service_token.clone()).post(st.cfg.service_urls.user.as_deref(),&p::USER_INTERNAL_ORDER_REFUND_CREATE.replace(":order_id",&id.to_string()),&json!({"actor_id":c.admin_user_id,"request":req})).await?;
+    let result:api_contracts::charge::ManualRefundCreated=common_http::internal::ApiClient::new(st.http.clone(),st.service_token.clone()).post(st.cfg.service_urls.user.as_deref(),&api_contracts::fill_path(p::USER_INTERNAL_ORDER_REFUND_CREATE,"order_id",&id.to_string()),&json!({"actor_id":c.admin_user_id,"request":req})).await?;
     sqlx::query("INSERT INTO audit_log(actor_id,module,action,target_type,target_id,after_json,created_month) VALUES (?,'finance','refund.create','charge_order',?,?,DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))").bind(c.admin_user_id).bind(id.to_string()).bind(json!({"request":req,"result":result})).execute(tx.executor()).await?;
     tx.commit().await?;
     Ok(Json(common_error::ApiEnvelope::ok(result,common_error::current_request_id())))
@@ -128,14 +116,14 @@ async fn review_decision<T:serde::de::DeserializeOwned+serde::Serialize>(st:AppS
     }
     authorize(&mut tx,c.admin_user_id).await?;
     let client=common_http::internal::ApiClient::new(st.http.clone(),st.service_token.clone());
-    let detail:api_contracts::charge::AdminRefundDetail=client.get(st.cfg.service_urls.user.as_deref(),&p::USER_INTERNAL_REFUND_DETAIL.replace(":refund_id",&no),&()).await?;
+    let detail:api_contracts::charge::AdminRefundDetail=client.get(st.cfg.service_urls.user.as_deref(),&api_contracts::fill_path(p::USER_INTERNAL_REFUND_DETAIL,"refund_id",&no),&()).await?;
     // 拒绝分支不看首签人;同意分支必须重新校验首签人账号仍有效。
     if let Some(first)=detail.first_signer.as_deref().filter(|_|!reject){
         let first=first.parse::<u64>().map_err(|_|AppError::ServiceUnavailable("审核身份响应无效".into()))?;
         authorize(&mut tx,first).await?;
     }
     let path=if reject{p::USER_INTERNAL_REFUND_REJECT}else{p::USER_INTERNAL_REFUND_APPROVE};
-    let result:T=client.post(st.cfg.service_urls.user.as_deref(),&path.replace(":refund_id",&no),&json!({"actor_id":c.admin_user_id,"comment":req.approve_comment})).await?;
+    let result:T=client.post(st.cfg.service_urls.user.as_deref(),&api_contracts::fill_path(path,"refund_id",&no),&json!({"actor_id":c.admin_user_id,"comment":req.approve_comment})).await?;
     if reject{sqlx::query("UPDATE refund_task SET stage='manual_review',last_error='退款审核已拒绝' WHERE refund_no=? AND stage IN ('queued','querying','reporting')").bind(&no).execute(tx.executor()).await?;}
     sqlx::query("INSERT INTO audit_log(actor_id,module,action,target_type,target_id,after_json,created_month) VALUES (?,'finance',?,'refund_record',?,?,DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))").bind(c.admin_user_id).bind(if reject{"refund.reject"}else{"refund.approve"}).bind(&no).bind(json!({"comment":req.approve_comment,"result":result})).execute(tx.executor()).await?;
     tx.commit().await?;
@@ -195,7 +183,7 @@ pub async fn invoices(State(st): State<AppState>, c: ActiveAdmin) -> AppResult<J
     let mut items = Vec::with_capacity(rows.len());
     for row in rows {
         let id: u64 = sqlx::Row::try_get(&row, "invoice_request_id")?;
-        let path = p::USER_INTERNAL_INVOICE_DETAIL.replace(":invoice_id", &id.to_string());
+        let path = api_contracts::fill_path(p::USER_INTERNAL_INVOICE_DETAIL, "invoice_id", &id.to_string());
         let detail: api_contracts::InvoiceDetailResponse = client.get(st.cfg.service_urls.user.as_deref(), &path, &()).await?;
         items.push(api_contracts::admin::InvoiceReviewRow {
             invoice_request_id: detail.invoice_request_id,
@@ -248,7 +236,7 @@ pub async fn invoice_approve(State(st): State<AppState>, c: ActiveAdmin, Path(id
         return Err(AppError::Conflict("发票申请已完成审核".into()));
     }
     if local_status == "rejected" { return Err(AppError::Conflict("已拒绝的发票申请不能开具".into())); }
-    let path = p::USER_INTERNAL_INVOICE_DETAIL.replace(":invoice_id", &id.to_string());
+    let path = api_contracts::fill_path(p::USER_INTERNAL_INVOICE_DETAIL, "invoice_id", &id.to_string());
     let client = common_http::internal::ApiClient::new(st.http.clone(), st.service_token.clone());
     let detail: api_contracts::InvoiceDetailResponse = client.get(st.cfg.service_urls.user.as_deref(), &path, &()).await?;
     let user_status = detail.review_status.as_str();
@@ -323,7 +311,7 @@ pub async fn invoice_reject(State(st): State<AppState>, c: ActiveAdmin, Path(id)
         return Ok(Json(common_error::ApiEnvelope::ok(api_contracts::admin::InvoiceRejectAck{reviewed:true,review_status:"rejected".into(),rejected:None,already_processed:Some(true)}, common_error::current_request_id())));
     }
     if local_status == "approved" || local_status == "rejected" { return Err(AppError::Conflict("发票申请已完成审核".into())); }
-    let path = p::USER_INTERNAL_INVOICE_DETAIL.replace(":invoice_id", &id.to_string());
+    let path = api_contracts::fill_path(p::USER_INTERNAL_INVOICE_DETAIL, "invoice_id", &id.to_string());
     let client = common_http::internal::ApiClient::new(st.http.clone(), st.service_token.clone());
     let detail: api_contracts::InvoiceDetailResponse = client.get(st.cfg.service_urls.user.as_deref(), &path, &()).await?;
     let user_status = detail.review_status.as_str();
@@ -390,7 +378,7 @@ async fn wallet_risk_authorize(tx:&mut common_db::Tx<'_>,actor:u64,release:bool)
 pub async fn wallet_risk_review(State(st):State<AppState>,c:ActiveAdmin,Path(id):Path<String>,Json(req):Json<WalletRiskDecision>)->AppResult<Json<common_error::ApiEnvelope<api_contracts::charge::WalletRefundApplied>>>{
  let id=uuid::Uuid::parse_str(&id).map_err(|_|AppError::BadRequest("申请编号无效".into()))?.to_string();
  let mut tx=st.finance.begin().await?;wallet_risk_authorize(&mut tx,c.admin_user_id,false).await?;
- let result:api_contracts::charge::WalletRefundApplied=common_http::internal::ApiClient::new(st.http.clone(),st.service_token.clone()).post(st.cfg.service_urls.user.as_deref(),&p::USER_INTERNAL_WALLET_RISK_REVIEW.replace(":request_id",&id),&json!({"actor_id":c.admin_user_id,"approved":req.approved,"comment":req.comment})).await?;
+ let result:api_contracts::charge::WalletRefundApplied=common_http::internal::ApiClient::new(st.http.clone(),st.service_token.clone()).post(st.cfg.service_urls.user.as_deref(),&api_contracts::fill_path(p::USER_INTERNAL_WALLET_RISK_REVIEW,"request_id",&id),&json!({"actor_id":c.admin_user_id,"approved":req.approved,"comment":req.comment})).await?;
  sqlx::query("INSERT INTO audit_log(actor_id,module,action,target_type,target_id,after_json,created_month) VALUES (?,'finance','wallet_risk.review','wallet_refund_request',?,?,DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))").bind(c.admin_user_id).bind(&id).bind(serde_json::to_value(&result)?).execute(tx.executor()).await?;
  tx.commit().await?;Ok(Json(common_error::ApiEnvelope::ok(result,common_error::current_request_id())))
 }
@@ -401,7 +389,7 @@ pub struct WalletRiskRelease {pub comment:String}
 pub async fn wallet_risk_release(State(st):State<AppState>,c:ActiveAdmin,Path(id):Path<String>,Json(req):Json<WalletRiskRelease>)->AppResult<Json<common_error::ApiEnvelope<api_contracts::charge::WalletRiskReleased>>>{
  let id=uuid::Uuid::parse_str(&id).map_err(|_|AppError::BadRequest("申请编号无效".into()))?.to_string();
  let mut tx=st.finance.begin().await?;wallet_risk_authorize(&mut tx,c.admin_user_id,true).await?;
- let result:api_contracts::charge::WalletRiskReleased=common_http::internal::ApiClient::new(st.http.clone(),st.service_token.clone()).post(st.cfg.service_urls.user.as_deref(),&p::USER_INTERNAL_WALLET_RISK_RELEASE.replace(":request_id",&id),&json!({"actor_id":c.admin_user_id,"comment":req.comment})).await?;
+ let result:api_contracts::charge::WalletRiskReleased=common_http::internal::ApiClient::new(st.http.clone(),st.service_token.clone()).post(st.cfg.service_urls.user.as_deref(),&api_contracts::fill_path(p::USER_INTERNAL_WALLET_RISK_RELEASE,"request_id",&id),&json!({"actor_id":c.admin_user_id,"comment":req.comment})).await?;
  sqlx::query("INSERT INTO audit_log(actor_id,module,action,target_type,target_id,after_json,created_month) VALUES (?,'finance','wallet_risk.release','wallet_refund_request',?,?,DATE_FORMAT(UTC_DATE(),'%Y-%m-01'))").bind(c.admin_user_id).bind(&id).bind(serde_json::to_value(&result)?).execute(tx.executor()).await?;
  tx.commit().await?;Ok(Json(common_error::ApiEnvelope::ok(result,common_error::current_request_id())))
 }

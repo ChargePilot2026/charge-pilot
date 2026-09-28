@@ -79,8 +79,11 @@ impl ChargeStopService {
                 .new_client()
                 .get(
                     self.base.cfg().service_urls.user.as_deref(),
-                    &api_contracts::paths::USER_INTERNAL_ORDER_DETAIL
-                        .replace(":order_id", &cid.to_string()),
+                        &api_contracts::fill_path(
+                            api_contracts::paths::USER_INTERNAL_ORDER_DETAIL,
+                            "order_id",
+                            &cid.to_string(),
+                        ),
                     &(),
                 )
                 .await?;
@@ -182,7 +185,13 @@ impl ChargeStopService {
             .new_client()
             .post(
                 self.base.cfg().service_urls.user.as_deref(),
-                &api_contracts::paths::USER_INTERNAL_END_RESULT.replace(":order_no", &c.order_no),
+                // D24:走 fill_path —— 占位符名与常量对不上时直接 panic,
+                // 不再静默发出带字面量 `:order_no` 的坏 URL。
+                &api_contracts::fill_path(
+                    api_contracts::paths::USER_INTERNAL_END_RESULT,
+                    "order_no",
+                    &c.order_no,
+                ),
                 &req,
             )
             .await?;

@@ -7,6 +7,8 @@
 //! P3:所有 SQL 与事务已下沉到 [`crate::services`]。handler 手上只有能力域
 //! 服务对象,拿不到裸连接池,因此本文件不再出现 `sqlx::`。`health` 的连通性
 //! 探测走 `st.fee.ping()`。
+//!
+//! D3:提现端点(恒 503 的预留桩)随跨库视图整块删除。
 
 use crate::{api_types as t, AppState};
 use axum::{
@@ -14,8 +16,7 @@ use axum::{
     Json,
 };
 use common_error::{AppError, AppResult, ApiEnvelope};
-use serde::{de::DeserializeOwned, Serialize};
-use serde_json::Value;
+use serde::Serialize;
 
 pub async fn health(State(st): State<AppState>) -> AppResult<&'static str> {
     st.fee.ping().await?;
@@ -36,7 +37,7 @@ pub async fn quote(
     let client=common_http::internal::ApiClient::new(st.http.clone(),st.service_token.clone());
     let port:api_contracts::ScanPortDetail=client.post(st.cfg.service_urls.gateway.as_deref(),api_contracts::paths::GW_SCAN_PORT,&api_contracts::ScanPortRequest{port_id:req.port_id}).await?;
     if port.status!="idle" {return Err(AppError::PortOccupied);}
-    let rule:api_contracts::pricing::DevicePricing=client.get(st.cfg.service_urls.admin.as_deref(),&api_contracts::paths::ADMIN_DEVICE_PRICING.replace(":id",&port.device_id),&()).await?;
+    let rule:api_contracts::pricing::DevicePricing=client.get(st.cfg.service_urls.admin.as_deref(),&api_contracts::fill_path(api_contracts::paths::ADMIN_DEVICE_PRICING,"id",&port.device_id),&()).await?;
     let local=chrono::Utc::now().with_timezone(&chrono::FixedOffset::east_opt(8*3600).expect("UTC+8"));
     let r=crate::quote_pricing::estimate(&rule,&req.estimated_kwh,req.estimated_minutes,(local.hour()*60+local.minute()) as usize)?;
     Ok(Json(ok_envelope(api_contracts::pricing::PriceQuote {
@@ -109,20 +110,8 @@ pub async fn refund_calc(
     })))
 }
 
-pub async fn withdraw_create(
-    State(st): State<AppState>,
-    Json(req): Json<t::WithdrawCreateRequest>,
-) -> AppResult<Json<ApiEnvelope<t::WithdrawCreateResponse>>> {
-    let _ = (st, req);
-    Err(AppError::ServiceUnavailable("提现功能尚未开放；银行收款账户与余额核对流程未接入".into()))
-}
-
 // ===================== helpers =====================
 
 fn ok_envelope<T: Serialize>(data: T) -> ApiEnvelope<T> {
     ApiEnvelope::ok(data, common_error::current_request_id())
 }
-
-// 抑制未使用警告
-#[allow(dead_code)]
-fn _unused_type_anchor<T: DeserializeOwned>(_: T) -> Value { Value::Null }

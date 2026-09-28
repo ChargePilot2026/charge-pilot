@@ -30,7 +30,7 @@ pub async fn timeline(
     let result = client
         .get(
             state.cfg.service_urls.user.as_deref(),
-            &paths::USER_INTERNAL_ORDER_TIMELINE.replace(":order_id", &id.to_string()),
+            &api_contracts::fill_path(paths::USER_INTERNAL_ORDER_TIMELINE, "order_id", &id.to_string()),
             &(),
         )
         .await?;
@@ -107,7 +107,7 @@ pub async fn get(
     Path(id): Path<u64>,
 ) -> AppResult<Json<ApiEnvelope<OrderDetail>>> {
     authorize(&state, &claims).await?;
-    let path = paths::USER_INTERNAL_ORDER_DETAIL.replace(":order_id", &id.to_string());
+    let path = api_contracts::fill_path(paths::USER_INTERNAL_ORDER_DETAIL, "order_id", &id.to_string());
     let client = ApiClient::new(state.http.clone(), state.service_token.clone());
     let mut detail: OrderDetail = client
         .get(state.cfg.service_urls.user.as_deref(), &path, &())
@@ -116,7 +116,7 @@ pub async fn get(
     let billing = client
         .get::<api_contracts::orders::OrderBilling, _>(
             state.cfg.service_urls.billing.as_deref(),
-            &paths::BILLING_ORDER_SUMMARY.replace(":order_id", &id.to_string()),
+            &api_contracts::fill_path(paths::BILLING_ORDER_SUMMARY, "order_id", &id.to_string()),
             &(),
         )
         .await?;

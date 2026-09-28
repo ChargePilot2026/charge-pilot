@@ -1347,37 +1347,6 @@ mod whitelabel_tests {
     }
 }
 
-/// 会员卡记录(会员卡模板功能预留,仅展示既有记录)。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MembershipCard {
-    pub id: u64,
-    pub user_id: u64,
-    pub card_type: String,
-    pub status: String,
-    pub price_cents: i64,
-    pub start_at: Option<String>,
-    pub end_at: Option<String>,
-}
-
-#[cfg(test)]
-mod membership_tests {
-    use super::*;
-
-    /// 回归护栏:列表项 `id` / `user_id` 是**数字**(与多数契约的字符串约定不同),
-    /// 改成字符串会破坏后台列表主键跳转
-    #[test]
-    fn membership_card_ids_are_numbers() {
-        let v = serde_json::to_value(MembershipCard {
-            id: 1, user_id: 7, card_type: "monthly".into(), status: "active".into(),
-            price_cents: 9900, start_at: None, end_at: None,
-        })
-        .unwrap();
-        assert!(v["id"].is_number());
-        assert!(v["user_id"].is_number());
-        assert!(v["start_at"].is_null());
-    }
-}
-
 /// admin 设备列表项 / 设备详情(两者字段集相同,故共用)。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceRow {

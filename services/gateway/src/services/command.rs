@@ -148,8 +148,11 @@ impl ChargeCommandService {
         let order: api_contracts::orders::OrderDetail = client
             .get(
                 self.base.cfg().service_urls.user.as_deref(),
-                &api_contracts::paths::USER_INTERNAL_ORDER_DETAIL
-                    .replace(":order_id", &p.charge_order_id.to_string()),
+                &api_contracts::fill_path(
+                    api_contracts::paths::USER_INTERNAL_ORDER_DETAIL,
+                    "order_id",
+                    &p.charge_order_id.to_string(),
+                ),
                 &(),
             )
             .await?;
@@ -317,8 +320,11 @@ impl ChargeCommandService {
                 let response: AppResult<serde_json::Value> = client
                     .post(
                         self.base.cfg().service_urls.user.as_deref(),
-                        &api_contracts::paths::USER_INTERNAL_START_RESULT
-                            .replace(":order_id", &c.order_no),
+                        &api_contracts::fill_path(
+                            api_contracts::paths::USER_INTERNAL_START_RESULT,
+                            "order_id",
+                            &c.order_no,
+                        ),
                         &req,
                     )
                     .await;
