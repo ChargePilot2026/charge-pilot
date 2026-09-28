@@ -1346,12 +1346,12 @@ type ChargeOrder struct {
 }
 
 type ChargeOrderPricing struct {
-	ChargeOrderID uint64
-	QuoteID       string
-	UserID        uint64
-	PortCode      string
-	QuoteSnapshot json.RawMessage
-	ConfirmedAt   time.Time
+	ChargeOrderID   uint64
+	UserID          uint64
+	PortCode        string
+	ConfirmedAt     time.Time
+	PaymentIntentID string
+	PricingSnapshot json.RawMessage
 }
 
 type ChargePaymentIntent struct {
@@ -1381,6 +1381,7 @@ type ChargePaymentIntent struct {
 	PaidAt             sql.NullTime
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
+	ChargeOrderID      sql.NullInt64
 }
 
 type ChargePrepay struct {

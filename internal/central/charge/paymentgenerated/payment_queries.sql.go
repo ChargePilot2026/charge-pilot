@@ -12,6 +12,62 @@ import (
 	"time"
 )
 
+const bindPaymentToCharge = `-- name: BindPaymentToCharge :execresult
+UPDATE payment_order SET biz_id = ? WHERE id = ? AND biz_id = 0 AND status = 'paid'
+`
+
+type BindPaymentToChargeParams struct {
+	BizID uint64
+	ID    uint64
+}
+
+func (q *Queries) BindPaymentToCharge(ctx context.Context, arg BindPaymentToChargeParams) (sql.Result, error) {
+	return q.db.ExecContext(ctx, bindPaymentToCharge, arg.BizID, arg.ID)
+}
+
+const callbackDigestByTransaction = `-- name: CallbackDigestByTransaction :one
+SELECT request_digest FROM payment_callback_idempotent
+WHERE wechat_transaction_id = ? LIMIT 1
+`
+
+func (q *Queries) CallbackDigestByTransaction(ctx context.Context, wechatTransactionID string) (sql.NullString, error) {
+	row := q.db.QueryRowContext(ctx, callbackDigestByTransaction, wechatTransactionID)
+	var request_digest sql.NullString
+	err := row.Scan(&request_digest)
+	return request_digest, err
+}
+
+const createChargeOrderFromPayment = `-- name: CreateChargeOrderFromPayment :execresult
+INSERT INTO charge_order
+  (order_no, user_id, device_id, port_no, port_code, payment_order_id,
+   status, charge_mode, charge_quantity, created_month)
+VALUES (?, ?, ?, ?, ?, ?, 'paid', ?, ?, UTC_DATE())
+`
+
+type CreateChargeOrderFromPaymentParams struct {
+	OrderNo        string
+	UserID         uint64
+	DeviceID       string
+	PortNo         uint8
+	PortCode       sql.NullString
+	PaymentOrderID sql.NullInt64
+	ChargeMode     sql.NullInt16
+	ChargeQuantity sql.NullInt16
+}
+
+func (q *Queries) CreateChargeOrderFromPayment(ctx context.Context, arg CreateChargeOrderFromPaymentParams) (sql.Result, error) {
+	return q.db.ExecContext(ctx, createChargeOrderFromPayment,
+		arg.OrderNo,
+		arg.UserID,
+		arg.DeviceID,
+		arg.PortNo,
+		arg.PortCode,
+		arg.PaymentOrderID,
+		arg.ChargeMode,
+		arg.ChargeQuantity,
+	)
+}
+
 const expireStaleIntents = `-- name: ExpireStaleIntents :exec
 UPDATE charge_payment_intent SET status = 'expired'
 WHERE status = 'initiated' AND expires_at < NOW(3)
@@ -19,6 +75,21 @@ WHERE status = 'initiated' AND expires_at < NOW(3)
 
 func (q *Queries) ExpireStaleIntents(ctx context.Context) error {
 	_, err := q.db.ExecContext(ctx, expireStaleIntents)
+	return err
+}
+
+const insertCallbackDigest = `-- name: InsertCallbackDigest :exec
+INSERT INTO payment_callback_idempotent (wechat_transaction_id, request_digest)
+VALUES (?, ?)
+`
+
+type InsertCallbackDigestParams struct {
+	WechatTransactionID string
+	RequestDigest       sql.NullString
+}
+
+func (q *Queries) InsertCallbackDigest(ctx context.Context, arg InsertCallbackDigestParams) error {
+	_, err := q.db.ExecContext(ctx, insertCallbackDigest, arg.WechatTransactionID, arg.RequestDigest)
 	return err
 }
 
@@ -84,6 +155,81 @@ func (q *Queries) InsertChargePaymentIntent(ctx context.Context, arg InsertCharg
 	return err
 }
 
+const insertChargePricingSnapshot = `-- name: InsertChargePricingSnapshot :exec
+INSERT INTO charge_order_pricing
+  (charge_order_id, payment_intent_id, user_id, port_code, pricing_snapshot)
+VALUES (?, ?, ?, ?, ?)
+`
+
+type InsertChargePricingSnapshotParams struct {
+	ChargeOrderID   uint64
+	PaymentIntentID string
+	UserID          uint64
+	PortCode        string
+	PricingSnapshot json.RawMessage
+}
+
+func (q *Queries) InsertChargePricingSnapshot(ctx context.Context, arg InsertChargePricingSnapshotParams) error {
+	_, err := q.db.ExecContext(ctx, insertChargePricingSnapshot,
+		arg.ChargeOrderID,
+		arg.PaymentIntentID,
+		arg.UserID,
+		arg.PortCode,
+		arg.PricingSnapshot,
+	)
+	return err
+}
+
+const insertLatePaymentRefund = `-- name: InsertLatePaymentRefund :exec
+INSERT INTO refund_record
+  (refund_no, payment_order_id, user_id, biz_type, biz_id,
+   refund_cents, reason, status, created_month)
+VALUES (?, ?, ?, 'charge', 0, ?, 'payment arrived after intent expired',
+        'pending', UTC_DATE())
+`
+
+type InsertLatePaymentRefundParams struct {
+	RefundNo       string
+	PaymentOrderID uint64
+	UserID         uint64
+	RefundCents    int64
+}
+
+func (q *Queries) InsertLatePaymentRefund(ctx context.Context, arg InsertLatePaymentRefundParams) error {
+	_, err := q.db.ExecContext(ctx, insertLatePaymentRefund,
+		arg.RefundNo,
+		arg.PaymentOrderID,
+		arg.UserID,
+		arg.RefundCents,
+	)
+	return err
+}
+
+const insertPaymentChargeEvent = `-- name: InsertPaymentChargeEvent :exec
+INSERT INTO charge_event_log
+  (charge_order_id, event_id, event, actor, detail, occurred_at)
+VALUES (?, ?, ?, 'payment_callback', ?, ?)
+`
+
+type InsertPaymentChargeEventParams struct {
+	ChargeOrderID uint64
+	EventID       string
+	Event         string
+	Detail        string
+	OccurredAt    time.Time
+}
+
+func (q *Queries) InsertPaymentChargeEvent(ctx context.Context, arg InsertPaymentChargeEventParams) error {
+	_, err := q.db.ExecContext(ctx, insertPaymentChargeEvent,
+		arg.ChargeOrderID,
+		arg.EventID,
+		arg.Event,
+		arg.Detail,
+		arg.OccurredAt,
+	)
+	return err
+}
+
 const insertPaymentOrderForIntent = `-- name: InsertPaymentOrderForIntent :execresult
 INSERT INTO payment_order
   (order_no, biz_type, biz_id, user_id, pay_method, total_cents,
@@ -104,6 +250,163 @@ func (q *Queries) InsertPaymentOrderForIntent(ctx context.Context, arg InsertPay
 		arg.UserID,
 		arg.TotalCents,
 		arg.ExpiredAt,
+	)
+}
+
+const insertPaymentOutbox = `-- name: InsertPaymentOutbox :exec
+INSERT INTO event_outbox (event_id, stream, envelope_json)
+VALUES (?, ?, ?)
+`
+
+type InsertPaymentOutboxParams struct {
+	EventID      string
+	Stream       string
+	EnvelopeJson json.RawMessage
+}
+
+func (q *Queries) InsertPaymentOutbox(ctx context.Context, arg InsertPaymentOutboxParams) error {
+	_, err := q.db.ExecContext(ctx, insertPaymentOutbox, arg.EventID, arg.Stream, arg.EnvelopeJson)
+	return err
+}
+
+const lockIntentForCallback = `-- name: LockIntentForCallback :one
+SELECT intent_id, merchant_order_no, payment_order_id, user_id,
+       device_id, port_no, port_code, pricing_snapshot, total_cents,
+       charge_mode, charge_quantity, status, expires_at, charge_order_id
+FROM charge_payment_intent WHERE merchant_order_no = ? LIMIT 1 FOR UPDATE
+`
+
+type LockIntentForCallbackRow struct {
+	IntentID        string
+	MerchantOrderNo string
+	PaymentOrderID  uint64
+	UserID          uint64
+	DeviceID        string
+	PortNo          uint8
+	PortCode        string
+	PricingSnapshot json.RawMessage
+	TotalCents      int64
+	ChargeMode      uint8
+	ChargeQuantity  uint16
+	Status          ChargePaymentIntentStatus
+	ExpiresAt       time.Time
+	ChargeOrderID   sql.NullInt64
+}
+
+func (q *Queries) LockIntentForCallback(ctx context.Context, merchantOrderNo string) (LockIntentForCallbackRow, error) {
+	row := q.db.QueryRowContext(ctx, lockIntentForCallback, merchantOrderNo)
+	var i LockIntentForCallbackRow
+	err := row.Scan(
+		&i.IntentID,
+		&i.MerchantOrderNo,
+		&i.PaymentOrderID,
+		&i.UserID,
+		&i.DeviceID,
+		&i.PortNo,
+		&i.PortCode,
+		&i.PricingSnapshot,
+		&i.TotalCents,
+		&i.ChargeMode,
+		&i.ChargeQuantity,
+		&i.Status,
+		&i.ExpiresAt,
+		&i.ChargeOrderID,
+	)
+	return i, err
+}
+
+const lockPaymentForCallback = `-- name: LockPaymentForCallback :one
+SELECT id, order_no, biz_id, user_id, total_cents, paid_cents,
+       wechat_transaction_id, status
+FROM payment_order WHERE id = ? AND order_no = ?
+LIMIT 1 FOR UPDATE
+`
+
+type LockPaymentForCallbackParams struct {
+	ID      uint64
+	OrderNo string
+}
+
+type LockPaymentForCallbackRow struct {
+	ID                  uint64
+	OrderNo             string
+	BizID               uint64
+	UserID              uint64
+	TotalCents          int64
+	PaidCents           int64
+	WechatTransactionID sql.NullString
+	Status              PaymentOrderStatus
+}
+
+func (q *Queries) LockPaymentForCallback(ctx context.Context, arg LockPaymentForCallbackParams) (LockPaymentForCallbackRow, error) {
+	row := q.db.QueryRowContext(ctx, lockPaymentForCallback, arg.ID, arg.OrderNo)
+	var i LockPaymentForCallbackRow
+	err := row.Scan(
+		&i.ID,
+		&i.OrderNo,
+		&i.BizID,
+		&i.UserID,
+		&i.TotalCents,
+		&i.PaidCents,
+		&i.WechatTransactionID,
+		&i.Status,
+	)
+	return i, err
+}
+
+const markIntentPaid = `-- name: MarkIntentPaid :execresult
+UPDATE charge_payment_intent SET status = 'paid', paid_at = ?, charge_order_id = ?
+WHERE intent_id = ? AND status = 'initiated' AND charge_order_id IS NULL
+`
+
+type MarkIntentPaidParams struct {
+	PaidAt        sql.NullTime
+	ChargeOrderID sql.NullInt64
+	IntentID      string
+}
+
+func (q *Queries) MarkIntentPaid(ctx context.Context, arg MarkIntentPaidParams) (sql.Result, error) {
+	return q.db.ExecContext(ctx, markIntentPaid, arg.PaidAt, arg.ChargeOrderID, arg.IntentID)
+}
+
+const markIntentRefundRequired = `-- name: MarkIntentRefundRequired :execresult
+UPDATE charge_payment_intent SET status = 'refund_required', paid_at = ?
+WHERE intent_id = ? AND status IN ('initiated','expired')
+`
+
+type MarkIntentRefundRequiredParams struct {
+	PaidAt   sql.NullTime
+	IntentID string
+}
+
+func (q *Queries) MarkIntentRefundRequired(ctx context.Context, arg MarkIntentRefundRequiredParams) (sql.Result, error) {
+	return q.db.ExecContext(ctx, markIntentRefundRequired, arg.PaidAt, arg.IntentID)
+}
+
+const markPaymentPaidByCallback = `-- name: MarkPaymentPaidByCallback :execresult
+UPDATE payment_order SET status = 'paid', paid_cents = ?,
+  wechat_transaction_id = ?, paid_at = ?
+WHERE id = ? AND order_no = ? AND status = 'initiated'
+  AND total_cents = ? AND paid_cents = 0
+`
+
+type MarkPaymentPaidByCallbackParams struct {
+	PaidCents           int64
+	WechatTransactionID sql.NullString
+	PaidAt              sql.NullTime
+	ID                  uint64
+	OrderNo             string
+	TotalCents          int64
+}
+
+func (q *Queries) MarkPaymentPaidByCallback(ctx context.Context, arg MarkPaymentPaidByCallbackParams) (sql.Result, error) {
+	return q.db.ExecContext(ctx, markPaymentPaidByCallback,
+		arg.PaidCents,
+		arg.WechatTransactionID,
+		arg.PaidAt,
+		arg.ID,
+		arg.OrderNo,
+		arg.TotalCents,
 	)
 }
 
