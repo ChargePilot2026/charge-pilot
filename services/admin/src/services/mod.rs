@@ -12,6 +12,12 @@
 //! 并把 `pool()` / `begin()` 降为 `pub(crate)`。当前它们仍是 `pub`,
 //! 所以 handler 理论上仍能拿到连接 —— 只是必须点名某个能力域。
 //! 那一步需要逐域搬迁 SQL,风险面比换连接来源大得多,单独排期。
+//!
+//! `outbox` 域与其它八个并列:它不是"业务域"而是**基础设施域** ——
+//! 持有 `ServiceBase` + `RedisStream`,负责把同事务落库的 `event_outbox`
+//! 行投递到 Redis Stream(D11)。
+
+pub mod outbox;
 
 use std::sync::Arc;
 
@@ -19,6 +25,8 @@ use common_app::ServiceBase;
 use common_config::AppConfig;
 use common_db::Db;
 use common_redis::{RedisCache, RedisStream};
+
+pub use outbox::OutboxService;
 
 /// 一个能力域持有的连接与配置。
 ///
@@ -55,6 +63,7 @@ type AppResult2<T> = common_error::AppResult<T>;
 /// - `webhook`   : Webhook 订阅与投递
 /// - `config`    : 定价/分账/白标/公告/OTA 等配置域
 /// - `cases`     : 客服工单与巡检
+/// - `outbox`    : 事件 outbox 发布器(类型与前八者不同,见上)
 #[derive(Clone)]
 pub struct AdminServices {
     pub identity: DomainService,
@@ -65,6 +74,7 @@ pub struct AdminServices {
     pub webhook: DomainService,
     pub config: DomainService,
     pub cases: DomainService,
+    pub outbox: OutboxService,
 }
 
 /// 一次性装配。共用同一个连接池句柄,不会多开连接。
@@ -75,7 +85,7 @@ pub fn build(
     service_token: Arc<String>,
     cfg: Arc<AppConfig>,
     _redis_cache: RedisCache,
-    _redis_stream: RedisStream,
+    redis_stream: RedisStream,
 ) -> AdminServices {
     let mk = || {
         ServiceBase::new(
@@ -94,5 +104,10 @@ pub fn build(
         webhook: DomainService { base: mk() },
         config: DomainService { base: mk() },
         cases: DomainService { base: mk() },
+        // 发布器要的是"连接 + Stream 两个句柄",所以单独构造而不是走 mk()。
+        outbox: OutboxService::new(
+            ServiceBase::new(db, http, service_token, cfg),
+            redis_stream,
+        ),
     }
 }

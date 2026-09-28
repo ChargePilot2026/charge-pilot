@@ -2,7 +2,7 @@
 //!
 //! 端口: 8085(仅运维 API,可选)
 //! 当前循环: announcement_expire / device_session_clean / snapshot_warmer
-//! 当前 Stream 组: webhook_retry / ota_schedule(失败进入 DLQ) / comp_tx(结果审计)
+//! 当前 Stream 组: webhook_retry(真实投递,D11) / ota_schedule(失败进入 DLQ) / comp_tx(结果审计)
 //! scheduled_task cron/manual runner 与其他计划任务尚未接入
 
 mod scheduler;
@@ -29,6 +29,8 @@ pub struct AppState {
     pub cfg: Arc<AppConfig>,
     pub event: services::EventService,
     pub retry: services::RetryService,
+    /// D11:webhook 投递能力域。handler 只能拿到它,拿不到裸连接。
+    pub webhook: services::WebhookService,
     pub redis_cache: RedisCache,
     pub redis_stream: RedisStream,
     pub jwt: Arc<JwtCodec>,
@@ -51,7 +53,7 @@ async fn main() -> AppResult<()> {
         .timeout(std::time::Duration::from_secs(15))
         .build().expect("reqwest");
 
-    let services::WorkerServices { event, retry } = services::build(
+    let services::WorkerServices { event, retry, webhook } = services::build(
         db,
         http.clone(),
         Arc::new(cfg.auth.service_token.clone()),
@@ -60,7 +62,7 @@ async fn main() -> AppResult<()> {
     );
 
     let state = AppState {
-        cfg: cfg.clone(), event, retry,
+        cfg: cfg.clone(), event, retry, webhook,
         redis_cache: redis_cache.clone(), redis_stream: redis_stream.clone(),
         jwt: jwt.clone(), http: http.clone(),
         service_token: Arc::new(cfg.auth.service_token.clone()),
@@ -82,6 +84,7 @@ async fn main() -> AppResult<()> {
 
 async fn health(axum::extract::State(state): axum::extract::State<AppState>) -> AppResult<&'static str> {
     state.event.ping().await?;
+    state.webhook.ping().await?;
     state.redis_cache.ping().await?;
     state.redis_stream.ping().await?;
     Ok("ok")

@@ -36,3 +36,5 @@ async-trait.workspace = true
 dotenvy.workspace = true
 sha2.workspace = true
 hex.workspace = true
+# D11:webhook 投递的 HMAC-SHA256 签名
+hmac.workspace = true

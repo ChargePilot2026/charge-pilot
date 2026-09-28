@@ -125,6 +125,9 @@ pub mod paths {
     pub const ADMIN_INTERNAL_EXPORT_TASK_GET: &str = "/api/v1/internal/export/tasks/:id";
     pub const ADMIN_INTERNAL_ALERTS_ACTIVE: &str = "/api/v1/internal/alerts";
     pub const ADMIN_INTERNAL_DEVICES_REBOOT: &str = "/api/v1/internal/devices/:id/reboot";
+    // D11:worker 投递 webhook 后的明细回写。`webhook_delivery_log` 在 admin_db,
+    // worker 无权跨库访问,故经本内部端点回写。
+    pub const ADMIN_INTERNAL_WEBHOOK_DELIVERIES: &str = "/api/v1/internal/webhooks/deliveries";
 
     pub const HEALTH: &str = "/api/v1/health";
     // ===== 由各服务 api_types::paths 迁入(P2/E5:路径唯一真源)=====

@@ -129,6 +129,74 @@ pub async fn deliveries(State(st): State<AppState>, _c: ActiveAdmin, Path(id): P
     )))
 }
 
+/// **D11**:worker 投递 webhook 后的明细回写(内部服务间调用)。
+///
+/// `webhook_delivery_log` 在 admin_db,worker 无权跨库访问,故经本端点回写。
+/// 鉴权由 `internal_token_mw` 中间件负责(`x-service-token`),与其它
+/// `internal_routes` 一致 —— 本 handler **不取** `ActiveAdmin`。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeliveryReportReq {
+    pub subscription_id: u64,
+    pub event_id: String,
+    pub event_type: String,
+    /// 实际发出的请求体(已不含 `secret` 与 `url`)。
+    pub request_body: Value,
+    /// `None` = 网络层失败(未拿到任何响应码,如超时/连接被拒)。
+    #[serde(default)]
+    pub response_status: Option<i32>,
+    /// 订阅方响应体,已截断。
+    #[serde(default)]
+    pub response_body: Option<String>,
+    #[serde(default)]
+    pub error_msg: Option<String>,
+    #[serde(default = "one")]
+    pub attempt_count: u32,
+    #[serde(default)]
+    pub duration_ms: Option<u32>,
+}
+
+fn one() -> u32 { 1 }
+
+pub async fn record_delivery(
+    State(st): State<AppState>,
+    Json(req): Json<DeliveryReportReq>,
+) -> AppResult<Json<common_error::ApiEnvelope<api_contracts::common::AckFlag>>> {
+    if req.subscription_id == 0 || req.event_id.is_empty() || req.event_id.len() > 64 {
+        return Err(AppError::BadRequest("投递记录缺少订阅或事件标识".into()));
+    }
+    // 列宽对齐:migrations/admin_db/0001_init.sql:272-286
+    //   event_type VARCHAR(64) / error_msg VARCHAR(255) / response_body TEXT
+    let event_type: String = req.event_type.chars().take(64).collect();
+    let error_msg: Option<String> = req.error_msg.map(|e| e.chars().take(255).collect());
+    // 订阅方可能回巨大 HTML 错误页;整段写库会撑爆 TEXT 与 worker 内存。
+    // 2 KiB 足够人工排障,超出部分丢弃。
+    let response_body: Option<String> = req
+        .response_body
+        .map(|b| b.chars().take(2048).collect::<String>().into());
+    sqlx::query(
+        "INSERT INTO webhook_delivery_log
+           (subscription_id, event_id, event_type, request_body, response_status,
+            response_body, error_msg, attempt_count, duration_ms)
+         VALUES (?,?,?,?,?,?,?,?,?)",
+    )
+    .bind(req.subscription_id)
+    .bind(&req.event_id)
+    .bind(event_type)
+    .bind(&req.request_body)
+    .bind(req.response_status)
+    .bind(response_body)
+    .bind(error_msg)
+    .bind(req.attempt_count.max(1))
+    .bind(req.duration_ms)
+    .execute(st.webhook.pool())
+    .await?;
+    Ok(Json(common_error::ApiEnvelope::ok(
+        api_contracts::common::AckFlag::new(true),
+        common_error::current_request_id(),
+    )))
+}
+
 #[allow(dead_code)]
 fn _trigger_via_stream(env: StreamEnvelope) {
     let _ = env;

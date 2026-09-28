@@ -29,8 +29,14 @@ use common_redis::{RedisCache, RedisStream};
 use common_telemetry as telemetry;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tower_http::trace::TraceLayer;
 use tracing::info;
+
+/// outbox 发布循环的节拍与批量。1 秒一轮:事件落库到投递的延迟上限远小于
+/// 运营能察觉的量级;批量 50 足够让一波积压在一轮内清完。
+const OUTBOX_PUBLISH_INTERVAL: Duration = Duration::from_secs(1);
+const OUTBOX_PUBLISH_BATCH: usize = 50;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -90,6 +96,7 @@ async fn main() -> AppResult<()> {
     };
 
     stream_consumer::spawn_all(state.clone()).await?;
+    spawn_outbox_publisher(state.clone());
     refund_task::spawn(state.clone());
     api::device_import::spawn_recovery(state.clone());
 
@@ -99,6 +106,25 @@ async fn main() -> AppResult<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app.into_make_service()).await?;
     Ok(())
+}
+
+/// 启动 outbox 发布循环(D11)。
+///
+/// 事件已在业务事务里落库,这里只负责把它们送进 Redis Stream。
+/// 失败只打日志:发布器是旁路,DB 或 Redis 抖动不应该拖垮 admin 的 HTTP 服务。
+/// 与 worker 的后台循环同样丢弃 `JoinHandle` —— 已知缺口,留待 D12 一并收口。
+fn spawn_outbox_publisher(state: AppState) {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(OUTBOX_PUBLISH_INTERVAL);
+        loop {
+            tick.tick().await;
+            match state.outbox.publish_pending(OUTBOX_PUBLISH_BATCH).await {
+                Ok(n) if n > 0 => info!(published = n, "admin outbox published"),
+                Ok(_) => {}
+                Err(e) => tracing::error!(error = %e, "admin outbox 发布失败,下个周期重试"),
+            }
+        }
+    });
 }
 
 pub fn build_router(state: AppState) -> Router {
@@ -122,6 +148,8 @@ pub fn build_router(state: AppState) -> Router {
         .route(api_types::paths::INTERNAL_SPLIT_TEMPLATES_GET, get(api::internal::split_template_get))
         .route(api_types::paths::INTERNAL_ALERTS_ACTIVE, get(api::internal::alerts_active))
         .route(api_types::paths::INTERNAL_DEVICES_REBOOT, post(api::internal::device_reboot))
+        // D11:worker 投递 webhook 后的明细回写(与 worker 同表归属,故在 admin 落库)
+        .route(api_contracts::paths::ADMIN_INTERNAL_WEBHOOK_DELIVERIES, post(webhook::record_delivery))
         .layer(middleware::from_fn_with_state(svc_token.clone(), common_auth::refs::internal_token_mw));
 
     // ===== PC 后台路由(需 JWT)=====
