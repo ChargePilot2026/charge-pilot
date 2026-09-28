@@ -442,3 +442,28 @@
 - 当前 9100 要求首帧 heartbeat，并核验已建档启用的设备和厂商；遥测、状态/告警帧、设备 ACK 与订单命令走现有 TCP/JSON 链路。厂商私有协议、真实 MQTT Broker、TLS、实体设备认证增强和硬件联调仍未完成。
 - 验证：`node tools/check-api-consistency.ts` 通过；`cargo check --workspace --message-format short --quiet` 退出码 0（有既存编译警告）；`git diff --check` 通过。未运行测试套件。部署脚本静态检查通过；因环境没有 Docker 与 Caddy CLI，Compose/Caddy 语法校验被脚本跳过，脚本明确返回“未完全验证”。
 - 删除占位 listener 不代表 MQTT 目标功能已完成，也不代表设备接入已通过生产验收。
+
+### 2026-09-28 重构收尾：阻塞级缺陷 D24 与四条遗留处置
+
+> 详见 `architecture-refactor-plan.md` §七·五。本节只记**对外可见**的变化。
+
+- 🔴 **D24（实施期间新发现，方案与台账均无此条）**：gateway 停机回写 user 的 URL
+  常量占位符是 `:order_id`，而调用方按 `:order_no` 替换。`String::replace` 找不到
+  子串时静默返回原串，于是请求打到带字面量的 URL，user 侧必然 Conflict，
+  `charge_ended` 永不发布 —— **计费链整条从未跑通**。已修为 `:order_no`，并新增
+  `api_contracts::fill_path()`（占位符不存在即 panic）改造全仓 27 处路径填充。
+  **⚠️ 仍需真实设备 + 开发库跑通一次完整「停机 → 计费」才算验收。**
+- **D11 Webhook 推送此前从未可用**，现已实现全链路：按订阅展开 → 可靠发布（outbox
+  发布器）→ HMAC-SHA256 签名 + SSRF 防护 + 禁重定向 + 幂等投递 → 结果回写投递日志。
+  **升级后历史「无投递记录」是正常的**。排障见 `runbook/webhook-delivery-failure.md`。
+- **D21 / D22 / D23 已修**：DLQ 重放改增量游标（不再从队首重扫导致新积压饿死）；
+  重放保留原 entry id 并按消费组定向；4 个未注册的空壳循环全部删除
+  （含依赖一张全仓无写入方表的 `export_run` —— 它查询恒为 false）。
+- **D3 死代码清零**：提现与会员卡相关的 handler、DTO、路径常量全部删除。
+  后台与小程序**无需跟进**（`admin-web` 零调用，路由早已下线）。
+- 新增内部端点 `POST /api/v1/internal/webhooks/deliveries`（服务间调用，前端不感知）。
+- 工具链统一锁定 **1.98.1**（此前 `rust-toolchain.toml` / `Cargo.toml` / 5 个
+  Dockerfile / dev 镜像分别写的是 1.88.0、1.88、1.88、浮动的 `rust:1`）。
+- 验证：`cargo check --workspace --all-targets` 零 error；`cargo test --workspace`
+  **325 passed / 0 failed / 53 ignored**（本轮新增 52 个护栏测试，零回归）。
+  **53 个 `#[ignore]` 的真实 DB 行为测试仍一个都未执行**（需 `compose.dev.yaml` 起库）。

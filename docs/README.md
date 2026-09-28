@@ -13,6 +13,11 @@ docs/
 ├── README.md                    ← 你在这里(读路径入口)
 ├── 需求分析.md                   ← "做什么 / 不做什么"(产品决策)
 ├── 技术规格.md                   ← "怎么做"(技术选型 + 架构 + 协议 + 部署)
+├── implementation-status.md      ← 逐日编年:实际做到了什么(按日期追加)
+├── architecture-refactor-plan.md ← 后端重构方案 + 缺陷台账 + 验收闸口 V1–V10
+├── api-change-list.md           ← API 变更清单(前端跟进依据)
+├── glossary.md                  ← 术语表
+├── local-development.md         ← 本地起服务
 ├── cross-reference.md           ← 跨服务 / 跨表 / 跨 Stream 对账 + CI 维护规则
 │
 ├── api/                         ← 5 个服务的 HTTP / Stream 端点细节
@@ -32,7 +37,8 @@ docs/
 │   ├── cert-renew-failed.md
 │   ├── backup-restore.md
 │   ├── gateway-crash.md
-│   └── ota-mass-failure.md
+│   ├── ota-mass-failure.md
+│   └── webhook-delivery-failure.md
 │
 └── checklists/                  ← 上线 / 部署 / 合规 Checklist
     ├── customer-onboarding.md
@@ -53,6 +59,10 @@ docs/
 | **测试** | `需求分析.md` § 八 + § 九 | `技术规格.md` § 五 + § 十三 | 各 `api/*.md` 错误码段 |
 | **运维** | `技术规格.md` § 十 + § 十四 | `cross-reference.md` 全量 | `runbook/README.md` + `checklists/first-deploy.md` |
 | **AI 协作** | `cross-reference.md` 全量(优先!) + 本 README | `技术规格.md` § 五(异步事件) | `api/*.md` 端点清单 + `db/*.md` 表清单 |
+
+> ⚠️ **改后端代码前必读** `architecture-refactor-plan.md` § 五缺陷台账与
+> § 六验收闸口 —— 那里记着已修但**尚未真实验收**的缺陷(如 D24 计费链需
+> 真实设备验证),以及当前 lint/分层的真实债务数。
 
 ---
 

@@ -355,7 +355,8 @@ lint **配置**只能放 `clippy.toml`；lint **级别**用源码 `#![deny(...)]
 | **D8** | **request_id 追踪断裂** | `common-error:235`、`:188`、`common-http/internal.rs:25` 三处各自生成 UUID | **修**：见 §四 | **P1a** | 响应体/响应头/出站/日志字段四处 id 一致 |
 | **D9** | **静态资源路径穿越**（未授权读任意文件） | `admin/src/static_serve.rs:27-31` 用 `PathBuf::starts_with` 做防护，但它是**逐组件**比较：`/app/static/../x` 的组件为 `["/","app","static","..","x"]`，**以静态根开头 → 检查通过**；`resolved_path` 全程无 `..` 过滤，`fs::read` 由 OS 消解 `..`。已用纯路径逻辑复现：`/../sentinel.txt`、`/../../etc/passwd`、`/assets/../../sentinel.txt` 三种形式的 `starts_with` 均为 `true`。且该 fallback 在 **JWT 保护之外**（`admin/src/main.rs:187`） | **修**：拒绝含 `..` 与绝对路径的组件；对 `root.canonicalize()` 与 `target.canonicalize()` 的结果做包含性校验（消解符号链接逃逸） | **P0.5**（安全门槛） | 目录外文件**始终不可读**（含符号链接指向目录外）；穿越请求返回 4xx；测试须以**真实静态目录存在**为前提运行 |
 | **D10** | **全额退款规则被计价错误截断** | `billing/src/charge_fee.rs:24-31` 先 `metered_pricing::calculate(...)?`（**`?` 直接返回**），`:33-41` 才判断「60 秒内停止 / 超 10 小时 → 费用归零」。**跨分时电价时前者报错，退款分支不可达**——已用现有计价源码复现：跨电价边界的 30 秒订单、超 10 小时订单，均符合归零条件却先返回 `Conflict` | **修**：**分离计量合法性校验与计价**；合法且符合退款条件的订单，其归零判定不应依赖分段计价成功 | **P0.5**（资金） | 跨电价边界 30 秒订单、超 10 小时订单 → **最终费用为 0**（不是 Conflict）；重复处理幂等；`fee_receipt` 与 `fee_delivery` 的同事务边界保留 |
-| **D11** | **webhook_retry 全链路未实现** | 生产者 `admin/src/stream_consumer.rs:63-68` 的 payload 是 `{alert_device_id, severity, event_id}`——**没有 `url`**；消费者 `worker/src/streams.rs:25-32` 第一件事就要求 `url`，缺失即 `BadRequest`，即便有 `url` 也固定返回 `ServiceUnavailable("webhook delivery is not configured")`。**两条路径均已复现** | **明确标注"未实现"**；决定补齐或接受功能限制。**不得用"已有重试队列保证最终送达"论证可丢**（原分级表即因此误判）。HTTP DTO 改造不会自动修复此 Stream 契约不匹配 | **待定**（需业务决策） | 若补齐：端到端投递测试（生产的 payload 能被消费者接受）；若接受：端点/流下线并在 API 变更清单标注 |
+| **D11** | **webhook_retry 全链路未实现** | 生产者 `admin/src/stream_consumer.rs:63-68` 的 payload 是 `{alert_device_id, severity, event_id}`——**没有 `url`**；消费者 `worker/src/streams.rs:25-32` 第一件事就要求 `url`，缺失即 `BadRequest`，即便有 `url` 也固定返回 `ServiceUnavailable`。**两条路径均已复现**。且 `webhook_delivery_log` **全仓无写入方**（`/admin/webhooks/:id/deliveries` 读的一直是空表） | **已修**（本轮实现，非仅记口径）：① admin 按 `alert_subscription` 展开订阅，事件与 `alert_event` 同事务落 `event_outbox` ② 新增 `OutboxService` 发布器（`FOR UPDATE SKIP LOCKED` + 指数退避，兼补 D5 最后一环）③ worker 真实投递：HMAC-SHA256 签名 + SSRF 防护（仅 https、禁 IP 字面量、禁本地/元数据名、端口白名单 {443,8443}、**禁重定向**）+ `(subscription_id, event_id)` 幂等 ④ 结果经新增内部端点 `POST /api/v1/internal/webhooks/deliveries` 回写 admin | **P5** | 32 个新护栏：SSRF 每条规则、HMAC 已知答案向量 + 逐字节翻转全量验证、状态码分类、payload 契约、outbox 退避。**⚠️ 未做真订阅方端到端验收** |
+| **D24** | 🔴 **停机回写 URL 占位符替换空操作，计费链整条从未跑通** | `gateway/src/services/stop.rs:185` 用 `:order_no` 替换路径常量 `USER_INTERNAL_END_RESULT`（`= ".../:order_id/end-result"`）。**`:order_no` 不是该字符串的子串**，`String::replace` 静默返回原串 → 请求打到字面量 URL → user `charge_end::apply` 首行 `order != req.order_no` 必然失败 → `charge_ended` 永不发布 → **计费链从不触发**。同族 `start-result` 按 `:order_id` 替换是对的，故为单点笔误 | **已修**：常量改为 `:order_no`（该端点本就按订单号寻址）；根因是 `str::replace` 静默失效而全仓 **27 处**跨服务路径填充都依赖它，故新增 `api_contracts::fill_path()`（占位符不存在即 **panic**）并改造全部 27 处 | **P5** | 3 个护栏：常量回归、填充实参、用错占位符名必须 panic。**⚠️ 计费链端到端仍需真实设备/库验证** |
 | **D14** | **开票用预付款金额，不等实结与退款** | `user/src/invoice.rs:50` 只要求订单 `completed` + 支付 `paid` + `refunded_cents = 0`，随后以 **`paid_cents`** 校验开票金额。但 `charge_end.rs:106` 停机即标 `completed`（此时尚未计费），`charge_fee.rs:131` 的差额退款**仅登记 pending**。完整路径：**预付 1000 → 停机 → 开票 1000 → 实结 400 并退款 600**。审核侧 `invoice.rs:216` **也不重新校验**计费/支付/退款状态 | **修**：明确"可开票"状态与**金额来源为实结额**；申请与**审核两处**都校验实结与退款终态；与资金更新采用**一致的加锁顺序**。⚠️ **实结额 ≠ 可开票额**，另需规则：① 欠款订单（`charge_fee.rs:157` 允许实结 > 已付并记 `shortfall_cents`，**无补扣闭环**）**是否禁止开票**；② 实结后发生人工退款时的**金额上限**（人工退款不改写原实结费用） | **P0.5**（资金） | 覆盖：计费延迟时申请、**退款处理中**申请、审核前发生退款、**欠款订单（实结>已付）**申请、**实结后人工退款**申请 → 全部按明确规则拒绝或按上限处理。**无需强制扩建补缴功能，但必须有明确拒绝或处理路径**。与 D6（查询归属）/ D10（归零规则）**互不替代** |
 | **D16** | **跨分时电价订单根本无法计费**（数据缺失，非逻辑错误） | `metered_pricing.rs:36-42`：只要 `wh > 0` 且该分钟费率与前一分钟不同，即 `Conflict("跨分时电价缺少分段电量读数，需审核")`。而 `api-contracts/src/lib.rs:159` 的 `ChargeEndMeter` **只有** `charged_wh` / `charged_seconds` / `ended_at`，**没有任何分段读数**。故**任何跨电价订单都无法完成计费** | **需明确决策**（三选一）：A 补齐分段计量与结算；B 此类订单转入**可实际完成**的异常处理流程；C 接受功能限制并列入准入约束。**错误信息里的"需审核"目前没有任何对应流程** | **待业务决策** | 若选 C：台账与准入约束须写明，**且不得把 D10 / D4 通过当作计费闭环**（DLQ 重放补不出缺失的分段读数） |
 | **D17** | **限流计数可能永不过期** | `common-redis/src/lib.rs:79-86` 的 `rate_limit` 把 `INCR` 与 `EXPIRE` 分成两次 await：若 `INCR` 已执行而 `EXPIRE` 因断连/任务取消未执行，且后续 `v > 1` 便**永不再设 TTL**，键永久残留。实际用于每用户 24 小时 5 次报修限制（`user/src/station.rs:89`） | **修**：`INCR` + 首次 `EXPIRE` 合并为 **Lua 原子操作**；并处理**已存在的无 TTL 异常键** | **P4** | 故障注入（`INCR` 成功、`EXPIRE` 失败）后键仍有 TTL；窗口到期计数自动归零、报修限制恢复。**D15 隔离连接不解决此问题** |
@@ -702,35 +703,99 @@ P4 改 `common-redis` 影响全部 5 个服务的消费者，**不能只跑 bill
 
 ---
 
-## 七·五、执行结果（2026-09-28）
+## 七·五、执行结果（2026-09-28 重写）
 
-### 已完成并通过验收
+> ⚠️ **本节曾在 2026-09-28 之前严重过时**：写着「P3 未启动」「D1 覆盖 56/56」
+> 「V2 238 passed」，而实际已有四个 P3 迁移提交、D1 矩阵实测仅 39 条、
+> 测试数是 273。**静态估计与文档陈述均不等于事实**——以下全部为实跑结果。
+
+### 本轮实施（分支 `refactor/p5-closeout`，基线 `f0a2050`）
+
+| 提交 | 内容 | 缺陷 |
+|---|---|---|
+| `b4dd11f` | 工具链锁 **1.98.1**，三处对齐 | — |
+| `20df7a2` | 停机回写 URL 占位符修复 + `fill_path` 防回潮；提现/会员卡死代码清零 | **D24** · D3 |
+| `2c9a3ff` | gateway 两处 handler 入参类型化 | P2 残尾 |
+| `c85aa66` | DLQ 增量游标 + 原 entry id 与消费组定向 | D21 · D23 |
+| `644bca2` | 删除 4 个未注册空壳循环 | D22 |
+| `fd2b74b` | webhook 投递全链路 | **D11** |
+
+**当前闸口（全部实跑）**：V1 **零 error**；V2 `cargo test --workspace` **325 passed / 0 failed / 53 ignored**（实施前 273，+52 个新护栏，**零回归**）。
+
+### 🔴 新发现：D24 —— 停机回写从未命中，计费链整条从未跑通
+
+**方案与台账中均无此条，是实施期间发现的阻塞级缺陷。**
+
+`services/gateway/src/services/stop.rs:185` 用 `:order_no` 去替换路径常量
+`USER_INTERNAL_END_RESULT`（`= "/api/v1/internal/charge-orders/:order_id/end-result"`）。
+`:order_no` **不是该字符串的子串**，`String::replace` 静默返回原串。
+
+后果链：设备 STOP ACK → user `end-result` 收到 `Path(order) = ":order_id"`
+→ `charge_end::apply` 首行校验 `order != req.order_no` 必然失败
+→ gateway `finish()` 不执行 → `charge_ended` 永不发布 → **计费链从不触发**。
+
+同族的 `start-result` 按 `:order_id` 替换是对的，故这是单点笔误而非设计。
+
+**根因不止这一处**：`str::replace` 在占位符名不匹配时静默失效，而全仓 **27 处**
+跨服务路径填充都依赖这个静默行为——写错任何一处都不会有编译错误或测试失败，
+只会发出一个带字面量的坏 URL。故新增 `api_contracts::fill_path()`（占位符不存在
+即 **panic**），并把 27 处调用点全部改用它。3 个护栏锁定。
+
+### 已完成并通过验收（此前阶段）
 
 | 阶段 | 状态 | 证据 |
 |---|---|---|
 | **P0** | ✅ | `--all-targets` 零 error |
-| **P0.5** | ✅ | D9 / D1 / D2 / D10 / D14 五项全部落地并附行为测试；D1 覆盖 **56/56** 管理端写端点 |
-| **P1a** | ✅ | 九项全部落地：工具链锁 1.88、`Db::begin()→Tx`、request_id 全链、`clippy.toml`、路由注册表、契约基线（228 条）、`common-app` 服务对象骨架、D12 gateway 启动与就绪 |
-| **P1b** | ✅ | 架构守护 + 扫描测试落地。债务基线 **1072 → 801 处 / 56 文件**（P2 的 E5 去重与 gateway 类型化各降一部分；只报告不阻断） |
-| **P4** | ✅ | D3 / D4③b / D4②裁剪水位 / D5 / D6 / D15 / D17 + migration 接管（`migrate-baseline` 工具、5 个 Dockerfile 补 `COPY migrations`、compose 挂载 + 独立 migrate job） |
-| **P6** | ✅ | `docs/api-change-list.md`；P2 的 gateway 类型化未改变任何字段名，§3 仍成立 |
+| **P0.5** | ✅ | D9 / D1 / D2 / D10 / D14 全部落地并附行为测试。D1 矩阵**实测 39 条**（此前文档写「56/56」有误；删 3 条悬空项后为 **36 条**） |
+| **P1a** | ✅ | 九项全部落地（工具链版本已由本轮修正为 1.98.1） |
+| **P1b** | ✅ | 架构守护 + 扫描测试落地（仍「只报告不阻断」，`architecture.rs:281` 是 `assert!(true)`） |
+| **P4** | ✅ | D3 / D4②③b / D5 / D6 / D15 / D17 + migration 接管 |
+| **P6** | ✅ | `docs/api-change-list.md` |
 
-**当前闸口**：V1 `cargo check --workspace --all-targets` **零 error**；V2 `cargo test --workspace` **238 passed / 0 failed**。
+### 本轮处置的缺陷（已实现，非仅记录口径）
+
+| 缺陷 | 处置 |
+|---|---|
+| **D11** webhook 投递 | **已实现全链路**。此前生产 payload 无 `url`、消费者固定 503、`webhook_delivery_log` **全仓无写入方**（后台「投递记录」页读的一直是空表）。现补齐：按 `alert_subscription` 展开订阅 → 事件与业务写同事务落 `event_outbox` → 新增 `OutboxService` 发布器（`FOR UPDATE SKIP LOCKED` + 指数退避）→ worker 真实 HTTP 投递（HMAC-SHA256 签名 + SSRF 防护 + 禁重定向 + 幂等）→ 结果经新增内部端点 `POST /api/v1/internal/webhooks/deliveries` 回写 admin。**同时补上 D5 的最后一环**：`pricing_rule_changed` 此前只写 outbox 无人发布 |
+| **D21** DLQ 重放饥饿 | **已修**。新增 `dlq_replay_cursor` 表按流维护**只增不减**的水位，改 `XRANGE (last_id +` 增量扫描 |
+| **D22** 4 个未注册循环 | **全部删除**。后三者只有一行 `info!`；`export_run` 看似有真实查询，但 `scheduled_task` 表**全仓无任何写入方**，查询恒为 false——它依赖一个不存在的数据 |
+| **D23** 重放重复投递 | **已修**。`XADD` 带原 `orig_id`（消费者按 entry id 去重时不再误判为新消息）+ `orig_group` 参与消费组定向（`XGROUP SETID` 把组游标对齐到新 entry 之前） |
+| **D3** 死代码 | **已清零**。删除 `membership.rs` 整文件、两个 `Withdraw*Req`、billing 恒 503 桩、4 个路径常量、`MembershipCard` DTO；D1 矩阵删 3 条悬空项。新增 2 个守护防回潮 |
+| **D24** 占位符静默失效 | **已修**（见上） |
+
+**D22 的一处裁决推翻**：原裁决为「接线 `export_run` + 删其余三个」。实施前核实发现
+`scheduled_task` 表全仓无写入方，故四个一并删除。
 
 ### 未完成
 
-| 阶段 | 原因 |
-|---|---|
-| **P2** `api-contracts` 重写 | **进行中**。① gateway 已归零（`ApiEnvelope<Value>` 11→0、`json!` 18→0）② **E5 路径单一真源完成**：`api-contracts::paths` 79→177 条，admin/user/billing 的 `api_types::paths` 131 条定义全部改为再导出/别名（**零调用方改动**），并加 4 个防回潮测试。**user/api.rs 归零**(Value 13→1)· user 余 35 · **admin 117→50** 待做;`withdraw_*` 死代码已删(D3 闭环) |
-| **P3** 逐服务迁移 | 未启动。5 个服务仍是扁平的 handler 模块；`AppState.db` 298 处引用未收敛 |
-| **P5** 全局收口 | 依赖 P2/P3。lint 仍为 `allow`，未转 `deny` |
-| **D13** Argon2 `spawn_blocking` | 属 P3-admin 范围，随之顺延 |
-| **D11** / **D16** | 需业务决策，不在技术实施范围 |
+| 项 | 状态 | 原因 |
+|---|---|---|
+| **D16** 跨分时电价 | **未做** | 需业务决策。技术前提：`ChargeEndMeter` 只来自设备 STOP ACK 的 `payload.meter`，分段读数**必须由设备固件回报**。服务端从 `telemetry.meter_kwh` 差分推导可行，但依赖设备持续上报且受时钟漂移影响（`tcp.rs:119` 无校正），**只能真机验收** |
+| **P3b** 垂直切片 | 未做 | user 约 367 处 / admin 约 190 处 `sqlx::query*` 仍在扁平 handler 模块；`DomainService::pool()/begin()` 仍为 `pub` |
+| **P5** 全局收口 | 未做 | lint 仍为 `allow`，未转 `deny`。**实测债务 1622 条**（`disallowed_methods` 1187 / `disallowed_types` 305 / `disallowed_macros` 130），其中 user 767 / admin 584 |
+| **D13** Argon2 | ✅ 已落地 | `services/admin/src/password.rs` + 3 处调用点 + 3 个护栏测试（本轮复核确认，此前文档误记为「顺延」） |
+
+### ⚠️ P5 工作量的实测修正
+
+原方案估「转 deny 需 2–3 人日」**严重低估**。基线实测 `disallowed_*` 共 **1622 条**，
+其中 **1187 条是 `sqlx::query*`**，集中在 user(767)/admin(584) 的扁平 handler 里。
+
+**这 1187 条与 P3b 要搬的 SQL 是同一批代码**——不先做垂直切片就不可能转 deny，
+且「先搬完再统一转」等于对同一批代码动两次刀。故 S8/S9/S10 已合并为单一阶段
+（每搬完一个域立即该域 deny 归零）。
 
 ### 已知遗留
 
-- 7 个 `#[ignore]` 的 DB 行为测试（D1 / D2 验收）**需要 `compose.dev.yaml` 起库才能真跑**（V2b），当前一个都未执行。
-- `admin_db` / `billing_db` 的 MySQL 账号仍持有全部 5 个 schema 的 `ALL PRIVILEGES`；收紧需按服务拆分账号，属运维变更。
+- **53 个 `#[ignore]` 的 DB 行为测试**（D1 / D2 验收 + 资金并发）**需 `compose.dev.yaml`
+  起库才能真跑**（V2b），当前**一个都未执行**。
+- **V8b**（共享库 ignored，需 Redis 隔离实例）、**V9**（migration 接管，需真实 5 库 +
+  5 个 Dockerfile 构建 + 整栈空卷启动）同样未跑。
+- **V4 fmt 基线即红**（`common-app/src/lib.rs` 等已有格式漂移），非本轮引入。
+- `admin_db` / `billing_db` 的 MySQL 账号仍持有全部 5 个 schema 的 `ALL PRIVILEGES`。
+- **D11 的 DNS rebinding 残余风险**：投递 URL 只做字面校验，不做 DNS 解析后校验。
+  彻底消除需「解析后校验 + 按 IP 直连 + TLS SNI 仍用域名」，属刻意取舍。
+- **D12 生命周期缺口**：admin outbox 发布器与 worker 已注册循环的 `JoinHandle` 仍被丢弃，
+  异常退出不撤销就绪状态。
 - `docs/技术规格.md` 尚未回写本次修复的偏差。
 
 ---
@@ -760,7 +825,7 @@ P4 改 `common-redis` 影响全部 5 个服务的消费者，**不能只跑 bill
 31. **P0.5 为硬门槛**：D1 / D2 / D9 行为测试未通过不得进入 P1a
 32. **D4 重放按消费确认水位裁剪**（`MAXLEN ~` 与精确裁剪**都不保护未 ACK 正文**）；`admin_db` 须补 `event_outbox`，`user_db`/`gateway_db` 的 outbox 须补 `stream_message_id`
 33. **D10 退款截断**（`charge_fee.rs:24` 的 `?` 先于 `:33` 的归零判定）= P0.5 资金门槛项
-34. **D11 webhook_retry 未实现**（生产 payload 无 `url`，消费者要求 `url`）= 待业务决策，**不得用不存在的送达能力论证可丢**
+34. **D11 webhook_retry 未实现**（生产 payload 无 `url`，消费者要求 `url`）= ~~待业务决策~~ → **已实现**（本轮）：订阅展开 + outbox 发布器 + 签名/SSRF/幂等 + 明细回写。**不得用不存在的送达能力论证可丢**的前提已消除
 35. **D12 gateway TCP 监听启动失败 → 进程启动失败**；关键任务异常退出撤销就绪；健康检查纳入关键任务存活
 36. **D13 密码计算走 `spawn_blocking` + 并发上限**；`tokio::spawn` / async trait 不解决问题
 37. **重放范围必须含"已发布但未完成消费"**：`status != 'published'` 与"最大延迟窗口"两个备选均已删除；历史记录走**全量重放或回执/检查点**，"保守时间窗"不作为不遗漏依据
@@ -771,11 +836,18 @@ P4 改 `common-redis` 影响全部 5 个服务的消费者，**不能只跑 bill
 42. **D2 含失败锁定**：`locked_until` / `status=locked` 全仓只读不写，契约 `docs/api/admin.md:107` 的"失败 5 次锁 30 min"从未触发
 43. **D17 限流 INCR+EXPIRE 合为 Lua 原子操作**，并清理已存在的无 TTL 异常键
 44. **P1a 行为变更例外仅 D12**（gateway 启动失败须使启动失败）；`dlq_replay` 注册属范围内，其余 9 个未注册 task 不动
+45. **D21 DLQ 重放改增量游标**：按流维护**只增不减**的水位（`dlq_replay_cursor`），用 `XRANGE (last_id +`。本批扫过即推进水位——**即便有条目 XADD 失败也推进**，失败项留在 DLQ 可人工捞；若不推进就会永久堵住该流，那正是 D21 要消除的饥饿
+46. **D22 四个未注册循环全部删除**（含原裁决要接线的 `export_run`）：后三者只有一行 `info!`；`export_run` 依赖的 `scheduled_task` 表**全仓无写入方**，查询恒为 false——它依赖一个不存在的数据
+47. **D23 重放保留原 entry id**：`XADD` 带 `orig_id`，使消费者按 entry id 去重时不误判为新消息；`orig_group` 参与消费组定向（`XGROUP SETID` 把组游标对齐到新 entry 之前）。**已知约束**：显式 id 必须大于流当前 top id，解析失败退回 `*`
+48. 🔴 **D24 占位符替换必须会失败**：`str::replace` 在名字不匹配时静默返回原串，这是「编译过、测试过、业务从不发生」的根因。跨服务路径填充一律走 `api_contracts::fill_path()`（占位符不存在即 panic）
+49. **P5 债务实测 1622 条**（原估 2–3 人日严重低估）：`disallowed_methods` 1187 / `disallowed_types` 305 / `disallowed_macros` 130；user 767 / admin 584。**1187 条 SQL 与 P3b 要搬的是同一批代码** → S8/S9/S10 合并为单一阶段，每搬完一域立即该域 deny 归零
+50. **D1 权限矩阵实测 36 条**（此前文档写「56/56」有误）：原 39 条中 3 条指向已删除的 handler，删后为 36。`invoice_approve`/`invoice_reject`/`wallet_risk_*` 走内联授权不在矩阵内
 
-### 待确认 2 件事
+### 待确认 3 件事
 
-1. **§三 `Value` 例外清单**——现列 3 类，是否够
+1. **§三 `Value` 例外清单**——现列 3 类，是否够（P5 转 deny 时需定稿）
 2. ~~提现归属~~ —— **已定整块删除（D3）**，不再需要裁决
+3. **D16 跨分时电价**——三个选项（补齐分段计量 / 转人工异常流程 / 接受限制）尚未裁决。**选项 C（按首分钟费率计价）会静默算错钱，不可无审批采用**
 
 ### 本方案不做
 

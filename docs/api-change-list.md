@@ -39,6 +39,16 @@
 | `POST /api/v1/user/invoices`(申请开票) | 金额上限改变 | **D14**。金额来源由**预付额** `paid_cents` 改为**实结额** `charge_order.total_cents`;新增拒绝:计费未完成 / 存在欠款 / 退款处理中 / 可开票额 ≤ 0 |
 | `POST /api/v1/internal/invoices/:invoice_id/review` | 新增复核 | **D14**。审核时重新校验计费/欠款/退款终态,金额超当前可开票额则拒绝 |
 
+### D11 新增的内部端点（服务间调用，**前端不感知**）
+
+| 端点 | 用途 | 鉴权 |
+|---|---|---|
+| `POST /api/v1/internal/webhooks/deliveries` | worker 投递 webhook 后回写投递明细到 `webhook_delivery_log` | `X-Service-Token` |
+
+> **为何需要它**：`webhook_delivery_log` 在 `admin_db`，worker 只连 `worker_db`，
+> 无权跨库访问。worker 投递后经本端点回写，`GET /api/v1/admin/webhooks/:id/deliveries`
+> 才能查到记录。
+
 ### D1 新增的操作权限码(`migrations/admin_db/0021`)
 
 以下权限码原先**不存在**,已补建并按角色授权。高权限域(账号/角色/定价/分账/提现)
@@ -100,6 +110,7 @@ settings.ota.update  membership.create  export.create
 | D7 | `reboot` 返回双层信封 | 单层信封 |
 | D9 | 可通过 `/../` 读取静态目录**外**任意文件 | 拒绝 `..`/绝对路径 + `canonicalize` 后包含性校验 |
 | D10 | 跨电价边界的 30 秒/超 10 小时订单返回 `Conflict` 而非全额退款 | 先校验计量、再判退款资格,归零不依赖计价成功 |
+| **D11** | `webhook_retry` 消费者要求 `url` 而生产 payload 无 `url`,永远 `BadRequest`;`webhook_delivery_log` 全仓无写入方 | **已实现全链路**:订阅展开 + 可靠发布 + HMAC 签名 + SSRF 防护 + 幂等 + 明细回写。**Webhook 推送现已可用**(需真订阅方验收) |
 | D12 | gateway TCP 监听失败仍启动且健康检查返回 `ok` | bind 失败即启动失败;监听退出即进程退出 |
 | D13 | Argon2 阻塞 Tokio 执行线程(实测 20ms 定时器被推迟到 193ms) | 已修:`spawn_blocking` + 信号量背压,见 `services/admin/src/password.rs` |
 | D14 | 预付 1000 可开票 1000(实结 400 + 退款 600) | 按实结额,且审核时复核 |
@@ -109,25 +120,25 @@ settings.ota.update  membership.create  export.create
 | D18 | 站点详情经纬度颠倒 | 修正 |
 | D19 | 发票双签崩溃后重试一律报「用户发票申请已处理」,审核员被永久卡死 | 补齐 `InvoiceDetailResponse` 的审核人/发票链接/拒因字段,恢复分支生效 |
 | D20 | 告警规则详情的 `threshold` 被声明为字符串(实际是 JSON 列,`between` 存数组) | 改为原始 JSON 值;并补上缺失的 `enabled` 布尔字段 |
-| D21 | DLQ 重放每轮只取最早 200 条,积压增长时新数据永远排不上 | **未修复**,见 §6 |
-| D22 | 4 个 worker 定时循环未注册进 `scheduler::start_all`,运行期不执行 | **未修复**,见 §6 |
-| D23 | DLQ 重放 `XADD *` 生成新 entry id;`orig_group` 解析后从未使用 | **未修复**,见 §6 |
+| D21 | DLQ 重放每轮只取最早 200 条,积压增长时新数据永远排不上 | **已修**:改增量游标(`dlq_replay_cursor`),不再从队首重扫 |
+| D22 | 4 个 worker 定时循环未注册进 `scheduler::start_all`,运行期不执行 | **已修**:四个空壳循环全部删除(含依赖无写入方表的 `export_run`) |
+| D23 | DLQ 重放 `XADD *` 生成新 entry id;`orig_group` 解析后从未使用 | **已修**:`XADD` 带原 id + `orig_group` 参与消费组定向 |
+| **D24** | 🔴 **停机回写 URL 残留字面量 `:order_id`,`charge_ended` 永不发布,计费链整条从未跑通** | **已修**:常量占位符改为 `:order_no`;新增 `fill_path()` 让占位符不匹配即 panic,全仓 27 处路径填充全部改造 |
 
-## 6. 遗留:需业务决策
+## 6. 遗留:需业务决策 / 待真实环境验收
 
 | 编号 | 状态 | 需要什么 |
 |---|---|---|
-| **D11** `webhook_retry` | **未实现**。生产 payload 是 `{alert_device_id, severity, event_id}`,**没有 `url`**,而消费者要求 `url` → 永远 `BadRequest` | 补齐投递实现,或接受"webhook 推送不可用"并在 UI 标注 |
-| **D16** 跨分时电价计费 | **未修复**。`api-contracts` 的 `ChargeEndMeter` 只有 `charged_wh`/`charged_seconds`/`ended_at`,**无分段读数**,因此任何跨电价订单都无法计费 | 补齐分段计量与结算,或转入人工异常处理流程 |
-| **D4 ③b** | DLQ 重放已实现并注册,但**未在真实 Redis 上端到端验证** | 需起 `compose.dev.yaml` 跑 V8b |
-| **D21** DLQ 重放追不上积压 | 每轮只取最早 200 条,无滑动游标 | 确认是改成增量扫描,还是接受"只追最早的"语义 |
-| **D22** 4 个 worker 循环未注册 | `export_run` / `reconcile_daily` / `billing_cycle_daily` / `alert_scan` 不执行 | 确认这 4 个是**该接线**还是**该删掉** |
-| **D23** DLQ 重放可能重复投递 | `XADD *` 新 entry id;`orig_group` 未使用 | 确认消费者是按 `event_id` 还是 entry id 去重 |
+| **D16** 跨分时电价计费 | **未修复**。`api-contracts` 的 `ChargeEndMeter` 只有 `charged_wh`/`charged_seconds`/`ended_at`,**无分段读数**,因此任何跨电价订单都无法计费 | 三选一:补齐分段计量 / 转人工异常流程 / 接受限制。**分段读数只能由设备固件在 STOP ACK 中回报**;服务端从 `telemetry.meter_kwh` 差分推导可行但受设备时钟漂移影响,需真机验收 |
+| **D11** | 全链路已实现(32 个护栏),但**未对真实 https 订阅方做端到端投递** | 需一个测试接收端验签(HMAC-SHA256 + `X-ChargePilot-Signature`) |
+| **D24** | 计费链已修复,但**未在真实设备 + 真实库上跑通一次完整的「停机 → 计费」** | 需真机与开发库 |
+| **D4 ③b** | DLQ 重放已注册并改为增量游标,但**未在真实 Redis 上端到端验证** | 需起 `compose.dev.yaml` 跑 V8b |
+| **D22** | 4 个空壳循环已删除(非「未注册」而是「本就不存在业务动作」) | 若将来要上导出/对账/告警扫描,应重新设计后实现,而不是恢复空壳 |
 
 ## 7. 尚未执行的阶段
 
 | 阶段 | 状态 | 说明 |
 |---|---|---|
 | P2 `api-contracts` 重写 | **已完成** | 全仓 `ApiEnvelope<Value>` 归零;契约新增回归测试 40 余条 |
-| P3 逐服务迁移 | **大部分完成** | gateway / admin / billing / worker 已删 `AppState.db`。**admin 只换了连接来源**,SQL 仍在原模块、`DomainService::pool()` 仍是 `pub` —— 见下 |
-| P5 全局收口 | **未做** | lint 仍为 `allow`,未转 `deny` |
+| P3 逐服务迁移 | **部分完成** | gateway / admin / billing / worker 已删 `AppState.db`。**admin 与 user 只换了连接来源**,SQL 仍在扁平模块、`DomainService::pool()` 仍是 `pub` |
+| P5 全局收口 | **未做** | lint 仍为 `allow`。**实测债务 1622 条**(`disallowed_methods` 1187 / `disallowed_types` 305 / `disallowed_macros` 130),其中 user 767 / admin 584 |
