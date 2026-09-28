@@ -120,3 +120,43 @@ GET `/settings/charge-rules` 返回规则完整时段、站点、状态、版本
 - `GET /user/charge/{order_no}`：单笔详情，含分项费用、欠费、支付摘要与退款列表（无退款时为空数组而非 null）。
 
 以上接口一律先校验所有权：他���订单与不存在订单返回同样的 404。
+
+## 用户账户接口（2026-09-29）
+
+小程序此前已在调用而后端未提供的账户类接口，现已补齐。认证使用用户 JWT，路径省略 `/api/v1`。所有接口先校验会话，未登录返回 401。
+
+### 钱包
+
+- `GET /user/wallet/balance`：`balance_cents` / `frozen_cents` / `available_cents`；无钱包时返回零值而非 404。
+- `GET /user/wallet/txns?direction=`：`in` / `out` 分别筛选收入与支出，含变动后余额。
+- `GET /user/wallet/recharges`、`POST /user/wallet/recharge`：充值记录与发起充值。金额限 1–50000 元；`request_id` 为 UUID 主键，重复提交返回同一 `payment_order_id` 并标记 `replayed`，同一请求号改金额则 409。渠道商户单号统一使用 `PAYW` 前缀，与微信及本地模拟器一致。
+- `GET /user/wallet/refunds`、`POST /user/wallet/refund`：钱包退款申请。提交即**冻结**等额余额（同一笔钱不能同时用于消费），实际出款须经风控审核；返回 `review_status`。审核意见来自 `wallet_risk_review`，无审核时为 `null`。
+
+### 优惠券、公告与客服
+
+- `GET /user/coupon/my?only_usable=`：本人优惠券，含 `usable`（未使用且未过期）。`usable` 为 false 的券仍会返回，便于页面展示"已过期"态。
+- `GET /user/announcement/list`：已发布且在有效期内的公告，仅返回全局公告。站点/城市范围公告需要定位信息，留待小程序适配时补充。
+- `GET /user/customer-service/entry`：优先级最高的启用坐席；未配置时返回 `available:false` 与提示文案，而非 404。
+
+### 站点
+
+- `GET /user/station/nearest?longitude=&latitude=`：附近站点，距离用球面公式在 SQL 内计算后再分页，50 公里外过滤。只返回 `active` 且未删除的站点。
+- `GET /user/station/{code}`：站点详情；停用站点按不存在处理。
+
+### 手机号
+
+- `POST /user/phone/bind`：绑定手机号。号码以 AES-256-GCM 加密存储（`phone_enc`），另存 SHA-256 `phone_hash` 做唯一性约束；返回掩码号码。**未配置 `PHONE_ENCRYPTION_KEY` 时拒绝绑定**，不会退化为明文存储。
+- `POST /user/phone/unbind`：解绑。
+
+平台暂未接入短信验证码通道，因此绑定接口不校验验证码。在没有真实短信能力前伪造验证会让任何人都能绑定他人号码，故此处留待后续补充。
+
+### 报修
+
+- `POST /user/device/report-fault`：提交报修，同时写入首条处理记录。
+- `GET /user/device/fault-reports`：本人报修列表。
+- `GET /user/device/fault-reports/{id}/history`：处理进度，仅返回对用户可见的节点（`user_visible=1`），内部派单信息不外泄。他人报修返回 404。
+
+### 发票
+
+- `POST /user/invoice/apply`：为本人已完成订单申请发票。金额取自计费回执（`charge_fee_receipt`），不取订单行上计费任务从未写入的列。同一订单只能申请一次（换 UUID 也拒），同一 UUID 幂等。`invoice_type` 取 `normal` / `vat_special`。
+- `GET /user/invoice/my`：本人发票申请列表，含审核状态与拒绝原因。

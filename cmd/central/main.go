@@ -133,6 +133,12 @@ func run(ctx context.Context) error {
 		charge.WechatCallbackAPI{Verifier: direct, Store: charge.PaymentCallbackStore{DB: userORM, ExpectedProvider: "wechat_direct", ExpectedMerchantID: cfg.WechatMchID, ExpectedAppID: cfg.WeChatAppID}}.Register(router)
 	}
 	charge.RefundAPI{Executor: charge.RefundExecutor{DB: userORM, Provider: refundProvider, ProviderName: cfg.PaymentMode}, ServiceToken: cfg.ServiceToken}.Register(router)
+	charge.UserAccountAPI{
+		Auth:         identity.SessionAuthenticator{JWT: jwt, Sessions: identity.Sessions{Redis: cache}, Users: identity.UserStore{DB: userORM}},
+		UserDB:       userORM, AdminDB: adminORM, GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken,
+		Gateway: serviceclient.Client{Timeout: 8 * time.Second}, Prepay: prepay,
+		PhoneKey: []byte(cfg.PhoneEncryptionKey),
+	}.Register(router)
 	charge.UserQueryAPI{Auth: identity.SessionAuthenticator{JWT: jwt, Sessions: identity.Sessions{Redis: cache}, Users: identity.UserStore{DB: userORM}},
 		DB: userORM, GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken, Gateway: serviceclient.Client{Timeout: 8 * time.Second}}.Register(router)
 	charge.CouponAPI{Auth: identity.SessionAuthenticator{JWT: jwt, Sessions: identity.Sessions{Redis: cache}, Users: identity.UserStore{DB: userORM}},
