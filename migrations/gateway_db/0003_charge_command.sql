@@ -1,3 +1,6 @@
+-- +goose NO TRANSACTION
+-- +goose Up
+
 CREATE TABLE IF NOT EXISTS charge_command (
   command_id VARCHAR(36) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
   stop_command_id VARCHAR(36) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,

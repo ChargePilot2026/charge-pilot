@@ -1,3 +1,6 @@
+-- +goose NO TRANSACTION
+-- +goose Up
+
 CREATE TABLE IF NOT EXISTS charge_prepay (
   charge_order_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
   request_json JSON NOT NULL,

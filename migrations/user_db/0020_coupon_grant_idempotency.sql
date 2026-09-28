@@ -1,3 +1,6 @@
+-- +goose NO TRANSACTION
+-- +goose Up
+
 -- Persist idempotency for both activity events and operator-issued coupons.
 ALTER TABLE coupon_grant
   ADD COLUMN source_event_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL,

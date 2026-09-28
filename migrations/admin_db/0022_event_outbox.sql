@@ -1,3 +1,6 @@
+-- +goose NO TRANSACTION
+-- +goose Up
+
 -- D5 / D4:admin 服务补建事件 outbox
 --
 -- 背景:

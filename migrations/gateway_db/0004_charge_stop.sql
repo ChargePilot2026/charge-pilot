@@ -1,3 +1,6 @@
+-- +goose NO TRANSACTION
+-- +goose Up
+
 CREATE TABLE IF NOT EXISTS charge_stop_command (
   command_id VARCHAR(36) NOT NULL,
   start_command_id VARCHAR(36) NOT NULL,

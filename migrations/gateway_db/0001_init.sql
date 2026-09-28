@@ -1,3 +1,6 @@
+-- +goose NO TRANSACTION
+-- +goose Up
+
 -- ============================================
 -- ChargePilot · gateway_db 初始迁移
 -- 文档: docs/db/gateway.md + docs/技术规格.md § 4

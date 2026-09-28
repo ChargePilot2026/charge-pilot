@@ -1,3 +1,6 @@
+-- +goose NO TRANSACTION
+-- +goose Up
+
 -- ============================================
 -- ChargePilot · worker_db 初始迁移
 -- 文档: docs/db/worker.md + docs/技术规格.md § 4

@@ -1,3 +1,6 @@
+-- +goose NO TRANSACTION
+-- +goose Up
+
 CREATE TABLE IF NOT EXISTS charge_order_pricing (
   charge_order_id BIGINT UNSIGNED NOT NULL,
   quote_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,

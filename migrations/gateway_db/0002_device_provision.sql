@@ -1,3 +1,6 @@
+-- +goose NO TRANSACTION
+-- +goose Up
+
 -- A non-null primary key serializes competing imports of the same device.
 -- Reservation and device/port creation commit or roll back together.
 CREATE TABLE IF NOT EXISTS device_provision (

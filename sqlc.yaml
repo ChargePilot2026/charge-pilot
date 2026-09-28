@@ -1,0 +1,26 @@
+version: "2"
+sql:
+  - engine: mysql
+    schema: migrations/gateway_db
+    queries: internal/gateway/store/queries.sql
+    gen:
+      go:
+        package: gatewaydb
+        out: internal/gateway/store/generated
+        sql_package: database/sql
+  - engine: mysql
+    schema: migrations/user_db
+    queries: internal/central/identity/queries.sql
+    gen:
+      go:
+        package: userdb
+        out: internal/central/identity/generated
+        sql_package: database/sql
+  - engine: mysql
+    schema: migrations/user_db
+    queries: internal/worker/outbox/queries.sql
+    gen:
+      go:
+        package: outboxdb
+        out: internal/worker/outbox/generated
+        sql_package: database/sql

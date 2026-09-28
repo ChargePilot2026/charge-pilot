@@ -1,3 +1,6 @@
+-- +goose NO TRANSACTION
+-- +goose Up
+
 -- Persist the command identity so late ACKs cannot reverse an earlier result.
 CREATE TABLE IF NOT EXISTS charge_start_receipt (
   charge_order_id BIGINT UNSIGNED NOT NULL,

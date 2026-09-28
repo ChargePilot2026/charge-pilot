@@ -1,3 +1,6 @@
+-- +goose NO TRANSACTION
+-- +goose Up
+
 -- Durable status and inspection notes for device fault reports.
 CREATE TABLE IF NOT EXISTS device_fault_report_event (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,

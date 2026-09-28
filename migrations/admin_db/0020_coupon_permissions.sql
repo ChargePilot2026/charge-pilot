@@ -1,3 +1,6 @@
+-- +goose NO TRANSACTION
+-- +goose Up
+
 INSERT IGNORE INTO permission (code,name,module,description) VALUES
  ('coupon.read','查看优惠券','coupon','查询优惠券模板和发放统计'),
  ('coupon.create','创建优惠券','coupon','创建优惠券模板'),

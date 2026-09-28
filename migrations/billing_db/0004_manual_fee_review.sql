@@ -1,3 +1,6 @@
+-- +goose NO TRANSACTION
+-- +goose Up
+
 -- D16:人工定价兜底单
 --
 -- 背景:

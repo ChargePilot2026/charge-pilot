@@ -1,3 +1,6 @@
+-- +goose NO TRANSACTION
+-- +goose Up
+
 CREATE TABLE IF NOT EXISTS refund_success_receipt (
   refund_record_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
   wechat_refund_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL UNIQUE,

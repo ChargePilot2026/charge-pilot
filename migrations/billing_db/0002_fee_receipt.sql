@@ -1,3 +1,6 @@
+-- +goose NO TRANSACTION
+-- +goose Up
+
 -- Global order idempotency independent of monthly fee_calculation partitions.
 CREATE TABLE IF NOT EXISTS fee_receipt (
   charge_order_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,

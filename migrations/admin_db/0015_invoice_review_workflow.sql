@@ -1,3 +1,6 @@
+-- +goose NO TRANSACTION
+-- +goose Up
+
 -- Keep one current queue state per user-owned invoice; retain the newest state
 -- if earlier deployments recorded multiple rows before enforcing uniqueness.
 INSERT INTO audit_log(actor_id,actor_name,module,action,target_type,target_id,before_json,after_json,created_month)

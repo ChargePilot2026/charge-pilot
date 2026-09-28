@@ -1,3 +1,6 @@
+-- +goose NO TRANSACTION
+-- +goose Up
+
 -- Keep old rows for audit/recovery, but seed the supported singleton ID from
 -- the latest configuration. Future application writes only update ID 1.
 INSERT INTO whitelabel_config

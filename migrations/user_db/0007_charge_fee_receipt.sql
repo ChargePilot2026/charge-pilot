@@ -1,3 +1,6 @@
+-- +goose NO TRANSACTION
+-- +goose Up
+
 CREATE TABLE IF NOT EXISTS charge_fee_receipt (
   charge_order_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
   calculation_no VARCHAR(64) NOT NULL UNIQUE,

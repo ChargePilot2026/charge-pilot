@@ -1,3 +1,6 @@
+-- +goose NO TRANSACTION
+-- +goose Up
+
 -- D21:DLQ 重放滑动游标
 --
 -- 背景:

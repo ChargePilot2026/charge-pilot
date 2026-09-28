@@ -1,3 +1,6 @@
+-- +goose NO TRANSACTION
+-- +goose Up
+
 ALTER TABLE refund_record MODIFY COLUMN status ENUM('pending','processing','success','failed','rejected') NOT NULL DEFAULT 'pending';
 CREATE TABLE IF NOT EXISTS refund_rejection (
  refund_record_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,

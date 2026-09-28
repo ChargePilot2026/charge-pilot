@@ -1,3 +1,6 @@
+-- +goose NO TRANSACTION
+-- +goose Up
+
 INSERT IGNORE INTO permission (code, name, module, description) VALUES
 ('feedback.read', '查看用户评价与投诉', 'customer_service', '查看用户提交的评价、投诉和建议'),
 ('feedback.reply', '回复与关闭用户反馈', 'customer_service', '回复或关闭用户反馈'),

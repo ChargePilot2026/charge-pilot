@@ -1,3 +1,6 @@
+-- +goose NO TRANSACTION
+-- +goose Up
+
 CREATE TABLE IF NOT EXISTS charge_event_log (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   charge_order_id BIGINT UNSIGNED NOT NULL,

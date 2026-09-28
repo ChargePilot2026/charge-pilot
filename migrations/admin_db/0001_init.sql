@@ -1,3 +1,6 @@
+-- +goose NO TRANSACTION
+-- +goose Up
+
 -- ============================================
 -- ChargePilot · admin_db 初始迁移
 -- 文档: docs/db/admin.md + docs/技术规格.md § 4

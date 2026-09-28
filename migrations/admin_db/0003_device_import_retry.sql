@@ -1,3 +1,6 @@
+-- +goose NO TRANSACTION
+-- +goose Up
+
 ALTER TABLE device_import
   ADD COLUMN attempts INT UNSIGNED NOT NULL DEFAULT 0,
   ADD COLUMN retryable BOOLEAN NOT NULL DEFAULT TRUE,

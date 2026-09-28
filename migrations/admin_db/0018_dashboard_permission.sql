@@ -1,3 +1,6 @@
+-- +goose NO TRANSACTION
+-- +goose Up
+
 INSERT IGNORE INTO permission (code,name,module,description)
 VALUES ('dashboard.read','查看运营仪表盘','dashboard','查看充电订单、结算金额与待处理告警汇总');
 

@@ -1,3 +1,6 @@
+-- +goose NO TRANSACTION
+-- +goose Up
+
 ALTER TABLE invoice_review
   MODIFY COLUMN review_status ENUM('pending','awaiting_second','approved','rejected') NOT NULL DEFAULT 'pending',
   ADD COLUMN first_reviewer_id BIGINT UNSIGNED DEFAULT NULL AFTER review_status,

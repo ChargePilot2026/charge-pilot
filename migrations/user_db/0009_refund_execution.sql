@@ -1,3 +1,6 @@
+-- +goose NO TRANSACTION
+-- +goose Up
+
 CREATE TABLE IF NOT EXISTS refund_execution (
   refund_record_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
   created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)

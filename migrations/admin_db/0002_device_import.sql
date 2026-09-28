@@ -1,3 +1,6 @@
+-- +goose NO TRANSACTION
+-- +goose Up
+
 CREATE TABLE IF NOT EXISTS device_import (
   import_id VARCHAR(36) NOT NULL PRIMARY KEY,
   actor_id BIGINT UNSIGNED NOT NULL,

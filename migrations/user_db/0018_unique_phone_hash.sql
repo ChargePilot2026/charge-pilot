@@ -1,3 +1,6 @@
+-- +goose NO TRANSACTION
+-- +goose Up
+
 -- WeChat now verifies the phone number server-side from a one-time phone code.
 -- A phone hash is therefore an identity key and must not be bound to two users.
 -- If this migration finds duplicate non-NULL hashes from the old client-trusted

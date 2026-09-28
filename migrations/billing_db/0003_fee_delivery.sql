@@ -1,3 +1,6 @@
+-- +goose NO TRANSACTION
+-- +goose Up
+
 CREATE TABLE IF NOT EXISTS fee_delivery (
   charge_order_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
   payload_json JSON NOT NULL,

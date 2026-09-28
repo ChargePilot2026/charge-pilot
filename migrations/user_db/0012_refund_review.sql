@@ -1,3 +1,6 @@
+-- +goose NO TRANSACTION
+-- +goose Up
+
 CREATE TABLE IF NOT EXISTS refund_review (
   refund_record_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
   snapshot_json JSON NOT NULL,
