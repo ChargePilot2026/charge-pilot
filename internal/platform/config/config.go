@@ -7,11 +7,12 @@ import (
 )
 
 type Gateway struct {
-	HTTPAddr       string `env:"GATEWAY_HTTP_ADDR" envDefault:":8083"`
-	DC589Addr      string `env:"DC589_ADDR" envDefault:":9100"`
-	DatabaseURL    string `env:"DATABASE_URL,required"`
-	ServiceToken   string `env:"SERVICE_TOKEN,required"`
-	MaxConnections int    `env:"DEVICE_MAX_CONNECTIONS" envDefault:"10000"`
+	HTTPAddr           string `env:"GATEWAY_HTTP_ADDR" envDefault:":8083"`
+	DC589Addr          string `env:"DC589_ADDR" envDefault:":9100"`
+	DatabaseURL        string `env:"DATABASE_URL,required"`
+	ServiceToken       string `env:"SERVICE_TOKEN,required"`
+	CentralInternalURL string `env:"CENTRAL_INTERNAL_URL" envDefault:"http://central:8080"`
+	MaxConnections     int    `env:"DEVICE_MAX_CONNECTIONS" envDefault:"10000"`
 }
 
 type Central struct {
@@ -23,6 +24,7 @@ type Central struct {
 	RedisStreamURL     string `env:"REDIS_STREAM_URL,required"`
 	JWTSecret          string `env:"JWT_SECRET,required"`
 	ServiceToken       string `env:"SERVICE_TOKEN,required"`
+	GatewayInternalURL string `env:"GATEWAY_INTERNAL_URL" envDefault:"http://gateway:8083"`
 	WeChatAppID        string `env:"WECHAT_APPID,required"`
 	WeChatAppSecret    string `env:"WECHAT_SECRET,required"`
 }
@@ -35,6 +37,8 @@ type Worker struct {
 	AdminDatabaseURL   string `env:"DATABASE_URL_ADMIN,required"`
 	RedisStreamURL     string `env:"REDIS_STREAM_URL,required"`
 	ServiceToken       string `env:"SERVICE_TOKEN,required"`
+	CentralInternalURL string `env:"CENTRAL_INTERNAL_URL" envDefault:"http://central:8080"`
+	GatewayInternalURL string `env:"GATEWAY_INTERNAL_URL" envDefault:"http://gateway:8083"`
 }
 
 func LoadGateway() (Gateway, error) {

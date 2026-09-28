@@ -14,6 +14,7 @@ import (
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/config"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/dbconn"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/httpapi"
+	"github.com/ChargePilot2026/charge-pilot/internal/worker/charge"
 	"github.com/ChargePilot2026/charge-pilot/internal/worker/outbox"
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
@@ -83,6 +84,8 @@ func run(ctx context.Context) error {
 		{Source: "user", DB: databases["user"], Stream: stream},
 		{Source: "admin", DB: databases["admin"], Stream: stream},
 	}
+	startResults := charge.Synchronizer{GatewayDB: databases["gateway"], CentralURL: cfg.CentralInternalURL, GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken}
+	endResults := charge.EndSynchronizer{GatewayDB: databases["gateway"], CentralURL: cfg.CentralInternalURL, ServiceToken: cfg.ServiceToken}
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for {
@@ -95,6 +98,12 @@ func run(ctx context.Context) error {
 			}
 			return err
 		case <-ticker.C:
+			if _, err := startResults.SyncBatch(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("charge start results: %v", err)
+			}
+			if _, err := endResults.SyncBatch(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("charge end results: %v", err)
+			}
 			for _, publisher := range publishers {
 				if _, err := publisher.PublishBatch(ctx); err != nil && !errors.Is(err, context.Canceled) {
 					log.Printf("outbox %s: %v", publisher.Source, err)

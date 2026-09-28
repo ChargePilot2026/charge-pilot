@@ -1296,6 +1296,8 @@ type ChargeOrder struct {
 	UpdatedAt      time.Time
 	DeletedAt      sql.NullTime
 	DeletedBy      sql.NullInt64
+	ChargeMode     sql.NullInt16
+	ChargeQuantity sql.NullInt16
 }
 
 type ChargeOrderPricing struct {
@@ -1320,6 +1322,11 @@ type ChargeStartReceipt struct {
 	Success       bool
 	PortID        sql.NullInt64
 	CreatedAt     time.Time
+	OrderNo       sql.NullString
+	DeviceID      sql.NullString
+	PortNo        sql.NullInt16
+	ResultCode    sql.NullInt16
+	OccurredAt    sql.NullTime
 }
 
 // 优惠券模板

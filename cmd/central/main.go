@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ChargePilot2026/charge-pilot/internal/central/charge"
 	"github.com/ChargePilot2026/charge-pilot/internal/central/identity"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/auth"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/config"
@@ -71,6 +72,11 @@ func run(ctx context.Context) error {
 		httpapi.OK(c, gin.H{"status": "identity_storage_ready"})
 	})
 	identity.API{WeChat: identity.MiniProgram{SDK: wechat}, Users: identity.UserStore{DB: db}, Sessions: identity.Sessions{Redis: cache}, JWT: jwt}.Register(router)
+	charge.StartAuthorization{DB: db, ServiceToken: cfg.ServiceToken}.Register(router)
+	charge.StartResultAPI{Store: charge.StartResultStore{DB: db}, ServiceToken: cfg.ServiceToken}.Register(router)
+	charge.EndResultAPI{Store: charge.EndResultStore{DB: db}, ServiceToken: cfg.ServiceToken}.Register(router)
+	charge.StopAuthorization{DB: db, ServiceToken: cfg.ServiceToken}.Register(router)
+	charge.UserStopAPI{JWT: jwt, Sessions: identity.Sessions{Redis: cache}, Users: identity.UserStore{DB: db}, GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken}.Register(router)
 	server := &http.Server{Addr: cfg.HTTPAddr, Handler: router, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 90 * time.Second}
 	go func() {
 		<-ctx.Done()

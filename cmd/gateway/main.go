@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ChargePilot2026/charge-pilot/internal/gateway/control"
 	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol"
 	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol/dc589"
 	"github.com/ChargePilot2026/charge-pilot/internal/gateway/store"
@@ -42,6 +43,15 @@ func run(ctx context.Context) error {
 	defer db.Close()
 	gin.SetMode(gin.ReleaseMode)
 	router := httpapi.NewRouter()
+	deviceConnections := &protocol.Registry{}
+	control.StartAPI{Service: control.StartService{
+		Orders: control.CentralAuthorizer{BaseURL: cfg.CentralInternalURL, ServiceToken: cfg.ServiceToken},
+		Store:  store.MySQLSink{DB: db}, Devices: deviceConnections,
+	}, ServiceToken: cfg.ServiceToken}.Register(router)
+	compensation := control.Compensation{Store: store.MySQLSink{DB: db}, Devices: deviceConnections}
+	control.CompensationAPI{Service: compensation, ServiceToken: cfg.ServiceToken}.Register(router)
+	userStops := control.UserStopService{Orders: control.CentralAuthorizer{BaseURL: cfg.CentralInternalURL, ServiceToken: cfg.ServiceToken}, Store: store.MySQLSink{DB: db}, Devices: deviceConnections}
+	control.UserStopAPI{Service: userStops, ServiceToken: cfg.ServiceToken}.Register(router)
 	router.GET("/health/live", func(c *gin.Context) { httpapi.OK(c, gin.H{"status": "live"}) })
 	router.GET("/health/ready", func(c *gin.Context) {
 		checkCtx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
@@ -62,11 +72,28 @@ func run(ctx context.Context) error {
 		return err
 	})
 	group.Go(func() error {
-		err := protocol.Serve(groupCtx, []protocol.Endpoint{{Address: cfg.DC589Addr, Adapter: dc589.TCPAdapter{}}}, store.MySQLSink{DB: db}, cfg.MaxConnections)
+		err := protocol.Serve(groupCtx, []protocol.Endpoint{{Address: cfg.DC589Addr, Adapter: dc589.TCPAdapter{Registry: deviceConnections}}}, store.MySQLSink{DB: db}, cfg.MaxConnections)
 		if errors.Is(err, context.Canceled) {
 			return nil
 		}
 		return err
+	})
+	group.Go(func() error {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-groupCtx.Done():
+				return nil
+			case <-ticker.C:
+				if err := compensation.RetryStopping(groupCtx); err != nil && !errors.Is(err, context.Canceled) {
+					log.Printf("STOP compensation: %v", err)
+				}
+				if err := userStops.RetryPending(groupCtx); err != nil && !errors.Is(err, context.Canceled) {
+					log.Printf("user STOP retry: %v", err)
+				}
+			}
+		}
 	})
 	group.Go(func() error {
 		<-groupCtx.Done()

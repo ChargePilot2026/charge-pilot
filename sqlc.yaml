@@ -18,9 +18,25 @@ sql:
         sql_package: database/sql
   - engine: mysql
     schema: migrations/user_db
+    queries: internal/central/charge/queries.sql
+    gen:
+      go:
+        package: chargedb
+        out: internal/central/charge/generated
+        sql_package: database/sql
+  - engine: mysql
+    schema: migrations/user_db
     queries: internal/worker/outbox/queries.sql
     gen:
       go:
         package: outboxdb
         out: internal/worker/outbox/generated
+        sql_package: database/sql
+  - engine: mysql
+    schema: migrations/gateway_db
+    queries: internal/worker/charge/queries.sql
+    gen:
+      go:
+        package: chargejobdb
+        out: internal/worker/charge/generated
         sql_package: database/sql

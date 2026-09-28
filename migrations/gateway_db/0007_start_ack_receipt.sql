@@ -1,0 +1,5 @@
+-- +goose NO TRANSACTION
+-- +goose Up
+
+ALTER TABLE charge_command ADD COLUMN result_code TINYINT UNSIGNED DEFAULT NULL;
+ALTER TABLE charge_command ADD COLUMN ack_at DATETIME(3) DEFAULT NULL;

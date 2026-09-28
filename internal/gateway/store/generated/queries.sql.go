@@ -32,7 +32,94 @@ func (q *Queries) GetEnabledDevice(ctx context.Context, arg GetEnabledDevicePara
 	return id, err
 }
 
-const insertDeviceEvent = `-- name: InsertDeviceEvent :exec
+const getStartCommandByOrder = `-- name: GetStartCommandByOrder :one
+SELECT command_id, stop_command_id, charge_order_id, payment_order_id,
+       order_no, user_id, device_id, port_no, port_code, port_id,
+       status, session_id, stop_session_id, result_reported, charge_mode, quantity
+FROM charge_command WHERE order_no = ? LIMIT 1
+`
+
+type GetStartCommandByOrderRow struct {
+	CommandID      string
+	StopCommandID  string
+	ChargeOrderID  uint64
+	PaymentOrderID uint64
+	OrderNo        string
+	UserID         uint64
+	DeviceID       string
+	PortNo         uint8
+	PortCode       string
+	PortID         sql.NullInt64
+	Status         ChargeCommandStatus
+	SessionID      sql.NullString
+	StopSessionID  sql.NullString
+	ResultReported bool
+	ChargeMode     uint8
+	Quantity       uint16
+}
+
+func (q *Queries) GetStartCommandByOrder(ctx context.Context, orderNo string) (GetStartCommandByOrderRow, error) {
+	row := q.db.QueryRowContext(ctx, getStartCommandByOrder, orderNo)
+	var i GetStartCommandByOrderRow
+	err := row.Scan(
+		&i.CommandID,
+		&i.StopCommandID,
+		&i.ChargeOrderID,
+		&i.PaymentOrderID,
+		&i.OrderNo,
+		&i.UserID,
+		&i.DeviceID,
+		&i.PortNo,
+		&i.PortCode,
+		&i.PortID,
+		&i.Status,
+		&i.SessionID,
+		&i.StopSessionID,
+		&i.ResultReported,
+		&i.ChargeMode,
+		&i.Quantity,
+	)
+	return i, err
+}
+
+const getStopCommandByOrder = `-- name: GetStopCommandByOrder :one
+SELECT command_id, start_command_id, charge_order_id, order_no,
+       user_id, device_id, port_no, port_id, status, session_id
+FROM charge_stop_command WHERE order_no = ? LIMIT 1
+`
+
+type GetStopCommandByOrderRow struct {
+	CommandID      string
+	StartCommandID string
+	ChargeOrderID  uint64
+	OrderNo        string
+	UserID         uint64
+	DeviceID       string
+	PortNo         uint8
+	PortID         uint64
+	Status         ChargeStopCommandStatus
+	SessionID      sql.NullString
+}
+
+func (q *Queries) GetStopCommandByOrder(ctx context.Context, orderNo string) (GetStopCommandByOrderRow, error) {
+	row := q.db.QueryRowContext(ctx, getStopCommandByOrder, orderNo)
+	var i GetStopCommandByOrderRow
+	err := row.Scan(
+		&i.CommandID,
+		&i.StartCommandID,
+		&i.ChargeOrderID,
+		&i.OrderNo,
+		&i.UserID,
+		&i.DeviceID,
+		&i.PortNo,
+		&i.PortID,
+		&i.Status,
+		&i.SessionID,
+	)
+	return i, err
+}
+
+const insertDeviceEvent = `-- name: InsertDeviceEvent :execresult
 INSERT INTO device_event (event_key, protocol_name, device_id, event_type, port_no, event_json, received_at)
 VALUES (?, ?, ?, ?, ?, ?, ?)
 ON DUPLICATE KEY UPDATE event_key = event_key
@@ -48,8 +135,8 @@ type InsertDeviceEventParams struct {
 	ReceivedAt   time.Time
 }
 
-func (q *Queries) InsertDeviceEvent(ctx context.Context, arg InsertDeviceEventParams) error {
-	_, err := q.db.ExecContext(ctx, insertDeviceEvent,
+func (q *Queries) InsertDeviceEvent(ctx context.Context, arg InsertDeviceEventParams) (sql.Result, error) {
+	return q.db.ExecContext(ctx, insertDeviceEvent,
 		arg.EventKey,
 		arg.ProtocolName,
 		arg.DeviceID,
@@ -58,7 +145,6 @@ func (q *Queries) InsertDeviceEvent(ctx context.Context, arg InsertDeviceEventPa
 		arg.EventJson,
 		arg.ReceivedAt,
 	)
-	return err
 }
 
 const insertDeviceOutbox = `-- name: InsertDeviceOutbox :exec
@@ -75,6 +161,578 @@ type InsertDeviceOutboxParams struct {
 func (q *Queries) InsertDeviceOutbox(ctx context.Context, arg InsertDeviceOutboxParams) error {
 	_, err := q.db.ExecContext(ctx, insertDeviceOutbox, arg.EventID, arg.EnvelopeJson)
 	return err
+}
+
+const insertStartCommand = `-- name: InsertStartCommand :exec
+INSERT INTO charge_command
+  (command_id, stop_command_id, charge_order_id, payment_order_id,
+   order_no, user_id, device_id, port_no, port_code, port_id,
+   owns_port, status, session_id, stop_session_id, charge_mode, quantity)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE, 'pending', ?, ?, ?, ?)
+`
+
+type InsertStartCommandParams struct {
+	CommandID      string
+	StopCommandID  string
+	ChargeOrderID  uint64
+	PaymentOrderID uint64
+	OrderNo        string
+	UserID         uint64
+	DeviceID       string
+	PortNo         uint8
+	PortCode       string
+	PortID         sql.NullInt64
+	SessionID      sql.NullString
+	StopSessionID  sql.NullString
+	ChargeMode     uint8
+	Quantity       uint16
+}
+
+func (q *Queries) InsertStartCommand(ctx context.Context, arg InsertStartCommandParams) error {
+	_, err := q.db.ExecContext(ctx, insertStartCommand,
+		arg.CommandID,
+		arg.StopCommandID,
+		arg.ChargeOrderID,
+		arg.PaymentOrderID,
+		arg.OrderNo,
+		arg.UserID,
+		arg.DeviceID,
+		arg.PortNo,
+		arg.PortCode,
+		arg.PortID,
+		arg.SessionID,
+		arg.StopSessionID,
+		arg.ChargeMode,
+		arg.Quantity,
+	)
+	return err
+}
+
+const insertTelemetry = `-- name: InsertTelemetry :exec
+INSERT INTO telemetry (device_id, port_no, metric, value_num, ts)
+VALUES (?, ?, ?, CAST(? AS DECIMAL(18,6)), ?)
+`
+
+type InsertTelemetryParams struct {
+	DeviceID string
+	PortNo   sql.NullInt16
+	Metric   string
+	ValueNum string
+	Ts       time.Time
+}
+
+func (q *Queries) InsertTelemetry(ctx context.Context, arg InsertTelemetryParams) error {
+	_, err := q.db.ExecContext(ctx, insertTelemetry,
+		arg.DeviceID,
+		arg.PortNo,
+		arg.Metric,
+		arg.ValueNum,
+		arg.Ts,
+	)
+	return err
+}
+
+const insertUserStopCommand = `-- name: InsertUserStopCommand :exec
+INSERT INTO charge_stop_command
+  (command_id, start_command_id, charge_order_id, order_no,
+   user_id, device_id, port_no, port_id, status, session_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+`
+
+type InsertUserStopCommandParams struct {
+	CommandID      string
+	StartCommandID string
+	ChargeOrderID  uint64
+	OrderNo        string
+	UserID         uint64
+	DeviceID       string
+	PortNo         uint8
+	PortID         uint64
+	SessionID      sql.NullString
+}
+
+func (q *Queries) InsertUserStopCommand(ctx context.Context, arg InsertUserStopCommandParams) error {
+	_, err := q.db.ExecContext(ctx, insertUserStopCommand,
+		arg.CommandID,
+		arg.StartCommandID,
+		arg.ChargeOrderID,
+		arg.OrderNo,
+		arg.UserID,
+		arg.DeviceID,
+		arg.PortNo,
+		arg.PortID,
+		arg.SessionID,
+	)
+	return err
+}
+
+const lockAvailablePort = `-- name: LockAvailablePort :one
+SELECT p.id, p.port_code FROM device_port AS p
+JOIN device AS d ON d.device_id = p.device_id
+JOIN vendor AS v ON v.id = d.vendor_id
+WHERE p.device_id = ? AND p.port_no = ? AND p.deleted_at IS NULL
+  AND p.status = 'idle' AND p.current_order_id IS NULL
+  AND d.status = 'enabled' AND d.deleted_at IS NULL
+  AND v.status = 'enabled' AND v.deleted_at IS NULL
+FOR UPDATE
+`
+
+type LockAvailablePortParams struct {
+	DeviceID string
+	PortNo   uint8
+}
+
+type LockAvailablePortRow struct {
+	ID       uint64
+	PortCode string
+}
+
+func (q *Queries) LockAvailablePort(ctx context.Context, arg LockAvailablePortParams) (LockAvailablePortRow, error) {
+	row := q.db.QueryRowContext(ctx, lockAvailablePort, arg.DeviceID, arg.PortNo)
+	var i LockAvailablePortRow
+	err := row.Scan(&i.ID, &i.PortCode)
+	return i, err
+}
+
+const lockOwnedChargingPort = `-- name: LockOwnedChargingPort :one
+SELECT id FROM device_port
+WHERE id = ? AND device_id = ? AND port_no = ?
+  AND current_order_id = ? AND status = 'charging'
+LIMIT 1 FOR UPDATE
+`
+
+type LockOwnedChargingPortParams struct {
+	ID             uint64
+	DeviceID       string
+	PortNo         uint8
+	CurrentOrderID sql.NullString
+}
+
+func (q *Queries) LockOwnedChargingPort(ctx context.Context, arg LockOwnedChargingPortParams) (uint64, error) {
+	row := q.db.QueryRowContext(ctx, lockOwnedChargingPort,
+		arg.ID,
+		arg.DeviceID,
+		arg.PortNo,
+		arg.CurrentOrderID,
+	)
+	var id uint64
+	err := row.Scan(&id)
+	return id, err
+}
+
+const lockStartForAck = `-- name: LockStartForAck :one
+SELECT command_id, order_no, port_id, status FROM charge_command
+WHERE device_id = ? AND port_no = ? AND session_id = ?
+LIMIT 1 FOR UPDATE
+`
+
+type LockStartForAckParams struct {
+	DeviceID  string
+	PortNo    uint8
+	SessionID sql.NullString
+}
+
+type LockStartForAckRow struct {
+	CommandID string
+	OrderNo   string
+	PortID    sql.NullInt64
+	Status    ChargeCommandStatus
+}
+
+func (q *Queries) LockStartForAck(ctx context.Context, arg LockStartForAckParams) (LockStartForAckRow, error) {
+	row := q.db.QueryRowContext(ctx, lockStartForAck, arg.DeviceID, arg.PortNo, arg.SessionID)
+	var i LockStartForAckRow
+	err := row.Scan(
+		&i.CommandID,
+		&i.OrderNo,
+		&i.PortID,
+		&i.Status,
+	)
+	return i, err
+}
+
+const lockStartForCompensation = `-- name: LockStartForCompensation :one
+SELECT command_id, order_no, device_id, port_no, port_id,
+       stop_session_id, status
+FROM charge_command WHERE order_no = ? LIMIT 1 FOR UPDATE
+`
+
+type LockStartForCompensationRow struct {
+	CommandID     string
+	OrderNo       string
+	DeviceID      string
+	PortNo        uint8
+	PortID        sql.NullInt64
+	StopSessionID sql.NullString
+	Status        ChargeCommandStatus
+}
+
+func (q *Queries) LockStartForCompensation(ctx context.Context, orderNo string) (LockStartForCompensationRow, error) {
+	row := q.db.QueryRowContext(ctx, lockStartForCompensation, orderNo)
+	var i LockStartForCompensationRow
+	err := row.Scan(
+		&i.CommandID,
+		&i.OrderNo,
+		&i.DeviceID,
+		&i.PortNo,
+		&i.PortID,
+		&i.StopSessionID,
+		&i.Status,
+	)
+	return i, err
+}
+
+const lockStartForStopAck = `-- name: LockStartForStopAck :one
+SELECT command_id, order_no, port_id FROM charge_command
+WHERE device_id = ? AND port_no = ? AND stop_session_id = ?
+  AND status = 'stopping' LIMIT 1 FOR UPDATE
+`
+
+type LockStartForStopAckParams struct {
+	DeviceID      string
+	PortNo        uint8
+	StopSessionID sql.NullString
+}
+
+type LockStartForStopAckRow struct {
+	CommandID string
+	OrderNo   string
+	PortID    sql.NullInt64
+}
+
+func (q *Queries) LockStartForStopAck(ctx context.Context, arg LockStartForStopAckParams) (LockStartForStopAckRow, error) {
+	row := q.db.QueryRowContext(ctx, lockStartForStopAck, arg.DeviceID, arg.PortNo, arg.StopSessionID)
+	var i LockStartForStopAckRow
+	err := row.Scan(&i.CommandID, &i.OrderNo, &i.PortID)
+	return i, err
+}
+
+const lockStartForUserStop = `-- name: LockStartForUserStop :one
+SELECT command_id, charge_order_id, order_no, user_id, device_id,
+       port_no, port_id, status FROM charge_command
+WHERE charge_order_id = ? AND order_no = ? AND user_id = ?
+LIMIT 1 FOR UPDATE
+`
+
+type LockStartForUserStopParams struct {
+	ChargeOrderID uint64
+	OrderNo       string
+	UserID        uint64
+}
+
+type LockStartForUserStopRow struct {
+	CommandID     string
+	ChargeOrderID uint64
+	OrderNo       string
+	UserID        uint64
+	DeviceID      string
+	PortNo        uint8
+	PortID        sql.NullInt64
+	Status        ChargeCommandStatus
+}
+
+func (q *Queries) LockStartForUserStop(ctx context.Context, arg LockStartForUserStopParams) (LockStartForUserStopRow, error) {
+	row := q.db.QueryRowContext(ctx, lockStartForUserStop, arg.ChargeOrderID, arg.OrderNo, arg.UserID)
+	var i LockStartForUserStopRow
+	err := row.Scan(
+		&i.CommandID,
+		&i.ChargeOrderID,
+		&i.OrderNo,
+		&i.UserID,
+		&i.DeviceID,
+		&i.PortNo,
+		&i.PortID,
+		&i.Status,
+	)
+	return i, err
+}
+
+const lockUserStopForAck = `-- name: LockUserStopForAck :one
+SELECT command_id, order_no, port_id, status FROM charge_stop_command
+WHERE device_id = ? AND port_no = ? AND session_id = ?
+LIMIT 1 FOR UPDATE
+`
+
+type LockUserStopForAckParams struct {
+	DeviceID  string
+	PortNo    uint8
+	SessionID sql.NullString
+}
+
+type LockUserStopForAckRow struct {
+	CommandID string
+	OrderNo   string
+	PortID    uint64
+	Status    ChargeStopCommandStatus
+}
+
+func (q *Queries) LockUserStopForAck(ctx context.Context, arg LockUserStopForAckParams) (LockUserStopForAckRow, error) {
+	row := q.db.QueryRowContext(ctx, lockUserStopForAck, arg.DeviceID, arg.PortNo, arg.SessionID)
+	var i LockUserStopForAckRow
+	err := row.Scan(
+		&i.CommandID,
+		&i.OrderNo,
+		&i.PortID,
+		&i.Status,
+	)
+	return i, err
+}
+
+const markPendingStartRejected = `-- name: MarkPendingStartRejected :execresult
+UPDATE charge_command SET status = 'rejected', result_code = 254,
+  ack_at = CURRENT_TIMESTAMP(3), error = 'start authorization revoked before send'
+WHERE command_id = ? AND status = 'pending'
+`
+
+func (q *Queries) MarkPendingStartRejected(ctx context.Context, commandID string) (sql.Result, error) {
+	return q.db.ExecContext(ctx, markPendingStartRejected, commandID)
+}
+
+const markStartAcked = `-- name: MarkStartAcked :execresult
+UPDATE charge_command SET status = 'acked', error = NULL, result_code = 0, ack_at = ?
+WHERE command_id = ? AND status = 'sent'
+`
+
+type MarkStartAckedParams struct {
+	AckAt     sql.NullTime
+	CommandID string
+}
+
+func (q *Queries) MarkStartAcked(ctx context.Context, arg MarkStartAckedParams) (sql.Result, error) {
+	return q.db.ExecContext(ctx, markStartAcked, arg.AckAt, arg.CommandID)
+}
+
+const markStartCompensated = `-- name: MarkStartCompensated :execresult
+UPDATE charge_command SET status = 'rejected', result_code = 254,
+  ack_at = ?, error = 'STOP compensation confirmed'
+WHERE command_id = ? AND status = 'stopping'
+`
+
+type MarkStartCompensatedParams struct {
+	AckAt     sql.NullTime
+	CommandID string
+}
+
+func (q *Queries) MarkStartCompensated(ctx context.Context, arg MarkStartCompensatedParams) (sql.Result, error) {
+	return q.db.ExecContext(ctx, markStartCompensated, arg.AckAt, arg.CommandID)
+}
+
+const markStartRejected = `-- name: MarkStartRejected :execresult
+UPDATE charge_command SET status = 'rejected', error = ?, result_code = ?, ack_at = ?
+WHERE command_id = ? AND status IN ('sent','stopping')
+`
+
+type MarkStartRejectedParams struct {
+	Error      sql.NullString
+	ResultCode sql.NullInt16
+	AckAt      sql.NullTime
+	CommandID  string
+}
+
+func (q *Queries) MarkStartRejected(ctx context.Context, arg MarkStartRejectedParams) (sql.Result, error) {
+	return q.db.ExecContext(ctx, markStartRejected,
+		arg.Error,
+		arg.ResultCode,
+		arg.AckAt,
+		arg.CommandID,
+	)
+}
+
+const markStartSent = `-- name: MarkStartSent :execresult
+UPDATE charge_command SET status = 'sent', sent_at = CURRENT_TIMESTAMP(3)
+WHERE command_id = ? AND status = 'pending'
+`
+
+func (q *Queries) MarkStartSent(ctx context.Context, commandID string) (sql.Result, error) {
+	return q.db.ExecContext(ctx, markStartSent, commandID)
+}
+
+const markStartStopping = `-- name: MarkStartStopping :exec
+UPDATE charge_command SET status = 'stopping', error = ?
+WHERE command_id = ? AND status IN ('sent','acked')
+`
+
+type MarkStartStoppingParams struct {
+	Error     sql.NullString
+	CommandID string
+}
+
+func (q *Queries) MarkStartStopping(ctx context.Context, arg MarkStartStoppingParams) error {
+	_, err := q.db.ExecContext(ctx, markStartStopping, arg.Error, arg.CommandID)
+	return err
+}
+
+const markStopSent = `-- name: MarkStopSent :exec
+UPDATE charge_command SET stop_sent_at = CURRENT_TIMESTAMP(3)
+WHERE command_id = ? AND status = 'stopping'
+`
+
+func (q *Queries) MarkStopSent(ctx context.Context, commandID string) error {
+	_, err := q.db.ExecContext(ctx, markStopSent, commandID)
+	return err
+}
+
+const markUserStopAcked = `-- name: MarkUserStopAcked :execresult
+UPDATE charge_stop_command SET status = 'acked'
+WHERE command_id = ? AND status = 'sent'
+`
+
+func (q *Queries) MarkUserStopAcked(ctx context.Context, commandID string) (sql.Result, error) {
+	return q.db.ExecContext(ctx, markUserStopAcked, commandID)
+}
+
+const markUserStopSent = `-- name: MarkUserStopSent :execresult
+UPDATE charge_stop_command SET status = 'sent', sent_at = CURRENT_TIMESTAMP(3)
+WHERE command_id = ? AND status IN ('pending','sent')
+`
+
+func (q *Queries) MarkUserStopSent(ctx context.Context, commandID string) (sql.Result, error) {
+	return q.db.ExecContext(ctx, markUserStopSent, commandID)
+}
+
+const pendingUserStops = `-- name: PendingUserStops :many
+SELECT command_id, order_no, device_id, port_no, session_id
+FROM charge_stop_command WHERE status = 'pending'
+  OR (status = 'sent' AND sent_at < DATE_SUB(NOW(3), INTERVAL 10 SECOND))
+ORDER BY created_at LIMIT 50
+`
+
+type PendingUserStopsRow struct {
+	CommandID string
+	OrderNo   string
+	DeviceID  string
+	PortNo    uint8
+	SessionID sql.NullString
+}
+
+func (q *Queries) PendingUserStops(ctx context.Context) ([]PendingUserStopsRow, error) {
+	rows, err := q.db.QueryContext(ctx, pendingUserStops)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []PendingUserStopsRow
+	for rows.Next() {
+		var i PendingUserStopsRow
+		if err := rows.Scan(
+			&i.CommandID,
+			&i.OrderNo,
+			&i.DeviceID,
+			&i.PortNo,
+			&i.SessionID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const releasePortAfterStop = `-- name: ReleasePortAfterStop :execresult
+UPDATE device_port SET status = 'idle', current_order_id = NULL
+WHERE id = ? AND current_order_id = ? AND status IN ('idle','charging')
+`
+
+type ReleasePortAfterStopParams struct {
+	ID             uint64
+	CurrentOrderID sql.NullString
+}
+
+func (q *Queries) ReleasePortAfterStop(ctx context.Context, arg ReleasePortAfterStopParams) (sql.Result, error) {
+	return q.db.ExecContext(ctx, releasePortAfterStop, arg.ID, arg.CurrentOrderID)
+}
+
+const releaseReservedPort = `-- name: ReleaseReservedPort :execresult
+UPDATE device_port SET current_order_id = NULL
+WHERE id = ? AND current_order_id = ? AND status = 'idle'
+`
+
+type ReleaseReservedPortParams struct {
+	ID             uint64
+	CurrentOrderID sql.NullString
+}
+
+func (q *Queries) ReleaseReservedPort(ctx context.Context, arg ReleaseReservedPortParams) (sql.Result, error) {
+	return q.db.ExecContext(ctx, releaseReservedPort, arg.ID, arg.CurrentOrderID)
+}
+
+const reservePort = `-- name: ReservePort :execresult
+UPDATE device_port SET current_order_id = ?
+WHERE id = ? AND status = 'idle' AND current_order_id IS NULL
+`
+
+type ReservePortParams struct {
+	CurrentOrderID sql.NullString
+	ID             uint64
+}
+
+func (q *Queries) ReservePort(ctx context.Context, arg ReservePortParams) (sql.Result, error) {
+	return q.db.ExecContext(ctx, reservePort, arg.CurrentOrderID, arg.ID)
+}
+
+const setPortCharging = `-- name: SetPortCharging :execresult
+UPDATE device_port SET status = 'charging'
+WHERE id = ? AND current_order_id = ? AND status = 'idle'
+`
+
+type SetPortChargingParams struct {
+	ID             uint64
+	CurrentOrderID sql.NullString
+}
+
+func (q *Queries) SetPortCharging(ctx context.Context, arg SetPortChargingParams) (sql.Result, error) {
+	return q.db.ExecContext(ctx, setPortCharging, arg.ID, arg.CurrentOrderID)
+}
+
+const stoppingCommands = `-- name: StoppingCommands :many
+SELECT command_id, order_no, device_id, port_no, stop_session_id
+FROM charge_command
+WHERE status = 'stopping'
+  AND (stop_sent_at IS NULL OR stop_sent_at < DATE_SUB(NOW(3), INTERVAL 10 SECOND))
+ORDER BY updated_at LIMIT 50
+`
+
+type StoppingCommandsRow struct {
+	CommandID     string
+	OrderNo       string
+	DeviceID      string
+	PortNo        uint8
+	StopSessionID sql.NullString
+}
+
+func (q *Queries) StoppingCommands(ctx context.Context) ([]StoppingCommandsRow, error) {
+	rows, err := q.db.QueryContext(ctx, stoppingCommands)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []StoppingCommandsRow
+	for rows.Next() {
+		var i StoppingCommandsRow
+		if err := rows.Scan(
+			&i.CommandID,
+			&i.OrderNo,
+			&i.DeviceID,
+			&i.PortNo,
+			&i.StopSessionID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const touchDevice = `-- name: TouchDevice :exec
@@ -97,5 +755,19 @@ func (q *Queries) TouchDevice(ctx context.Context, arg TouchDeviceParams) error 
 		arg.LastSeenAt,
 		arg.ID,
 	)
+	return err
+}
+
+const touchDeviceSeen = `-- name: TouchDeviceSeen :exec
+UPDATE device SET last_seen_at = ? WHERE device_id = ? AND status = 'enabled' AND deleted_at IS NULL
+`
+
+type TouchDeviceSeenParams struct {
+	LastSeenAt sql.NullTime
+	DeviceID   string
+}
+
+func (q *Queries) TouchDeviceSeen(ctx context.Context, arg TouchDeviceSeenParams) error {
+	_, err := q.db.ExecContext(ctx, touchDeviceSeen, arg.LastSeenAt, arg.DeviceID)
 	return err
 }
