@@ -1,8 +1,0 @@
-[toolchain]
-# 锁定具体版本：声明的 rust-version 必须与实际工具链一致，三者（rust-toolchain / Cargo.toml
-# 的 rust-version / Dockerfile 的 FROM rust:）必须同版本，否则「本机过、CI 挂」或反之。
-# 下限来自传递依赖：common-auth → jsonwebtoken → simple_asn1 → time 0.3.55（MSRV 1.88）。
-# 1.98.1 = 本机实际使用并验收的版本。
-channel = "1.98.1"
-components = ["rustfmt", "clippy"]
-profile = "minimal"
