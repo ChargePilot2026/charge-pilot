@@ -1,0 +1,55 @@
+# Go 后端重建与验收清单
+
+## 已确认的决定
+
+- 从需求、API、数据库文档重建后端，不移植旧语言业务实现。
+- 运行服务为 `gateway`、`central`、`worker`；`central` 在同一 HTTP 端口按路径承载 user/admin/billing 逻辑模块。
+- HTTP 使用 Gin；MySQL 驱动为 go-sql-driver/mysql，SQL 查询由 sqlc 生成，迁移由 Goose 执行。
+- Redis 使用 go-redis/v9；JWT 使用 golang-jwt/jwt/v5；精确计费用 shopspring/decimal，入账金额用整数分。
+- 微信支付使用官方 wechatpay-go；汇付天下优先验证其 Go SDK 的接口覆盖。
+- 暂不做 MQTT。gateway 的 TCP 厂商协议按适配器隔离，不同协议可监听不同端口。附件中的 5.8.9 协议命名为 `dc589`，默认监听 `:9100`。
+- 仅有测试数据，允许重建开发数据库。全部业务功能和资金流程验证后一次切换。
+
+## 2026-09-28 本地验证记录
+
+- 使用新的 `compose.dev.yaml` 清空原开发测试卷后从空 MySQL 运行五个 schema 的 Goose 迁移，`gateway`、`central`、`worker` 三个 Go 容器均启动，三个 `/health/ready` 返回成功。健康检查只说明当前已接线的数据库和 Redis 可用。
+- `dc589` 注册样例和心跳已在 TCP 与 MySQL 上验证；设备事件同事务写入 Outbox，worker 把 Outbox 条目发布至 Redis Stream。多协议不同监听端口通过测试。
+- 并发首次登录只创建一条用户和一个钱包；本地假微信身份下，Gin 登录、JWT、资料读取、刷新令牌轮换、旧令牌拒绝和退出撤销均通过 MySQL/Redis 集成测试。真实微信 `code2Session` 尚未联调。
+- `go test ./...`、`go vet ./...`、sqlc 生成、开发与生产 Compose 解析、Caddyfile 解析均通过。生产启动脚本仍禁止切换。
+
+## 目录目标
+
+```text
+go.mod
+cmd/gateway/            # TCP 协议及内部 HTTP
+cmd/central/            # user、admin、billing 的 Gin API
+cmd/worker/             # 计划任务、事件消费与重试
+internal/gateway/       # 协议适配与设备领域
+internal/central/       # 用户、订单、支付、后台、财务领域
+internal/worker/        # 异步任务
+internal/platform/      # 配置、数据库、鉴权、HTTP、事件
+migrations/             # 按 schema 组织的 SQL 迁移
+admin-web/              # React 后台，保留前端工程
+miniprogram/            # 微信原生小程序，保留前端工程
+docs/                   # 需求、API、数据与联调文档
+```
+
+## 功能验收范围
+
+| 领域 | 必须验证的闭环 | 当前状态 |
+| --- | --- | --- |
+| 设备 | `dc589` 登录、心跳、遥测、远程启动/停止、结束订单、故障、断线补传、设备配置、OTA；新协议独立端口 | 注册和上行帧、入库及 Outbox 发布已通过本地测试；命令派发、订单关联、OTA 与实机联调未完成 |
+| 用户 | 微信登录、可选手机号、协议同意、账户、会员卡、优惠券、地图、反馈、客服 | 微信 `code2Session` SDK、首次建用户/钱包、JWT、Redis 刷新轮换、退出和资料读取已写；无微信实凭证联调，其他未完成 |
+| 充电 | 扫码只读、支付后启动、端口排他、实时曲线、停止、计费、账单通知 | 计费规则函数已有；业务闭环未实现 |
+| 支付退款 | 微信直连、汇付天下、支付回调幂等、充值、自动和人工退款、风控审核 | 未实现；无测试商户资料 |
+| 财务 | 价费分离、两种分账模式、至多八方、对账、账单、提现、发票 | 价费与分账纯函数已有；持久化与渠道联调未实现 |
+| 运营 | 设备/站点/定价/活动、白标、公告、RBAC、审计、告警 Webhook、监管报送 | 未实现 |
+| 运维 | 五 schema 迁移、Outbox/Streams、重试/DLQ、备份、可观测性、发布与回滚 | Goose 五库迁移已在一次性测试库执行；gateway Outbox→Stream 已测试；消费、DLQ、备份和发布验收未完成 |
+
+`docs/需求分析.md` 是业务边界，`docs/api/*.md` 与 `docs/db/*.md` 是接口和表字段参考。API 文档仍包含旧服务端口或旧字段名，需随各功能落地逐项修订。任何表中的“已写”仅指单独代码和本地测试，不代表端到端验收。
+
+## 已知外部验收限制
+
+- 微信支付和汇付天下测试商户资料暂不可用。支付实现只能做 SDK 调用契约与模拟回调测试，不能宣称渠道联调通过。
+- `dc589` 的可联调设备及厂商 OTA 双备份/自动回滚证明暂不可用。协议示例可做编解码测试，不能宣称设备端或回滚通过。
+- 在这些条件满足前，生产切换门禁保持关闭。

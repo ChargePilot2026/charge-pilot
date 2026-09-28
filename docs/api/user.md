@@ -1,5 +1,7 @@
 # user 服务 API 详细设计
 
+> **Go 重建中的目标接口**：`user` 是 `central` 内部模块，最终从同一 Gin 端口 `:8080` 提供。本文件旧服务路径、端口、字段或“已实现”表述尚待逐项校准；当前实际能力以 [Go 重建清单](../migration/go-rebuild.md) 为准。
+
 **服务**:`user`(`services/user`)
 **对外地址**:`https://<customer-domain>/api/v1/user/...`(经 Caddy 反代到 `user:8081`)
 **鉴权**:JWT(HS256,openid)放 `Authorization: Bearer <jwt>` header
@@ -1551,7 +1553,7 @@ Wechatpay-Nonce: ...
 ## 文档维护
 
 - 修改本文件需在 PR 标题写 `api(user): <简短描述>`,并在 PR 描述中说明影响哪些端点
-- 任何新增 / 删除 / 修改端点必须同步更新 `services/user/src/openapi.rs` 与本文件
+- 任何新增 / 删除 / 修改端点必须同步更新 `internal/central/` 的 Gin 路由、接口契约与本文件
 - CI 检查:OpenAPI 规范与本文件端点清单必须一致(脚本 `tools/check-api-consistency.ts`)
 
 ### 当前扫码读取实现（2026-09-26）

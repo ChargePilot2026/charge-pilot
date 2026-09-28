@@ -7,7 +7,7 @@
 #     -d '{"username":"admin","password":"DevAdmin2026!"}' \
 #     | python3 -c 'import sys,json; print(json.load(sys.stdin)["data"]["token"])')
 #   echo "$TOKEN" > .codewave/temps/token.txt
-#   bash temps/probe_admin_gets.sh
+#   bash scripts/probes/admin_gets.sh
 #
 # Exit codes:
 #   0  probe finished (regardless of individual endpoint failures)
@@ -18,6 +18,7 @@
 #   "non-json" indicates the server returned HTML / non-JSON (likely SPA
 #   fallback from static_serve::serve_spa — usually a wrong path).
 set -u
+cd "$(dirname "$0")/../.."
 
 TOKEN_FILE="${TOKEN_FILE:-.codewave/temps/token.txt}"
 TOKEN=$(cat "$TOKEN_FILE" 2>/dev/null)

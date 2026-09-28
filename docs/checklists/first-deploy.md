@@ -17,10 +17,10 @@
 
 - [ ] Docker ≥ 24 + Docker Compose ≥ 2.20 安装
 - [ ] 创建工作目录 `/opt/chargepilot/`(或客户自选)
-- [ ] 拷贝交付物:`docker-compose.yml` + `Caddyfile` + `.env.example`
+- [ ] 拷贝交付物:`docker-compose.yml` + `docker/Caddyfile` + `.env.example`，保持 `docker/` 相对路径
 - [ ] 复制 `.env.example` 为 `.env`,填数据库密码、`REDIS_PASSWORD`、**不同值的** `REDIS_STREAM_PASSWORD`、`JWT_SECRET`、服务令牌与微信支付凭证
 - [ ] `chmod 600 .env`(权限隔离,不入 Git)
-- [ ] 运行 `bash tools/check-deploy-config.sh`;退出码 `0` 才表示全部验证,`2` 表示缺少 Docker/Caddy 校验能力,需在部署机补跑
+- [ ] 生产切换门禁开放后运行 `bash scripts/check-deploy-config.sh` 并检查退出码
 
 ## 三、启动基础设施
 

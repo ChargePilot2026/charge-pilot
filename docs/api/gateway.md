@@ -1,5 +1,7 @@
 # gateway 服务 API 详细设计
 
+> **Go 重建中的目标接口**：当前设备协议名为 `dc589`，使用二进制 TCP 帧和 `:9100`；其他协议可使用新端口。本文件旧 JSON 帧描述或“已实现”表述尚待逐项校准；当前实际能力以 [Go 重建清单](../migration/go-rebuild.md) 为准。
+
 **服务**:`gateway`(`services/gateway`)
 **对外地址**(设备侧):
 - TCP 监听 `:9100`(当前为换行分隔 JSON `Frame`)

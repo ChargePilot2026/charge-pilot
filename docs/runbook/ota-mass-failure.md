@@ -28,7 +28,7 @@ OTA 推送告警风暴
   │    # P1-10:admin 暂未提供 /internal/ota/abort-all 端点(本期未实现)
   │    # 临时方案:客户运维手动在 PC 后台"OTA 计划"页 → 取消所有 status='pending' 的 ota_schedule
   │    # 或代码动工后用此命令(预占):
-  │    # docker exec chargepilot-admin curl -s -X POST http://chargepilot-admin:8082/internal/ota/abort-all
+  │    # docker exec chargepilot-central curl -s -X POST http://chargepilot-central:8080/internal/ota/abort-all
   │
   └─ 评估是否影响充电业务
        ├─ 是(回滚的设备无法充电)→ 启动应急通知(见 § 五)

@@ -1,5 +1,7 @@
 # admin 服务 API 详细设计
 
+> **Go 重建中的目标接口**：`admin` 是 `central` 内部模块，最终从同一 Gin 端口 `:8080` 提供。本文件旧服务路径、端口、字段或“已实现”表述尚待逐项校准；当前实际能力以 [Go 重建清单](../migration/go-rebuild.md) 为准。
+
 **服务**:`admin`(`services/admin`)
 **对外地址**:`https://<customer-domain>/api/v1/admin/...`(经 Caddy 反代到 `admin:8082`)
 **鉴权**:JWT(HS256,§ 7.3.2)+ 角色权限(`permission_codes`)
@@ -1151,7 +1153,7 @@ user 服务在单库事务中锁定模板，校验用户有效、模板处于发
 1. 校验 `id=1`(单例)
 2. 全字段幂等写入固定 `id=1`，扩展字段保存在 `config_json`；与 `audit_log` before/after snapshot 同事务提交
 3. **缓存失效**:`DEL whitelabel:config`(user 服务 TTL 30 min)
-4. **运维联动**:`custom_domain` 变更后,**人工**同步更新 Caddyfile + 微信小程序后台"request 合法域名"
+4. **运维联动**:`custom_domain` 变更后,**人工**同步更新 `docker/Caddyfile` + 微信小程序后台"request 合法域名"
 
 **错误码**:
 - `1005`: `theme_color` 非 HEX 格式
@@ -1489,10 +1491,10 @@ user 服务在单库事务中锁定模板，校验用户有效、模板处于发
 ## 文档维护
 
 - 修改本文件需在 PR 标题写 `api(admin): <简短描述>`,并在 PR 描述中说明影响哪些端点
-- 任何新增 / 删除 / 修改端点必须同步更新 `services/admin/src/openapi.rs` 与本文件
+- 任何新增 / 删除 / 修改端点必须同步更新 `internal/central/` 的 Gin 路由、接口契约与本文件
 - CI 检查:OpenAPI 规范与本文件端点清单必须一致(脚本 `tools/check-api-consistency.ts`)
 - **跨服务一致性**:admin 通过 HTTP 调 user / gateway / billing / worker 的内部接口命名,必须与对应服务 API 文档一致;新增 admin 端点若依赖其他服务接口,必须先在对方服务的 API 文档中落地路径
-- **审计一致性**:任何 admin 写端点必须在 `services/admin/src/audit_log.rs` 的 `audit_action!()` 宏中注册,否则 CI 拒绝合并
+- **审计一致性**:任何 admin 写端点都应检查审计记录与权限映射；Go 模块落地时建立相应权限矩阵
 - **导出任务**:目标由 worker 服务承接，当前导出入口返回 503；worker 状态查询与下载端点未实现，详见 `docs/api/worker.md` § 零
 
 ### 当前站点操作权限（2026-09-26）

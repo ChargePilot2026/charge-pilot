@@ -292,7 +292,7 @@
 
 - 应用层强制只有一条记录(ID=1);新增时校验 `id=1`
 - `theme_color` 必须是 7 字符 HEX 格式(`#RRGGBB`,应用层校验)
-- `custom_domain` 变更后,需客户运维同步更新 Caddyfile + 微信小程序后台"request 合法域名"配置
+- `custom_domain` 变更后,需客户运维同步更新 `docker/Caddyfile` + 微信小程序后台"request 合法域名"配置
 
 ### 关系
 

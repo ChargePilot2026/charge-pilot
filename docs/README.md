@@ -13,6 +13,7 @@ docs/
 ├── README.md                    ← 你在这里(读路径入口)
 ├── 需求分析.md                   ← "做什么 / 不做什么"(产品决策)
 ├── 技术规格.md                   ← "怎么做"(技术选型 + 架构 + 协议 + 部署)
+├── central-merge.md             ← 当前 3 进程部署与配置
 ├── implementation-status.md      ← 逐日编年:实际做到了什么(按日期追加)
 ├── architecture-refactor-plan.md ← 后端重构方案 + 缺陷台账 + 验收闸口 V1–V10
 ├── api-change-list.md           ← API 变更清单(前端跟进依据)
@@ -20,7 +21,7 @@ docs/
 ├── local-development.md         ← 本地起服务
 ├── cross-reference.md           ← 跨服务 / 跨表 / 跨 Stream 对账 + CI 维护规则
 │
-├── api/                         ← 5 个服务的 HTTP / Stream 端点细节
+├── api/                         ← 5 个逻辑域的 HTTP / Stream 端点细节
 │   ├── user.md  admin.md  gateway.md  billing.md  worker.md
 │
 ├── db/                          ← 5 个 schema 的表结构 + 字段 + 索引
@@ -99,7 +100,7 @@ checklists/ ← 需求分析 § 13 + 技术规格 § 10 引用
 
 ## 立即可用的关键事实
 
-- **5 个服务**:`gateway`(设备) / `user`(小程序) / `admin`(PC 后台) / `billing`(计费) / `worker`(后台任务)
+- **3 个运行服务**:`gateway`(设备) / `central`(小程序、PC 后台、计费) / `worker`(后台任务)；central 内保留 `user/admin/billing` 逻辑模块
 - **5 个 schema**:`gateway_db` 8 张 / `user_db` 18 张 / `admin_db` 25 张 / `billing_db` 5 张 / `worker_db` 5 张 = **61 张**
 - **11 个 Stream**:`device_event_stream` / `alert_stream` / `charge_started_stream` / `charge_ended_stream` / `refund_required_stream` / `invoice_required_stream` / `webhook_retry_stream` / `ota_schedule_stream` / `comp_tx_stream` / `coupon_grant_required_stream` / `pricing_rule_changed_stream`
 - **角色载体**:终端用户→仅小程序;运营 / 财务 / 巡检 / 管理员→同一 PC 后台;**客服坐席→微信原生客服会话**

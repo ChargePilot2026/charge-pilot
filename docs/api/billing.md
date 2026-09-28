@@ -1,5 +1,7 @@
 # billing 服务 API 详细设计
 
+> **Go 重建中的目标接口**：`billing` 是 `central` 内部模块，最终从同一 Gin 端口 `:8080` 提供。本文件旧服务路径、端口、字段或“已实现”表述尚待逐项校准；当前实际能力以 [Go 重建清单](../migration/go-rebuild.md) 为准。
+
 **服务**:`billing`(`services/billing`)
 **对外地址**(内部 HTTP):`:8084`(**仅内网可达**,Docker Compose 内服务间调用)
 **鉴权**(内部 HTTP):服务间共享密钥(`Authorization: Bearer <service_token>`)
@@ -494,7 +496,7 @@ pub struct PartyAmount {
 ## 文档维护
 
 - 修改本文件需在 PR 标题写 `api(billing): <简短描述>`
-- 新增 HTTP 端点必须同步更新 `services/billing/src/openapi.rs`
+- 新增 HTTP 端点必须同步更新 `internal/central/` 的 Gin 路由、接口契约与本文件
 - **Stream 名必须从 § 5.1 8 个真实 Stream 中选**,新增 Stream 必须先在技术规格登记
 - **计费 / 分账引擎的输入输出结构变更**(影响 `fee_calculation.calculation_detail` JSON 格式)→ 必须同步更新本文档 § 七 + `docs/db/billing.md` 表结构 + 写数据库 migration 兼容老数据
 - CI 检查:OpenAPI 规范与本文件端点清单一致(脚本 `tools/check-api-consistency.ts`)

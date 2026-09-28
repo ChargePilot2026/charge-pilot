@@ -1,114 +1,27 @@
-# Caddyfile · ChargePilot 反向代理 + TLS 终止(P0-4 修正)
-# 配套文档:docs/技术规格.md § 10(部署)+ § 9.1(TLS)
-#
-# P0-4 关键修正:
-#   - **全局块必须在文件开头**(Caddy 严格语法:全局块 → site block → 其他)
-#   - 把原 § 末尾的 {acme_ca / log / servers} 等全局配置块移到文件最前
-#   - 校验工具:bash tools/check-deploy-config.sh 自动扫全局块位置
-#
-# 用法:
-#   1. 复制到客户服务器:scp Caddyfile user@server:/opt/chargepilot/
-#   2. 修改 <customer-domain> 为实际域名(如 charge.example.com)
-#   3. Caddy 首次启动自动从 Let's Encrypt 申请证书(需域名 A 记录指向服务器)
-#   4. Caddy 续期由 ACME HTTP-01 自动完成(每 60 天)
-#
-# 注意:
-#   - Caddy **不代理** TCP :9100 — 该端口由 gateway 服务直接监听
-#   - MQTT :1883 尚未实现、未监听，也不会由 Docker Compose 暴露
-#   - 内部 HTTP 端口(8081 user / 8082 admin / 8083 gateway / 8084 billing)
-#     **不直接暴露公网**,只通过本 Caddyfile 反代
-
-# ============ 1. 全局块(必须在文件开头)============
+# Read-only snapshot of ../docker/Caddyfile; run the canonical file.
 {
-    # ACME 证书签发(Let's Encrypt)
-    acme_ca https://acme-v02.api.letsencrypt.org/directory
-    # on_demand_tls 仅用于客户动态添加子域名场景;通常关闭
-    # on_demand_tls {
-    #     ask https://admin:8082/api/v1/internal/caddy/ask
-    # }
     admin off
-    auto_https on
-    servers {
-        protocols h1 h2 h3
-        max_header_size 4mb
-        read_timeout 60s
-        write_timeout 60s
-    }
     log default {
         output stdout
         format json
     }
 }
 
-# ============ 2. 主域名:PC 后台 + 小程序 API 统一入口 ============
-<customer-domain> {
-    # 编码压缩
+{$PUBLIC_DOMAIN} {
     encode zstd gzip
-    # HSTS(§ 9.1)
-    header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
-    # 安全响应头
+    header Strict-Transport-Security "max-age=63072000; includeSubDomains"
     header X-Content-Type-Options "nosniff"
     header X-Frame-Options "DENY"
-    header Referrer-Policy "strict-origin-when-cross-origin"
-    header Content-Security-Policy "default-src 'self'; img-src 'self' https: data:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';"
 
-    # CORS(同源策略,§ 9.7)
-    @cors_preflight method OPTIONS
-    header @cors_preflight Access-Control-Allow-Origin "{http.request.header.Origin}"
-    header @cors_preflight Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
-    header @cors_preflight Access-Control-Allow-Headers "Authorization, Content-Type, X-Requested-With"
-    header @cors_preflight Access-Control-Max-Age "86400"
-
-    # ===== 小程序 API(user 服务,:8081)=====
-    reverse_proxy /api/v1/user/* http://chargepilot-user:8081 {
-        header_up X-Real-IP {remote_host}
-        header_up X-Forwarded-For {remote_host}
-        header_up X-Forwarded-Proto https
-        transport http {
-            dial_timeout 5s
-            response_header_timeout 30s
-            read_timeout 30s
-        }
+    handle /api/* {
+        reverse_proxy chargepilot-central:8080
     }
 
-    # ===== 小程序公开端点(支付回调等,:8081)=====
-    reverse_proxy /api/v1/public/* http://chargepilot-user:8081 {
-        header_up X-Real-IP {remote_host}
-        header_up X-Forwarded-For {remote_host}
-        transport http {
-            dial_timeout 5s
-            response_header_timeout 30s
-            read_timeout 30s
-        }
+    handle_path /admin/* {
+        root * /srv/admin
+        try_files {path} /index.html
+        file_server
     }
 
-    # ===== OpenAPI 文档 + Swagger UI(:8081 user 提供)=====
-    reverse_proxy /api/docs/* http://chargepilot-user:8081
-
-    # ===== PC 后台 API(admin 服务,:8082)=====
-    reverse_proxy /api/v1/admin/* http://chargepilot-admin:8082 {
-        header_up X-Real-IP {remote_host}
-        header_up X-Forwarded-For {remote_host}
-        transport http {
-            dial_timeout 5s
-            response_header_timeout 60s
-            read_timeout 60s
-        }
-    }
-
-    # ===== PC 后台 React SPA 静态资源(由 admin 服务直接服务,:8082)=====
-    reverse_proxy /admin/* http://chargepilot-admin:8082 {
-        @spa_fallback path /admin/*
-        rewrite @spa_fallback /admin/index.html
-        header Cache-Control "public, max-age=86400"
-    }
-
-    # ===== 根路径 → PC 后台首页 =====
     redir / /admin/
-}
-
-# ============ 3. 健康检查端点(可选,L4 LB 用)============
-:8080 {
-    bind 127.0.0.1
-    respond /health 200
 }

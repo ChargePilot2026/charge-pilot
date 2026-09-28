@@ -59,7 +59,7 @@ docker exec -it caddy caddy adapt --config /etc/caddy/Caddyfile \
 
 1. 告诉客户运维:**申请开 80 出口到服务器公网 IP**(Let's Encrypt 必须用 HTTP-01)
 2. 临时方案:改用 DNS-01 挑战(需要客户域名 NS 切到 Cloudflare 或加 CNAME 别名)
-3. 若客户合规禁止 80 出口:暂改用 ZeroSSL 备 CA(Caddyfile `acme ca https://acme.zerossl.com/v2/DV90`)
+3. 若客户合规禁止 80 出口:暂改用 ZeroSSL 备 CA(`docker/Caddyfile` 中配置 `acme ca https://acme.zerossl.com/v2/DV90`)
 
 ### 4.3 Let's Encrypt 配额用尽
 

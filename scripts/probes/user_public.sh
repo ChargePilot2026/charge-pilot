@@ -1,5 +1,5 @@
 #!/bin/bash
-# Probe every user-facing route exposed by services/user (the miniprogram
+# Probe every user-facing route exposed by central's user module (the miniprogram
 # backend). The script:
 #   1. Hits /api/v1/public/auth/* without any token.
 #   2. Mints a local-dev JWT (same secret as the user service) for
@@ -11,7 +11,7 @@
 #      code.
 #
 # Usage:
-#   bash temps/probe_user_public.sh
+#   bash scripts/probes/user_public.sh
 #
 # Exit code: 0 always (per-endpoint failures are not fatal; the goal is
 # to surface them in the table).
@@ -25,6 +25,7 @@
 # Redis-cache and creates a user row in user_db.user. It cleans up
 # after itself on exit (best effort; kill -9 leaves residue).
 set -u
+cd "$(dirname "$0")/../.."
 
 USER_HOST="${USER_HOST:-http://localhost:8081}"
 REDIS_HOST="${REDIS_HOST:-redis-cache}"
