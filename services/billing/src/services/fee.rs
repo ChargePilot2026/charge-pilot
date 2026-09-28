@@ -16,7 +16,7 @@
 //!    没取到时显式 `rollback` 再返回 `false`(fire-and-forget 的析构回滚不等价)。
 
 use crate::api_types::{CalculateResponse, FeeBreakdownResponse};
-use crate::charge_fee::resolve_fee;
+use crate::charge_fee::{resolve_fee, resolve_fee_segmented};
 use api_contracts::pricing::MeteredOrder;
 use common_app::ServiceBase;
 use common_error::{AppError, AppResult};
@@ -58,7 +58,24 @@ impl FeeService {
             return Err(AppError::Conflict("计费订单身份不匹配".into()));
         }
         let meter = &source.meter;
-        let fee = resolve_fee(&source.quote.pricing, source.started_at, meter)?;
+        // D16 分派：只在 meter 真的带分段数据时走分段路径，否则**逐字**走原路径。
+        // 判据是 `segments` 非空而非「是否跨了电价」——跨电价但缺分段数据仍须报
+        // Conflict（静默改走单费率会按错误费率收钱）。
+        let fee = match if meter.segments.is_empty() {
+            resolve_fee(&source.quote.pricing, source.started_at, meter)
+        } else {
+            resolve_fee_segmented(&source.quote.pricing, source.started_at, meter)
+        } {
+            Ok(fee) => fee,
+            Err(error) => {
+                // 无法自动计费时，给人工异常流程一个**可查的落点**，
+                // 而不是抛一句无后续的 Conflict 就完事。记账失败不得阻断主流程。
+                tracing::warn!(charge_order_id=cid, order_no, %error, "charge not priceable automatically");
+                self.record_manual_fee_review(cid, order_no, meter.charged_wh, &error.to_string())
+                    .await;
+                return Err(error);
+            }
+        };
         let snapshot = serde_json::to_value(&source)?;
         let mut tx = self.base.begin().await?;
         sqlx::query("INSERT IGNORE INTO fee_receipt (charge_order_id,source_json) VALUES (?,?)")
@@ -116,6 +133,55 @@ impl FeeService {
             service_cents: fee.service_cents,
             total_cents: fee.total_cents,
         })
+    }
+
+    /// 记一条「需人工定价」的兜底单，让「无法自动计费」有可查的落点。
+    ///
+    /// 依赖表 `billing_db.manual_fee_review`（由 `migrations/billing_db/0005_*.sql`
+    /// 建立，另一路负责）。本方法在表不存在时**静默失败**并只记日志 ——
+    /// 兜底记账失败不应阻断计费主流程。
+    ///
+    /// 约定表结构（建表方照此）：
+    /// ```sql
+    /// CREATE TABLE manual_fee_review (
+    ///   id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    ///   charge_order_id BIGINT UNSIGNED NOT NULL,
+    ///   order_no        VARCHAR(64)  NOT NULL,
+    ///   reason          VARCHAR(255) NOT NULL,
+    ///   energy_wh       BIGINT UNSIGNED NOT NULL,
+    ///   created_at      DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    ///   created_month   VARCHAR(7)   NOT NULL,
+    ///   UNIQUE KEY uk_order(charge_order_id),
+    ///   KEY idx_month(created_month)
+    /// );
+    /// ```
+    /// `uk_order` 保证同一订单重复计费重试只会**多一条请求而非多条单**；
+    /// `idx_month` 让「本月待人工定价清单」这类月度运营查询走索引。
+    #[allow(clippy::disallowed_methods)] // billing 侧 repository 层
+    pub async fn record_manual_fee_review(
+        &self,
+        charge_order_id: u64,
+        order_no: &str,
+        energy_wh: u64,
+        reason: &str,
+    ) {
+        // reason 列长 255，截断避免整条 INSERT 失败而丢掉这个落点。
+        let reason: String = reason.chars().take(255).collect();
+        let result = sqlx::query(
+            "INSERT IGNORE INTO manual_fee_review (charge_order_id,order_no,reason,energy_wh,created_month) VALUES (?,?,?,?,?)",
+        )
+        .bind(charge_order_id)
+        .bind(order_no)
+        .bind(&reason)
+        .bind(energy_wh)
+        .bind(chrono::Utc::now().format("%Y-%m-01").to_string())
+        .execute(self.base.pool())
+        .await;
+        match result {
+            Ok(_) => tracing::info!(charge_order_id, "manual fee review recorded"),
+            // 表尚未建立（migration 未上线）是最可能的原因，记 warn 而不中断。
+            Err(error) => tracing::warn!(charge_order_id, %error, "manual fee review not recorded"),
+        }
     }
 
     /// 费用明细只读。不开事务 —— 单表单条 SELECT。

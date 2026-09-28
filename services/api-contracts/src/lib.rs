@@ -329,11 +329,34 @@ pub struct ChargeStopResponse {
     pub command_id: String,
 }
 
+/// 充电时段内的一段连续区间及其电能量(Wh)。
+///
+/// `energy_wh` 用**整数**而非 f64:`ChargeEndMeter` 派生了 `Eq`,
+/// 浮点会破坏 derive;且金额计算本就该用整数避免累积误差。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ChargeMeterSegment {
+    pub started_at: chrono::DateTime<chrono::Utc>,
+    pub ended_at: chrono::DateTime<chrono::Utc>,
+    pub energy_wh: u64,
+}
+
 #[derive(Debug,Clone,Serialize,Deserialize,PartialEq,Eq)]
 pub struct ChargeEndMeter {
     pub charged_wh: u64,
     pub charged_seconds: u32,
     pub ended_at: chrono::DateTime<chrono::Utc>,
+    /// 分段计量明细。**空数组 = 服务端未能推导**(例如设备未上报 meter_kwh),
+    /// 此时 billing 走单费率路径;若该订单实际跨越了费率边界,billing 会
+    /// 转入人工兜底而不是错误地按单费率计价。
+    ///
+    /// ⚠️ 时钟来源是**设备时钟**(`telemetry.ts` 来自设备上报帧)。
+    /// `tcp.rs` 当前无时钟校正,故分段边界可能与真实时间有偏差。
+    ///
+    /// `#[serde(default)]` 是**向后兼容的关键**:存量
+    /// `charge_stop_command.meter_json` 与 `charge_end_receipt.meter_json`
+    /// 里没有这个字段,缺省它会让这些历史记录反序列化直接失败。
+    #[serde(default)]
+    pub segments: Vec<ChargeMeterSegment>,
 }
 
 #[derive(Debug,Clone,Serialize,Deserialize)]
@@ -345,6 +368,73 @@ pub struct ChargeEndRequest {
     pub port_no:u8,
     pub port_id:u64,
     pub meter:ChargeEndMeter,
+}
+
+#[cfg(test)]
+mod charge_end_meter_tests {
+    use super::*;
+
+    /// 向后兼容护栏(D16):`segments` 加字段前落下的 `meter_json` 里**没有**这个键。
+    /// 缺了 `#[serde(default)]`,这些历史行会在读回时直接报错,
+    /// 导致存量 STOP 无法重放推进。
+    #[test]
+    fn legacy_meter_json_without_segments_still_deserializes() {
+        let legacy = r#"{"charged_wh":1250,"charged_seconds":3600,"ended_at":"2026-09-26T12:00:00Z"}"#;
+        let meter: ChargeEndMeter = serde_json::from_str(legacy)
+            .expect("旧格式 meter_json 必须能反序列化");
+        assert_eq!(meter.charged_wh, 1250);
+        assert_eq!(meter.charged_seconds, 3600);
+        assert!(meter.segments.is_empty(), "缺失的分段应为空 vec 而不是解析失败");
+    }
+
+    /// 存量 `charge_stop_command.meter_json` 的完整包装也要能直接读回来。
+    #[test]
+    fn legacy_charge_end_request_without_segments_still_deserializes() {
+        let legacy = r#"{
+            "order_no":"O1","start_command_id":"s1","stop_command_id":"t1",
+            "device_id":"dev1","port_no":1,"port_id":9,
+            "meter":{"charged_wh":1250,"charged_seconds":3600,"ended_at":"2026-09-26T12:00:00Z"}
+        }"#;
+        let req: ChargeEndRequest = serde_json::from_str(legacy).expect("存量停止请求必须能反序列化");
+        assert_eq!(req.meter.charged_wh, 1250);
+        assert!(req.meter.segments.is_empty());
+    }
+
+    /// 新格式往返:分段必须原样回来,且仍是整数瓦时。
+    #[test]
+    fn segments_round_trip() {
+        let meter = ChargeEndMeter {
+            charged_wh: 1235,
+            charged_seconds: 7200,
+            ended_at: "2026-09-26T12:00:00Z".parse().unwrap(),
+            segments: vec![ChargeMeterSegment {
+                started_at: "2026-09-26T11:00:00Z".parse().unwrap(),
+                ended_at: "2026-09-26T11:59:59Z".parse().unwrap(),
+                energy_wh: 1235,
+            }],
+        };
+        let json = serde_json::to_string(&meter).unwrap();
+        let back: ChargeEndMeter = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, meter);
+        // 金额计算依赖整数瓦时,不允许被序列化成浮点。
+        assert!(json.contains("\"energy_wh\":1235"), "energy_wh 必须是整数: {json}");
+    }
+
+    /// 空分段会被序列化出来(gateway 存进 `meter_json`),
+    /// 读回来仍是空 vec —— 两边对「没有分段」的表达必须一致。
+    #[test]
+    fn empty_segments_serialize_as_empty_array() {
+        let meter = ChargeEndMeter {
+            charged_wh: 0,
+            charged_seconds: 0,
+            ended_at: "2026-09-26T12:00:00Z".parse().unwrap(),
+            segments: vec![],
+        };
+        let json = serde_json::to_string(&meter).unwrap();
+        assert!(json.contains("\"segments\":[]"), "缺省也必须写回空数组: {json}");
+        let back: ChargeEndMeter = serde_json::from_str(&json).unwrap();
+        assert!(back.segments.is_empty());
+    }
 }
 
 // ---- user <-> billing ----

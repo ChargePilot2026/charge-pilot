@@ -181,6 +181,8 @@ mod tests {
                 charged_wh: 125,
                 charged_seconds: 1,
                 ended_at: chrono::Utc::now(),
+                // D16:本用例是单费率场景，不提供分段读数
+                segments: Vec::new(),
             },
         };
         let mut wrong = req.clone();

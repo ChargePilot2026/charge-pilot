@@ -25,13 +25,8 @@ pub fn resolve_fee(
     started_at: DateTime<Utc>,
     meter: &ChargeEndMeter,
 ) -> AppResult<QuoteResponse> {
-    crate::metered_pricing::validate_meter(started_at, meter.ended_at, meter.charged_wh, meter.charged_seconds)?;
-    if is_full_refund_eligible(started_at, meter.ended_at, meter.charged_seconds) {
-        return Ok(QuoteResponse {
-            electric_cents: 0,
-            service_cents: 0,
-            total_cents: 0,
-        });
+    if let Some(zero) = precheck(started_at, meter)? {
+        return Ok(zero);
     }
     crate::metered_pricing::calculate(
         rule,
@@ -40,6 +35,46 @@ pub fn resolve_fee(
         meter.charged_wh,
         meter.charged_seconds,
     )
+}
+
+/// D16:有分段计量数据时走分段计价路径。
+///
+/// **D10 的两步顺序由 [`precheck`] 统一保证**，与 [`resolve_fee`] 走的是同一份代码
+/// （而不是各写一遍）：先校验计量合法性（与电价无关），再判全额退款归零
+/// （≤60 秒停止 / 超 10 小时）—— 归零判定在**计价之前**，所以跨电价订单也能归零，
+/// 不会因为分段计价出错而被卡住。两条路径只差最后一步的算法。
+pub fn resolve_fee_segmented(
+    rule: &DevicePricing,
+    started_at: DateTime<Utc>,
+    meter: &ChargeEndMeter,
+) -> AppResult<QuoteResponse> {
+    if let Some(zero) = precheck(started_at, meter)? {
+        return Ok(zero);
+    }
+    crate::metered_pricing::calculate_segmented(
+        rule,
+        started_at,
+        meter.ended_at,
+        meter.charged_wh,
+        meter.charged_seconds,
+        &meter.segments,
+    )
+}
+
+/// D10 前两步：计量合法性校验 + 全额退款归零。
+///
+/// 两条计价路径（单费率 / 分段）共用，保证归零判定**永远在计价之前**、
+/// 且**永远不会被电价配置或分段数据影响**。返回 `Some(零)` 即命中全额退款。
+fn precheck(started_at: DateTime<Utc>, meter: &ChargeEndMeter) -> AppResult<Option<QuoteResponse>> {
+    crate::metered_pricing::validate_meter(started_at, meter.ended_at, meter.charged_wh, meter.charged_seconds)?;
+    if is_full_refund_eligible(started_at, meter.ended_at, meter.charged_seconds) {
+        return Ok(Some(QuoteResponse {
+            electric_cents: 0,
+            service_cents: 0,
+            total_cents: 0,
+        }));
+    }
+    Ok(None)
 }
 
 
@@ -72,7 +107,75 @@ mod tests {
             charged_wh: wh,
             charged_seconds: seconds,
             ended_at: ended_at.parse().unwrap(),
+            segments: vec![],
         }
+    }
+
+    fn meter_with_segments(
+        wh: u64,
+        seconds: u32,
+        ended_at: &str,
+        segments: Vec<api_contracts::ChargeMeterSegment>,
+    ) -> ChargeEndMeter {
+        ChargeEndMeter {
+            charged_wh: wh,
+            charged_seconds: seconds,
+            ended_at: ended_at.parse().unwrap(),
+            segments,
+        }
+    }
+
+    fn seg(start: &str, end: &str, energy_wh: u64) -> api_contracts::ChargeMeterSegment {
+        api_contracts::ChargeMeterSegment {
+            started_at: start.parse().unwrap(),
+            ended_at: end.parse().unwrap(),
+            energy_wh,
+        }
+    }
+
+    /// D16 验收③：分段路径下的 D10 归零判定**同样生效**——
+    /// 跨电价的 30 秒订单即便带了分段数据也必须归零，不得走到计价再报错。
+    #[test]
+    fn segmented_path_preserves_zero_refund_rules() {
+        // 跨本地 20:00(=12:00Z) 分界、时长 30 秒 → 归零
+        let start: DateTime<Utc> = "2026-09-26T11:59:45Z".parse().unwrap();
+        let m = meter_with_segments(10, 30, "2026-09-26T12:00:15Z", vec![
+            seg("2026-09-26T11:59:45Z", "2026-09-26T12:00:00Z", 6),
+            seg("2026-09-26T12:00:00Z", "2026-09-26T12:00:15Z", 4),
+        ]);
+        let fee = resolve_fee_segmented(&rule(), start, &m)
+            .expect("符合全额退款条件,分段路径不应因跨电价而失败");
+        assert_eq!((fee.electric_cents, fee.service_cents, fee.total_cents), (0, 0, 0));
+
+        // 超 10 小时 → 归零
+        let start2: DateTime<Utc> = "2026-09-26T10:00:00Z".parse().unwrap();
+        let m2 = meter_with_segments(2_000_000, 39601, "2026-09-27T00:00:01Z", vec![
+            seg("2026-09-26T10:00:00Z", "2026-09-26T12:00:00Z", 1_000_000),
+            seg("2026-09-26T12:00:00Z", "2026-09-27T00:00:01Z", 1_000_000),
+        ]);
+        assert_eq!(resolve_fee_segmented(&rule(), start2, &m2).unwrap().total_cents, 0);
+    }
+
+    /// D16 验收④：非全额退款的跨电价订单，在分段路径下**终于能计上费了**。
+    #[test]
+    fn segmented_path_prices_cross_tariff_order() {
+        let start: DateTime<Utc> = "2026-09-26T11:00:00Z".parse().unwrap();
+        let m = meter_with_segments(2000, 7200, "2026-09-26T13:00:00Z", vec![
+            seg("2026-09-26T11:00:00Z", "2026-09-26T12:00:00Z", 1000),
+            seg("2026-09-26T12:00:00Z", "2026-09-26T13:00:00Z", 1000),
+        ]);
+        let fee = resolve_fee_segmented(&rule(), start, &m).expect("跨电价订单有了分段数据就应能计价");
+        assert_eq!((fee.electric_cents, fee.service_cents, fee.total_cents), (150, 60, 210));
+    }
+
+    /// 分段路径同样不得绕过计量合法性校验
+    #[test]
+    fn segmented_path_still_rejects_invalid_meter() {
+        let start: DateTime<Utc> = "2026-09-26T11:59:45Z".parse().unwrap();
+        let m = meter_with_segments(10, 0, "2026-09-26T12:00:15Z", vec![
+            seg("2026-09-26T11:59:45Z", "2026-09-26T12:00:15Z", 10),
+        ]);
+        assert!(resolve_fee_segmented(&rule(), start, &m).is_err());
     }
 
     /// D10 验收①:跨电价边界的 30 秒订单 → 归零,不是 Conflict
