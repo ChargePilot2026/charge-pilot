@@ -8,7 +8,10 @@ use axum::{
 };
 use common_error::{AppError, AppResult};
 use serde::Deserialize;
-use serde_json::{json, Value};
+// P2 残尾:handler 的请求体已全部类型化(契约 `gd::FirmwarePushRequest` /
+// `gd::DeviceCommandRequest`),本文件不再有 `Json<Value>`。
+// 剩下的 `serde_json::Value` 只在 `numeric_value` 出现 —— 设备原始遥测帧的
+// 不透明协议载荷(方案 §三 例外清单第 2 类),已在那一个函数上精确豁免。
 
 pub async fn health(State(st): State<AppState>) -> AppResult<&'static str> {
     st.device.ping().await?;
@@ -261,7 +264,7 @@ pub async fn device_reboot(
 pub async fn device_firmware_push(
     State(_st): State<AppState>,
     Path(_id): Path<String>,
-    Json(_req): Json<Value>,
+    Json(_req): Json<gd::FirmwarePushRequest>,
 ) -> AppResult<Json<common_error::ApiEnvelope<gd::NotImplementedResponse>>> {
     Err(AppError::ServiceUnavailable("OTA 固件传输、设备 ACK 与失败回滚尚未接入，未创建或发送命令".into()))
 }
@@ -305,21 +308,22 @@ pub async fn device_backfill(
     )))
 }
 
-fn numeric_value(value: &Value) -> Option<f64> {
+/// 从设备原始帧的 metric 载荷里取数值。
+///
+/// **豁免理由**:设备上报的遥测帧是**不透明协议载荷**(各厂商字段不一,
+/// 值可能是数字也可能是字符串),见方案 §三 `Value` 例外清单第 2 类
+/// (`gateway_db.raw_frame_log` 设备原始帧)。解析在 handler 边界完成,
+/// 随即转成 `Measurement` 具名结构,不向下游传播 `Value`。
+#[allow(clippy::disallowed_types)]
+fn numeric_value(value: &serde_json::Value) -> Option<f64> {
     let number = value.as_f64().or_else(|| value.as_str().and_then(|text| text.parse::<f64>().ok()))?;
     number.is_finite().then_some(number)
-}
-
-#[derive(Debug, Deserialize)]
-pub struct DeviceCommandReq {
-    pub cmd: String,
-    pub params: Option<Value>,
 }
 
 pub async fn device_command(
     State(_st): State<AppState>,
     Path(_id): Path<String>,
-    Json(_req): Json<DeviceCommandReq>,
+    Json(_req): Json<gd::DeviceCommandRequest>,
 ) -> AppResult<Json<common_error::ApiEnvelope<gd::NotImplementedResponse>>> {
     Err(AppError::ServiceUnavailable("通用设备指令传输与 ACK 尚未接入，未创建或发送命令".into()))
 }

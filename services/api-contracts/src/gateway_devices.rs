@@ -114,6 +114,34 @@ pub struct NotImplementedResponse {
     pub reason: String,
 }
 
+/// 固件推送请求(尚未接线,但**契约必须显式** —— 不能用 `Json<Value>` 收任意体)。
+///
+/// 固件升级协议会随厂商/型号变化,当前尚无任何实现消费这些字段,
+/// 因此全部为可选且 `deny_unknown_fields` **关闭**:真实固件可能带额外字段,
+/// 收窄到具名字段的同时不应把未知的合法字段变成 400。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct FirmwarePushRequest {
+    #[serde(default)]
+    pub package_id: Option<u64>,
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub force: Option<bool>,
+}
+
+/// 设备指令请求(尚未接线)。
+///
+/// `params` 刻意保持 `Map<String, Value>` 而非裸 `Value`:它是**指令参数集合**,
+/// 键名由具体 `cmd` 决定(重启/读取/设置…),无法在契约层枚举;
+/// 但「必须是对象」这一条可以约束住 —— 用 `Map` 后,`params: 123` 这类
+/// 畸形请求会在反序列化时就被拒,而不是流到下发逻辑里。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceCommandRequest {
+    pub cmd: String,
+    #[serde(default)]
+    pub params: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,6 +159,37 @@ mod tests {
     fn cleanup_response_field_name_frozen() {
         let v = serde_json::to_value(CleanupSessionsResponse { closed_count: 3 }).unwrap();
         assert_eq!(v["closed_count"], 3);
+    }
+
+    /// P2 残尾的类型化收益：`params` 必须是**对象**。
+    /// 改回裸 `Value` 后 `params: 123` 这类畸形请求会静默通过反序列化，
+    /// 一路流到设备下发逻辑才出错。
+    #[test]
+    fn device_command_params_must_be_an_object() {
+        let ok: DeviceCommandRequest =
+            serde_json::from_str(r#"{"cmd":"reboot","params":{"delay":3}}"#).unwrap();
+        assert_eq!(ok.cmd, "reboot");
+        assert_eq!(ok.params.unwrap()["delay"], 3);
+
+        assert!(
+            serde_json::from_str::<DeviceCommandRequest>(r#"{"cmd":"reboot","params":123}"#).is_err(),
+            "params 必须是对象，标量应被拒"
+        );
+        // params 整体可省略
+        let bare: DeviceCommandRequest = serde_json::from_str(r#"{"cmd":"ping"}"#).unwrap();
+        assert!(bare.params.is_none());
+    }
+
+    /// 未知的额外字段不得导致 400 —— 固件协议会随厂商演进，
+    /// 收窄到具名字段的同时不能把合法的新字段变成错误。
+    #[test]
+    fn firmware_push_ignores_unknown_fields() {
+        let r: FirmwarePushRequest = serde_json::from_str(
+            r#"{"package_id":7,"version":"1.2.3","vendor_specific":{"a":1}}"#,
+        )
+        .unwrap();
+        assert_eq!(r.package_id, Some(7));
+        assert_eq!(r.version.as_deref(), Some("1.2.3"));
     }
 
     #[test]
