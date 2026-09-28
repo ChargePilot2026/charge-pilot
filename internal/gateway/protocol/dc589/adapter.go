@@ -4,10 +4,10 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol"
@@ -16,7 +16,8 @@ import (
 // TCPAdapter is one vendor listener. Other adapters use separate ports and
 // implement protocol.Adapter without changing this package.
 type TCPAdapter struct {
-	Clock func() time.Time
+	Clock    func() time.Time
+	Registry *protocol.Registry
 }
 
 func (TCPAdapter) Name() string { return "dc589" }
@@ -55,8 +56,13 @@ func (a TCPAdapter) ServeConn(ctx context.Context, conn net.Conn, sink protocol.
 	if _, err := rand.Read(serverSession[:]); err != nil {
 		return err
 	}
-	if err := writeFrame(conn, BuildRegisterReply(serverSession, clock())); err != nil {
+	session := &connection{conn: conn}
+	if err := session.writeFrame(BuildRegisterReply(serverSession, clock())); err != nil {
 		return err
+	}
+	if a.Registry != nil {
+		detach := a.Registry.Attach(deviceID, session)
+		defer detach()
 	}
 	for {
 		if err := conn.SetReadDeadline(clock().Add(90 * time.Second)); err != nil {
@@ -68,19 +74,35 @@ func (a TCPAdapter) ServeConn(ctx context.Context, conn net.Conn, sink protocol.
 		}
 		event := protocol.Event{Protocol: a.Name(), DeviceID: deviceID, ReceivedAt: clock(), RawPayload: frame.Data, SessionID: frame.Session}
 		switch frame.Command {
-		case Heartbeat:
-			if len(frame.Data) < 17 {
+		case 0xA8: // device time request; record before responding
+			if len(frame.Data) != 6 {
 				return ErrPayload
 			}
-			board, err := decodeBCD(frame.Data[:8])
-			if err != nil || board != deviceID {
-				return ErrPayload
-			}
-			event.Type = protocol.Heartbeat
+			event.Type = protocol.TimeSync
 			if err := sink.Record(ctx, event); err != nil {
 				return err
 			}
-			if err := writeFrame(conn, BuildHeartbeatReply(frame.Session)); err != nil {
+			if err := session.writeFrame(BuildTimeReply(frame.Session, clock())); err != nil {
+				return err
+			}
+		case Heartbeat:
+			heartbeat, err := ParseHeartbeat(frame)
+			if err != nil || heartbeat.BoardID != deviceID {
+				return ErrPayload
+			}
+			event.Type = protocol.Heartbeat
+			event.Signal = heartbeat.Signal
+			if heartbeat.HasPortStatus {
+				event.DeviceStatus = heartbeat.DeviceStatus
+				event.VoltageV = heartbeat.VoltageV
+				event.TemperatureC = heartbeat.TemperatureC
+				event.PortStates = heartbeat.PortStates
+				event.ChargingPorts = heartbeat.ChargingPorts
+			}
+			if err := sink.Record(ctx, event); err != nil {
+				return err
+			}
+			if err := session.writeFrame(BuildHeartbeatReply(frame.Session)); err != nil {
 				return err
 			}
 		case StartReply, StopReply:
@@ -98,18 +120,23 @@ func (a TCPAdapter) ServeConn(ctx context.Context, conn net.Conn, sink protocol.
 				return err
 			}
 		case ChargeEnd:
-			if len(frame.Data) != 44 {
-				return ErrPayload
+			end, err := ParseChargeEnd(frame)
+			if err != nil {
+				return err
 			}
 			event.Type = protocol.ChargeEnd
-			event.Port = frame.Data[1]
-			event.EnergyMilliKWh = uint32(binary.LittleEndian.Uint16(frame.Data[32:34]))
-			event.PowerDeciWatts = uint32(binary.LittleEndian.Uint16(frame.Data[42:44]))
-			event.StopReason = frame.Data[40]
+			event.Port = end.Port
+			event.OrderNumber = end.OrderNumber
+			event.EnergyMilliKWh = end.ChargedMWh / 1000
+			event.ChargedSeconds = end.ChargedSeconds
+			event.EndedAt = end.EndedAt
+			event.PowerDeciWatts = end.PowerDeciWatts
+			event.StopReason = end.StopReason
+			event.ConsumerType = end.ConsumerType
 			if err := sink.Record(ctx, event); err != nil {
 				return err
 			}
-			if err := writeFrame(conn, BuildChargeEndReply(frame.Session, event.Port)); err != nil {
+			if err := session.writeFrame(BuildChargeEndReply(frame.Session, event.Port)); err != nil {
 				return err
 			}
 		case Fault:
@@ -120,7 +147,7 @@ func (a TCPAdapter) ServeConn(ctx context.Context, conn net.Conn, sink protocol.
 			if err := sink.Record(ctx, event); err != nil {
 				return err
 			}
-			if err := writeFrame(conn, BuildFaultReply(frame.Session, event.Port)); err != nil {
+			if err := session.writeFrame(BuildFaultReply(frame.Session, event.Port)); err != nil {
 				return err
 			}
 		case RemoteControl + 1: // A3: remote-control result; vendor may not send it
@@ -132,7 +159,14 @@ func (a TCPAdapter) ServeConn(ctx context.Context, conn net.Conn, sink protocol.
 				return err
 			}
 		case 0xC2: // local charging-band report; no acknowledgement per protocol
+			meter, err := ParseChargingBand(frame)
+			if err != nil {
+				return err
+			}
 			event.Type = protocol.Telemetry
+			event.Port = meter.Port
+			event.PowerDeciWatts = meter.PowerDeciWatts
+			event.ChargingPorts = []protocol.PortTelemetry{meter}
 			if err := sink.Record(ctx, event); err != nil {
 				return err
 			}
@@ -142,16 +176,52 @@ func (a TCPAdapter) ServeConn(ctx context.Context, conn net.Conn, sink protocol.
 	}
 }
 
-func writeFrame(conn net.Conn, frame Frame) error {
+type connection struct {
+	conn net.Conn
+	mu   sync.Mutex
+}
+
+func (c *connection) Close() error { return c.conn.Close() }
+
+func (c *connection) Send(ctx context.Context, command protocol.Command) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if command.SessionID == ([6]byte{}) {
+		return ErrPayload
+	}
+	var frame Frame
+	var err error
+	switch command.Kind {
+	case protocol.CommandStart:
+		frame, err = BuildStart(StartCommand{Session: command.SessionID, Port: command.Port, OrderBCD: command.OrderBCD, Mode: ChargeMode(command.Mode), Quantity: command.Quantity})
+	case protocol.CommandStop:
+		frame, err = BuildStop(command.SessionID, command.Port)
+	case protocol.CommandReboot:
+		frame, err = BuildRemoteControl(command.SessionID, 1, false, [8]byte{})
+	case protocol.CommandOTA:
+		frame, err = BuildRemoteControl(command.SessionID, command.RemoteMode, command.UseUpgradeID, command.UpgradeID)
+	default:
+		return ErrPayload
+	}
+	if err != nil {
+		return err
+	}
+	return c.writeFrame(frame)
+}
+
+func (c *connection) writeFrame(frame Frame) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	raw, err := Encode(frame)
 	if err != nil {
 		return err
 	}
-	if err := conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+	if err := c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
 		return err
 	}
 	for len(raw) > 0 {
-		n, err := conn.Write(raw)
+		n, err := c.conn.Write(raw)
 		if err != nil {
 			return err
 		}

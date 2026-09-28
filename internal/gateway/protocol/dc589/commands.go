@@ -109,6 +109,19 @@ func BuildStop(session [6]byte, port byte) (Frame, error) {
 	return Frame{Command: StopCharge, Session: session, Data: []byte{port}}, nil
 }
 
+func BuildRemoteControl(session [6]byte, controlType byte, useUpgradeID bool, upgradeID [8]byte) (Frame, error) {
+	if controlType != 1 && controlType != 2 && controlType != 3 {
+		return Frame{}, ErrPayload
+	}
+	data := make([]byte, 10)
+	data[0] = controlType
+	if controlType != 1 && useUpgradeID {
+		data[1] = 1
+		copy(data[2:], upgradeID[:])
+	}
+	return Frame{Command: RemoteControl, Session: session, Data: data}, nil
+}
+
 type CommandResult struct {
 	Code byte
 	Port byte
@@ -130,6 +143,12 @@ func BuildRegisterReply(session [6]byte, now time.Time) Frame {
 
 func BuildHeartbeatReply(session [6]byte) Frame {
 	return Frame{Command: HeartbeatReply, Session: session, Data: []byte{1}}
+}
+
+func BuildTimeReply(session [6]byte, now time.Time) Frame {
+	data := make([]byte, 6)
+	encodeTime(data, now.In(chinaLocation))
+	return Frame{Command: 0xA9, Session: session, Data: data}
 }
 
 func BuildChargeEndReply(session [6]byte, port byte) Frame {

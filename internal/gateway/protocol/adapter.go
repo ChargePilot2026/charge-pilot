@@ -26,6 +26,7 @@ const (
 	Fault        EventType = "fault"
 	RemoteResult EventType = "remote_result"
 	Telemetry    EventType = "telemetry"
+	TimeSync     EventType = "time_sync"
 )
 
 type Event struct {
@@ -38,9 +39,30 @@ type Event struct {
 	EnergyMilliKWh uint32
 	PowerDeciWatts uint32
 	StopReason     uint8
+	ConsumerType   uint8
 	ReceivedAt     time.Time
 	RawPayload     []byte
 	SessionID      [6]byte
+	// Meter and safety fields are decoded by the vendor adapter before the
+	// event is durably stored. RawPayload remains available for audit/replay.
+	OrderNumber    string
+	ChargedSeconds uint32
+	EndedAt        time.Time
+	VoltageV       uint16
+	TemperatureC   int16
+	DeviceStatus   uint8
+	Signal         uint8
+	PortStates     []uint8
+	ChargingPorts  []PortTelemetry
+}
+
+type PortTelemetry struct {
+	Port           uint8
+	RemainingSecs  uint32
+	ChargedSeconds uint32
+	RemainingMWh   uint32
+	ChargedMWh     uint32
+	PowerDeciWatts uint32
 }
 
 // Sink owns authentication and durable persistence. A protocol adapter may
