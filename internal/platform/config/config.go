@@ -27,6 +27,12 @@ type Central struct {
 	GatewayInternalURL string `env:"GATEWAY_INTERNAL_URL" envDefault:"http://gateway:8083"`
 	WeChatAppID        string `env:"WECHAT_APPID,required"`
 	WeChatAppSecret    string `env:"WECHAT_SECRET,required"`
+	PaymentMode        string `env:"PAYMENT_MODE" envDefault:"disabled"`
+	WechatMchID        string `env:"WECHAT_MCH_ID"`
+	WechatCertSerial   string `env:"WECHAT_CERT_SERIAL"`
+	WechatAPIv3Key     string `env:"WECHAT_APIV3_KEY"`
+	WechatPrivateKey   string `env:"WECHAT_PRIVATE_KEY_PATH"`
+	WechatNotifyURL    string `env:"WECHAT_NOTIFY_URL"`
 }
 
 type Worker struct {
@@ -59,6 +65,12 @@ func LoadCentral() (Central, error) {
 	}
 	if len(c.JWTSecret) < 32 {
 		return c, fmt.Errorf("central config: JWT_SECRET must have at least 32 bytes")
+	}
+	if c.PaymentMode != "disabled" && c.PaymentMode != "simulation" && c.PaymentMode != "wechat_direct" {
+		return c, fmt.Errorf("central config: invalid PAYMENT_MODE")
+	}
+	if c.PaymentMode == "wechat_direct" && (c.WechatMchID == "" || c.WechatCertSerial == "" || len(c.WechatAPIv3Key) != 32 || c.WechatPrivateKey == "" || c.WechatNotifyURL == "") {
+		return c, fmt.Errorf("central config: incomplete WeChat Pay credentials")
 	}
 	return c, nil
 }

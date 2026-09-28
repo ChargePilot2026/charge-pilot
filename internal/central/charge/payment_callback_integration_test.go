@@ -54,7 +54,7 @@ func TestVerifiedPaymentCreatesOneChargeOrderAfterCallback(t *testing.T) {
 		t.Fatalf("before callback orders=%d err=%v", before, err)
 	}
 	verified := VerifiedPayment{Provider: "simulation", MerchantID: "test-merchant", AppID: "test-app", MerchantOrderNo: intent.MerchantOrderNo,
-		TransactionID: transactionID, PaidCents: intent.Estimate.TotalCents, PaidAt: time.Now().UTC()}
+		TransactionID: transactionID, OpenID: intent.OpenID, PaidCents: intent.Estimate.TotalCents, PaidAt: time.Now().UTC()}
 	store := PaymentCallbackStore{DB: db, ExpectedProvider: "simulation", ExpectedMerchantID: "test-merchant", ExpectedAppID: "test-app"}
 	first, err := store.Apply(ctx, verified)
 	if err != nil || first.ChargeOrderID == 0 || first.RefundRequired {
@@ -122,7 +122,7 @@ func TestLateVerifiedPaymentQueuesRefundWithoutChargeOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	verified := VerifiedPayment{Provider: "simulation", MerchantID: "test-merchant", AppID: "test-app", MerchantOrderNo: intent.MerchantOrderNo,
-		TransactionID: transactionID, PaidCents: intent.Estimate.TotalCents, PaidAt: time.Now().UTC()}
+		TransactionID: transactionID, OpenID: intent.OpenID, PaidCents: intent.Estimate.TotalCents, PaidAt: time.Now().UTC()}
 	store := PaymentCallbackStore{DB: db, ExpectedProvider: "simulation", ExpectedMerchantID: "test-merchant", ExpectedAppID: "test-app"}
 	result, err := store.Apply(ctx, verified)
 	if err != nil || !result.RefundRequired || result.ChargeOrderID != 0 {

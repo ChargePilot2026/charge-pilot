@@ -10,6 +10,7 @@ import (
 	"time"
 
 	paymentdb "github.com/ChargePilot2026/charge-pilot/internal/central/charge/paymentgenerated"
+	"github.com/ChargePilot2026/charge-pilot/internal/central/payment"
 	"github.com/ChargePilot2026/charge-pilot/internal/central/pricing"
 	"github.com/go-sql-driver/mysql"
 	"github.com/google/uuid"
@@ -136,4 +137,28 @@ func existingIntent(row paymentdb.PaymentIntentByRequestRow, input IntentInput) 
 	return PaymentIntent{IntentID: row.IntentID, MerchantOrderNo: row.MerchantOrderNo, PaymentOrderID: row.PaymentOrderID,
 		UserID: row.UserID, OpenID: row.Openid, DeviceID: row.DeviceID, PortNo: row.PortNo, PortCode: row.PortCode,
 		StationID: row.StationID, Estimate: snapshot.Estimate, ExpiresAt: row.ExpiresAt, Status: string(row.Status)}, nil
+}
+
+func (s PaymentIntentStore) PrepayParams(ctx context.Context, paymentOrderID uint64) (payment.PrepayParams, error) {
+	data, err := paymentdb.New(s.DB).PrepayByPaymentOrder(ctx, paymentOrderID)
+	if err != nil {
+		return payment.PrepayParams{}, err
+	}
+	var params payment.PrepayParams
+	if err := json.Unmarshal(data, &params); err != nil || params.PrepayID == "" || params.Provider == "" {
+		return payment.PrepayParams{}, ErrPaymentIntentConflict
+	}
+	return params, nil
+}
+
+func (s PaymentIntentStore) SavePrepay(ctx context.Context, paymentOrderID uint64, params payment.PrepayParams) error {
+	if s.DB == nil || paymentOrderID == 0 || params.PrepayID == "" || params.Provider == "" {
+		return ErrPaymentIntentConflict
+	}
+	data, err := json.Marshal(params)
+	if err != nil {
+		return err
+	}
+	return paymentdb.New(s.DB).SavePrepay(ctx, paymentdb.SavePrepayParams{PaymentOrderID: paymentOrderID,
+		ParamsJson: data, PrepayID: sql.NullString{String: params.PrepayID, Valid: true}})
 }

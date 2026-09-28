@@ -12,6 +12,8 @@ import (
 
 	"github.com/ChargePilot2026/charge-pilot/internal/central/charge"
 	"github.com/ChargePilot2026/charge-pilot/internal/central/identity"
+	"github.com/ChargePilot2026/charge-pilot/internal/central/payment"
+	"github.com/ChargePilot2026/charge-pilot/internal/central/pricing"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/auth"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/config"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/dbconn"
@@ -41,6 +43,11 @@ func run(ctx context.Context) error {
 		return err
 	}
 	defer db.Close()
+	adminDB, err := dbconn.Open(ctx, cfg.AdminDatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer adminDB.Close()
 	redisOptions, err := redis.ParseURL(cfg.RedisCacheURL)
 	if err != nil {
 		return err
@@ -65,7 +72,7 @@ func run(ctx context.Context) error {
 	router.GET("/health/ready", func(c *gin.Context) {
 		check, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
 		defer cancel()
-		if db.PingContext(check) != nil || cache.Ping(check).Err() != nil {
+		if db.PingContext(check) != nil || adminDB.PingContext(check) != nil || cache.Ping(check).Err() != nil {
 			httpapi.Write(c, http.StatusServiceUnavailable, 5003, "storage unavailable", nil)
 			return
 		}
@@ -78,6 +85,24 @@ func run(ctx context.Context) error {
 	charge.StopAuthorization{DB: db, ServiceToken: cfg.ServiceToken}.Register(router)
 	charge.UserStopAPI{JWT: jwt, Sessions: identity.Sessions{Redis: cache}, Users: identity.UserStore{DB: db}, GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken}.Register(router)
 	charge.ScanAPI{Auth: identity.SessionAuthenticator{JWT: jwt, Sessions: identity.Sessions{Redis: cache}, Users: identity.UserStore{DB: db}}, GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken}.Register(router)
+	var prepay charge.PrepayProvider
+	switch cfg.PaymentMode {
+	case "simulation":
+		prepay = payment.Simulator{}
+		charge.SimulationCallbackAPI{DB: db, Store: charge.PaymentCallbackStore{DB: db, ExpectedProvider: "simulation", ExpectedMerchantID: "local-simulation", ExpectedAppID: cfg.WeChatAppID}, ServiceToken: cfg.ServiceToken}.Register(router)
+	case "wechat_direct":
+		direct, err := payment.NewWechatDirect(ctx, payment.Config{AppID: cfg.WeChatAppID, MerchantID: cfg.WechatMchID,
+			CertificateSerial: cfg.WechatCertSerial, APIv3Key: cfg.WechatAPIv3Key,
+			PrivateKeyPath: cfg.WechatPrivateKey, NotifyURL: cfg.WechatNotifyURL})
+		if err != nil {
+			return err
+		}
+		prepay = direct
+		charge.WechatCallbackAPI{Verifier: direct, Store: charge.PaymentCallbackStore{DB: db, ExpectedProvider: "wechat_direct", ExpectedMerchantID: cfg.WechatMchID, ExpectedAppID: cfg.WeChatAppID}}.Register(router)
+	}
+	charge.PaymentStartAPI{Auth: identity.SessionAuthenticator{JWT: jwt, Sessions: identity.Sessions{Redis: cache}, Users: identity.UserStore{DB: db}},
+		Scan: charge.ScanAPI{GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken}, Pricing: pricing.Store{DB: adminDB},
+		Intents: charge.PaymentIntentStore{DB: db}, Provider: prepay}.Register(router)
 	server := &http.Server{Addr: cfg.HTTPAddr, Handler: router, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 90 * time.Second}
 	go func() {
 		<-ctx.Done()

@@ -12,6 +12,10 @@
     header X-Content-Type-Options "nosniff"
     header X-Frame-Options "DENY"
 
+    handle /api/v1/internal/* {
+        respond 404
+    }
+
     handle /api/* {
         reverse_proxy chargepilot-central:8080
     }

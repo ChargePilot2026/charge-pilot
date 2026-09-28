@@ -269,8 +269,36 @@ func (q *Queries) InsertPaymentOutbox(ctx context.Context, arg InsertPaymentOutb
 	return err
 }
 
+const intentForSimulation = `-- name: IntentForSimulation :one
+SELECT intent_id, merchant_order_no, openid, total_cents, status, expires_at
+FROM charge_payment_intent WHERE merchant_order_no = ? LIMIT 1
+`
+
+type IntentForSimulationRow struct {
+	IntentID        string
+	MerchantOrderNo string
+	Openid          string
+	TotalCents      int64
+	Status          ChargePaymentIntentStatus
+	ExpiresAt       time.Time
+}
+
+func (q *Queries) IntentForSimulation(ctx context.Context, merchantOrderNo string) (IntentForSimulationRow, error) {
+	row := q.db.QueryRowContext(ctx, intentForSimulation, merchantOrderNo)
+	var i IntentForSimulationRow
+	err := row.Scan(
+		&i.IntentID,
+		&i.MerchantOrderNo,
+		&i.Openid,
+		&i.TotalCents,
+		&i.Status,
+		&i.ExpiresAt,
+	)
+	return i, err
+}
+
 const lockIntentForCallback = `-- name: LockIntentForCallback :one
-SELECT intent_id, merchant_order_no, payment_order_id, user_id,
+SELECT intent_id, merchant_order_no, payment_order_id, user_id, openid,
        device_id, port_no, port_code, pricing_snapshot, total_cents,
        charge_mode, charge_quantity, status, expires_at, charge_order_id
 FROM charge_payment_intent WHERE merchant_order_no = ? LIMIT 1 FOR UPDATE
@@ -281,6 +309,7 @@ type LockIntentForCallbackRow struct {
 	MerchantOrderNo string
 	PaymentOrderID  uint64
 	UserID          uint64
+	Openid          string
 	DeviceID        string
 	PortNo          uint8
 	PortCode        string
@@ -301,6 +330,7 @@ func (q *Queries) LockIntentForCallback(ctx context.Context, merchantOrderNo str
 		&i.MerchantOrderNo,
 		&i.PaymentOrderID,
 		&i.UserID,
+		&i.Openid,
 		&i.DeviceID,
 		&i.PortNo,
 		&i.PortCode,
@@ -476,6 +506,34 @@ func (q *Queries) PaymentIntentByRequest(ctx context.Context, arg PaymentIntentB
 		&i.ExpiresAt,
 	)
 	return i, err
+}
+
+const prepayByPaymentOrder = `-- name: PrepayByPaymentOrder :one
+SELECT params_json FROM charge_prepay WHERE payment_order_id = ? LIMIT 1
+`
+
+func (q *Queries) PrepayByPaymentOrder(ctx context.Context, paymentOrderID uint64) (json.RawMessage, error) {
+	row := q.db.QueryRowContext(ctx, prepayByPaymentOrder, paymentOrderID)
+	var params_json json.RawMessage
+	err := row.Scan(&params_json)
+	return params_json, err
+}
+
+const savePrepay = `-- name: SavePrepay :exec
+INSERT INTO charge_prepay (payment_order_id, params_json, prepay_id)
+VALUES (?, ?, ?)
+ON DUPLICATE KEY UPDATE payment_order_id = payment_order_id
+`
+
+type SavePrepayParams struct {
+	PaymentOrderID uint64
+	ParamsJson     json.RawMessage
+	PrepayID       sql.NullString
+}
+
+func (q *Queries) SavePrepay(ctx context.Context, arg SavePrepayParams) error {
+	_, err := q.db.ExecContext(ctx, savePrepay, arg.PaymentOrderID, arg.ParamsJson, arg.PrepayID)
+	return err
 }
 
 const userOpenID = `-- name: UserOpenID :one

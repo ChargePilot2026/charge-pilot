@@ -26,6 +26,7 @@ type VerifiedPayment struct {
 	AppID           string
 	MerchantOrderNo string
 	TransactionID   string
+	OpenID          string
 	PaidCents       int64
 	PaidAt          time.Time
 }
@@ -48,7 +49,7 @@ func (s PaymentCallbackStore) Apply(ctx context.Context, payment VerifiedPayment
 	paidAt := payment.PaidAt.UTC().Truncate(time.Millisecond)
 	if s.DB == nil || s.ExpectedProvider == "" || s.ExpectedMerchantID == "" || s.ExpectedAppID == "" ||
 		payment.Provider != s.ExpectedProvider || payment.MerchantID != s.ExpectedMerchantID || payment.AppID != s.ExpectedAppID ||
-		payment.MerchantOrderNo == "" || len(payment.MerchantOrderNo) > 64 || payment.TransactionID == "" || len(payment.TransactionID) > 64 ||
+		payment.MerchantOrderNo == "" || len(payment.MerchantOrderNo) > 64 || payment.TransactionID == "" || len(payment.TransactionID) > 64 || payment.OpenID == "" ||
 		payment.PaidCents <= 0 || paidAt.IsZero() || paidAt.After(time.Now().Add(5*time.Minute)) {
 		return PaymentCallbackResult{}, ErrPaymentCallbackConflict
 	}
@@ -73,7 +74,7 @@ func (s PaymentCallbackStore) Apply(ctx context.Context, payment VerifiedPayment
 	if err != nil {
 		return PaymentCallbackResult{}, err
 	}
-	if order.UserID != intent.UserID || order.TotalCents != intent.TotalCents || order.TotalCents != payment.PaidCents ||
+	if order.UserID != intent.UserID || intent.Openid != payment.OpenID || order.TotalCents != intent.TotalCents || order.TotalCents != payment.PaidCents ||
 		intent.ChargeQuantity == 0 || intent.PortNo == 0 || order.ID > math.MaxInt64 {
 		return PaymentCallbackResult{}, ErrPaymentCallbackConflict
 	}
@@ -177,7 +178,7 @@ func (s PaymentCallbackStore) queueLateRefund(ctx context.Context, tx *sql.Tx, q
 }
 
 func callbackDigest(payment VerifiedPayment) string {
-	value := payment.Provider + "\x00" + payment.MerchantID + "\x00" + payment.AppID + "\x00" + payment.MerchantOrderNo + "\x00" + payment.TransactionID + "\x00" +
+	value := payment.Provider + "\x00" + payment.MerchantID + "\x00" + payment.AppID + "\x00" + payment.OpenID + "\x00" + payment.MerchantOrderNo + "\x00" + payment.TransactionID + "\x00" +
 		decimalAmount(payment.PaidCents)
 	digest := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(digest[:])

@@ -1,6 +1,6 @@
 # Go 充电生命周期接口（当前实现）
 
-> 本文只记录新 Go 后端已接线的充电接口。支付预下单、真实支付回调、计费结算和退款执行仍未完成；以下内部接口只能在测试库中用已付款测试单验收。生产切换门禁保持关闭。
+> 本文记录新 Go 后端的充电接口。支付预下单、微信回调接线和本地模拟已实现；真实商户联调、计费结算和退款执行仍未完成。生产切换门禁保持关闭。旧小程序仍调用废止的 `/scan/quote` 和 `quote_id`，尚未适配本契约。
 
 ## 服务内部认证
 
@@ -10,7 +10,9 @@
 
 `POST central /api/v1/user/scan/resolve` 请求 `{ "code": "设备码或端口码" }`，`POST central /api/v1/user/scan/port` 请求 `{ "port_id": "印刷端口码" }`。两个接口都校验用户 JWT、实时会话和账号状态，经 `GET gateway /api/v1/internal/scan/resolve?code=...` 读取已启用设备与端口。返回 `kind=port|device`、站点 ID、端口状态、最近两分钟心跳推断的在线状态及 `available`。端口码是字符串，内部数字端口 ID 不暴露。扫码不创建订单、不预占端口。价格不放在扫码查询响应里。
 
-扫码之后没有独立报价接口或 `quote_id`。用户决定支付时，服务端读取站点有效计费规则、计算应付金额并保存规则快照，只创建支付意图和支付单；验签确认成功的支付回调才创建充电订单。支付回调的事务逻辑已实现：以商户、应用、交易号和金额为守门条件，重放不重复创建订单；过期后到账只建立待退款记录。支付渠道与 HTTP 回调接线仍在开发中。
+扫码之后没有独立报价接口或 `quote_id`。用户决定支付时，调用 `POST central /api/v1/user/scan/start`，请求 `client_request_id`（UUID）、`port_id`、`estimated_kwh`、`estimated_minutes`。服务端读取站点有效计费规则、计算预付金额并保存规则快照，只创建支付意图和支付单；响应包含 `intent_id`、`merchant_order_no`、费用分项、`payment_params`、`expires_at`，没有充电订单号。服务端重新计算金额，不接受客户端提交金额。
+
+`PAYMENT_MODE=wechat_direct` 时，官方 SDK 创建 JSAPI 预支付并验签、解密 `POST /api/v1/public/payments/wechat/callback`。回调核对商户、应用、用户 openid、交易号和金额后，才在同一事务中创建已付款充电订单；重复回调不会重复创建。过期后到账只建立待退款记录。`PAYMENT_MODE=simulation` 仅用于本地测试，其内部模拟回调要求 `X-Service-Token`，公网代理拒绝 `/api/v1/internal/*`。`PAYMENT_MODE=disabled` 拒绝发起支付。
 
 ## 付款后启动
 

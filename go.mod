@@ -12,6 +12,7 @@ require (
 	github.com/pressly/goose/v3 v3.28.0
 	github.com/redis/go-redis/v9 v9.22.0
 	github.com/shopspring/decimal v1.4.0
+	github.com/wechatpay-apiv3/wechatpay-go v0.2.21
 	golang.org/x/sync v0.22.0
 )
 

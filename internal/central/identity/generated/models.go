@@ -1385,10 +1385,10 @@ type ChargePaymentIntent struct {
 }
 
 type ChargePrepay struct {
-	ChargeOrderID uint64
-	RequestJson   json.RawMessage
-	PrepayID      sql.NullString
-	CreatedAt     time.Time
+	PrepayID       sql.NullString
+	CreatedAt      time.Time
+	PaymentOrderID uint64
+	ParamsJson     json.RawMessage
 }
 
 type ChargeStartReceipt struct {
