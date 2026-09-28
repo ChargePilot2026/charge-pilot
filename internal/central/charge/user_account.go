@@ -62,6 +62,7 @@ func (a UserAccountAPI) Register(r *gin.Engine) {
 	r.GET("/api/v1/user/device/fault-reports/:id/history", a.myFaultHistory)
 	r.GET("/api/v1/user/invoice/my", a.myInvoices)
 	r.POST("/api/v1/user/invoice/apply", a.applyInvoice)
+	r.POST("/api/v1/user/charge/:order_id/feedback", a.submitFeedback)
 }
 
 func (a UserAccountAPI) userID(c *gin.Context) (uint64, bool) {
