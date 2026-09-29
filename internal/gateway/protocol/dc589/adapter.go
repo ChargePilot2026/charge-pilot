@@ -117,12 +117,34 @@ func (a TCPAdapter) ServeConn(ctx context.Context, conn net.Conn, sink protocol.
 	if err := session.writeFrame(BuildRegisterReply(serverSession, clock())); err != nil {
 		return err
 	}
+	// Ask for the heartbeat period and for per-port telemetry before the first
+	// heartbeat arrives.
+	//
+	// Since 5.8.6 the port block is only present in a heartbeat when the
+	// platform asked for it, so a gateway that never sends this is accepting
+	// whatever the board shipped with. That makes "no port telemetry" and
+	// "nothing is charging" the same observation, and the first is almost never
+	// the truth. It also fixes the read deadline: the vendor's rule is three
+	// missed heartbeats, not any constant this build could pick.
+	interval, err := BuildHeartbeatInterval(serverSession, DefaultHeartbeatSeconds, true)
+	if err != nil {
+		return err
+	}
+	if err := session.writeFrame(interval); err != nil {
+		return err
+	}
+	// The read deadline follows the period just asked for, at the vendor's rule
+	// of three missed heartbeats. A constant would be wrong in one direction or
+	// the other: too long and a board that has stopped talking keeps its ports
+	// open for minutes, too short and a board honouring a longer period than we
+	// asked for is dropped mid-session.
+	readTimeout := time.Duration(DefaultHeartbeatSeconds*3) * time.Second
 	if a.Registry != nil {
 		detach := a.Registry.Attach(deviceID, session, func(protocol.Session) { replaced.Store(true) })
 		defer detach()
 	}
 	for {
-		if err := conn.SetReadDeadline(clock().Add(90 * time.Second)); err != nil {
+		if err := conn.SetReadDeadline(clock().Add(readTimeout)); err != nil {
 			return err
 		}
 		frame, err := ReadFrame(reader)
@@ -229,7 +251,18 @@ func (a TCPAdapter) ServeConn(ctx context.Context, conn net.Conn, sink protocol.
 				return err
 			}
 		default:
-			return fmt.Errorf("%w: unsupported command 0x%02x", ErrPayload, frame.Command)
+			// An unrecognised command is recorded and skipped, not fatal.
+			//
+			// The vendor document marks several commands as optional: the
+			// platform-parameter request is "not sent by some boards", the
+			// charging-band report is "not sent by some boards", and the remote
+			// control reply "is not reported" for reset and upgrade. Boards
+			// running older firmware still send them. Dropping the connection on
+			// one would mean a perfectly healthy pile is unreachable purely
+			// because this build has not implemented a command it does not need
+			// — and the first such command would be the one that keeps it from
+			// being diagnosed.
+			audit.Unknown(frame.Command)
 		}
 	}
 }

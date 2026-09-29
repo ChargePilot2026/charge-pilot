@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -38,6 +39,11 @@ type SessionAudit struct {
 	framesIn  atomic.Int64
 	framesOut atomic.Int64
 	lastSeen  atomic.Int64 // UnixNano of the most recent frame
+	// unknown is a small set of command bytes this build chose not to act on.
+	// It is bounded rather than a growing map so a device that sprays unknown
+	// commands cannot use it to grow its own session row without limit.
+	unknownMu sync.Mutex
+	unknown   [256]bool
 }
 
 // NewSessionAudit starts tracking one connection. remoteAddr is captured here
@@ -72,6 +78,37 @@ func (a *SessionAudit) Outbound(dataLen int, at time.Time) {
 	a.bytesOut.Add(int64(dataLen))
 	a.framesOut.Add(1)
 	a.lastSeen.Store(at.UnixNano())
+}
+
+// Unknown records that a command arrived and was deliberately not acted on.
+//
+// It is recorded rather than counted so an operator can tell "this board speaks
+// a superset of what we implemented" apart from "this board is healthy". That
+// distinction is what turns a skipped command from a mystery into a to-do.
+func (a *SessionAudit) Unknown(command byte) {
+	if a == nil {
+		return
+	}
+	a.unknownMu.Lock()
+	a.unknown[command] = true
+	a.unknownMu.Unlock()
+}
+
+// UnknownCommands lists the distinct command bytes that were skipped, in
+// ascending order so the value is stable between runs.
+func (a *SessionAudit) UnknownCommands() []int {
+	if a == nil {
+		return nil
+	}
+	a.unknownMu.Lock()
+	defer a.unknownMu.Unlock()
+	var out []int
+	for i, seen := range a.unknown {
+		if seen {
+			out = append(out, i)
+		}
+	}
+	return out
 }
 
 // SessionRecord is the terminal state of one connection, ready to persist.

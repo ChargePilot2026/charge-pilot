@@ -74,45 +74,98 @@ func ParseHeartbeat(frame Frame) (HeartbeatData, error) {
 	return result, nil
 }
 
+// ChargeEndData is one settlement frame.
+//
+// The charge type and the amount are read as well as the energy. Neither is
+// used to decide what the rider owes — a device-billed session's money was
+// collected before the board ever reported anything — but both are the only
+// record of how a session actually ended, and a long-run session is
+// indistinguishable from an ordinary one without the type.
 type ChargeEndData struct {
 	Port           uint8
 	OrderNumber    string
 	StartedAt      time.Time
 	EndedAt        time.Time
+	ChargeType     uint8
 	ChargedSeconds uint32
-	ChargedMWh     uint32
-	PowerDeciWatts uint32
+	// RemainingSeconds is what the board had left. When power banding discounted
+	// it, the board converts it back before reporting, so it is comparable with
+	// the granted span rather than with the discounted one.
+	RemainingSeconds uint32
+	ChargedMWh       uint32
+	// AmountCents is the device's own view of the charge, in cents. The board
+	// reports it at 0.01 yuan per unit here while other commands use 0.1 yuan,
+	// so the conversion differs by command and is not shared.
+	AmountCents    int64
 	StopReason     uint8
 	ConsumerType   uint8
+	PowerDeciWatts uint32
+	// Band is the power band at the end of the session, 1..5.
+	Band uint8
 }
 
+// Byte offsets in the 0xBB settlement payload.
+const (
+	endOffsetUpload   = 0
+	endOffsetPort     = 1
+	endOffsetOrder    = 2
+	endOffsetStart    = 10
+	endOffsetEnd      = 16
+	endOffsetLeftMin  = 22
+	endOffsetLeftSec  = 24
+	endOffsetType     = 25
+	endOffsetUsedMin  = 26
+	endOffsetUsedSec  = 28
+	endOffsetConsumer = 29
+	endOffsetLeftWh   = 30
+	endOffsetUsedWh   = 32
+	endOffsetAmount   = 34
+	endOffsetCard     = 36
+	endOffsetStop     = 40
+	endOffsetBand     = 41
+	endOffsetPower    = 42
+)
+
 func ParseChargeEnd(frame Frame) (ChargeEndData, error) {
-	if frame.Command != ChargeEnd || len(frame.Data) != 44 || frame.Data[1] == 0 {
+	if frame.Command != ChargeEnd || len(frame.Data) != 44 || frame.Data[endOffsetPort] == 0 {
 		return ChargeEndData{}, ErrPayload
 	}
-	order, err := decodeBCD(frame.Data[2:10])
+	order, err := decodeBCD(frame.Data[endOffsetOrder : endOffsetOrder+8])
 	if err != nil {
 		return ChargeEndData{}, err
 	}
-	started, err := decodeTime(frame.Data[10:16])
+	started, err := decodeTime(frame.Data[endOffsetStart : endOffsetStart+6])
 	if err != nil {
 		return ChargeEndData{}, err
 	}
-	ended, err := decodeTime(frame.Data[16:22])
+	ended, err := decodeTime(frame.Data[endOffsetEnd : endOffsetEnd+6])
 	if err != nil || ended.Before(started) {
 		return ChargeEndData{}, ErrPayload
 	}
-	if frame.Data[28] > 59 {
+	if frame.Data[endOffsetUsedSec] > 59 || frame.Data[endOffsetLeftSec] > 59 {
+		return ChargeEndData{}, ErrPayload
+	}
+	data := frame.Data
+	amount := int64(binary.LittleEndian.Uint16(data[endOffsetAmount : endOffsetAmount+2]))
+	// The band is 1-based here. The port-status reply counts the same ladder
+	// from zero, so the two are not interchangeable and each parse pins its own
+	// base rather than sharing a helper that would be wrong for one of them.
+	band := data[endOffsetBand]
+	if band > 5 {
 		return ChargeEndData{}, ErrPayload
 	}
 	return ChargeEndData{
-		Port: frame.Data[1], OrderNumber: order,
+		Port: data[endOffsetPort], OrderNumber: order,
 		StartedAt: started, EndedAt: ended,
-		ChargedSeconds: uint32(binary.LittleEndian.Uint16(frame.Data[26:28]))*60 + uint32(frame.Data[28]),
-		ConsumerType:   frame.Data[29],
-		ChargedMWh:     uint32(binary.LittleEndian.Uint16(frame.Data[32:34])) * 1000,
-		StopReason:     frame.Data[40],
-		PowerDeciWatts: uint32(binary.LittleEndian.Uint16(frame.Data[42:44])),
+		ChargeType:       data[endOffsetType],
+		RemainingSeconds: uint32(binary.LittleEndian.Uint16(data[endOffsetLeftMin:endOffsetLeftMin+2]))*60 + uint32(data[endOffsetLeftSec]),
+		ChargedSeconds:   uint32(binary.LittleEndian.Uint16(data[endOffsetUsedMin:endOffsetUsedMin+2]))*60 + uint32(data[endOffsetUsedSec]),
+		ConsumerType:     data[endOffsetConsumer],
+		ChargedMWh:       uint32(binary.LittleEndian.Uint16(data[endOffsetUsedWh:endOffsetUsedWh+2])) * 1000,
+		AmountCents:      amount,
+		StopReason:       data[endOffsetStop],
+		Band:             band,
+		PowerDeciWatts:   uint32(binary.LittleEndian.Uint16(data[endOffsetPower : endOffsetPower+2])),
 	}, nil
 }
 

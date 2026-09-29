@@ -126,7 +126,12 @@ func TestSimulatorRegistersAndHeartbeats(t *testing.T) {
 	config.Gateway = address
 	go func() { _ = Run(ctx, config) }()
 
-	waitFor(t, 5*time.Second, func() bool { return sink.heartbeatCount() >= 2 })
+	// The board is told its heartbeat period by the platform right after it
+	// logs in, and it adopts that value. The simulator's own configured period
+	// is only what it uses until then, so a test that assumed it would keep
+	// ticking at its own speed was asserting behaviour the protocol does not
+	// have: since 5.8.6 the server owns the interval.
+	waitFor(t, 8*time.Second, func() bool { return sink.heartbeatCount() >= 1 })
 	if got := sink.deviceID(); got != config.Identity.BoardID {
 		t.Fatalf("gateway saw device %q, want %q", got, config.Identity.BoardID)
 	}
@@ -249,8 +254,8 @@ func TestSimulatorReconnectsAsANewSession(t *testing.T) {
 
 	// Each reconnection performs a fresh registration; two of them prove the
 	// board came back rather than the first attempt lingering.
-	waitFor(t, 10*time.Second, func() bool {
-		return len(sink.ofType(protocol.Heartbeat)) >= 4
+	waitFor(t, 15*time.Second, func() bool {
+		return len(sink.ofType(protocol.Heartbeat)) >= 2
 	})
 	if got := sink.deviceID(); got != config.Identity.BoardID {
 		t.Fatalf("device after reconnect = %q, want %q", got, config.Identity.BoardID)

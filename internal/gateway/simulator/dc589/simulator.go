@@ -175,6 +175,13 @@ type board struct {
 	mu       sync.Mutex
 	session  [6]byte
 	charging map[byte]*charge
+	// heartbeat is re-armed whenever the platform sets a new period, and
+	// portTelemetry records whether port data is included. Both are server
+	// decisions since 5.8.6, so the board keeps them rather than assuming its
+	// own defaults still apply.
+	heartbeat     *time.Ticker
+	portTelemetry bool
+	configTable   dc589.ConfigTable
 }
 
 func newBoard(config Config, conn net.Conn) *board {
@@ -239,8 +246,8 @@ func (b *board) loop(ctx context.Context) error {
 		}
 	}()
 
-	ticker := time.NewTicker(b.config.Heartbeat)
-	defer ticker.Stop()
+	b.heartbeat = time.NewTicker(b.config.Heartbeat)
+	defer b.heartbeat.Stop()
 	// Metering advances on its own cadence so a charge progresses between
 	// heartbeats even when the server is not asking.
 	meter := time.NewTicker(time.Second)
@@ -258,7 +265,7 @@ func (b *board) loop(ctx context.Context) error {
 			}
 		case <-meter.C:
 			b.advance()
-		case <-ticker.C:
+		case <-b.heartbeat.C:
 			b.sendHeartbeat()
 		}
 	}
@@ -284,10 +291,61 @@ func (b *board) handle(ctx context.Context, frame dc589.Frame) error {
 			return nil
 		}
 		return b.writer.send(dc589.BuildTimeRequest())
+	case dc589.HeartbeatInterval:
+		// Since 5.8.6 this also decides whether port telemetry appears in each
+		// heartbeat. A board that ignores it would be reporting whatever its
+		// factory default was, which is precisely the ambiguity the command
+		// exists to remove, so the simulator honours it and then uses the value
+		// it was given rather than its own default.
+		ok, err := dc589.ParseHeartbeatInterval(frame)
+		if err != nil {
+			return err
+		}
+		b.setHeartbeat(ok.Seconds)
+		b.portTelemetry = ok.PortStatus
+		return b.writer.send(dc589.BuildHeartbeatSetReply(ok))
+	case dc589.SetConfig:
+		return b.applyConfig(frame)
+	case dc589.ReadConfig:
+		if err := b.writer.send(dc589.BuildReadConfigAck()); err != nil {
+			return err
+		}
+		report, err := dc589.BuildConfigReport(b.configTable)
+		if err != nil {
+			// A table the board could not encode is reported as a rejected
+			// write rather than dropped, so the platform is never left waiting
+			// for a read that will not come.
+			return b.writer.send(dc589.BuildConfigAck(1))
+		}
+		return b.writer.send(report)
 	default:
 		// Register, heartbeat, charge-end and fault replies need no answer.
 		return nil
 	}
+}
+
+// setHeartbeat adopts the period the server asked for.
+func (b *board) setHeartbeat(seconds uint16) {
+	if seconds == 0 {
+		return
+	}
+	if b.heartbeat != nil {
+		b.heartbeat.Stop()
+	}
+	b.heartbeat = time.NewTicker(time.Duration(seconds) * time.Second)
+}
+
+// applyConfig accepts a parameter table the way a board would: it validates the
+// ranges, and a rejected write leaves the previous table in place. A simulator
+// that accepted everything would make the 0xC4 error path untestable, which is
+// the only way the platform learns its tariff did not reach the device.
+func (b *board) applyConfig(frame dc589.Frame) error {
+	table, err := dc589.DecodeConfig(frame)
+	if err != nil {
+		return b.writer.send(dc589.BuildConfigAck(1))
+	}
+	b.configTable = table
+	return b.writer.send(dc589.BuildConfigAck(0))
 }
 
 // start begins or refuses a charge. A refusal is what the server turns into a
