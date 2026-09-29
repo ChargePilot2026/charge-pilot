@@ -197,7 +197,24 @@ UI-METER-0929 从缺少分段转人工，确认 200 Wh / 800 Wh 后电费 74 分
 
 **优惠券自动规则（活动）此前为何未完成、现已如何处理**：`需求分析` 第 213 行写"自动规则触发：首充优惠 / 邀请有奖 / 满减满返 / 节日活动（**全部支持**）"，但实测 `coupon_grant` 表**只有 `grant_source='manual'` 一条写入路径**（`internal/central/admin/coupons.go`），没有任何触发器、规则表或调度入口。`docs/api/*.md` 中无对应契约，`admin_coupon` 亦只是映射表。这不是漏写一个函数：规则的数据模型（触发条件、叠加与互斥、发放量与预算上限）、触发时机（首充判定、邀请归因）与风控都需产品先定。尤其"邀请有奖"若无归因与自邀/刷量防护，会直接变成薅羊毛入口，因此不自行设计口径。
 
-**另记：`docs/api/*.md` 存在系统性路径漂移。** 本轮做了一次"文档端点 vs 代码注册路由"的全量比对：代码注册 140 条，文档中约 75 个端点路径在代码里找不到。抽查确认绝大多数**不是缺功能，而是文档停留在重建前的旧路径**——例如文档写 `/api/v1/public/payment/wechat/callback`，代码实为 `/api/v1/public/payments/wechat/callback`（复数）；文档写 `/api/v1/admin/users/{id}/unlock`，代码实为 `/api/v1/admin/admin-users/{id}/unlock`（改名以免与终端用户 `users` 撞名）。代码是经过浏览器实测的那一侧，故以代码为准。这与本文档第 81 行"API 文档仍包含旧服务端口或旧字段名，需随各功能落地逐项修订"是同一问题，本轮未逐条修订，仅登记规模与典型样本。
+**另记：`docs/api/*.md` 存在系统性路径漂移。** 做了一次"文档端点 vs 代码注册路由"的全量比对，代码注册 140 条，文档中 **93 个端点路径在代码里找不到**。分两类：
+
+- **约 82 条是旧路径改名**，功能都在。例如文档 `/api/v1/public/payment/wechat/callback` 实为 `/api/v1/public/payments/wechat/callback`（复数）；文档 `/api/v1/admin/users/{id}/unlock` 实为 `/api/v1/admin/admin-users/{id}/unlock`（改名以免与终端用户 `users` 撞名）；文档 `/api/v1/admin/billing/reconcile-logs` 实为 `/api/v1/admin/billing/reconciles`。代码是经浏览器实测的一侧，以代码为准。
+- **11 条确实没有对应实现**，已逐条定性：
+
+| 文档端点 | 定性 |
+| --- | --- |
+| `GET /admin/export/tasks/{id}`、`GET /internal/export/tasks/{id}` | 导出任务的**单项详情**未实现；列表与下载已覆盖日常使用 |
+| `GET /internal/scheduled-tasks/{id}/last-run` | 定时任务的上次执行记录未实现 |
+| `POST /admin/settings/split-templates/{id}/parties` | 分账模板的**追加参与方**未实现；模板本身可建可查 |
+| `POST /internal/refund-records/claim`、`/execution`、`/{id}/result` | 退款记录的内部操作端点未实现；退款走 worker 消费 Outbox，无此 HTTP 面 |
+| `POST /internal/device-sessions/cleanup-idle` | **空闲会话清理未实现，且当前无对象可清**（见下） |
+
+**关于 `device_session` 这张死表**：`gateway_db.device_session` 有完整结构（会话 ID、协议、远端地址、起止时间、结束原因、收发字节与帧数），但**全代码库零引用**——网关只在内存 `protocol.Registry` 里跟踪会话。`Registry.Attach` 正确返回 detach 闭包并在重连时关闭旧会话，**内存不泄漏**，设备上下线判断也正常。所以缺的不是稳定性，是**连接审计**：无法回答"这台设备什么时候、从哪个 IP 连上来、连了多久、传了多少数据"。
+
+同时这也解释了 `cleanup-idle` 为何没有对应实现且当前无对象可清：会话只在内存里，进程重启即清空，一个针对持久化表的清理端点在本架构下没有意义。
+
+**本轮不实现会话持久化**：设备域的验收项是"注册、心跳扩展字段、结算/分档解析、遥测入库及 Outbox"，会话落库不在其中；且它会改动 TCP 接入热路径（每帧计数、每次断连写库），属于需要显式立项的变更，不在验收范围内顺手加。据实登记于此。
 
 
 ### 2026-09-29 用户侧充电查询补齐
