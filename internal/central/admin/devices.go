@@ -19,13 +19,19 @@ type Device struct {
 	Model       *string    `json:"model"`
 	Status      string     `json:"status"`
 	InstallAt   *time.Time `json:"install_at"`
+	// What this board can report, and what it is currently charged on. Carried
+	// on the device row itself so an operator does not have to open the pricing
+	// screen to find out why a tariff will not apply here.
+	ChargeMode            string `json:"charge_mode"`
+	ReportsEnergy         bool   `json:"reports_energy"`
+	ReportsSegmentedPower bool   `json:"reports_segmented_power"`
 }
 
 func (s ResourceStore) deviceQuery(ctx context.Context) *gorm.DB {
 	return s.AdminDB.WithContext(ctx).Table("device_meta AS d").Joins("LEFT JOIN station AS s ON s.id=d.station_id AND s.deleted_at IS NULL").Where("d.deleted_at IS NULL")
 }
 
-const deviceColumns = "d.id,d.device_id,d.station_id,d.vendor_id,d.model,d.status,d.install_at,s.name AS station_name,s.code AS station_code"
+const deviceColumns = "d.id,d.device_id,d.station_id,d.vendor_id,d.model,d.status,d.install_at,d.charge_mode,d.reports_energy,d.reports_segmented_power,s.name AS station_name,s.code AS station_code"
 
 func (s ResourceStore) Devices(ctx context.Context, q PageQuery) (Page[Device], error) {
 	out := Page[Device]{Items: []Device{}, Page: q.Page, PageSize: q.PageSize}

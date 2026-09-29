@@ -15,8 +15,11 @@ import (
 // published. The only operator action left is taking one off a station, which
 // is what disabling means here.
 
-func offerCode(ruleID uint64, order int) string {
-	return fmt.Sprintf("T%08d-%02d", ruleID, order+1)
+// offerCode identifies a package on sale without exposing a sequential id. It
+// is derived from the package template and the offer row, both of which are
+// unique, so a yard can sell the same package at several targets.
+func offerCodeFor(packageTemplateID, offerID uint64) string {
+	return fmt.Sprintf("P%08d-%08d", packageTemplateID, offerID)
 }
 
 func (a ResourceAPI) registerChargeOffers(r *gin.Engine) {
@@ -27,9 +30,12 @@ func (a ResourceAPI) registerChargeOffers(r *gin.Engine) {
 func (a ResourceAPI) chargeOffers(c *gin.Context) {
 	rows := []map[string]any{}
 	err := a.Store.AdminDB.WithContext(c.Request.Context()).Table("charge_offer o").
-		Select("o.id,o.station_id,s.name AS station_name,o.template_id,o.template_package_id," +
-			"o.code,o.name,o.mode,o.price_cents,o.duration_minutes,o.status,o.version").
-		Joins("JOIN station s ON s.id=o.station_id AND s.deleted_at IS NULL").Order("o.station_id,o.mode,o.price_cents,o.id").Find(&rows).Error
+		Select("o.id,o.station_id,s.name AS station_name,o.device_id,o.package_template_id," +
+			"o.code,o.name,o.mode,o.price_cents,o.duration_minutes,o.min_charge_cents," +
+			"o.show_remark,o.card_default,o.status,o.version").
+		Joins("JOIN station s ON s.id=o.station_id AND s.deleted_at IS NULL").
+		Where("o.deleted_at IS NULL").
+		Order("o.station_id,o.device_id,o.mode,o.price_cents,o.id").Find(&rows).Error
 	if err != nil {
 		resourceFailure(c, err)
 		return

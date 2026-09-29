@@ -25,6 +25,13 @@ type ImportDevice struct {
 	StationID uint64  `json:"station_id"`
 	PortCount uint8   `json:"port_count"`
 	Model     *string `json:"model"`
+	// The metering capability is carried on the import so a fleet can be
+	// classified in one go, which is the only practical way to backfill it:
+	// a device that was never classified is refused every tariff that needs a
+	// meter, so leaving these unset means leaving the whole fleet unpriceable.
+	ChargeMode            string `json:"charge_mode"`
+	ReportsEnergy         bool   `json:"reports_energy"`
+	ReportsSegmentedPower bool   `json:"reports_segmented_power"`
 }
 type ImportJob struct {
 	ImportID    string  `json:"import_id"`
@@ -65,6 +72,13 @@ func (a ResourceAPI) createImport(c *gin.Context) {
 		key := strings.ToLower(d.DeviceID)
 		if !regexp.MustCompile(`^[A-Za-z0-9_-]{8,32}$`).MatchString(d.DeviceID) || d.PortCount == 0 || d.VendorID == 0 || d.StationID == 0 || seen[key] || (d.Model != nil && utf8.RuneCountInString(*d.Model) > 128) {
 			httpapi.BadRequest(c, "设备编号、端口数、厂商或站点无效/重复")
+			return
+		}
+		if d.ChargeMode != "" && !validDeviceChargeMode(d.ChargeMode) {
+			// Checked here rather than at apply time. A fleet is imported once;
+			// finding out months later that one row carries a mode the engine
+			// cannot price would be a very expensive way to learn it.
+			httpapi.BadRequest(c, "设备 "+d.DeviceID+" 的计费方式无效")
 			return
 		}
 		seen[key] = true
@@ -108,11 +122,37 @@ func (a ResourceAPI) createImport(c *gin.Context) {
 				return errConflict
 			}
 		}
+		// Only boards that are actually new are checked. A board already in this
+		// yard is running whatever the yard was charging when it arrived, and
+		// refusing to re-import it would block a routine correction for a
+		// condition that was true before the re-import and is unchanged by it.
+		arriving, err := newDevicesOnly(tx, in.Devices)
+		if err != nil {
+			return err
+		}
+		// Checked on the batch, so the whole import is refused rather than part
+		// of it: a fleet that is half priceable and half not is a fleet an
+		// operator has to reconcile by hand before anything can be billed.
+		if err := checkImportAgainstYard(tx, arriving); err != nil {
+			var blocked *errMeteringBlocked
+			if errors.As(err, &blocked) {
+				httpapi.Write(c, 409, 1009, err.Error()+"，请补录该设备的计量能力或先改用该场地可执行的计费方式", nil)
+				return errAlreadyReported
+			}
+			return err
+		}
 		if err := tx.Table("device_import").Create(map[string]any{"import_id": in.ImportID, "actor_id": p.ID, "request_json": string(body), "status": "pending"}).Error; err != nil {
 			return err
 		}
 		return resourceAudit(tx, p, "create", "device_import", 0, nil, in, c.ClientIP(), in.ImportID)
 	})
+	// The handler above has already written the refusal, so the generic failure
+	// path must not write a second body on top of it. Two JSON documents in one
+	// response is not a response any client can read, and the operator sees a
+	// generic database error instead of the reason their fleet was turned away.
+	if errors.Is(err, errAlreadyReported) {
+		return
+	}
 	if err != nil {
 		resourceFailure(c, err)
 		return
@@ -179,7 +219,19 @@ func (a ResourceAPI) runImport(c *gin.Context, id string) {
 			if !errors.Is(e, gorm.ErrRecordNotFound) {
 				return e
 			}
-			if err := tx.Table("device_meta").Create(map[string]any{"device_id": d.DeviceID, "vendor_id": d.VendorID, "station_id": d.StationID, "model": d.Model, "status": "enabled"}).Error; err != nil {
+			row := map[string]any{
+				"device_id": d.DeviceID, "vendor_id": d.VendorID, "station_id": d.StationID,
+				"model": d.Model, "status": "enabled",
+				"reports_energy": d.ReportsEnergy, "reports_segmented_power": d.ReportsSegmentedPower,
+			}
+			// An existing device keeps whatever it was already classified as.
+			// The import is a fleet onboarding record, not a re-classification;
+			// overwriting a declared capability because a re-import omitted the
+			// field would un-price every board in the yard at a stroke.
+			if d.ChargeMode != "" {
+				row["charge_mode"] = d.ChargeMode
+			}
+			if err := tx.Table("device_meta").Create(row).Error; err != nil {
 				return err
 			}
 		}

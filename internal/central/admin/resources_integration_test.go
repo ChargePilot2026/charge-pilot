@@ -206,31 +206,36 @@ func TestAdminPagesIntegration(t *testing.T) {
 	// A pricing template carries the tariff, its packages and the display
 	// switches as one object, and is applied to a station as one copy.
 	spec := gin.H{
-		"basis":              "energy",
-		"windows":            []gin.H{{"start": "00:00", "end": "24:00", "cents_per_kwh": 50}},
-		"service":            gin.H{"mode": "energy", "cents_per_kwh": 20},
+		"mode":               "server_energy",
+		"electric":           gin.H{"basis": "energy", "periods": []gin.H{{"end_minute": 1440, "electric_cents": 50}}},
+		"service":            gin.H{"basis": "energy", "cents_per_kwh": 20},
 		"min_electric_cents": 10,
 	}
 	tmpl := gin.H{
 		"name": "集成计费模板", "remark": "集成用例",
 		"spec":    spec,
 		"display": gin.H{"show_energy": true, "show_power": true, "show_fee_split": true},
-		"packages": []gin.H{
-			{"name": "2元", "kind": "amount", "price_cents": 200, "duration_minutes": 0, "stop_when_full": false, "status": "active"},
-			{"name": "2小时", "kind": "package", "price_cents": 0, "duration_minutes": 120, "stop_when_full": true, "status": "active"},
-		},
 	}
 	pricingTemplateID := fmt.Sprintf("%.0f", data(call(adminToken, "POST", "settings/pricing-templates", tmpl, 200))["id"].(float64))
 	call(fin1, "POST", "settings/pricing-templates", tmpl, 403)
-	// A tariff that leaves part of the day unpriced is refused at the door.
+	// A chain of periods that stops short of midnight leaves the night
+	// unpriced, and is refused at the door rather than stored as a hole.
 	call(adminToken, "POST", "settings/pricing-templates", gin.H{"name": "坏时段", "spec": gin.H{
-		"basis": "energy", "windows": []gin.H{{"start": "01:00", "end": "24:00", "cents_per_kwh": 50}}}}, 400)
-	// A power-tier tariff with no tiers is equally unpriceable.
+		"mode":     "server_energy",
+		"electric": gin.H{"basis": "energy", "periods": []gin.H{{"end_minute": 720, "electric_cents": 50}}}}}, 400)
+	// A power ladder with no rungs is equally unpriceable.
 	call(adminToken, "POST", "settings/pricing-templates", gin.H{"name": "空档位", "spec": gin.H{
-		"basis": "power_tier", "windows": []gin.H{{"start": "00:00", "end": "24:00", "cents_per_kwh": 50}}, "tiers": []gin.H{}}}, 400)
-	// A package without the terms that make it priceable is refused too.
-	call(adminToken, "POST", "settings/pricing-templates", gin.H{"name": "残缺套餐", "spec": spec,
-		"packages": []gin.H{{"name": "无价", "kind": "amount", "price_cents": 0, "status": "active"}}}, 400)
+		"mode":     "server_realtime_power",
+		"electric": gin.H{"basis": "realtime_power", "periods": []gin.H{{"end_minute": 1440}}}}}, 400)
+	// A device-billed tariff that still carries a rate would look priced when
+	// nothing on that path ever reads one.
+	call(adminToken, "POST", "settings/pricing-templates", gin.H{"name": "设备计费带费率", "spec": gin.H{
+		"mode":     "device_duration",
+		"electric": gin.H{"basis": "energy", "periods": []gin.H{{"end_minute": 1440, "electric_cents": 50}}}}}, 400)
+	// The mode and its own basis disagreeing is a tariff nobody agreed to.
+	call(adminToken, "POST", "settings/pricing-templates", gin.H{"name": "模式与费率不符", "spec": gin.H{
+		"mode":     "server_max_power",
+		"electric": gin.H{"basis": "energy", "periods": []gin.H{{"end_minute": 1440, "electric_cents": 50}}}}}, 400)
 	call(adminToken, "POST", "settings/pricing-templates/"+pricingTemplateID+"/apply", gin.H{"request_id": "aa000000-0000-4000-8000-000000000000", "station_id": 0, "expected_version": 0}, 400)
 	call(adminToken, "POST", "settings/pricing-templates/999999999999/apply", gin.H{"request_id": "aa000000-0000-4000-8000-0000000000ff", "station_id": sid, "expected_version": 0}, 404)
 
@@ -241,11 +246,14 @@ func TestAdminPagesIntegration(t *testing.T) {
 	if firstRule["id"] != replayRule["id"] || replayRule["replayed"] != true {
 		t.Fatal("apply replay must preserve rule")
 	}
-	// Applying copies the packages to the station in the same transaction.
+	// Packages are a pool of their own, so applying a tariff publishes no
+	// offers at all. Publishing them is a separate, explicit act, and conflating
+	// the two is what let an operator sell a package priced for a tariff that
+	// was no longer running.
 	var offers int64
-	adb.Table("charge_offer").Where("station_id=? AND template_id=? AND status='active'", sid, pricingTemplateID).Count(&offers)
-	if offers != 2 {
-		t.Fatalf("applying a template must publish every package, got %d offers", offers)
+	adb.Table("charge_offer").Where("station_id=? AND status='active' AND deleted_at IS NULL", sid).Count(&offers)
+	if offers != 0 {
+		t.Fatalf("applying a tariff must not publish any package, got %d offers", offers)
 	}
 	// Two packages at one station is the case a leftover UNIQUE(station_id)
 	// would break, so the count above is the regression guard for it.
@@ -258,20 +266,21 @@ func TestAdminPagesIntegration(t *testing.T) {
 
 	// Editing the template must not reach the rule the station is charging under.
 	edited := gin.H{"name": "改价后的模板", "spec": gin.H{
-		"basis": "energy", "windows": []gin.H{{"start": "00:00", "end": "24:00", "cents_per_kwh": 99}},
-		"service": gin.H{"mode": "energy", "cents_per_kwh": 20}, "min_electric_cents": 10},
-		"packages": []gin.H{{"name": "5元", "kind": "amount", "price_cents": 500,
-			"duration_minutes": 0, "stop_when_full": false, "status": "active"}},
+		"mode":     "server_energy",
+		"electric": gin.H{"basis": "energy", "periods": []gin.H{{"end_minute": 1440, "electric_cents": 99}}},
+		"service":  gin.H{"basis": "energy", "cents_per_kwh": 20}, "min_electric_cents": 10},
 		"version": 1}
 	call(adminToken, "PUT", "settings/pricing-templates/"+pricingTemplateID, edited, 200)
 	var appliedSpec string
 	adb.Table("pricing_rule").Where("id=?", firstRule["id"]).Pluck("spec_json", &appliedSpec)
 	var snapshot struct {
-		Windows []struct {
-			CentsPerKWh int64 `json:"cents_per_kwh"`
-		} `json:"windows"`
+		Electric struct {
+			Periods []struct {
+				ElectricCents int64 `json:"electric_cents"`
+			} `json:"periods"`
+		} `json:"electric"`
 	}
-	if err := json.Unmarshal([]byte(appliedSpec), &snapshot); err != nil || len(snapshot.Windows) != 1 || snapshot.Windows[0].CentsPerKWh != 50 {
+	if err := json.Unmarshal([]byte(appliedSpec), &snapshot); err != nil || len(snapshot.Electric.Periods) != 1 || snapshot.Electric.Periods[0].ElectricCents != 50 {
 		t.Fatalf("applied rule changed to %s when the template was edited; it is a snapshot", appliedSpec)
 	}
 
@@ -281,8 +290,8 @@ func TestAdminPagesIntegration(t *testing.T) {
 		t.Fatal("copy must create a new template")
 	}
 	detail := data(call(adminToken, "GET", "settings/pricing-templates/"+copied, nil, 200))
-	if len(detail["packages"].([]any)) != 1 {
-		t.Fatal("copy must carry the packages across")
+	if detail["name"] != "模板副本" {
+		t.Fatal("copy must be readable under its new name")
 	}
 
 	// After the station disables the rule, the template can be applied again and
@@ -304,8 +313,8 @@ func TestAdminPagesIntegration(t *testing.T) {
 	// Two operators applying different templates against the same station
 	// version cannot both win.
 	otherID := fmt.Sprintf("%.0f", data(call(adminToken, "POST", "settings/pricing-templates", gin.H{
-		"name": "并发模板", "spec": gin.H{"basis": "energy",
-			"windows": []gin.H{{"start": "00:00", "end": "24:00", "cents_per_kwh": 30}}}}, 200))["id"].(float64))
+		"name": "并发模板", "spec": gin.H{"mode": "server_energy",
+			"electric": gin.H{"basis": "energy", "periods": []gin.H{{"end_minute": 1440, "electric_cents": 30}}}}}, 200))["id"].(float64))
 	otherPath := "settings/pricing-templates/" + otherID + "/apply"
 	codes := make(chan int, 2)
 	for _, requestID := range []string{"aa000000-0000-4000-8000-000000000005", "aa000000-0000-4000-8000-000000000006"} {
@@ -390,9 +399,15 @@ func TestAdminPagesIntegration(t *testing.T) {
 	exec(gdb, "INSERT INTO vendor(vendor_code,vendor_name,adapter_class,protocol,status) VALUES ('PAGES_VENDOR','页面测试','dc589','tcp','enabled')")
 	var vid uint64
 	gdb.Table("vendor").Where("vendor_code='PAGES_VENDOR'").Pluck("id", &vid)
-	batch := gin.H{"import_id": "33333333-3333-4333-8333-333333333333", "devices": []gin.H{{"device_id": "PAGESDEV01", "vendor_id": vid, "station_id": sid, "port_count": 2, "model": "测试型号"}}}
+	// This station already runs a metered tariff, so a board arriving here has to
+	// declare what it can report. The capability travels on the import because
+	// classifying a fleet one device at a time is not something anyone does.
+	batch := gin.H{"import_id": "33333333-3333-4333-8333-333333333333", "devices": []gin.H{{"device_id": "PAGESDEV01", "vendor_id": vid, "station_id": sid, "port_count": 2, "model": "测试型号", "charge_mode": "server_energy", "reports_energy": true, "reports_segmented_power": true}}}
 	call(adminToken, "POST", "device-imports", batch, 200)
 	call(adminToken, "POST", "device-imports", batch, 200)
+	// A board that declares nothing cannot join a metered yard. The whole batch
+	// is refused rather than half of it, and the message names the board.
+	call(adminToken, "POST", "device-imports", gin.H{"import_id": "33333333-3333-4333-8333-333333333334", "devices": []gin.H{{"device_id": "PAGESDEV02", "vendor_id": vid, "station_id": sid, "port_count": 2}}}, 409)
 	call(adminToken, "GET", "devices?keyword=PAGESDEV01", nil, 200)
 	// Real rows exercise charge detail joins, manual reservations, double signing,
 	// channel reconciliation, and duplicate provider receipt accounting.

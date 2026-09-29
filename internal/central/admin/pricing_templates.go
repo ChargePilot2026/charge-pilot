@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"regexp"
 	"strings"
 
 	"github.com/ChargePilot2026/charge-pilot/internal/central/pricing"
@@ -26,58 +27,24 @@ import (
 // second time by the generic failure path as an opaque database error.
 var errAlreadyReported = errors.New("response already written")
 
-type templatePackageInput struct {
-	ID              uint64 `json:"id"`
-	Name            string `json:"name"`
-	Kind            string `json:"kind"`
-	PriceCents      int64  `json:"price_cents"`
-	DurationMinutes uint16 `json:"duration_minutes"`
-	StopWhenFull    bool   `json:"stop_when_full"`
-	Status          string `json:"status"`
-}
-
+// A pricing template is only the tariff. Charge packages live in their own
+// template pool: a package is a prepaid cap settled on its own price, so it
+// stays valid whichever tariff is running, and one tariff can be paired with
+// several different package sets.
 type pricingTemplateInput struct {
-	Name     string                 `json:"name"`
-	Remark   string                 `json:"remark"`
-	Spec     pricing.Spec           `json:"spec"`
-	Display  *pricing.Display       `json:"display"`
-	Packages []templatePackageInput `json:"packages"`
-	Version  uint32                 `json:"version"`
-}
-
-// validPackage keeps the package vocabulary identical to what settlement can
-// actually charge. A "package" kind without a duration, or an amount without a
-// positive cap, would be sellable and unpriceable.
-func validPackage(in templatePackageInput) bool {
-	if !validText(in.Name, 64) || in.Status != "active" && in.Status != "disabled" {
-		return false
-	}
-	switch in.Kind {
-	case "amount":
-		return in.PriceCents > 0 && in.PriceCents <= 1000000 && in.DurationMinutes == 0
-	case "package":
-		return in.PriceCents == 0 && in.DurationMinutes > 0 && in.DurationMinutes <= 600
-	default:
-		return false
-	}
+	Name    string           `json:"name"`
+	Remark  string           `json:"remark"`
+	Spec    pricing.Spec     `json:"spec"`
+	Display *pricing.Display `json:"display"`
+	Version uint32           `json:"version"`
 }
 
 // validTemplate is the single gate every create and update passes through, so
 // an unusable tariff or package is refused as bad input rather than surfacing
 // later as a database error halfway through the write.
 func validTemplate(in pricingTemplateInput) bool {
-	if !validText(in.Name, 64) || len([]rune(in.Remark)) > 255 || len(in.Packages) > 32 {
-		return false
-	}
-	if pricing.ValidateSpec(in.Spec) != nil {
-		return false
-	}
-	for _, pkg := range in.Packages {
-		if !validPackage(pkg) {
-			return false
-		}
-	}
-	return true
+	return validText(in.Name, 64) && len([]rune(in.Remark)) <= 255 &&
+		pricing.ValidateSpec(in.Spec) == nil
 }
 
 func (a ResourceAPI) registerPricingTemplates(r *gin.Engine) {
@@ -139,15 +106,9 @@ func (a ResourceAPI) pricingTemplateDetail(c *gin.Context) {
 		resourceFailure(c, pricing.ErrInvalidPricing)
 		return
 	}
-	packages := []templatePackageInput{}
-	if err := a.Store.AdminDB.WithContext(c.Request.Context()).Table("pricing_template_package").
-		Where("template_id=?", id).Order("sort_order,id").Find(&packages).Error; err != nil {
-		resourceFailure(c, err)
-		return
-	}
 	httpapi.OK(c, gin.H{
 		"id": row.ID, "name": row.Name, "remark": row.Remark, "status": row.Status,
-		"version": row.Version, "spec": spec, "display": display, "packages": packages,
+		"version": row.Version, "spec": spec, "display": display,
 		"permissions": c.MustGet("admin_profile").(Profile).Permissions,
 	})
 }
@@ -180,10 +141,6 @@ func (a ResourceAPI) createPricingTemplate(c *gin.Context) {
 		if err := tx.Raw("SELECT LAST_INSERT_ID()").Scan(&id).Error; err != nil {
 			return err
 		}
-		if err := writeTemplatePackages(tx, id, in.Packages); err != nil {
-			return err
-		}
-		row["packages"] = in.Packages
 		return resourceAudit(tx, actor, "pricing.template.create", "pricing_template", id, nil, row, c.ClientIP(), httpapi.RequestID(c))
 	})
 	if err != nil {
@@ -235,13 +192,6 @@ func (a ResourceAPI) updatePricingTemplate(c *gin.Context) {
 		if err := tx.Table("pricing_template").Where("id=?", id).Updates(row).Error; err != nil {
 			return err
 		}
-		if err := tx.Table("pricing_template_package").Where("template_id=?", id).Delete(nil).Error; err != nil {
-			return err
-		}
-		if err := writeTemplatePackages(tx, id, in.Packages); err != nil {
-			return err
-		}
-		row["packages"] = in.Packages
 		return resourceAudit(tx, actor, "pricing.template.update", "pricing_template", id, before, row, c.ClientIP(), httpapi.RequestID(c))
 	})
 	if err != nil {
@@ -249,23 +199,6 @@ func (a ResourceAPI) updatePricingTemplate(c *gin.Context) {
 		return
 	}
 	httpapi.OK(c, gin.H{"id": id, "version": in.Version + 1})
-}
-
-func writeTemplatePackages(tx *gorm.DB, templateID uint64, packages []templatePackageInput) error {
-	for i, in := range packages {
-		if !validPackage(in) {
-			return errConflict
-		}
-		row := map[string]any{
-			"template_id": templateID, "name": strings.TrimSpace(in.Name), "kind": in.Kind,
-			"price_cents": in.PriceCents, "duration_minutes": in.DurationMinutes,
-			"stop_when_full": in.StopWhenFull, "sort_order": i + 1, "status": in.Status,
-		}
-		if err := tx.Table("pricing_template_package").Create(row).Error; err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // copyPricingTemplate duplicates a template so an operator can try a variant
@@ -301,13 +234,6 @@ func (a ResourceAPI) copyPricingTemplate(c *gin.Context) {
 			return err
 		}
 		if err := tx.Raw("SELECT LAST_INSERT_ID()").Scan(&newID).Error; err != nil {
-			return err
-		}
-		packages := []templatePackageInput{}
-		if err := tx.Table("pricing_template_package").Where("template_id=?", id).Order("sort_order,id").Find(&packages).Error; err != nil {
-			return err
-		}
-		if err := writeTemplatePackages(tx, newID, packages); err != nil {
 			return err
 		}
 		return resourceAudit(tx, actor, "pricing.template.copy", "pricing_template", newID,
@@ -351,20 +277,38 @@ func (a ResourceAPI) disablePricingTemplate(c *gin.Context) {
 
 type applyTemplateInput struct {
 	StationID uint64 `json:"station_id"`
+	// DeviceID is empty to publish the yard default. A device id publishes that
+	// one pile's tariff, which is how a yard runs two different tariffs side by
+	// side.
+	DeviceID  string `json:"device_id"`
 	RequestID string `json:"request_id"`
-	// ExpectedVersion is the station's current rule version, so two operators
+	// ExpectedVersion is the target's current rule version, so two operators
 	// applying different templates at once cannot both win.
 	ExpectedVersion uint32 `json:"expected_version"`
 }
 
-// applyPricingTemplate publishes a template as the station's active rule: the
-// tariff becomes a pricing_rule and every package becomes a charge_offer, in
-// one transaction. A partial application would leave a station selling packages
-// priced against a tariff that was never published.
+// devicePattern matches the ids the gateway registers. It is checked before a
+// device row is written so a typo cannot create an assignment that silently
+// never applies.
+var deviceIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
+// scope narrows a rule lookup to one device or to the yard default, and is the
+// single definition of "which rules does this operation supersede".
+func ruleScope(stationID uint64, deviceID string) func(*gorm.DB) *gorm.DB {
+	return func(q *gorm.DB) *gorm.DB {
+		if deviceID == "" {
+			return q.Where("station_id=? AND device_id IS NULL", stationID)
+		}
+		return q.Where("station_id=? AND device_id=?", stationID, deviceID)
+	}
+}
+
+// applyPricingTemplate publishes a template as the running rule for one device
+// or for the whole yard. The rule is a copy of the template, so editing the
+// template afterwards cannot change what is already being charged.
 //
-// Re-applying the same template to a station already running it is refused. A
-// station changes tariff by disabling its current rule first, which is what the
-// confirmation in the UI says.
+// Re-applying the same template where it already runs is refused; the operator
+// disables the current rule first, which is what the confirmation says.
 func (a ResourceAPI) applyPricingTemplate(c *gin.Context) {
 	templateID, ok := pathID(c)
 	if !ok {
@@ -374,7 +318,8 @@ func (a ResourceAPI) applyPricingTemplate(c *gin.Context) {
 	if !decodeResource(c, &in) {
 		return
 	}
-	if _, err := uuid.Parse(in.RequestID); err != nil || in.StationID == 0 {
+	if _, err := uuid.Parse(in.RequestID); err != nil || in.StationID == 0 ||
+		(in.DeviceID != "" && !deviceIDPattern.MatchString(in.DeviceID)) {
 		httpapi.BadRequest(c, "请填写有效请求编号并选择站点")
 		return
 	}
@@ -384,6 +329,7 @@ func (a ResourceAPI) applyPricingTemplate(c *gin.Context) {
 	hash := hex.EncodeToString(digest[:])
 	var id uint64
 	var version uint32
+	var switchTask uint64
 	replayed := false
 	err := a.Store.AdminDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
 		// The receipt is checked first so a retry after an uncertain response
@@ -426,13 +372,53 @@ func (a ResourceAPI) applyPricingTemplate(c *gin.Context) {
 			Where("id=? AND status='active' AND deleted_at IS NULL", in.StationID).Take(&station).Error; err != nil {
 			return err
 		}
+		if in.DeviceID != "" {
+			var known int64
+			if err := tx.Table("device_meta").
+				Where("device_id=? AND station_id=? AND deleted_at IS NULL", in.DeviceID, in.StationID).
+				Count(&known).Error; err != nil {
+				return err
+			}
+			if known == 0 {
+				httpapi.Write(c, 404, 1004, "该设备不属于此站点", nil)
+				return errAlreadyReported
+			}
+		}
+		// What has to be written to which board, and whether each of them can
+		// even run what is about to be published. Resolved before the duplicate
+		// check below so a refusal names the board that cannot take the tariff
+		// instead of the template that is merely already in use somewhere.
+		targets, err := resolveSwitchTargets(tx, in.StationID, in.DeviceID)
+		if err != nil {
+			return err
+		}
+		// An empty target list is a yard being priced before its hardware
+		// arrives, which is a normal thing to do, so it is not refused here.
+		// What is refused is a board joining a yard that would then run a
+		// tariff it cannot measure; that check lives where the board is added.
+		if blocked := checkMetering(spec.Mode, targets); len(blocked) > 0 {
+			// Named one by one. A yard-wide apply that quietly skipped the three
+			// boards without meters would leave those three charging on a tariff
+			// nobody can see, which is the failure this check exists to prevent.
+			scope := "以下设备无法执行该计费方式，请先补录计量能力："
+			if in.DeviceID != "" {
+				scope = "该设备无法执行该计费方式，请先补录计量能力："
+			}
+			httpapi.Write(c, 409, 1009, scope+strings.Join(blocked, "；"), nil)
+			return errAlreadyReported
+		}
 		var running int64
-		if err := tx.Table("pricing_rule").Where("template_id=? AND station_id=? AND status='active' AND deleted_at IS NULL",
-			templateID, in.StationID).Count(&running).Error; err != nil {
+		if err := ruleScope(in.StationID, in.DeviceID)(tx.Table("pricing_rule")).
+			Where("template_id=? AND status='active' AND deleted_at IS NULL", templateID).
+			Count(&running).Error; err != nil {
 			return err
 		}
 		if running > 0 {
-			httpapi.Write(c, 409, 1009, "该计费模板已应用到此站点，请先停用后再重新应用", nil)
+			scope := "该站点"
+			if in.DeviceID != "" {
+				scope = "该设备"
+			}
+			httpapi.Write(c, 409, 1009, "该计费模板已应用于"+scope+"，请先停用后再重新应用", nil)
 			return errAlreadyReported
 		}
 		// Read with a locking read rather than MAX(version). Under REPEATABLE
@@ -440,9 +426,9 @@ func (a ResourceAPI) applyPricingTemplate(c *gin.Context) {
 		// began, so two operators applying at the same time would both see the
 		// old version and both win.
 		var current struct{ Version uint32 }
-		if err := tx.Table("pricing_rule").Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("station_id=?", in.StationID).Order("version DESC").Limit(1).Take(&current).Error; err != nil &&
-			!errors.Is(err, gorm.ErrRecordNotFound) {
+		if err := ruleScope(in.StationID, in.DeviceID)(tx.Table("pricing_rule")).
+			Clauses(clause.Locking{Strength: "UPDATE"}).
+			Order("version DESC").Limit(1).Take(&current).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 			return err
 		}
 		if current.Version != in.ExpectedVersion {
@@ -451,13 +437,14 @@ func (a ResourceAPI) applyPricingTemplate(c *gin.Context) {
 		version = current.Version + 1
 		// Supersede the running rule only once the new one is known to be
 		// publishable, which the checks above have established.
-		if err := tx.Table("pricing_rule").Where("station_id=? AND status='active'", in.StationID).
-			Update("status", "disabled").Error; err != nil {
+		if err := ruleScope(in.StationID, in.DeviceID)(tx.Table("pricing_rule")).
+			Where("status='active'").Update("status", "disabled").Error; err != nil {
 			return err
 		}
 		row := map[string]any{
-			"template_id": templateID, "station_id": in.StationID, "name": tmpl.Name,
-			"spec_json": string(tmpl.SpecJSON), "channel": "default", "version": version, "status": "active",
+			"template_id": templateID, "station_id": in.StationID, "device_id": nullableDevice(in.DeviceID),
+			"name": tmpl.Name, "spec_json": string(tmpl.SpecJSON), "channel": "default",
+			"version": version, "status": "active",
 		}
 		if err := tx.Table("pricing_rule").Create(row).Error; err != nil {
 			return err
@@ -465,29 +452,32 @@ func (a ResourceAPI) applyPricingTemplate(c *gin.Context) {
 		if err := tx.Raw("SELECT LAST_INSERT_ID()").Scan(&id).Error; err != nil {
 			return err
 		}
-		packages := []templatePackageInput{}
-		if err := tx.Table("pricing_template_package").Where("template_id=? AND status='active'", templateID).
-			Order("sort_order,id").Find(&packages).Error; err != nil {
-			return err
-		}
-		for order, pkg := range packages {
-			// A code is unique per station, and a template can be applied to the
-			// same station more than once over its life. Every application
-			// allocates a new rule id, so deriving the code from it keeps each
-			// generation distinct and lets the row be written in one insert.
-			offer := map[string]any{
-				"station_id": in.StationID, "template_id": templateID, "template_package_id": pkg.ID,
-				"code": offerCode(id, order), "name": pkg.Name, "mode": pkg.Kind,
-				"price_cents": pkg.PriceCents, "duration_minutes": pkg.DurationMinutes,
-				"status": "active", "version": 1,
-			}
-			if err := tx.Table("charge_offer").Create(offer).Error; err != nil {
-				return err
-			}
-		}
 		if err := tx.Table("pricing_publication").Create(map[string]any{"request_id": in.RequestID,
 			"actor_id": actor.ID, "payload_hash": hash, "rule_id": id, "version": version}).Error; err != nil {
 			return err
+		}
+		// The board's own record of the mode it is on follows the rule, so an
+		// operator looking at the device matrix sees the same mode the tariff
+		// log does even for a device that never had a rule of its own.
+		if err := tx.Table("device_meta").
+			Where("station_id=? AND deleted_at IS NULL", in.StationID).
+			Where("device_id IN ?", switchDeviceIDs(targets)).
+			Updates(map[string]any{"charge_mode": string(spec.Mode)}).Error; err != nil {
+			return err
+		}
+		// Only a device-billed tariff has to reach the hardware: under server
+		// billing the platform prices the session and the board only has to
+		// obey a start and a stop, so a task there would be a record of nothing.
+		// The task is written in the same transaction as the rule, so a tariff
+		// that is live can never be one whose rollout was not recorded.
+		// Nothing to switch to: a task with no rows in it is a log entry that
+		// can only ever be confusing, so an empty rollout records no task.
+		if !spec.Mode.ServerBilled() && len(targets) > 0 {
+			taskID, err := a.planSwitchTask(tx, actor, in.StationID, templateID, spec.Mode, targets, c)
+			if err != nil {
+				return err
+			}
+			switchTask = taskID
 		}
 		return resourceAudit(tx, actor, "pricing.template.apply", "pricing_rule", id, nil, row, c.ClientIP(), httpapi.RequestID(c))
 	})
@@ -498,5 +488,30 @@ func (a ResourceAPI) applyPricingTemplate(c *gin.Context) {
 		resourceFailure(c, err)
 		return
 	}
-	httpapi.OK(c, gin.H{"id": id, "version": version, "replayed": replayed})
+	response := gin.H{"id": id, "version": version, "replayed": replayed}
+	if switchTask > 0 {
+		// The tariff is live; the boards are not yet switched. Both halves are
+		// in the answer because an operator who reads only the id will assume
+		// the devices are already running it.
+		response["switch_task_id"] = switchTask
+		response["switch_pending"] = true
+	}
+	httpapi.OK(c, response)
+}
+
+// switchDeviceIDs is the device list of a rollout, in the shape a SQL IN
+// clause takes.
+func switchDeviceIDs(targets []switchTarget) []string {
+	ids := make([]string, 0, len(targets))
+	for _, target := range targets {
+		ids = append(ids, target.DeviceID)
+	}
+	return ids
+}
+
+func nullableDevice(deviceID string) any {
+	if deviceID == "" {
+		return nil
+	}
+	return deviceID
 }
