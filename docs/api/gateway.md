@@ -407,7 +407,15 @@
 
 **鉴权**:服务间共享密钥。查询参数:`order_id`、`port_no`、`started_at` 必填，`ended_at` 可省略（默认当前时间），`granularity` ∈ `15min` / `hourly`；gateway 从本 schema 对应聚合表读取真实采样并返回 `data.series` 和摘要。既有遥测不会自动回填聚合表；聚合维度是设备与端口，按订单时间窗筛选，紧邻订单共用同一聚合桶时可能混入边界样本。订单归属与时间窗由 user 服务验证。错误粒度和时间窗返回参数错误。
 
-> **实现现状修正（2026-09-29 实测）**：本节原文称"TCP 实测及断网补传数据在原始遥测落库的同一事务中同步更新 15 分钟/小时聚合值（平均、最小、最大和样本数）"，**该描述与实现不符**。`telemetry_aggregate_15min` 与 `telemetry_aggregate_hourly` 两张表由迁移创建，但全代码库无任何写入或读取，两表恒为空。已交付的曲线实现是 gateway 直接读 `telemetry` 原表并按秒在内存中聚合（`GET /api/v1/internal/devices/{device_id}/telemetry`，未上报指标返回 `null`），`granularity` 参数尚未实现。两张聚合表属于被按秒聚合方案取代的历史设计；未确认有消费者之前不写入，避免在遥测热路径上增加无产出的开销。**在补上聚合写入与 `granularity` 读取之前，不得按本节描述宣称 15 分钟/小时粒度曲线可用。**
+> **实现现状（2026-09-29 两次修正）**：本节原文称"TCP 实测及断网补传数据在原始遥测落库的同一事务中同步更新 15 分钟/小时聚合值"。
+>
+> 第一次核对时，这句话被判定为**不实陈述**——两张聚合表由迁移创建并带 `uk_bucket` 唯一键，却长期无任何写入与读取，且当时判断不值得为无消费者的表增加热路径开销。**这个判断是错的**，已在下列第二次修正中推翻。
+>
+> 真正的问题是曲线读原表用 `ORDER BY ts DESC LIMIT limit*8`，而 `MaxWindow=24h`、`MaxPoints=2000` 即上限 16000 行；设备约 5 秒一采且每次写多个指标，24 小时约 5 万行，于是**曲线静默只返回最近约三分之一的时间段且无任何提示**。这是一处正在返回错误结果的用户可见缺陷，不只是"多了一张没用的表"。
+>
+> 现已补齐：TCP 与断线补传两条写入路径都在**同一事务内**批量 upsert 两张聚合表（每事件每粒度一条语句）；读侧 `chooseSource` 按窗口与点数预算自动选表，预算够走原表保留逐秒细节，超出走聚合。`GET /api/v1/internal/devices/{device_id}/telemetry` 的响应新增 `granularity`（`raw`/`15min`/`hourly`）与 `bucket`，调用方能明确知道自己看到的是哪种分辨率。
+>
+> **注意**：本节描述的 `historical-curve` 端点（带 `order_id`/`port_no`/`granularity` 参数）**仍未实现**；已实现的是不带这些参数、按设备与时间窗查询的 `GET /api/v1/internal/devices/{device_id}/telemetry`。不得按本节描述宣称历史曲线端点可用。
 
 ### `POST /api/v1/internal/device-sessions/cleanup-idle`
 

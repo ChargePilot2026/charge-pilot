@@ -182,7 +182,12 @@ func applyStopAck(ctx context.Context, tx *gorm.DB, event protocol.Event) error 
 }
 
 func insertMeasurements(ctx context.Context, tx *gorm.DB, event protocol.Event) error {
+	// Collected as we go so the rollups can be written in one statement per
+	// granularity instead of one per metric.
+	rollup := make([]AggregateSample, 0, 8)
 	insert := func(port sql.NullInt16, metric, value string) error {
+		rollup = append(rollup, AggregateSample{DeviceID: event.DeviceID, Port: port, Metric: metric,
+			Value: value, TS: event.ReceivedAt.UTC()})
 		return tx.WithContext(ctx).Create(&telemetryRow{DeviceID: event.DeviceID, PortNo: port, Metric: metric,
 			ValueNum: value, TS: event.ReceivedAt.UTC()}).Error
 	}
@@ -212,9 +217,11 @@ func insertMeasurements(ctx context.Context, tx *gorm.DB, event protocol.Event) 
 	}
 	if event.Type == protocol.ChargeEnd {
 		id := sql.NullInt16{Int16: int16(event.Port), Valid: true}
-		return insert(id, "meter_kwh", decimal.NewFromInt(int64(event.EnergyMilliKWh)).Shift(-3).StringFixed(3))
+		if err := insert(id, "meter_kwh", decimal.NewFromInt(int64(event.EnergyMilliKWh)).Shift(-3).StringFixed(3)); err != nil {
+			return err
+		}
 	}
-	return nil
+	return refreshAggregates(ctx, tx, rollup)
 }
 
 func requireOne(result *gorm.DB) error {

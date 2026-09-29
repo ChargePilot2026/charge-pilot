@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	gatewaystore "github.com/ChargePilot2026/charge-pilot/internal/gateway/store"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/httpapi"
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
@@ -263,6 +264,7 @@ func (a TelemetryAPI) persistBackfill(ctx context.Context, deviceID string, samp
 		present[sampleKey(deviceID, row.PortNo, row.Metric, row.TS)] = struct{}{}
 	}
 	rows := make([]map[string]any, 0, len(samples))
+	newSamples := make([]gatewaystore.AggregateSample, 0, len(samples))
 	skipped := 0
 	for _, s := range samples {
 		if _, dup := present[sampleKey(s.deviceID, s.portNo, s.metric, s.ts)]; dup {
@@ -273,11 +275,20 @@ func (a TelemetryAPI) persistBackfill(ctx context.Context, deviceID string, samp
 			"device_id": s.deviceID, "port_no": s.portNo, "metric": s.metric,
 			"value_num": s.value, "ts": s.ts,
 		})
+		newSamples = append(newSamples, gatewaystore.AggregateSample{
+			DeviceID: s.deviceID, Port: s.portNo, Metric: s.metric, Value: s.value, TS: s.ts,
+		})
 	}
 	if len(rows) == 0 {
 		return 0, skipped, nil
 	}
 	if err := a.DB.WithContext(ctx).Table("telemetry").CreateInBatches(rows, 500).Error; err != nil {
+		return 0, 0, err
+	}
+	// Backfilled readings must reach the rollups too. A device that was offline
+	// for a chunk of the window would otherwise show a gap in any curve served
+	// from the aggregates, even though the raw rows are present.
+	if err := gatewaystore.RefreshAggregates(ctx, a.DB, newSamples); err != nil {
 		return 0, 0, err
 	}
 	return len(rows), skipped, nil

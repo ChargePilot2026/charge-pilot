@@ -94,19 +94,31 @@ func (a TelemetryAPI) curve(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	series, err := a.read(ctx, deviceID, from, to, limit)
+	granularity, table := chooseSource(from, to, limit)
+	series, err := a.read(ctx, deviceID, from, to, limit, table)
 	if err != nil {
 		httpapi.Write(c, http.StatusServiceUnavailable, 5003, "telemetry unavailable", nil)
 		return
 	}
+	// The caller is told which resolution they are looking at. Without this a
+	// 24-hour curve served from hourly rollups is indistinguishable from a
+	// per-second one, and nobody can tell that the detail was reduced.
+	label := "raw"
+	switch table {
+	case "telemetry_aggregate_15min":
+		label = "15min"
+	case "telemetry_aggregate_hourly":
+		label = "hourly"
+	}
 	httpapi.OK(c, gin.H{
 		"device_id": deviceID, "from": from, "to": to, "series": series, "count": len(series),
+		"granularity": label, "bucket": granularity.String(),
 	})
 }
 
 // read pivots the long telemetry rows into per-timestamp points. Readings are
 // grouped in SQL so the response size stays bounded regardless of sample rate.
-func (a TelemetryAPI) read(ctx context.Context, deviceID string, from, to time.Time, limit int) ([]CurvePoint, error) {
+func (a TelemetryAPI) read(ctx context.Context, deviceID string, from, to time.Time, limit int, table string) ([]CurvePoint, error) {
 	// Column names differ from the Go field names; without the tags GORM scans
 	// zero values and every point comes back empty.
 	type reading struct {
@@ -114,12 +126,26 @@ func (a TelemetryAPI) read(ctx context.Context, deviceID string, from, to time.T
 		Name string    `gorm:"column:metric"`
 		Raw  []byte    `gorm:"column:value_num"`
 	}
+	// A long window cannot be served from the raw table: a device reporting every
+	// few seconds produces tens of thousands of rows, and the row budget below
+	// would silently return only the newest slice while the response claimed to
+	// cover the whole window. When the window is wide enough that this would
+	// happen, the request is served from the rollups instead.
 	rows := []reading{}
-	if err := a.DB.WithContext(ctx).Table("telemetry").
-		Select("ts, metric, value_num").
-		Where("device_id = ? AND ts >= ? AND ts <= ? AND value_num IS NOT NULL", deviceID, from, to).
-		Order("ts DESC").Limit(limit * 8).Find(&rows).Error; err != nil {
-		return nil, err
+	if table == "telemetry" {
+		if err := a.DB.WithContext(ctx).Table("telemetry").
+			Select("ts, metric, value_num").
+			Where("device_id = ? AND ts >= ? AND ts <= ? AND value_num IS NOT NULL", deviceID, from, to).
+			Order("ts DESC").Limit(limit * 8).Find(&rows).Error; err != nil {
+			return nil, err
+		}
+	} else {
+		if err := a.DB.WithContext(ctx).Table(table).
+			Select("bucket_start AS ts, metric, avg_value AS value_num").
+			Where("device_id = ? AND bucket_start >= ? AND bucket_start <= ?", deviceID, from, to).
+			Order("bucket_start DESC").Limit(limit * 8).Find(&rows).Error; err != nil {
+			return nil, err
+		}
 	}
 	type bucket struct {
 		ts     time.Time
@@ -187,4 +213,30 @@ func (a TelemetryAPI) maxPoints() int {
 		return a.MaxPoints
 	}
 	return 2000
+}
+
+// chooseSource picks the table that can actually answer the request.
+//
+// The raw table is preferred whenever the point budget comfortably covers the
+// window, because per-second detail is more useful than a rollup whenever it is
+// affordable. Beyond that the hourly rollup is used for multi-day windows and
+// the 15-minute one otherwise.
+//
+// The estimate is deliberately generous: each raw sample becomes one row, and a
+// second of readings can hold several metrics. Choosing the rollup too eagerly
+// would throw away detail an operator can still afford; choosing the raw table
+// too eagerly is the silent-truncation bug this guards against.
+func chooseSource(from, to time.Time, limit int) (time.Duration, string) {
+	buckets := int(to.Sub(from) / time.Second)
+	if buckets <= 0 || limit <= 0 {
+		return 0, "telemetry"
+	}
+	// Four rows per second is a comfortable upper estimate for a busy device.
+	if buckets*4 <= limit*8 {
+		return 0, "telemetry"
+	}
+	if to.Sub(from) > 6*time.Hour {
+		return time.Hour, "telemetry_aggregate_hourly"
+	}
+	return 15 * time.Minute, "telemetry_aggregate_15min"
 }
