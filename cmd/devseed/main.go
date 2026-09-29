@@ -273,10 +273,16 @@ func seedStation(ctx context.Context, adminDB *sql.DB) (int64, error) {
 	return result.LastInsertId()
 }
 
+// seedDevice 建示例设备。
+//
+// reports_energy 必须为 true：示例订单全部是按电量计的（charged_kwh 有值），
+// 而计费模板下发时会校验设备是否具备该模式的计量能力——按电量计费的模板
+// 会被设备能力门控挡下，理由是"未声明电量上报能力，无法按电量计费"。设备
+// 不报电量、订单却按电量计，示例数据集就自相矛盾，连一套正常计费模板都配不上。
 func seedDevice(ctx context.Context, adminDB *sql.DB, stationID int64) (string, error) {
 	if _, err := adminDB.ExecContext(ctx, `
-		INSERT INTO device_meta (device_id, station_id, model, serial_no, status, charge_mode, install_at)
-		VALUES (?, ?, ?, ?, 'enabled', 'device_duration', NOW(3))`,
+		INSERT INTO device_meta (device_id, station_id, model, serial_no, status, charge_mode, reports_energy, install_at)
+		VALUES (?, ?, ?, ?, 'enabled', 'server_energy', 1, NOW(3))`,
 		demoDeviceID, stationID, demoDeviceModel, demoDeviceID); err != nil {
 		return "", err
 	}
