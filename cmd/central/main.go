@@ -21,6 +21,7 @@ import (
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/dbconn"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/httpapi"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/serviceclient"
+	"github.com/ChargePilot2026/charge-pilot/internal/regulatory"
 	"github.com/gin-gonic/gin"
 	"github.com/go-pay/wechat-sdk/mini"
 	"github.com/go-pay/xhttp"
@@ -110,6 +111,7 @@ func run(ctx context.Context) error {
 	}
 	adminAPI := admin.API{Store: adminStore, Sessions: admin.Sessions{Redis: cache}, JWT: jwt}
 	adminAPI.Register(router)
+	regulatory.API{Queue: regulatory.Queue{DB: adminDB}, ServiceToken: cfg.ServiceToken}.Register(router)
 	billing.Service{Store: billing.Store{DB: billingORM}, Orders: charge.BillingOrders{DB: userORM}, Splits: billing.SplitResolver{AdminDB: adminORM}, ServiceToken: cfg.ServiceToken,
 		Bills: charge.BillIssuer{Store: charge.BillStore{DB: userORM}}}.Register(router)
 	admin.ResourceAPI{Store: admin.ResourceStore{AdminDB: adminORM, UserDB: userORM, BillingDB: billingORM}, Auth: adminAPI, GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken, ExportDir: os.Getenv("EXPORT_DIR")}.Register(router)

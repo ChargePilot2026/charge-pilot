@@ -118,6 +118,7 @@ services:
       DATABASE_URL_GATEWAY: mysql://chargepilot:chargepilot_dev@mysql:3306/gateway_db
       DATABASE_URL_USER: mysql://chargepilot:chargepilot_dev@mysql:3306/user_db
       DATABASE_URL_ADMIN: mysql://chargepilot:chargepilot_dev@mysql:3306/admin_db
+      REGULATORY_MODE: simulation
     ports: ["127.0.0.1:8085:8085"]
 
   admin-web:

@@ -118,6 +118,9 @@ services:
       SERVICE_TOKEN: ${SERVICE_TOKEN:?required}
       CENTRAL_INTERNAL_URL: http://chargepilot-central:8080
       GATEWAY_INTERNAL_URL: http://chargepilot-gateway:8083
+      REGULATORY_MODE: ${REGULATORY_MODE:-disabled}
+      REGULATORY_ENDPOINT: ${REGULATORY_ENDPOINT:-}
+      REGULATORY_SIGNING_SECRET: ${REGULATORY_SIGNING_SECRET:-}
     expose: ["8085"]
     depends_on:
       chargepilot-migrate: { condition: service_completed_successfully }

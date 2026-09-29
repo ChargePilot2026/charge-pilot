@@ -14,6 +14,7 @@ import (
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/config"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/dbconn"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/httpapi"
+	"github.com/ChargePilot2026/charge-pilot/internal/regulatory"
 	"github.com/ChargePilot2026/charge-pilot/internal/worker/alerts"
 	"github.com/ChargePilot2026/charge-pilot/internal/worker/billing"
 	"github.com/ChargePilot2026/charge-pilot/internal/worker/charge"
@@ -101,6 +102,13 @@ func run(ctx context.Context) error {
 	billingJobs := billing.Dispatcher{CentralURL: cfg.CentralInternalURL, ServiceToken: cfg.ServiceToken}
 	refunds := refund.Dispatcher{CentralURL: cfg.CentralInternalURL, ServiceToken: cfg.ServiceToken}
 	webhooks := webhookdelivery.WebhookDeliverer{AdminDB: orms["admin"], Stream: stream}
+	var regulatoryReports *regulatory.Deliverer
+	switch cfg.RegulatoryMode {
+	case "simulation":
+		regulatoryReports = &regulatory.Deliverer{DB: databases["admin"], Sender: regulatory.SimulationSender{}}
+	case "http":
+		regulatoryReports = &regulatory.Deliverer{DB: databases["admin"], Sender: regulatory.HTTPSender{Endpoint: cfg.RegulatoryEndpoint, Secret: cfg.RegulatorySecret}}
+	}
 	dlq := outbox.DLQ{WorkerDB: orms["worker"], Stream: stream, Consumer: "worker-dlq"}
 	internaljob.OpsAPI{WorkerDB: orms["worker"], ServiceToken: cfg.ServiceToken, DLQ: dlq}.Register(router)
 	// Refund results arrive asynchronously from the channel; the consumer posts
@@ -158,6 +166,11 @@ func run(ctx context.Context) error {
 				}
 				if _, err := refundResults.ConsumeOnce(refundCtx); err != nil && !errors.Is(err, context.Canceled) {
 					log.Printf("refund result consumer: %v", err)
+				}
+				if regulatoryReports != nil {
+					if _, err := regulatoryReports.RunBatch(refundCtx); err != nil && !errors.Is(err, context.Canceled) {
+						log.Printf("regulatory delivery: %v", err)
+					}
 				}
 			}
 		}
