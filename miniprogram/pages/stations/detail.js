@@ -3,13 +3,11 @@ Page({
   data:{station:null,loading:false,error:'',needsLogin:false},
   onLoad(query) { this._id=query.id; this._gone=false; this._generation=0; this.load(); },
   onUnload() { this._gone=true; this._generation++; },
-  async login() { try { await stationDetailApp.login(); await this.load(); } catch(e) { this.setData({error:e.message || '登录失败'}); } },
   async load() {
     if (!this._id) { this.setData({error:'缺少站点标识'}); return; }
-    if (!stationDetailApp.globalData.token) { this.setData({needsLogin:true}); return; }
     const generation=++this._generation;
     this.setData({loading:true,error:'',station:null,needsLogin:false});
-    try { const station=await stationDetailApp.request('GET','/user/station/'+encodeURIComponent(this._id)); if (!this._gone && generation===this._generation) this.setData({station}); }
+    try { const station=await stationDetailApp.request('GET','/user/station/'+encodeURIComponent(this._id),undefined,false); if (!this._gone && generation===this._generation) this.setData({station}); }
     catch(e) { if (!this._gone && generation===this._generation) this.setData({error:e.message || '站点查询失败'}); }
     finally { if (!this._gone && generation===this._generation) this.setData({loading:false}); }
   },

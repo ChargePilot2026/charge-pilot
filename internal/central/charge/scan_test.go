@@ -22,7 +22,7 @@ type scanUser struct{}
 
 func (scanUser) Active(context.Context, uint64) (bool, error) { return true, nil }
 
-func TestScanRequiresUserAndReturnsOnlyGatewayReadResult(t *testing.T) {
+func TestScanIsPublicAndReturnsOnlyGatewayReadResult(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/internal/scan/resolve" || r.URL.Query().Get("code") != "board:1" || r.Header.Get("X-Service-Token") != "service-token" {
 			t.Errorf("unexpected gateway request %s", r.URL.String())
@@ -51,9 +51,11 @@ func TestScanRequiresUserAndReturnsOnlyGatewayReadResult(t *testing.T) {
 			body = `{"port_id":"board:1"}`
 		}
 		unauth := httptest.NewRecorder()
-		router.ServeHTTP(unauth, httptest.NewRequest(http.MethodPost, route, bytes.NewBufferString(body)))
-		if unauth.Code != http.StatusUnauthorized {
-			t.Fatalf("%s unauth status=%d", route, unauth.Code)
+		anonymous := httptest.NewRequest(http.MethodPost, route, bytes.NewBufferString(body))
+		anonymous.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(unauth, anonymous)
+		if unauth.Code != http.StatusOK || !bytes.Contains(unauth.Body.Bytes(), []byte(`"available":true`)) {
+			t.Fatalf("%s anonymous status=%d body=%s", route, unauth.Code, unauth.Body.String())
 		}
 		request := httptest.NewRequest(http.MethodPost, route, bytes.NewBufferString(body))
 		request.Header.Set("Authorization", "Bearer "+token)
@@ -62,6 +64,24 @@ func TestScanRequiresUserAndReturnsOnlyGatewayReadResult(t *testing.T) {
 		router.ServeHTTP(response, request)
 		if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(`"available":true`)) {
 			t.Fatalf("%s status=%d body=%s", route, response.Code, response.Body.String())
+		}
+	}
+}
+
+func TestCanonicalScanCode(t *testing.T) {
+	for _, tc := range []struct {
+		raw, code string
+		valid     bool
+	}{
+		{"board:1", "board:1", true},
+		{"https://charge.example/scan?code=board%3A1", "board:1", true},
+		{"https://charge.example/scan?code=board:1&code=other", "", false},
+		{"http://charge.example/scan?code=board:1", "", false},
+		{"https://charge.example/scan?port=board:1", "", false},
+	} {
+		got, ok := canonicalScanCode(tc.raw)
+		if got != tc.code || ok != tc.valid {
+			t.Fatalf("scan code %q: code=%q valid=%t", tc.raw, got, ok)
 		}
 	}
 }

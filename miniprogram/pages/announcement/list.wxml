@@ -1,5 +1,4 @@
 <view class="container">
-  <view wx:if="{{needsLogin}}" class="card"><view>登录后查看当前公告</view><button type="primary" bindtap="login">微信登录</button></view>
   <view wx:for="{{items}}" wx:key="id" class="card">
     <view class="title">{{item.title}}</view><view class="text-secondary">{{item.timeText}}</view><view class="content">{{item.content}}</view>
   </view>

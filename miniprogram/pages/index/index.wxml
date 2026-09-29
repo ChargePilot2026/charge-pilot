@@ -1,20 +1,11 @@
 <view class="container">
   <!-- 公告轮播 -->
-  <view class="card" wx:if="{{announcements.length > 0}}">
+  <view class="card" wx:if="{{announcements.length > 0}}" bindtap="goAnnouncements">
     <view class="tag tag-orange">公告</view>
     <text class="text-secondary" style="margin-left: 8rpx;">{{announcements[0].title}}</text>
   </view>
 
-  <!-- 钱包余额 -->
-  <view class="card" bindtap="goWallet" wx:if="{{balance_cents > 0}}">
-    <view style="display: flex; justify-content: space-between; align-items: center;">
-      <view>
-        <view class="text-secondary">钱包余额</view>
-        <view style="font-size: 32px; font-weight: 600; color: #1677ff;">¥{{balance_cents / 100}}</view>
-      </view>
-      <view class="tag tag-blue">充值</view>
-    </view>
-  </view>
+  <view class="card"><view>附近充电站</view><map wx:if="{{latitude !== null}}" latitude="{{latitude}}" longitude="{{longitude}}" markers="{{markers}}" show-location="{{true}}" bindmarkertap="goStation" style="width:100%;height:400rpx;"/><view wx:if="{{mapError}}" class="text-secondary">{{mapError}}</view><button bindtap="goMap">查看地图与站点</button></view>
 
   <!-- 充电中卡片 -->
   <view class="card" bindtap="goOngoing" wx:if="{{ongoing}}">
@@ -38,10 +29,9 @@
   <!-- 快捷入口 -->
   <view class="card">
     <view style="display: flex; justify-content: space-around;">
-      <view bindtap="goWallet"><view style="font-size: 40rpx;">💰</view><view class="text-secondary">钱包</view></view>
+      <view bindtap="goAnnouncements"><view style="font-size: 40rpx;">📢</view><view class="text-secondary">公告</view></view>
       <view bindtap="goOngoing" wx:if="{{ongoing}}"><view style="font-size: 40rpx;">🔋</view><view class="text-secondary">充电中</view></view>
-      <view><view style="font-size: 40rpx;">🎫</view><view class="text-secondary">优惠券</view></view>
-      <view><view style="font-size: 40rpx;">📞</view><view class="text-secondary">客服</view></view>
+      <view bindtap="goProfile"><view style="font-size: 40rpx;">👤</view><view class="text-secondary">我的</view></view>
     </view>
   </view>
 </view>

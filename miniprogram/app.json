@@ -33,8 +33,6 @@
     "selectedColor": "#1677ff",
     "list": [
       { "pagePath": "pages/index/index", "text": "首页" },
-      { "pagePath": "pages/stations/nearby", "text": "找桩" },
-      { "pagePath": "pages/wallet/wallet", "text": "钱包" },
       { "pagePath": "pages/profile/profile", "text": "我的" }
     ]
   },

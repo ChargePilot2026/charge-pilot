@@ -9,6 +9,11 @@ App({
     this.globalData.refreshToken = wx.getStorageSync('cp_refresh_token') || '';
     this.globalData.userInfo = wx.getStorageSync('cp_user') || null;
   },
+  onShow(options: any) {
+    const raw = options?.query?.q || options?.query?.scene;
+    if (typeof raw !== 'string' || !raw) return;
+    wx.navigateTo({ url: '/pages/scan-result/scan-result?code=' + encodeURIComponent(raw) });
+  },
   saveSession(session: any) {
     this.globalData.token = session.token;
     this.globalData.refreshToken = session.refresh_token;

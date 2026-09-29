@@ -1,16 +1,18 @@
 # Go 充电生命周期接口（当前实现）
 
-> 本文记录新 Go 后端的充电接口。支付预下单、微信回调接线和本地模拟已实现；真实商户联调、计费结算和退款执行仍未完成。生产切换门禁保持关闭。旧小程序仍调用废止的 `/scan/quote` 和 `quote_id`，尚未适配本契约。
+> 本文记录当前 Go 后端和小程序的充电主流程。扫码、后台方案、支付意图、模拟支付回调、实际计费和自动退款已接线；真实微信商户和设备联调仍需验收。
 
 ## 服务内部认证
 
-`gateway` 和 `central` 的 `/api/v1/internal/...` 接口仅在 Docker 内网调用，必须携带 `X-Service-Token`。公开小程序接口使用用户 JWT。响应均使用 `{code,message,data,request_id,trace_id}` 信封。
+`gateway` 和 `central` 的 `/api/v1/internal/...` 接口仅在 Docker 内网调用，必须携带 `X-Service-Token`。扫码、端口、方案、公告及站点读取可匿名访问；发起支付及用户订单、钱包、退款操作使用用户 JWT。响应均使用 `{code,message,data,request_id,trace_id}` 信封。
 
 ## 扫码只读
 
-`POST central /api/v1/user/scan/resolve` 请求 `{ "code": "设备码或端口码" }`，`POST central /api/v1/user/scan/port` 请求 `{ "port_id": "印刷端口码" }`。两个接口都校验用户 JWT、实时会话和账号状态，经 `GET gateway /api/v1/internal/scan/resolve?code=...` 读取已启用设备与端口。返回 `kind=port|device`、站点 ID、端口状态、最近两分钟心跳推断的在线状态及 `available`。端口码是字符串，内部数字端口 ID 不暴露。扫码不创建订单、不预占端口。价格不放在扫码查询响应里。
+`POST central /api/v1/user/scan/resolve` 请求 `{ "code": "二维码原始内容" }`，`POST central /api/v1/user/scan/port` 请求 `{ "port_id": "印刷端口码" }`。小程序把扫描内容原样传给 central；central 支持纯设备/端口码，或包含唯一 `code` 查询参数的 HTTPS 二维码链接，提取后经 `GET gateway /api/v1/internal/scan/resolve?code=...` 查询。返回 `kind=port|device`、站点 ID、端口状态、在线状态及 `available`。设备结果含端口列表，选择端口后再请求端口详情。扫码不创建订单、不预占端口。
 
-扫码之后没有独立报价接口或 `quote_id`。用户决定支付时，调用 `POST central /api/v1/user/scan/start`，请求 `client_request_id`（UUID）、`port_id`、`estimated_kwh`、`estimated_minutes`。服务端读取站点有效计费规则、计算预付金额并保存规则快照，只创建支付意图和支付单；响应包含 `intent_id`、`merchant_order_no`、费用分项、`payment_params`、`expires_at`，没有充电订单号。服务端重新计算金额，不接受客户端提交金额。
+端口页调用 `POST /api/v1/user/scan/offers`，请求 `{ "port_id": "..." }`，读取后台按站点发布的金额档位和时长套餐。用户只能选择方案，不能输入金额、电量、时长或价格。金额档位按设备实测电量与站点计费规则扣费，达到购买金额时停止，未用部分退款；时长套餐以后台设置的固定价格购买固定时长，到时停止，提前结束或故障时按实际充电秒数比例结算并退还剩余款项。
+
+用户点击支付前，小程序才检查登录。`POST /api/v1/user/scan/start` 请求 `{ "client_request_id": "UUID", "port_id": "...", "offer_id": 123 }`。后端重读当前有效方案和计费规则，冻结在短期支付意图中，并创建微信支付单；响应含 `intent_id`、`merchant_order_no`、`payment_params` 和 `expires_at`，此时尚无充电订单。相同请求 ID 重试使用原冻结价格，即使运营人员随后改价或下架。真实服务拒绝客户端估价字段。
 
 `PAYMENT_MODE=wechat_direct` 时，官方 SDK 创建 JSAPI 预支付并验签、解密 `POST /api/v1/public/payments/wechat/callback`。回调核对商户、应用、用户 openid、交易号和金额后，才在同一事务中创建已付款充电订单；重复回调不会重复创建。过期后到账只建立待退款记录。`PAYMENT_MODE=simulation` 仅用于本地测试，其内部模拟回调要求 `X-Service-Token`，公网代理拒绝 `/api/v1/internal/*`。`PAYMENT_MODE=disabled` 拒绝发起支付。
 
@@ -24,6 +26,8 @@
 ## 主动停止与结束
 
 `POST central /api/v1/user/charge/stop` 使用用户 JWT，请求 `{ "order_no": "ORD-..." }`。central 通过内部请求让 gateway 核对当前用户和充电状态，持久化唯一 B9 STOP 并派发。成功响应的 `stopped` 始终是 `false`；BA 回执仅表示设备已停止输出，计费需要 BB 结算帧。
+
+worker 每 10 秒检查充电中订单的冻结方案：套餐时长到期、金额档位根据最新可核算设备读数达到上限，或设备持续在线且该端口连续至少 1 分钟上报零功率时，向 gateway 发起自动 STOP。端口缺失读数或设备离线不视作零功率。金额档位若缺少可靠分时计量证据，当前无法据此确认到价停机，属于实机联调前必须继续处理的边界。
 
 `dc589` BB 包按协议小端解码订单号、实际 Wh、时长、停止原因及本地结束时间，原始事件先持久化再发 BC。worker 重试 `POST central /api/v1/internal/charge-orders/{order_no}/end-result`，请求包含开始/停止命令 ID、设备/端口身份和 `meter:{charged_wh,charged_seconds,ended_at,stop_reason}`。central 以事务写结束回执、订单实际读数和 `charge_ended_stream` Outbox；worker 收到确认后才释放 gateway 端口。重复一致的读数幂等，不一致返回 `409`。订单的计费金额仍未知，必须由后续计费流程填入。
 

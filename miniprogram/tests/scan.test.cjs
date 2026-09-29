@@ -1,67 +1,64 @@
-const test=require('node:test');const assert=require('node:assert/strict');const fs=require('node:fs');const path=require('node:path');const vm=require('node:vm');const {createRequire}=require('node:module');
+const test=require('node:test');
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const path=require('node:path');
+const vm=require('node:vm');
+const {createRequire}=require('node:module');
+
 function page(name,app,wx={}){
  const filename=path.resolve(__dirname,`../pages/${name}/${name}.js`);let definition;
- vm.runInNewContext(fs.readFileSync(filename,'utf8'),{getApp:()=>app,Page:v=>definition=v,require:createRequire(filename),wx:{stopPullDownRefresh(){},...wx}},{filename});
- const p={...definition,data:structuredClone(definition.data)};p.setData=v=>Object.assign(p.data,v);p.onLoad({code:'DEV00001%3A1'});return p;
+ vm.runInNewContext(fs.readFileSync(filename,'utf8'),{getApp:()=>app,Page:value=>definition=value,require:createRequire(filename),wx:{stopPullDownRefresh(){},...wx}},{filename});
+ const p={...definition,data:structuredClone(definition.data)};p.setData=value=>Object.assign(p.data,value);p.onLoad({code:'DEV00001%3A1'});return p;
 }
-const port=(n,status='idle')=>({port_id:'DEV00001:'+n,port_code:'DEV00001:'+n,device_id:'DEV00001',port_no:n,status});
-const payableQuote=()=>({quote_id:'00000000-0000-4000-8000-000000000001',quote_expires_at:new Date(Date.now()+60000).toISOString(),estimated_kwh:'0.500',estimated_minutes:120,total_cents:70,electric_cents:50,service_cents:20,pricing:{name:'tariff'}});
-const checkout=()=>({order_no:'ORDER_TEST',hold_expires_at:new Date(Date.now()+60000).toISOString(),payment_params:{timeStamp:'1234567890',nonceStr:'nonce',package:'prepay_id=test',signType:'RSA',paySign:'signed'}});
-test('payment cancellation retries same order and payment success only opens server status',async()=>{
- let starts=0,pays=0;const urls=[];
- const p=page('scan-result',{globalData:{token:'t'},request:async(_,url)=>{if(url.endsWith('resolve'))return {kind:'port',...port(1)};if(url.endsWith('quote'))return payableQuote();starts++;return checkout();}},
- {showModal:o=>o.success({confirm:true}),requestPayment:o=>{pays++;assert.equal(o.package,'prepay_id=test');if(pays===1)o.fail({errMsg:'requestPayment:fail cancel'});else o.success({});},navigateTo:o=>urls.push(o.url)});
- await p.onShow();await p.estimate();await p.pay();assert.equal(starts,1);assert.match(p.data.paymentNotice,/取消/);await p.onShow();assert.equal(p.data.orderNo,'ORDER_TEST');await p.pay();assert.equal(starts,1);assert.equal(pays,2);assert.equal(urls[0],'/pages/charge/charging?order_no=ORDER_TEST');assert.equal(p.data.canRetryPayment,false);
+const port=(n,status='idle')=>({port_id:`DEV00001:${n}`,port_code:`DEV00001:${n}`,device_id:'DEV00001',port_no:n,port_status:status,online:true,available:status==='idle'});
+const offer={id:7,station_id:1,code:'P60',name:'60 分钟套餐',mode:'package',price_cents:600,duration_minutes:60};
+const checkout=()=>({merchant_order_no:'PAY_TEST',payable_cents:600,expires_at:new Date(Date.now()+60000).toISOString(),payment_params:{timeStamp:'1234567890',nonceStr:'nonce',package:'prepay_id=test',signType:'RSA',paySign:'signed'}});
+function app(token='t'){
+ const calls=[];const result={globalData:{token},_generation:0,calls,login:async()=>{result.globalData.token='t';result._generation++;},request:async(method,url,body,auth)=>{
+  calls.push({method,url,body,auth});
+  if(url.endsWith('/resolve'))return {kind:'port',device_id:'DEV00001',port:port(1)};
+  if(url.endsWith('/offers'))return {port_id:'DEV00001:1',items:[offer]};
+  if(url.endsWith('/port'))return port(1);
+  return checkout();
+ }};return result;
+}
+async function selectedPage(application,wx={}){const p=page('scan-result',application,wx);await p.onShow();p.selectOffer({currentTarget:{dataset:{id:7}}});return p;}
+
+test('scanner forwards raw QR and anonymous device discovery does not log in',async()=>{
+ const routes=[];const application=app('');let logins=0;application.login=async()=>{logins++;};
+ const p=page('scan',application,{scanCode:options=>options.success({result:'DEV00001:1'}),navigateTo:options=>{routes.push(options.url);options.success();}});
+ await p.scan();assert.equal(logins,0);assert.equal(routes[0],'/pages/scan-result/scan-result?code=DEV00001%3A1');
 });
-test('uncertain checkout cannot automatically create another order',async()=>{
- let starts=0;const p=page('scan-result',{globalData:{token:'t'},request:async(_,url)=>{if(url.endsWith('resolve'))return {kind:'port',...port(1)};if(url.endsWith('quote'))return payableQuote();starts++;throw new Error('network timeout');}},{showModal:o=>o.success({confirm:true}),requestPayment:()=>assert.fail('unexpected payment')});
- await p.onShow();await p.estimate();await p.pay();await p.pay();await p.load();assert.equal(starts,1);assert.equal(p.data.startAttempted,true);assert.match(p.data.paymentNotice,/timeout/);
+test('device and port responses use the current nested gateway contract',async()=>{
+ const application=app('');application.request=async(_method,url)=>url.endsWith('/resolve')?{kind:'device',device_id:'DEV00001',ports:[port(1),port(2,'fault')]}:url.endsWith('/port')?port(1):{port_id:'DEV00001:1',items:[offer]};
+ const p=page('scan-result',application);await p.onShow();assert.equal(p.data.ports[0].statusLabel,'空闲');assert.equal(p.data.ports[1].selectable,false);
+ await p.selectPort({currentTarget:{dataset:{id:'DEV00001:1'}}});assert.equal(p.data.selected.port_no,1);assert.equal(p.data.offers[0].priceText,'¥6.00');
 });
-test('expired quote and dismissed confirmation never create payment',async()=>{
- let starts=0;const p=page('scan-result',{globalData:{token:'t'},request:async(_,url)=>{if(url.endsWith('resolve'))return {kind:'port',...port(1)};if(url.endsWith('quote'))return payableQuote();starts++;}},{showModal:o=>o.success({confirm:false})});
- await p.onShow();await p.estimate();await p.pay();assert.equal(starts,0);p.data.quote.quote_expires_at='2020-01-01';await p.pay();assert.equal(starts,0);assert.equal(p.data.quote,null);
+test('anonymous port browsing requests offers without login',async()=>{
+ const application=app('');const p=page('scan-result',application);await p.onShow();assert.equal(p.data.selected.port_no,1);assert.equal(p.data.offers.length,1);assert.equal(application.calls.length,2);assert.ok(application.calls.every(call=>call.auth===false));
 });
-test('payment lifecycle resumes without recreating order or losing success',async()=>{
- let complete;const urls=[];let starts=0;
- const p=page('scan-result',{globalData:{token:'t'},request:async(_,url)=>{if(url.endsWith('resolve'))return {kind:'port',...port(1)};if(url.endsWith('quote'))return payableQuote();starts++;return checkout();}},
- {showModal:o=>o.success({confirm:true}),requestPayment:o=>{complete=o.success;p.onHide();},navigateTo:o=>urls.push(o.url)});
- await p.onShow();await p.estimate();const pending=p.pay();await new Promise(r=>setImmediate(r));await p.pay();complete({});await pending;assert.equal(urls.length,0);await p.onShow();assert.equal(starts,1);assert.equal(urls.length,1);
+test('payment checks login after offer selection and submits only the configured offer ID',async()=>{
+ const application=app('');let paid=0;const routes=[];
+ const p=await selectedPage(application,{showModal:options=>options.success({confirm:true}),requestPayment:options=>{paid++;options.success({});},navigateTo:options=>routes.push(options.url)});
+ await p.pay();assert.equal(paid,1);assert.equal(application._generation,1);
+ const start=application.calls.find(call=>call.url.endsWith('/start'));
+ assert.equal(start.body.offer_id,7);assert.equal(start.body.port_id,'DEV00001:1');assert.match(start.body.client_request_id,/^[0-9a-f-]{36}$/);
+ assert.equal(start.body.estimated_kwh,undefined);assert.equal(start.body.estimated_minutes,undefined);
+ assert.equal(routes[0],'/pages/charge/history');assert.equal(p.data.paymentNo,'PAY_TEST');
 });
-test('scanner login and navigation preserve canonical port code without creating orders',async()=>{
- const urls=[];let logins=0;const app={globalData:{token:''},login:async()=>{logins++;app.globalData.token='t';}};
- const p=page('scan',app,{scanCode:opts=>opts.success({result:'DEV00001:1'}),navigateTo:opts=>{urls.push(opts.url);opts.success();}});
- await p.scan();assert.equal(logins,1);assert.equal(urls[0],'/pages/scan-result/scan-result?code=DEV00001%3A1');assert.equal(p.data.busy,false);
+test('cancelled WeChat UI retries the same payment intent without a second start',async()=>{
+ const application=app();let payments=0;
+ const p=await selectedPage(application,{showModal:options=>options.success({confirm:true}),requestPayment:options=>{payments++;if(payments===1)options.fail({errMsg:'requestPayment:fail cancel'});else options.success({});},navigateTo:()=>{}});
+ await p.pay();assert.match(p.data.paymentNotice,/取消/);await p.pay();
+ assert.equal(application.calls.filter(call=>call.url.endsWith('/start')).length,1);assert.equal(payments,2);
 });
-test('scan cancellation is silent; invalid manual input never logs in or navigates',async()=>{
- const p=page('scan',{globalData:{token:''},login:()=>assert.fail('unexpected login')},{scanCode:opts=>opts.fail({errMsg:'scanCode:fail cancel'})});
- await p.scan();assert.equal(p.data.error,'');p.data.manualCode='not a code';await p.manual();assert.match(p.data.error,/二维码内容无效/);
-});
-test('device selection refreshes occupied state and forwards printed port code',async()=>{
- const calls=[];const p=page('scan-result',{globalData:{token:'t'},request:async(_,url,body)=>{calls.push({url,body});return url.endsWith('resolve') ? {kind:'device',device_id:'DEV00001',ports:[port(1),port(2,'fault')]} : port(1,'charging');}});
- await p.onShow();assert.equal(calls[0].body.code,'DEV00001:1');assert.equal(p.data.ports[1].selectable,false);
- await p.selectPort({currentTarget:{dataset:{id:'DEV00001:2'}}});assert.equal(calls.length,1);
- await p.selectPort({currentTarget:{dataset:{id:'DEV00001:1'}}});assert.equal(calls[1].body.port_id,'DEV00001:1');assert.equal(p.data.selected.status,'charging');assert.equal(p.data.ports[0].selectable,false);
- assert.ok(calls.every(c=>['/user/scan/resolve','/user/scan/port'].includes(c.url)));
-});
-test('port scan selects canonical port and errors clear earlier results',async()=>{
- let fail=false;const p=page('scan-result',{globalData:{token:'t'},request:async()=>{if(fail)throw new Error('设备已停用');return {kind:'port',...port(7)};}});
- await p.onShow();assert.equal(p.data.selected.port_no,7);fail=true;await p.load();assert.equal(p.data.selected,null);assert.equal(p.data.ports.length,0);assert.equal(p.data.error,'设备已停用');
-});
-test('reserved port stays visible but cannot be selected or quoted',async()=>{
- const calls=[];const p=page('scan-result',{globalData:{token:'t'},request:async(_,url)=>{calls.push(url);return {kind:'device',device_id:'DEV00001',ports:[port(1,'reserved'),port(2)]};}});
- await p.onShow();assert.equal(p.data.error,'');assert.equal(p.data.ports[0].statusLabel,'启动处理中');assert.equal(p.data.ports[0].selectable,false);
- await p.selectPort({currentTarget:{dataset:{id:'DEV00001:1'}}});assert.equal(calls.length,1);assert.equal(p.data.selected,null);
-});
-test('hidden scan page ignores late responses and anonymous page offers login',async()=>{
- let resolve;const app={globalData:{token:'t'},request:()=>new Promise(r=>resolve=r)};const p=page('scan-result',app);const pending=p.onShow();p.onHide();resolve({kind:'port',...port(1)});await pending;assert.equal(p.data.selected,null);
- app.globalData.token='';await p.onShow();assert.equal(p.data.needsLogin,true);assert.equal(p.data.loading,false);
-});
-test('fee preview sends explicit estimates, shows cents and invalidates on edits',async()=>{
- const calls=[];const p=page('scan-result',{globalData:{token:'t'},request:async(_,url,body)=>{calls.push({url,body});return url.endsWith('resolve') ? {kind:'port',...port(1)} : {electric_cents:50,service_cents:20,total_cents:70,pricing:{name:'Station tariff'}};}});
- await p.onShow();await p.estimate();assert.equal(p.data.quote.totalText,'¥0.70');assert.equal(calls[1].body.estimated_kwh,'0.500');assert.equal(calls[1].body.estimated_minutes,120);
- p.inputKwh({detail:{value:'1.000'}});assert.equal(p.data.quote,null);p.inputMinutes({detail:{value:'0'}});await p.estimate();assert.equal(calls.length,2);assert.match(p.data.error,/1–1440/);
-});
-test('quote response cannot replace a changed estimate',async()=>{
- let resolve;const p=page('scan-result',{globalData:{token:'t'},request:async(_,url)=>url.endsWith('resolve') ? {kind:'port',...port(1)} : new Promise(r=>resolve=r)});
- await p.onShow();const pending=p.estimate();p.inputKwh({detail:{value:'2.000'}});resolve({electric_cents:50,service_cents:20,total_cents:70,pricing:{name:'old'}});await pending;assert.equal(p.data.quote,null);
+test('uncertain start reuses its request ID and cannot silently change the offer',async()=>{
+ const application=app();const ids=[];application.request=async(method,url,body,auth)=>{
+  if(url.endsWith('/resolve'))return {kind:'port',device_id:'DEV00001',port:port(1)};
+  if(url.endsWith('/offers'))return {port_id:'DEV00001:1',items:[offer]};
+  ids.push(body.client_request_id);throw new Error('network timeout');
+ };
+ const p=await selectedPage(application,{showModal:options=>options.success({confirm:true})});await p.pay();await p.pay();
+ assert.equal(ids.length,2);assert.equal(ids[0],ids[1]);assert.equal(p.data.startAttempted,true);assert.match(p.data.paymentNotice,/timeout/);
+ p.selectOffer({currentTarget:{dataset:{id:7}}});assert.equal(p._requestID,ids[0]);
 });

@@ -455,9 +455,6 @@ func (a UserAccountAPI) myCoupons(c *gin.Context) {
 // ---- 公告与客服 ----
 
 func (a UserAccountAPI) announcements(c *gin.Context) {
-	if _, ok := a.userID(c); !ok {
-		return
-	}
 	page, pageSize, ok := readPaging(c)
 	if !ok {
 		return
@@ -529,9 +526,6 @@ func (a UserAccountAPI) supportEntry(c *gin.Context) {
 // ---- 站点 ----
 
 func (a UserAccountAPI) nearbyStations(c *gin.Context) {
-	if _, ok := a.userID(c); !ok {
-		return
-	}
 	longitude, latitude, ok := readCoordinates(c)
 	if !ok {
 		return
@@ -586,9 +580,6 @@ func (a UserAccountAPI) nearbyStations(c *gin.Context) {
 }
 
 func (a UserAccountAPI) stationDetail(c *gin.Context) {
-	if _, ok := a.userID(c); !ok {
-		return
-	}
 	code := strings.TrimSpace(c.Param("code"))
 	if code == "" || len(code) > 64 {
 		httpapi.BadRequest(c, "站点编码无效")

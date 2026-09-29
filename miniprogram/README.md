@@ -54,12 +54,15 @@ globalData: {
 | 路径 | 用途 |
 | --- | --- |
 | `POST /api/v1/public/auth/login` | code → JWT |
-| `POST /api/v1/user/scan/resolve` | 扫码解析 |
+| `POST /api/v1/user/scan/resolve` | 匿名扫码解析，原样发送二维码内容 |
 | `POST /api/v1/user/scan/port` | 单端口详情 |
-| `POST /api/v1/user/scan/start` | 创建订单 + 微信预下单 |
+| `POST /api/v1/user/scan/offers` | 读取后台配置的金额档位和时长套餐 |
+| `POST /api/v1/user/scan/start` | 登录后选定 `offer_id`，创建支付意图和微信预下单；回调成功才创建充电订单 |
 | `GET /api/v1/user/charge/ongoing/snapshot` | 5s 轮询 |
 | `POST /api/v1/user/charge/stop` | 主动停止 |
 | `GET /api/v1/user/wallet/balance` | 余额 |
 | `GET /api/v1/user/coupon/my` | 我的优惠券 |
 | `GET /api/v1/user/announcement/list` | 公告 |
-| `POST /api/v1/public/payment/wechat/callback` | 微信支付回调 |
+| `POST /api/v1/public/payments/wechat/callback` | 微信支付回调 |
+
+底部导航只有“首页”和“我的”。首页提供扫码、公告、附近站点地图和充电中入口；我的提供余额、订单和退款入口。金额与套餐价格、可售站点和套餐时长由 PC 后台设置，小程序没有自填金额入口。消息中心尚未实现。

@@ -9,7 +9,6 @@ Page({
  inputCode(event){this.setData({manualCode:event.detail.value});},
  async openResult(code){
   const valid=normalizeCode(code);
-  if(!scanApp.globalData.token)await scanApp.login();
   if(this._gone)return;
   await new Promise((resolve,reject)=>wx.navigateTo({url:'/pages/scan-result/scan-result?code='+encodeURIComponent(valid),success:resolve,fail:reject}));
  },

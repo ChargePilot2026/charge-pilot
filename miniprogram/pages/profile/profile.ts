@@ -43,6 +43,8 @@ Page({
   },
 
   goPhoneBind() { wx.navigateTo({ url: '/pages/profile/phone' }); },
+  goWallet() { wx.navigateTo({ url: '/pages/wallet/wallet' }); },
+  goRefunds() { wx.navigateTo({ url: '/pages/wallet/refund' }); },
   goOrders() { wx.navigateTo({ url: '/pages/charge/history' }); },
   goAnnouncements() { wx.navigateTo({ url: '/pages/announcement/list' }); },
   goCoupons() { wx.navigateTo({ url: '/pages/coupons/my' }); },

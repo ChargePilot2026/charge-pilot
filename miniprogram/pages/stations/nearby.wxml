@@ -1,6 +1,5 @@
 <view class="container">
-  <button wx:if="{{needsLogin}}" bindtap="login">登录后找桩</button>
-  <button wx:else bindtap="locate" disabled="{{loading}}">获取当前位置</button>
+  <button bindtap="locate" disabled="{{loading}}">获取当前位置</button>
   <picker range="{{radii}}" value="{{radiusIndex}}" bindchange="onRadius"><view class="card">搜索半径：{{radii[radiusIndex]}} 公里 ▾</view></picker>
   <map wx:if="{{latitude != null}}" latitude="{{latitude}}" longitude="{{longitude}}" markers="{{markers}}" show-location="{{true}}" bindmarkertap="open" style="width:100%;height:400rpx;" />
   <view wx:if="{{error}}" class="card">{{error}}<button bindtap="load" disabled="{{loading}}">重试</button></view>

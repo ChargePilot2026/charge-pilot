@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ChargePilot2026/charge-pilot/internal/central/identity"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/httpapi"
@@ -50,9 +51,8 @@ func (a ScanAPI) resolve(c *gin.Context) { a.handle(c, false) }
 func (a ScanAPI) port(c *gin.Context)    { a.handle(c, true) }
 
 func (a ScanAPI) handle(c *gin.Context, requirePort bool) {
-	if _, ok := a.Auth.Authenticate(c); !ok {
-		return
-	}
+	// Device and port discovery is public. Authentication is required only when
+	// the customer creates a payment intent in /scan/start.
 	var body struct {
 		Code   string `json:"code"`
 		PortID string `json:"port_id"`
@@ -65,7 +65,14 @@ func (a ScanAPI) handle(c *gin.Context, requirePort bool) {
 	if requirePort {
 		code = body.PortID
 	}
-	if !userScanCodePattern.MatchString(code) {
+	if !requirePort {
+		var valid bool
+		code, valid = canonicalScanCode(code)
+		if !valid {
+			httpapi.BadRequest(c, "invalid scan code")
+			return
+		}
+	} else if !userScanCodePattern.MatchString(code) {
 		httpapi.BadRequest(c, "invalid scan code")
 		return
 	}
@@ -88,6 +95,26 @@ func (a ScanAPI) handle(c *gin.Context, requirePort bool) {
 		return
 	}
 	httpapi.OK(c, result)
+}
+
+// The app sends the untouched QR payload. Customer QR links may carry the
+// printed device/port code in `code`, while plain codes remain valid too.
+func canonicalScanCode(raw string) (string, bool) {
+	if userScanCodePattern.MatchString(raw) {
+		return raw, true
+	}
+	if len(raw) > 2048 || !utf8.ValidString(raw) || strings.ContainsAny(raw, "\x00\r\n\t") {
+		return "", false
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" {
+		return "", false
+	}
+	values := parsed.Query()["code"]
+	if len(values) != 1 || !userScanCodePattern.MatchString(values[0]) {
+		return "", false
+	}
+	return values[0], true
 }
 
 func (a ScanAPI) lookup(ctx context.Context, code string) (ScanResult, int) {
