@@ -24,8 +24,15 @@ import (
 )
 
 func TestAdminPagesIntegration(t *testing.T) {
-	if os.Getenv("TEST_ADMIN_DATABASE_URL") == "" {
-		t.Skip("disposable databases required")
+	// 四个库缺一不可：只设了 admin 一个就去连另外三个，报出来的是 "invalid MySQL URL"，
+	// 看起来像代码坏了，其实是没配齐环境。
+	for _, key := range []string{
+		"TEST_ADMIN_DATABASE_URL", "TEST_USER_DATABASE_URL",
+		"TEST_BILLING_DATABASE_URL", "TEST_GATEWAY_DATABASE_URL",
+	} {
+		if os.Getenv(key) == "" {
+			t.Skipf("disposable databases required: %s is not set", key)
+		}
 	}
 	ctx := context.Background()
 	open := func(key string) *gorm.DB {

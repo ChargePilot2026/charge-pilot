@@ -183,7 +183,7 @@ func dbWithStationMode(t *testing.T, mode pricing.ChargeMode) *gorm.DB {
 	if err := orm.Raw("SELECT COALESCE(MAX(id),0)+9000 FROM station").Scan(&next).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := orm.Exec("INSERT INTO station(id,name,status,longitude,latitude) VALUES(?,'active',116.4,39.9)", next,
+	if err := orm.Exec("INSERT INTO station(id,name,status,longitude,latitude) VALUES(?,?,'active',116.4,39.9)", next,
 		"计量能力站点").Error; err != nil {
 		t.Fatal(err)
 	}
