@@ -58,6 +58,25 @@ func (s PaymentCallbackStore) Apply(ctx context.Context, payment VerifiedPayment
 	digest := callbackDigest(payment)
 	var callbackResult PaymentCallbackResult
 	err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// The payment order is located first, because merchant_order_no is the
+		// order_no for both business types. A wallet recharge never creates a
+		// payment intent, so looking the intent up first rejected every recharge
+		// callback: the customer paid, the provider took the money, and the
+		// platform refused the notification and never credited the wallet.
+		var order PaymentOrderRecord
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("order_no = ?", payment.MerchantOrderNo).Take(&order).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrPaymentCallbackConflict
+			}
+			return err
+		}
+		if order.BizType == "wallet_recharge" {
+			return settleWalletRecharge(tx, order, payment, digest, paidAt, &callbackResult)
+		}
+		if order.BizType != "charge" {
+			return ErrPaymentCallbackConflict
+		}
 		var intent PaymentIntentRecord
 		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("merchant_order_no = ?", payment.MerchantOrderNo).Take(&intent).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -66,13 +85,10 @@ func (s PaymentCallbackStore) Apply(ctx context.Context, payment VerifiedPayment
 		if err != nil {
 			return err
 		}
-		var order PaymentOrderRecord
-		err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND order_no = ?", intent.PaymentOrderID, intent.MerchantOrderNo).Take(&order).Error
-		if errors.Is(err, gorm.ErrRecordNotFound) {
+		// The intent must belong to this exact payment order, otherwise a
+		// verified callback could settle against a different customer's order.
+		if intent.PaymentOrderID != order.ID {
 			return ErrPaymentCallbackConflict
-		}
-		if err != nil {
-			return err
 		}
 		if order.UserID != intent.UserID || intent.OpenID != payment.OpenID || order.TotalCents != intent.TotalCents || order.TotalCents != payment.PaidCents ||
 			intent.ChargeQuantity == 0 || intent.PortNo == 0 || order.ID > math.MaxInt64 {
@@ -225,3 +241,108 @@ func callbackDigest(payment VerifiedPayment) string {
 }
 
 func decimalAmount(amount int64) string { return strconv.FormatInt(amount, 10) }
+
+// settleWalletRecharge credits the balance for a verified wallet recharge.
+//
+// The money is already with the provider by the time this runs, so a frozen or
+// otherwise unusable wallet must still be credited: refusing here would leave
+// the customer short with no record on our side. A frozen wallet simply cannot
+// spend the credit until it is released, which is what the freeze is for.
+func settleWalletRecharge(tx *gorm.DB, order PaymentOrderRecord, payment VerifiedPayment, digest string, paidAt time.Time, result *PaymentCallbackResult) error {
+	// wallet_recharge_request is keyed by the client request id; it has no
+	// surrogate id and no soft-delete column, so request_id is the only handle.
+	var request struct {
+		RequestID string `gorm:"column:request_id"`
+		UserID    uint64 `gorm:"column:user_id"`
+		Amount    int64  `gorm:"column:amount_cents"`
+	}
+	if err := tx.Table("wallet_recharge_request").Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("payment_order_id = ?", order.ID).Take(&request).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrPaymentCallbackConflict
+		}
+		return err
+	}
+	// The request must belong to the payer and describe the same amount, so a
+	// verified callback cannot credit a different sum than the one requested.
+	if request.UserID != order.UserID || request.Amount != payment.PaidCents || order.TotalCents != payment.PaidCents {
+		return ErrPaymentCallbackConflict
+	}
+
+	var previousDigest PaymentCallbackDigestRecord
+	digestErr := tx.Where("wechat_transaction_id = ?", payment.TransactionID).Take(&previousDigest).Error
+	if digestErr != nil && !errors.Is(digestErr, gorm.ErrRecordNotFound) {
+		return digestErr
+	}
+	if digestErr == nil && previousDigest.RequestDigest != digest {
+		return ErrPaymentCallbackConflict
+	}
+	// A replayed notification must not credit the wallet a second time. A
+	// recharge has no business row to bind biz_id to, so the settled payment
+	// order itself is the proof: already paid, same provider transaction, same
+	// amount, and the same verified payload digest.
+	if order.Status == "paid" || order.Status == "partial_refunded" || order.Status == "refunded" {
+		if digestErr != nil || !order.WechatTransactionID.Valid ||
+			order.WechatTransactionID.String != payment.TransactionID || order.PaidCents != payment.PaidCents {
+			return ErrPaymentCallbackConflict
+		}
+		*result = PaymentCallbackResult{Replayed: true}
+		return nil
+	}
+	if order.Status != "initiated" || order.BizID != 0 || digestErr == nil {
+		return ErrPaymentCallbackConflict
+	}
+	if err := tx.Create(&PaymentCallbackDigestRecord{WechatTransactionID: payment.TransactionID, RequestDigest: digest}).Error; err != nil {
+		if isMySQLDuplicate(err) {
+			return ErrPaymentCallbackConflict
+		}
+		return err
+	}
+	paid := tx.Model(&PaymentOrderRecord{}).
+		Where("id = ? AND order_no = ? AND status = 'initiated' AND total_cents = ? AND paid_cents = 0",
+			order.ID, order.OrderNo, payment.PaidCents).
+		Updates(map[string]any{"status": "paid", "paid_cents": payment.PaidCents,
+			"wechat_transaction_id": payment.TransactionID, "paid_at": paidAt})
+	if paid.Error != nil {
+		return paid.Error
+	}
+	if paid.RowsAffected != 1 {
+		return ErrPaymentCallbackConflict
+	}
+
+	var wallet struct {
+		ID      uint64 `gorm:"column:id"`
+		Balance int64  `gorm:"column:balance_cents"`
+		Version int64  `gorm:"column:version"`
+	}
+	if err := tx.Table("wallet_account").Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("user_id = ? AND deleted_at IS NULL", order.UserID).Take(&wallet).Error; err != nil {
+		return err
+	}
+	balance := wallet.Balance + payment.PaidCents
+	if err := tx.Table("wallet_account").Where("id = ? AND version = ?", wallet.ID, wallet.Version).
+		Updates(map[string]any{"balance_cents": balance, "version": wallet.Version + 1}).Error; err != nil {
+		return err
+	}
+	if err := tx.Table("wallet_txn").Create(map[string]any{
+		"txn_no": "RC" + strings.ToUpper(digest[:32]), "user_id": order.UserID,
+		"wallet_account_id": wallet.ID, "direction": "in", "amount_cents": payment.PaidCents,
+		"balance_after_cents": balance, "biz_type": "recharge", "biz_ref": request.RequestID,
+		"note": "wechat recharge settled", "created_month": utcDate(),
+	}).Error; err != nil {
+		return err
+	}
+	// Published so a later activity rule (first-recharge rewards) can react to
+	// the credit without this settlement path having to know about coupons.
+	eventID := "W" + digest[:32]
+	envelope, err := json.Marshal(map[string]any{"event_id": eventID, "user_id": order.UserID,
+		"payment_order_id": order.ID, "recharge_request_id": request.RequestID, "amount_cents": payment.PaidCents})
+	if err != nil {
+		return err
+	}
+	if err := tx.Create(&EventOutboxRecord{EventID: eventID, Stream: "wallet_recharge_settled_stream", EnvelopeJSON: envelope}).Error; err != nil {
+		return err
+	}
+	*result = PaymentCallbackResult{}
+	return nil
+}
