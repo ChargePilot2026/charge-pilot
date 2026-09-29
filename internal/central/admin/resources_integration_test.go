@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -57,7 +58,7 @@ func TestAdminPagesIntegration(t *testing.T) {
 	provision.API{DB: gdb, ServiceToken: "test-service"}.Register(gr)
 	gateway := httptest.NewServer(gr)
 	defer gateway.Close()
-	ResourceAPI{Store: ResourceStore{AdminDB: adb, UserDB: udb, BillingDB: bdb}, Auth: a, GatewayURL: gateway.URL, ServiceToken: "test-service"}.Register(router)
+	ResourceAPI{Store: ResourceStore{AdminDB: adb, UserDB: udb, BillingDB: bdb}, Auth: a, GatewayURL: gateway.URL, ServiceToken: "test-service", ExportDir: t.TempDir()}.Register(router)
 	token := func(name, role string) string {
 		t.Helper()
 		exec(adb, "INSERT INTO admin_user_role(username,password_hash,role_id) SELECT ?,?,id FROM role WHERE code=? AND deleted_at IS NULL", name, "unused-test-hash", role)
@@ -112,6 +113,45 @@ func TestAdminPagesIntegration(t *testing.T) {
 	call("", "GET", exportPath, nil, 401)
 	call(fin1, "GET", "exports/not-an-id", nil, 400)
 	call(fin1, "GET", "exports/999999999999", nil, 404)
+	period := gin.H{"from": "2026-09-01", "to": "2026-09-30"}
+	exec(udb, "INSERT INTO charge_bill(bill_no,charge_order_id,user_id,device_id,electric_cents,service_cents,total_cents,issued_at,created_month) VALUES('PAGES_BILL_1',900001,1,'PAGES_DEV',200,50,250,'2026-09-15','2026-09-01'),('PAGES_BILL_2',900002,1,'PAGES_DEV',300,75,375,'2026-10-01','2026-10-01')")
+	exec(adb, "INSERT INTO finance_reconcile_log(reconcile_type,reconcile_date,internal_count,wechat_count,diff_count,internal_cents,wechat_cents,diff_cents) VALUES('wechat_pay','2026-09-15',1,1,0,250,250,0),('wechat_pay','2026-10-01',1,0,1,375,0,375)")
+	call(adminToken, "POST", "exports", gin.H{"request_id": "bb000000-0000-4000-8000-000000000001", "resource": "bills", "format": "pdf"}, 400)
+	call(adminToken, "POST", "exports", gin.H{"request_id": "bb000000-0000-4000-8000-000000000002", "resource": "orders", "format": "pdf"}, 400)
+	call(fin1, "POST", "exports", gin.H{"request_id": "bb000000-0000-4000-8000-000000000003", "resource": "bills", "format": "pdf", "filter": period}, 403)
+	createdPDF := data(call(adminToken, "POST", "exports", gin.H{"request_id": "bb000000-0000-4000-8000-000000000004", "resource": "bills", "format": "pdf", "filter": period}, 200))
+	if createdPDF["status"] != "completed" || createdPDF["row_count"] != float64(1) {
+		t.Fatalf("bill PDF export failed: %v", createdPDF)
+	}
+	var pdfTaskID uint64
+	adb.Table("export_task").Where("task_no = ?", createdPDF["task_no"]).Pluck("id", &pdfTaskID)
+	pdfReq := httptest.NewRequest("GET", fmt.Sprintf("/api/v1/admin/exports/%d/download", pdfTaskID), nil)
+	pdfReq.Header.Set("Authorization", "Bearer "+adminToken)
+	pdfResponse := httptest.NewRecorder()
+	router.ServeHTTP(pdfResponse, pdfReq)
+	if pdfResponse.Code != 200 || !strings.HasPrefix(pdfResponse.Header().Get("Content-Type"), "application/pdf") || !strings.HasPrefix(pdfResponse.Body.String(), "%PDF-") {
+		t.Fatalf("PDF download failed: %d %s", pdfResponse.Code, pdfResponse.Header().Get("Content-Type"))
+	}
+	replayedPDF := data(call(adminToken, "POST", "exports", gin.H{"request_id": "bb000000-0000-4000-8000-000000000004", "resource": "bills", "format": "pdf", "filter": period}, 200))
+	if replayedPDF["task_no"] != createdPDF["task_no"] || replayedPDF["status"] != "completed" {
+		t.Fatalf("bill PDF replay changed task: %v", replayedPDF)
+	}
+	call(adminToken, "POST", "exports", gin.H{"request_id": "bb000000-0000-4000-8000-000000000004", "resource": "bills", "format": "xlsx", "filter": period}, 409)
+	createdXLSX := data(call(adminToken, "POST", "exports", gin.H{"request_id": "bb000000-0000-4000-8000-000000000005", "resource": "reconciles", "format": "xlsx", "filter": period}, 200))
+	if createdXLSX["status"] != "completed" || createdXLSX["row_count"] != float64(1) {
+		t.Fatalf("reconcile XLSX export failed: %v", createdXLSX)
+	}
+	var pdfPath string
+	adb.Table("export_task").Where("id = ?", pdfTaskID).Pluck("file_path", &pdfPath)
+	exec(adb, "UPDATE export_task SET expires_at = UTC_TIMESTAMP(3) - INTERVAL 1 SECOND WHERE id = ?", pdfTaskID)
+	removed, err := (ExportTask{Store: ResourceStore{AdminDB: adb}, ExportDir: filepath.Dir(pdfPath)}).CleanupExpired(ctx)
+	if err != nil || removed != 1 {
+		t.Fatalf("expired export cleanup = %d, %v", removed, err)
+	}
+	if _, err := os.Stat(pdfPath); !os.IsNotExist(err) {
+		t.Fatalf("expired export file remains: %v", err)
+	}
+	call(adminToken, "GET", fmt.Sprintf("exports/%d/download", pdfTaskID), nil, 410)
 	for _, path := range []string{"stations", "devices", "orders", "users", "roles", "alerts", "announcements", "customer-service", "webhooks", "ota/packages", "ota/schedules", "settings/charge-rules", "whitelabel", "coupons", "feedback", "device-fault-reports", "billing/meter-reviews", "billing/settlements", "billing/invoices", "billing/refunds", "billing/wallet-risks", "device-imports"} {
 		call(adminToken, "GET", path, nil, 200)
 		call("", "GET", path, nil, 401)

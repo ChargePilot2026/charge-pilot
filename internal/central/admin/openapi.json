@@ -3038,6 +3038,51 @@
         }
       }
     },
+    "/api/v1/admin/exports": {
+      "get": {
+        "summary": "分页读取导出任务",
+        "security": [{"bearerAuth": []}],
+        "x-permission": "finance.read",
+        "responses": {"200": {"description": "导出任务列表"}}
+      },
+      "post": {
+        "summary": "创建导出任务",
+        "security": [{"bearerAuth": []}],
+        "x-permission": "export.create",
+        "description": "CSV 和 XLSX 支持所有授权资源；PDF 只支持 bills/reconciles 汇总，两个资源要求不超过 31 天的 from/to 日期范围。",
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {
+            "type": "object",
+            "required": ["request_id", "resource"],
+            "properties": {
+              "request_id": {"type": "string", "format": "uuid"},
+              "resource": {"type": "string", "enum": ["orders", "stations", "devices", "settlements", "bills", "reconciles"]},
+              "format": {"type": "string", "enum": ["csv", "xlsx", "pdf"], "default": "csv"},
+              "filter": {"type": "object"}
+            }
+          }}}
+        },
+        "responses": {"200": {"description": "任务状态与行数"}, "400": {"description": "参数无效"}, "403": {"description": "无权限"}, "409": {"description": "request_id 冲突"}}
+      }
+    },
+    "/api/v1/admin/exports/resources": {
+      "get": {
+        "summary": "读取当前账号可导出的资源和格式",
+        "security": [{"bearerAuth": []}],
+        "x-permission": "export.create",
+        "responses": {"200": {"description": "资源、格式和最大行数"}}
+      }
+    },
+    "/api/v1/admin/exports/{id}/download": {
+      "get": {
+        "summary": "下载导出文件",
+        "security": [{"bearerAuth": []}],
+        "x-permission": "export.create",
+        "description": "下载时重新校验创建者、资源权限和财务数据范围，返回 CSV/XLSX/PDF 对应媒体类型。",
+        "responses": {"200": {"description": "导出文件"}, "403": {"description": "无权限"}, "409": {"description": "文件尚未生成"}, "410": {"description": "文件已过期"}}
+      }
+    },
     "/api/v1/admin/exports/{id}": {
       "get": {
         "summary": "读取单个导出任务状态",

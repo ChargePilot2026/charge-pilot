@@ -2,12 +2,12 @@ package admin
 
 import (
 	"context"
-	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
@@ -17,7 +17,7 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// ExportTask builds a CSV off the request path. Exports are permission checked
+// ExportTask builds bounded CSV, XLSX or summary PDF files. Exports are permission checked
 // when they are requested and again when they are downloaded, because a file
 // must not stay readable after the requesting account loses its role.
 type ExportTask struct {
@@ -31,6 +31,7 @@ type exportRow struct {
 	ID          uint64  `json:"id"`
 	TaskNo      string  `json:"task_no" gorm:"column:task_no"`
 	Resource    string  `json:"resource" gorm:"column:resource"`
+	FileFormat  string  `json:"file_format" gorm:"column:file_format"`
 	Status      string  `json:"status" gorm:"column:status"`
 	RequestedBy uint64  `json:"requested_by" gorm:"column:requested_by"`
 	FilterJSON  *string `json:"filter_json" gorm:"column:filter_json"`
@@ -49,6 +50,42 @@ func (t ExportTask) maxRows() int {
 		return t.MaxRows
 	}
 	return 50000
+}
+
+func (t ExportTask) exportDir() string {
+	if t.ExportDir != "" {
+		return t.ExportDir
+	}
+	return filepath.Join(os.TempDir(), "chargepilot-exports")
+}
+
+// CleanupExpired removes finished files after the 24-hour download window.
+// The expected path is recomputed rather than trusting a mutable DB value.
+func (t ExportTask) CleanupExpired(ctx context.Context) (int, error) {
+	rows := []exportRow{}
+	if err := t.Store.AdminDB.WithContext(ctx).Table("export_task").
+		Where("status IN ? AND expires_at <= ?", []string{"completed", "failed"}, time.Now().UTC()).
+		Order("id").Limit(1000).Find(&rows).Error; err != nil {
+		return 0, err
+	}
+	removed := 0
+	for _, row := range rows {
+		format := row.FileFormat
+		if format == "" {
+			format = "csv"
+		}
+		expected := filepath.Join(t.exportDir(), row.TaskNo+"."+format)
+		if row.FilePath != nil && *row.FilePath == expected && filepath.Base(row.TaskNo) == row.TaskNo {
+			if err := os.Remove(expected); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return removed, err
+			}
+		}
+		if err := t.Store.AdminDB.WithContext(ctx).Table("export_task").Where("id = ? AND status IN ?", row.ID, []string{"completed", "failed"}).Update("status", "expired").Error; err != nil {
+			return removed, err
+		}
+		removed++
+	}
+	return removed, nil
 }
 
 // exportSpec declares the columns and query for one resource, so adding a
@@ -107,6 +144,25 @@ var exportRegistry = map[string]exportSpec{
 		},
 		Builder: func(ctx context.Context, q *gorm.DB, scope DataScope) *gorm.DB { return q },
 	},
+	"bills": {
+		Permission: "finance.read",
+		Table:      "charge_bill",
+		Columns: []exportColumn{
+			{"账单号", "bill_no"}, {"订单ID", "charge_order_id"}, {"用户ID", "user_id"},
+			{"设备号", "device_id"}, {"电费(分)", "electric_cents"}, {"服务费(分)", "service_cents"},
+			{"合计(分)", "total_cents"}, {"退款(分)", "refund_cents"}, {"状态", "status"}, {"开具时间", "issued_at"},
+		},
+	},
+	"reconciles": {
+		Permission: "finance.read",
+		Table:      "finance_reconcile_log",
+		Columns: []exportColumn{
+			{"对账类型", "reconcile_type"}, {"对账日期", "reconcile_date"},
+			{"内部笔数", "internal_count"}, {"渠道笔数", "wechat_count"}, {"差异笔数", "diff_count"},
+			{"内部金额(分)", "internal_cents"}, {"渠道金额(分)", "wechat_cents"}, {"差额(分)", "diff_cents"},
+			{"已解决", "resolved"},
+		},
+	},
 }
 
 func (t ExportTask) register(r *gin.Engine) {
@@ -134,13 +190,22 @@ func (t ExportTask) detailTask(c *gin.Context) {
 
 func (t ExportTask) listResources(c *gin.Context) {
 	profile := c.MustGet("admin_profile").(Profile)
+	scope, err := LoadDataScope(c.Request.Context(), t.Store.AdminDB, profile)
+	if err != nil {
+		resourceFailure(c, err)
+		return
+	}
 	items := []string{}
 	for name, spec := range exportRegistry {
-		if hasPermission(profile, spec.Permission) {
+		if hasPermission(profile, spec.Permission) && (scope.Unrestricted || !exportRequiresGlobalScope(name)) {
 			items = append(items, name)
 		}
 	}
-	httpapi.OK(c, gin.H{"items": items, "max_rows": t.maxRows()})
+	httpapi.OK(c, gin.H{"items": items, "formats": []string{"csv", "xlsx", "pdf"}, "pdf_resources": []string{"bills", "reconciles"}, "max_rows": t.maxRows()})
+}
+
+func exportRequiresGlobalScope(resource string) bool {
+	return resource == "bills" || resource == "reconciles" || resource == "settlements"
 }
 
 func (t ExportTask) listTasks(c *gin.Context) {
@@ -168,6 +233,7 @@ func (t ExportTask) createTask(c *gin.Context) {
 	var in struct {
 		RequestID string         `json:"request_id"`
 		Resource  string         `json:"resource"`
+		Format    string         `json:"format"`
 		Filter    map[string]any `json:"filter"`
 	}
 	if !decodeResource(c, &in) {
@@ -182,31 +248,65 @@ func (t ExportTask) createTask(c *gin.Context) {
 		httpapi.BadRequest(c, "不支持的导出资源")
 		return
 	}
+	if in.Format == "" {
+		in.Format = "csv"
+	}
+	if in.Format != "csv" && in.Format != "xlsx" && in.Format != "pdf" {
+		httpapi.BadRequest(c, "导出格式无效")
+		return
+	}
+	if in.Format == "pdf" && in.Resource != "bills" && in.Resource != "reconciles" {
+		httpapi.BadRequest(c, "PDF 仅支持账单与对账汇总")
+		return
+	}
+	if (in.Resource == "bills" || in.Resource == "reconciles") && !validExportPeriod(in.Filter) {
+		httpapi.BadRequest(c, "账单与对账需提供不超过 31 天的 from/to 日期")
+		return
+	}
 	profile := c.MustGet("admin_profile").(Profile)
 	if !hasPermission(profile, spec.Permission) {
 		httpapi.Write(c, 403, 1003, "没有导出该资源的权限", nil)
 		return
 	}
-	taskNo := "EXP" + strings.ToUpper(strings.ReplaceAll(in.RequestID, "-", ""))[:24]
+	if exportRequiresGlobalScope(in.Resource) {
+		scope, err := LoadDataScope(c.Request.Context(), t.Store.AdminDB, profile)
+		if err != nil {
+			resourceFailure(c, err)
+			return
+		}
+		if !scope.Unrestricted {
+			httpapi.Write(c, 403, 1003, "该财务资源只允许全局数据范围导出", nil)
+			return
+		}
+	}
+	// Keep all 128 UUID bits. Truncating the trailing bytes made requests with
+	// the same prefix collide even though their request IDs were distinct.
+	taskNo := "EXP" + strings.ToUpper(strings.ReplaceAll(in.RequestID, "-", ""))
 	filter, err := json.Marshal(in.Filter)
 	if err != nil {
 		httpapi.BadRequest(c, "导出筛选条件无效")
 		return
 	}
+	var replayed *exportRow
 	err = t.Store.AdminDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
 		var existing exportRow
 		found := tx.Table("export_task").Where("task_no = ?", taskNo).Take(&existing)
 		if found.Error == nil {
-			if existing.Resource != in.Resource {
+			var savedFilter map[string]any
+			if existing.FilterJSON != nil {
+				_ = json.Unmarshal([]byte(*existing.FilterJSON), &savedFilter)
+			}
+			if existing.RequestedBy != profile.ID || existing.Resource != in.Resource || existing.FileFormat != in.Format || !reflect.DeepEqual(savedFilter, in.Filter) {
 				return errConflict
 			}
+			replayed = &existing
 			return nil
 		}
 		if !errors.Is(found.Error, gorm.ErrRecordNotFound) {
 			return found.Error
 		}
 		if err := tx.Table("export_task").Create(map[string]any{
-			"task_no": taskNo, "resource": in.Resource, "status": "pending", "requested_by": profile.ID,
+			"task_no": taskNo, "resource": in.Resource, "file_format": in.Format, "status": "pending", "requested_by": profile.ID,
 			"filter_json": string(filter), "expires_at": time.Now().UTC().Add(24 * time.Hour),
 		}).Error; err != nil {
 			return err
@@ -215,6 +315,10 @@ func (t ExportTask) createTask(c *gin.Context) {
 	})
 	if err != nil {
 		resourceFailure(c, err)
+		return
+	}
+	if replayed != nil {
+		httpapi.OK(c, gin.H{"task_no": taskNo, "status": replayed.Status, "row_count": replayed.RowCount, "expires_at": replayed.ExpiresAt})
 		return
 	}
 	// Build synchronously: exports are small and bounded, and returning a ready
@@ -228,13 +332,10 @@ func (t ExportTask) createTask(c *gin.Context) {
 	httpapi.OK(c, gin.H{"task_no": taskNo, "status": finished.Status, "row_count": finished.RowCount, "expires_at": finished.ExpiresAt})
 }
 
-// run writes the CSV and records the outcome. The file is written to a
+// run writes the requested format and records the outcome. The file is written to a
 // temporary name and renamed, so a partial export is never downloadable.
 func (t ExportTask) run(ctx context.Context, taskNo string, spec exportSpec, profile Profile) error {
-	dir := t.ExportDir
-	if dir == "" {
-		dir = filepath.Join(os.TempDir(), "chargepilot-exports")
-	}
+	dir := t.exportDir()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return t.fail(ctx, taskNo, err)
 	}
@@ -246,23 +347,39 @@ func (t ExportTask) run(ctx context.Context, taskNo string, spec exportSpec, pro
 	if err != nil {
 		return t.fail(ctx, taskNo, err)
 	}
+	if exportRequiresGlobalScope(row.Resource) && !scope.Unrestricted {
+		return t.fail(ctx, taskNo, errors.New("scoped finance export is not available"))
+	}
 	var filters map[string]any
 	if row.FilterJSON != nil && *row.FilterJSON != "" {
 		_ = json.Unmarshal([]byte(*row.FilterJSON), &filters)
 	}
+	if filters == nil {
+		filters = map[string]any{}
+	}
 	query := t.Store.UserDB.WithContext(ctx).Table(spec.Table)
-	if spec.Table == "station" || spec.Table == "device_meta" {
+	if spec.Table == "station" || spec.Table == "device_meta" || spec.Table == "finance_reconcile_log" {
 		query = t.Store.AdminDB.WithContext(ctx).Table(spec.Table)
 	} else if spec.Table == "settlement" {
 		query = t.Store.BillingDB.WithContext(ctx).Table(spec.Table)
 	}
-	query = query.Where(map[string]any{"deleted_at": nil})
+	if spec.Table != "charge_bill" && spec.Table != "finance_reconcile_log" && spec.Table != "settlement" {
+		query = query.Where(map[string]any{"deleted_at": nil})
+	}
+	if spec.Table == "charge_bill" {
+		query = query.Where("issued_at >= ? AND issued_at < ?", filters["from"], nextExportDate(filters["to"]))
+	} else if spec.Table == "finance_reconcile_log" {
+		query = query.Where("reconcile_date >= ? AND reconcile_date <= ?", filters["from"], filters["to"])
+	}
 	if spec.Builder != nil {
 		query = spec.Builder(ctx, query, scope)
 	}
 	records := []map[string]any{}
-	if err := query.Limit(t.maxRows()).Find(&records).Error; err != nil {
+	if err := query.Limit(t.maxRows() + 1).Find(&records).Error; err != nil {
 		return t.fail(ctx, taskNo, err)
+	}
+	if len(records) > t.maxRows() {
+		return t.fail(ctx, taskNo, fmt.Errorf("导出超过 %d 行，请缩小范围", t.maxRows()))
 	}
 	mask, err := LoadFieldMask(ctx, t.Store.AdminDB, profile.RoleID)
 	if err != nil {
@@ -274,35 +391,29 @@ func (t ExportTask) run(ctx context.Context, taskNo string, spec exportSpec, pro
 	}
 	records = mask.MaskSlice(spec.Table, records)
 
-	path := filepath.Join(dir, taskNo+".csv")
+	format := row.FileFormat
+	if format == "" {
+		format = "csv"
+	}
+	path := filepath.Join(dir, taskNo+"."+format)
 	pending := path + ".partial"
 	file, err := os.OpenFile(pending, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return t.fail(ctx, taskNo, err)
 	}
-	writer := csv.NewWriter(file)
 	headers := make([]string, 0, len(spec.Columns))
 	for _, column := range spec.Columns {
 		headers = append(headers, column.Header)
 	}
-	if err := writer.Write(headers); err != nil {
-		file.Close()
-		os.Remove(pending)
-		return t.fail(ctx, taskNo, err)
-	}
+	lines := make([][]string, 0, len(records))
 	for _, record := range records {
 		line := make([]string, 0, len(names))
 		for _, name := range names {
 			line = append(line, stringifyCell(record[name]))
 		}
-		if err := writer.Write(line); err != nil {
-			file.Close()
-			os.Remove(pending)
-			return t.fail(ctx, taskNo, err)
-		}
+		lines = append(lines, line)
 	}
-	writer.Flush()
-	if err := writer.Error(); err != nil {
+	if err := writeExport(file, format, row.Resource, headers, lines, filters); err != nil {
 		file.Close()
 		os.Remove(pending)
 		return t.fail(ctx, taskNo, err)
@@ -370,6 +481,21 @@ func (t ExportTask) downloadTask(c *gin.Context) {
 		httpapi.Write(c, 403, 1003, "没有下载该导出的权限", nil)
 		return
 	}
+	if exportRequiresGlobalScope(row.Resource) {
+		scope, err := LoadDataScope(c.Request.Context(), t.Store.AdminDB, profile)
+		if err != nil {
+			resourceFailure(c, err)
+			return
+		}
+		if !scope.Unrestricted {
+			httpapi.Write(c, 403, 1003, "当前数据范围无权下载该财务导出", nil)
+			return
+		}
+	}
+	if row.Status == "expired" {
+		httpapi.Write(c, 410, 1005, "导出文件已过期，请重新导出", nil)
+		return
+	}
 	if row.Status != "completed" || row.FilePath == nil {
 		httpapi.Write(c, 409, 2009, "导出尚未完成", nil)
 		return
@@ -384,7 +510,16 @@ func (t ExportTask) downloadTask(c *gin.Context) {
 			return
 		}
 	}
-	c.Header("Content-Type", "text/csv; charset=utf-8")
-	c.Header("Content-Disposition", `attachment; filename="`+row.TaskNo+`.csv"`)
+	format := row.FileFormat
+	if format == "" {
+		format = "csv"
+	}
+	mime := map[string]string{"csv": "text/csv; charset=utf-8", "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "pdf": "application/pdf"}[format]
+	if mime == "" {
+		httpapi.Write(c, 409, 2009, "导出格式不可用", nil)
+		return
+	}
+	c.Header("Content-Type", mime)
+	c.Header("Content-Disposition", `attachment; filename="`+row.TaskNo+`.`+format+`"`)
 	c.File(*row.FilePath)
 }

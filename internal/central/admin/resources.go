@@ -23,6 +23,7 @@ type ResourceAPI struct {
 	Store                    ResourceStore
 	Auth                     API
 	GatewayURL, ServiceToken string
+	ExportDir                string
 }
 
 func (a ResourceAPI) Register(r *gin.Engine) {
@@ -43,7 +44,7 @@ func (a ResourceAPI) Register(r *gin.Engine) {
 	a.registerWebhookDelivery(r)
 	a.registerAlertRules(r)
 	a.registerAdminUsers(r)
-	ExportTask{Store: a.Store, Auth: a.Auth}.register(r)
+	ExportTask{Store: a.Store, Auth: a.Auth, ExportDir: a.ExportDir}.register(r)
 	OtaAPI{Store: a.Store, Auth: a.Auth, GatewayURL: a.GatewayURL, ServiceToken: a.ServiceToken}.registerOta(r)
 	r.GET("/api/v1/admin/stations", a.Auth.Require("station.read"), a.stations)
 	r.GET("/api/v1/admin/stations/:id", a.Auth.Require("station.read"), a.station)

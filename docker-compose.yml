@@ -82,10 +82,13 @@ services:
       <<: *go-build
       args: { SERVICE: central }
     restart: unless-stopped
+    volumes:
+      - export-files:/var/lib/chargepilot/exports
     environment:
       DATABASE_URL_USER: mysql://chargepilot:${DB_PASSWORD}@chargepilot-mysql:3306/user_db
       DATABASE_URL_ADMIN: mysql://chargepilot:${DB_PASSWORD}@chargepilot-mysql:3306/admin_db
       DATABASE_URL_BILLING: mysql://chargepilot:${DB_PASSWORD}@chargepilot-mysql:3306/billing_db
+      EXPORT_DIR: /var/lib/chargepilot/exports
       REDIS_CACHE_URL: redis://:${REDIS_PASSWORD}@chargepilot-redis-cache:6379/0
       REDIS_STREAM_URL: redis://:${REDIS_STREAM_PASSWORD}@chargepilot-redis-stream:6379/0
       JWT_SECRET: ${JWT_SECRET:?required}
@@ -139,3 +142,4 @@ volumes:
   redis-stream-data:
   caddy-data:
   caddy-config:
+  export-files:

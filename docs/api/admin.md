@@ -284,7 +284,9 @@ admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故�
 
 > **计费分账小计**:15 个端点。计费规则必须先有模板(`pricing_template`),再用 `charge-rule` 实例绑定到站点;分账模板需配齐 `split_party` 比例后才能被站点引用。
 
-### L. 审计与导出(6 个)— `audit_log`
+### L. 审计与导出— `audit_log`
+
+下表中的 `/export/...` 是重建前路径，当前 Go 导出接口见本文件“当前 Go 导出接口”小节及 [Go 后台业务页面](go-admin-pages.md#导出)。
 
 | 方法 | 路径 | 鉴权 | 说明 |
 | --- | --- | --- | --- |
@@ -1435,7 +1437,11 @@ user 服务在单库事务中锁定模板，校验用户有效、模板处于发
 
 **业务逻辑**:查 `audit_log` 表(按月分区,§ 4.6 数据保留 ≥ 3 年)。
 
-### `POST /api/v1/admin/export/orders`
+### 当前 Go 导出接口
+
+`POST /api/v1/admin/exports` 以 `request_id`（完整 UUID）、`resource`、`format`（默认 `csv`）和 `filter` 创建导出；`GET /api/v1/admin/exports` 列表、`GET /api/v1/admin/exports/{id}` 详情、`GET /api/v1/admin/exports/resources` 资源及格式、`GET /api/v1/admin/exports/{id}/download` 下载。资源为 `orders`/`stations`/`devices`/`settlements`/`bills`/`reconciles`。CSV 和 XLSX 支持所有资源，PDF 仅为 `bills`/`reconciles` 的汇总；这两个资源必须提供 `filter.from` 与 `filter.to`（日期，最多 31 天）。按权限和数据范围检查，下载时再次校验；任务 24 小时到期。详见 [Go 后台业务页面](go-admin-pages.md#导出)。
+
+### 历史方案：`POST /api/v1/admin/export/orders`（已废弃）
 
 **鉴权**:[角色] `export.create`
 
@@ -1468,7 +1474,7 @@ user 服务在单库事务中锁定模板，校验用户有效、模板处于发
 ```
 
 **业务逻辑**:
-当前返回 `503 ServiceUnavailable`，不会创建或声称已排队的导出任务。worker 导出执行器、任务状态查询、文件生成和对象存储签名尚未实现；其余参数字段属于计划契约，待执行器可用后启用。
+本节请求体、202 响应、worker 任务与 OSS 签名流程均为重建前的历史设计；当前 Go 服务使用上方的 `/exports` 契约，旧路径不注册。
 
 **计划业务逻辑(尚未实现)**:
 1. 校验时间窗 ≤ 90 天(防止超大数据量导出导致 OOM)
@@ -1482,13 +1488,13 @@ user 服务在单库事务中锁定模板，校验用户有效、模板处于发
 - `1005`: 时间窗 > 90 天
 - `2020`: 导出任务不存在(GET 时)
 
-### `GET /api/v1/admin/export/tasks/{task_id}/download`
+### 历史方案：`GET /api/v1/admin/export/tasks/{task_id}/download`（已废弃）
 
 > **Go 实现修订**：导出任务由 central 的 `admin_db.export_task` 承载，当前查询详情为 `GET /api/v1/admin/exports/{id}`，下载为 `GET /api/v1/admin/exports/{id}/download`。旧的 worker 任务透传与 OSS 临时签名描述不适用于当前实现；下载时重新校验账号、权限与文件期限。详见 [Go 后台业务页面](go-admin-pages.md#导出)。
 
 **鉴权**:[角色] `export.download`
 
-当前返回 `503 ServiceUnavailable`。worker 任务状态接口、文件生成和对象存储签名尚未实现。
+旧路径不注册；当前下载路径为 `/api/v1/admin/exports/{id}/download`，返回本地生成的 CSV/XLSX/PDF 文件。
 
 > **计划设计**:导出任务应由 worker 持久化并通过内部 API 查询；当前不会向 `admin_db.scheduled_task` 写入，也不会从 admin 数据库跨 schema 读取任务。
 
@@ -1501,7 +1507,7 @@ user 服务在单库事务中锁定模板，校验用户有效、模板处于发
 - CI 检查:OpenAPI 规范与本文件端点清单必须一致(脚本 `tools/check-api-consistency.ts`)
 - **跨服务一致性**:admin 通过 HTTP 调 user / gateway / billing / worker 的内部接口命名,必须与对应服务 API 文档一致;新增 admin 端点若依赖其他服务接口,必须先在对方服务的 API 文档中落地路径
 - **审计一致性**:任何 admin 写端点都应检查审计记录与权限映射；Go 模块落地时建立相应权限矩阵
-- **导出任务**:目标由 worker 服务承接，当前导出入口返回 503；worker 状态查询与下载端点未实现，详见 `docs/api/worker.md` § 零
+- **导出任务**:当前由 central 的 `admin_db.export_task` 承载，文件由 central 生成；worker 旧设计仅供历史参考。
 
 ### 当前站点操作权限（2026-09-26）
 
