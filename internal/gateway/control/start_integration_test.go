@@ -68,7 +68,7 @@ func TestPaidStartIsDurableAndRequiresMatchedDeviceACK(t *testing.T) {
 	paid := store.PaidOrder{ChargeOrderID: chargeOrderID, PaymentOrderID: 456, OrderNo: orderNo, UserID: 789, DeviceID: deviceID, PortNo: 1, ChargeMode: 4, ChargeQuantity: 600}
 	registry := &protocol.Registry{}
 	session := &recordingSession{}
-	detach := registry.Attach(deviceID, session)
+	detach := registry.Attach(deviceID, session, nil)
 	defer detach()
 	service := StartService{Orders: fixedPaidOrder{paid}, Store: store.MySQLSink{DB: testGORMDB(t, db)}, Devices: registry}
 	first, err := service.Start(ctx, orderNo)

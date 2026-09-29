@@ -73,6 +73,29 @@ type Sink interface {
 	Record(context.Context, Event) error
 }
 
+// SessionRecorder persists the terminal state of a connection so operators can
+// answer when a device connected, from where, for how long and how much data it
+// moved. It is separate from Sink because a session is known only once the
+// connection has already ended, and an adapter that cannot persist sessions
+// must still be able to serve devices.
+type SessionRecorder interface {
+	RecordSession(context.Context, SessionRecord) error
+}
+
+// CloseReason classifies why a connection ended. It is a short, stable token
+// because the value is stored and later grouped in audit queries.
+type CloseReason string
+
+const (
+	CloseDeviceClosed CloseReason = "device_closed"
+	CloseReadTimeout  CloseReason = "read_timeout"
+	CloseReadError    CloseReason = "read_error"
+	CloseProtocol     CloseReason = "protocol_error"
+	CloseRejected     CloseReason = "rejected"
+	CloseReplaced     CloseReason = "replaced"
+	CloseContextEnded CloseReason = "context_ended"
+)
+
 // Adapter serves one connection in one vendor-specific wire format.
 type Adapter interface {
 	Name() string

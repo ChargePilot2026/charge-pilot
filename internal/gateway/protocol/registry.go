@@ -46,7 +46,14 @@ type Registry struct {
 
 type registryEntry struct{ session Session }
 
-func (r *Registry) Attach(deviceID string, session Session) func() {
+// Attach installs session as the current connection for deviceID and returns a
+// detach function. If a session is already registered it is closed and
+// onReplaced is called with it, which lets the caller record that the old
+// connection ended because a newer login took over rather than because the
+// device hung up.
+//
+// onReplaced may be nil.
+func (r *Registry) Attach(deviceID string, session Session, onReplaced func(Session)) func() {
 	r.mu.Lock()
 	if r.sessions == nil {
 		r.sessions = make(map[string]*registryEntry)
@@ -56,6 +63,9 @@ func (r *Registry) Attach(deviceID string, session Session) func() {
 	r.sessions[deviceID] = current
 	r.mu.Unlock()
 	if previous != nil {
+		if onReplaced != nil {
+			onReplaced(previous.session)
+		}
 		_ = previous.session.Close()
 	}
 	return func() {

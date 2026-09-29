@@ -4,14 +4,46 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol"
 )
+
+// remoteAddrOf captures the peer address for the session audit. The host part
+// is kept, and an IPv6 zone or a long port suffix is trimmed to what fits the
+// column, because a row must never be rejected over a cosmetic overflow.
+func remoteAddrOf(conn net.Conn) string {
+	if conn == nil || conn.RemoteAddr() == nil {
+		return ""
+	}
+	addr := conn.RemoteAddr().String()
+	if len(addr) > 64 {
+		addr = addr[:64]
+	}
+	return addr
+}
+
+// finish writes the terminal session row. A sink that does not implement
+// SessionRecorder is left alone rather than failed: session auditing is
+// valuable, but refusing to serve devices over it would be the wrong trade.
+func (a TCPAdapter) finish(ctx context.Context, sink protocol.Sink, audit *protocol.SessionAudit, deviceID string, reason protocol.CloseReason) {
+	recorder, ok := sink.(protocol.SessionRecorder)
+	if !ok {
+		return
+	}
+	clock := a.Clock
+	if clock == nil {
+		clock = time.Now
+	}
+	_ = recorder.RecordSession(ctx, audit.Snapshot(deviceID, string(reason), clock()))
+}
 
 // TCPAdapter is one vendor listener. Other adapters use separate ports and
 // implement protocol.Adapter without changing this package.
@@ -22,11 +54,15 @@ type TCPAdapter struct {
 
 func (TCPAdapter) Name() string { return "dc589" }
 
-func (a TCPAdapter) ServeConn(ctx context.Context, conn net.Conn, sink protocol.Sink) error {
+func (a TCPAdapter) ServeConn(ctx context.Context, conn net.Conn, sink protocol.Sink) (serveErr error) {
 	clock := a.Clock
 	if clock == nil {
 		clock = time.Now
 	}
+	// A session is identified by the server-chosen session bytes we hand the
+	// device in the register reply, which is what the device echoes back in
+	// every later frame. Using it as the audit key means a reconnect produces a
+	// distinct row rather than overwriting the previous connection.
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
@@ -56,12 +92,33 @@ func (a TCPAdapter) ServeConn(ctx context.Context, conn net.Conn, sink protocol.
 	if _, err := rand.Read(serverSession[:]); err != nil {
 		return err
 	}
-	session := &connection{conn: conn}
+	audit := protocol.NewSessionAudit(protocol.TransportTCP, hex.EncodeToString(serverSession[:]), remoteAddrOf(conn), clock())
+	// Set when a newer login displaces this connection, so the audit row says
+	// "replaced" rather than implying the device hung up on its own.
+	var replaced atomic.Bool
+	// Persist the finished connection on every exit path. The write happens after
+	// the protocol exchange is over, so a database problem here cannot corrupt
+	// the exchange or mask the real error that ended the connection.
+	reason := protocol.CloseDeviceClosed
+	defer func() {
+		if errors.Is(serveErr, os.ErrDeadlineExceeded) {
+			reason = protocol.CloseReadTimeout
+		} else if serveErr != nil {
+			reason = protocol.CloseProtocol
+		} else if replaced.Load() {
+			reason = protocol.CloseReplaced
+		}
+		if ctx.Err() != nil {
+			reason = protocol.CloseContextEnded
+		}
+		a.finish(context.WithoutCancel(ctx), sink, audit, deviceID, reason)
+	}()
+	session := &connection{conn: conn, audit: audit}
 	if err := session.writeFrame(BuildRegisterReply(serverSession, clock())); err != nil {
 		return err
 	}
 	if a.Registry != nil {
-		detach := a.Registry.Attach(deviceID, session)
+		detach := a.Registry.Attach(deviceID, session, func(protocol.Session) { replaced.Store(true) })
 		defer detach()
 	}
 	for {
@@ -72,6 +129,7 @@ func (a TCPAdapter) ServeConn(ctx context.Context, conn net.Conn, sink protocol.
 		if err != nil {
 			return err
 		}
+		audit.Inbound(len(frame.Data), clock())
 		event := protocol.Event{Protocol: a.Name(), DeviceID: deviceID, ReceivedAt: clock(), RawPayload: frame.Data, SessionID: frame.Session}
 		switch frame.Command {
 		case 0xA8: // device time request; record before responding
@@ -177,8 +235,9 @@ func (a TCPAdapter) ServeConn(ctx context.Context, conn net.Conn, sink protocol.
 }
 
 type connection struct {
-	conn net.Conn
-	mu   sync.Mutex
+	conn  net.Conn
+	mu    sync.Mutex
+	audit *protocol.SessionAudit
 }
 
 func (c *connection) Close() error { return c.conn.Close() }
@@ -223,12 +282,15 @@ func (c *connection) writeFrame(frame Frame) error {
 	for len(raw) > 0 {
 		n, err := c.conn.Write(raw)
 		if err != nil {
+			c.audit.Outbound(len(frame.Data), time.Now())
 			return err
 		}
 		if n == 0 {
+			c.audit.Outbound(len(frame.Data), time.Now())
 			return errors.New("zero-byte TCP write")
 		}
 		raw = raw[n:]
 	}
+	c.audit.Outbound(len(frame.Data), time.Now())
 	return nil
 }
