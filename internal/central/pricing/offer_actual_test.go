@@ -7,7 +7,9 @@ import (
 
 func TestConfiguredOfferSettlement(t *testing.T) {
 	start := time.Date(2026, 9, 29, 2, 0, 0, 0, time.UTC)
-	rule := Rule{ID: 1, StationID: 2, Version: 1, Mode: "kwh", Periods: []Period{{Period: "flat", Start: "00:00", End: "24:00", ElectricPriceCents: 100}}, ServiceCentsPerKWh: 100}
+	rule := Rule{ID: 1, StationID: 2, Version: 1, Spec: Spec{Basis: BasisEnergy,
+		Windows: []Window{{Start: "00:00", End: "24:00", CentsPerKWh: 100}},
+		Service: ServiceFee{Mode: ServiceEnergy, CentsPerKWh: 100}}}
 	meter := ActualMeter{StartedAt: start, EndedAt: start.Add(30 * time.Minute), ChargedWh: 1000, ChargedSeconds: 1800}
 	tests := []struct {
 		name  string
