@@ -25,10 +25,18 @@ type FieldErr struct {
 	Rule  string `json:"rule"`
 }
 
-func NewRouter() *gin.Engine {
+func NewRouter(metrics ...*Metrics) *gin.Engine {
 	router := gin.New()
 	_ = router.SetTrustedProxies(nil)
 	router.Use(gin.Recovery(), Trace())
+	// The middleware is installed after the route table exists, so FullPath is
+	// resolved by the time a request completes; unmatched requests collapse to a
+	// single label instead of their raw path.
+	for _, m := range metrics {
+		if m != nil {
+			router.Use(m.Middleware())
+		}
+	}
 	router.HandleMethodNotAllowed = true
 	router.NoRoute(func(c *gin.Context) {
 		Write(c, http.StatusNotFound, 1004, "接口尚未提供，请确认服务版本", nil)

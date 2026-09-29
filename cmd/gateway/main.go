@@ -48,7 +48,13 @@ func run(ctx context.Context) error {
 	}
 	sink := store.MySQLSink{DB: orm}
 	gin.SetMode(gin.ReleaseMode)
-	router := httpapi.NewRouter()
+	// Metrics are exposed unauthenticated so a scraper needs no operator
+	// session; the endpoint carries route names, status codes and timings only.
+	// The registry is passed into NewRouter so the recording middleware is
+	// installed before any route is registered.
+	metrics := httpapi.NewMetrics("gateway")
+	router := httpapi.NewRouter(metrics)
+	metrics.Register(router)
 	provision.API{DB: orm, ServiceToken: cfg.ServiceToken}.Register(router)
 	deviceConnections := &protocol.Registry{}
 	control.StartAPI{Service: control.StartService{

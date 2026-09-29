@@ -66,7 +66,13 @@ func run(ctx context.Context) error {
 		return err
 	}
 	gin.SetMode(gin.ReleaseMode)
-	router := httpapi.NewRouter()
+	// Metrics are exposed unauthenticated so a scraper needs no operator
+	// session; the endpoint carries route names, status codes and timings only.
+	// The registry is passed into NewRouter so the recording middleware is
+	// installed before any route is registered.
+	metrics := httpapi.NewMetrics("worker")
+	router := httpapi.NewRouter(metrics)
+	metrics.Register(router)
 	router.GET("/health/live", func(c *gin.Context) { httpapi.OK(c, gin.H{"status": "live"}) })
 	router.GET("/health/ready", func(c *gin.Context) {
 		check, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
