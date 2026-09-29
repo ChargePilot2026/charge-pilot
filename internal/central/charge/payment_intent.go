@@ -111,14 +111,21 @@ func (s PaymentIntentStore) Reserve(ctx context.Context, input IntentInput) (Pay
 		if !input.Offer.Valid() || input.Offer.StationID != input.Port.StationID {
 			return PaymentIntent{}, pricing.ErrInvalidPricing
 		}
-		minutes, mode := uint16(10080), uint8(12)
+		// A fixed-span package is handed to the device as a span, so the board
+		// counts it down and stops itself. A prepaid amount has no device-side
+		// equivalent — the firmware reserves that charging type and never
+		// implemented it — so it is expressed as platform billing, where the
+		// platform prices the session and stops it. The long span sent along is
+		// a safety bound, not the stop rule; the stop rule lives on the server
+		// side of the pricing package and has not shipped yet.
+		minutes, mode := uint16(10080), uint8(4)
 		if input.Offer.Mode == "package" {
 			minutes, mode = input.Offer.DurationMinutes, 0
 		}
 		estimate = pricing.Estimate{EstimatedKWh: "0.000", EstimatedMinutes: minutes, ServiceCents: input.Offer.PriceCents, TotalCents: input.Offer.PriceCents, ChargeMode: mode, ChargeQuantity: minutes}
 	} else {
 		var err error
-		estimate, err = pricing.EstimateCharge(input.Rule, input.Energy, input.Minutes, time.Now())
+		estimate, err = pricing.EstimateCharge(input.Rule, input.Energy, input.Minutes, time.Now(), 0)
 		if err != nil {
 			return PaymentIntent{}, err
 		}

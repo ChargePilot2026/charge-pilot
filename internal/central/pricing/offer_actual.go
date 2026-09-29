@@ -1,37 +1,38 @@
 package pricing
 
-import "github.com/shopspring/decimal"
-
-// PriceOfferActual freezes the purchased cap or package terms at payment time.
-// A package charges only for used seconds; excess use never creates a debt.
+// PriceOfferActual is the settlement entry point the billing and charge flows
+// call. It is a thin adapter over SettleSession rather than a second pricing
+// path: the device-billed case is decided by the amount that was actually
+// collected, and having that logic live in two places is how a quote and a bill
+// end up disagreeing about which one they used.
 func PriceOfferActual(rule Rule, offer *Offer, meter ActualMeter) (ActualFee, error) {
-	base, err := PriceActual(rule, meter)
-	if err != nil || offer == nil {
-		return base, err
+	settlement, err := SettleSession(rule.Spec, meter, offer, ActualFromMeter(meter))
+	if err != nil {
+		return ActualFee{}, err
 	}
-	if !offer.Valid() || offer.StationID != rule.StationID {
-		return ActualFee{}, ErrInvalidPricing
+	return ActualFee{
+		ElectricCents: settlement.ElectricCents,
+		ServiceCents:  settlement.ServiceCents,
+		TotalCents:    settlement.TotalCents,
+	}, nil
+}
+
+// ActualFromMeter derives what the device reported from the meter record.
+//
+// The meter is the platform's own view, so this is an inferred actual rather
+// than one read back from the board. It is passed as an actual precisely so
+// that the settlement can be marked estimated — the two are different claims
+// and the difference has to survive into the receipt.
+func ActualFromMeter(meter ActualMeter) *SessionActual {
+	actual := &SessionActual{
+		UsedSeconds: meter.ChargedSeconds,
+		UsedMilliWh: uint64(meter.ChargedWh) * 1000,
+		Reported:    false,
 	}
-	total := base.TotalCents
-	if offer.Mode == "package" {
-		seconds := int64(meter.ChargedSeconds)
-		limit := int64(offer.DurationMinutes) * 60
-		if seconds > limit {
-			seconds = limit
+	for _, segment := range meter.Segments {
+		if uint32(segment.PeakW) > actual.PeakWatts {
+			actual.PeakWatts = segment.PeakW
 		}
-		total = decimal.NewFromInt(offer.PriceCents).Mul(decimal.NewFromInt(seconds)).Div(decimal.NewFromInt(limit)).Round(0).IntPart()
-	} else if total > offer.PriceCents {
-		total = offer.PriceCents
 	}
-	if total < 0 {
-		return ActualFee{}, ErrInvalidPricing
-	}
-	if base.TotalCents == 0 {
-		return ActualFee{ServiceCents: total, TotalCents: total}, nil
-	}
-	electric := decimal.NewFromInt(base.ElectricCents).Mul(decimal.NewFromInt(total)).Div(decimal.NewFromInt(base.TotalCents)).Round(0).IntPart()
-	if electric < 0 || electric > total {
-		return ActualFee{}, ErrInvalidPricing
-	}
-	return ActualFee{ElectricCents: electric, ServiceCents: total - electric, TotalCents: total}, nil
+	return actual
 }

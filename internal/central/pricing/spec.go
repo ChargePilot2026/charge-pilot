@@ -17,83 +17,58 @@ var (
 	beijing = time.FixedZone("Asia/Shanghai", 8*3600)
 )
 
-// Basis is the single axis that decides what a tariff charges money on.
-// Everything else in Spec only refines how that basis is priced.
-type Basis string
+const maxRateCents = 1000000
 
-const (
-	// BasisEnergy charges cents-per-kWh against metered energy.
-	BasisEnergy Basis = "energy"
-	// BasisPowerTier charges graduated power tiers: each tier carries a
-	// cents-per-hour rate that is converted to an equivalent cents-per-kWh
-	// price using the tier ceiling.
-	BasisPowerTier Basis = "power_tier"
-	// BasisMaxPower charges one rate against the highest power seen, so a
-	// session that peaks briefly still pays for the whole session.
-	BasisMaxPower Basis = "max_power"
-	// BasisPerMinute charges a flat rate per minute.
-	BasisPerMinute Basis = "per_minute"
-	// BasisPerSession charges a flat amount per session.
-	BasisPerSession Basis = "per_session"
-)
-
-// ServiceMode selects what the service fee is charged on. It is deliberately
-// not a UI tab: each value is just another basis applied to the service line.
-type ServiceMode string
-
-const (
-	ServiceNone        ServiceMode = "none"
-	ServiceEnergy      ServiceMode = "energy"
-	ServiceMinute      ServiceMode = "minute"
-	ServiceMinutePower ServiceMode = "minute_power"
-	ServiceSession     ServiceMode = "session"
-)
-
-// TierPriceBasis records how a power tier's cents-per-hour rate becomes money.
-// The industry quotes gradient pricing in cents-per-hour, but the meter only
-// reports energy, so the conversion has to be an explicit, stored decision
-// rather than an assumption buried in the settlement code.
-type TierPriceBasis string
-
-const (
-	// TierPerHourAtCeiling converts as rate * (tier ceiling kW) = equivalent
-	// cents per kWh. A 0.17 cents-per-hour tier capped at 200W bills 0.034
-	// cents/kWh-equivalent... in cents terms: 0.17 * 0.2 kW = 0.034 yuan/kWh.
-	TierPerHourAtCeiling TierPriceBasis = "per_hour_at_ceiling"
-	// TierPerKWh reads the stored cents-per-hour number as a plain cents/kWh.
-	TierPerKWh TierPriceBasis = "per_kwh"
-)
-
-// Window is a time-of-use rate applied across a contiguous clock range.
-type Window struct {
-	Start string `json:"start"`
-	End   string `json:"end"`
-	// CentsPerKWh prices energy and power tiers, and is also the fallback for
-	// power above the top tier.
-	CentsPerKWh int64 `json:"cents_per_kwh"`
-	// CentsPerHourPerKW prices the whole session by its peak power. Only read
-	// by BasisMaxPower, and only meaningful on an all-day window.
-	CentsPerHourPerKW int64 `json:"cents_per_hour_per_kw,omitempty"`
-	// ServiceCentsPerKWh overrides Spec.Service.CentsPerKWh inside this window.
-	ServiceCentsPerKWh *int64 `json:"service_cents_per_kwh,omitempty"`
-}
-
-// Tier is one power band. Tiers are ordered and must not overlap.
+// Tier is one rung of a power ladder. Only the ceiling is stored: the floor of
+// a tier is always the previous tier's ceiling plus one watt, which is how the
+// editor guarantees the bands cannot overlap. Storing both ends independently
+// is what lets a tariff end up with a hole in it, and a hole in a ladder is a
+// session that cannot be priced at all.
 type Tier struct {
-	LowW  uint32 `json:"low_w"`
-	HighW uint32 `json:"high_w"`
-	// CentsPerHour is only meaningful when TierPriceBasis is per_hour_at_ceiling.
-	CentsPerHour        int64 `json:"cents_per_hour"`
-	ServiceCentsPerHour int64 `json:"service_cents_per_hour"`
+	// MaxWatts is the inclusive upper bound. The first tier must be 0 and the
+	// values must strictly increase.
+	MaxWatts int `json:"max_watts"`
+	// ElectricCents is cents per kWh when the electric basis is energy, and
+	// cents per hour when it is a power basis — see TierPriceBasis.
+	ElectricCents int64 `json:"electric_cents"`
+	// ServiceCents is only read when the service line is ServiceMinutePower.
+	ServiceCents int64 `json:"service_cents,omitempty"`
 }
 
-// ServiceFee carries every service-fee rate; the active one is picked by Mode.
-type ServiceFee struct {
-	Mode            ServiceMode `json:"mode"`
-	CentsPerKWh     int64       `json:"cents_per_kwh"`
-	CentsPerMinute  int64       `json:"cents_per_minute"`
-	CentsPerHour    int64       `json:"cents_per_hour"`
-	CentsPerSession int64       `json:"cents_per_session"`
+// Period is one time-of-use slice of the day. The day is stored as a chain of
+// end minutes rather than as independent start/end pairs, for the same reason
+// the tiers are stored as ceilings: a chain cannot contain a gap, whereas a
+// pair of times very easily can.
+type Period struct {
+	// EndMinute is minutes from midnight, 1..1440. Values must strictly
+	// increase and the last one must be exactly 1440, so the day is covered
+	// with no hole and no overlap.
+	EndMinute int `json:"end_minute"`
+	// ElectricCents is the single electricity rate for this period, and is the
+	// only rate field when the basis is energy — an energy tariff has no
+	// ladder, and offering one would be offering a field nothing reads.
+	ElectricCents int64 `json:"electric_cents,omitempty"`
+	// Tiers is the power ladder that applies inside this period, and is empty
+	// when the electric basis is energy.
+	Tiers []Tier `json:"tiers,omitempty"`
+}
+
+// ElectricLine prices the electricity itself. It is required for a
+// server-billed mode and absent for a device-billed one, because on a
+// device-billed session there is no electricity price anywhere in the system.
+type ElectricLine struct {
+	Basis   ServerBasis `json:"basis"`
+	Periods []Period    `json:"periods"`
+}
+
+// ServiceLine prices the service fee. A nil *ServiceLine and a ServiceNone basis
+// both mean no service fee; the pointer is kept so "not configured" and
+// "configured as zero" stay distinguishable when an editor round-trips it.
+type ServiceLine struct {
+	Basis           ServiceBasis `json:"basis"`
+	CentsPerKWh     int64        `json:"cents_per_kwh,omitempty"`
+	CentsPerMinute  int64        `json:"cents_per_minute,omitempty"`
+	CentsPerSession int64        `json:"cents_per_session,omitempty"`
 }
 
 // Channel is how the session was started; it selects the rate multipliers.
@@ -105,73 +80,99 @@ const (
 	ChannelCard    Channel = "card"
 )
 
-// Multiplier holds basis points where 10000 means 1.0x. Zero disables the
-// override so an unset multiplier can never silently become free charging.
-type Multiplier struct {
-	TempElectricBP int32 `json:"temp_electric_bp"`
-	TempServiceBP  int32 `json:"temp_service_bp"`
-	CardElectricBP int32 `json:"card_electric_bp"`
-	CardServiceBP  int32 `json:"card_service_bp"`
+// ChannelMultiplier holds basis points where 10000 means 1.0x. It applies to
+// the electric line only: the real back office shows the card rate as a
+// multiplier on the electricity charge and nothing else, so folding a service
+// multiplier in here would invent a discount the tariff never published.
+type ChannelMultiplier struct {
+	TempBP int32 `json:"temp_bp"`
+	CardBP int32 `json:"card_bp"`
 }
 
-func (m Multiplier) electricBP(channel Channel) int32 {
-	if channel == ChannelTemp && m.TempElectricBP > 0 {
-		return m.TempElectricBP
+func (m *ChannelMultiplier) electricBP(channel Channel) int32 {
+	if m == nil {
+		return 10000
 	}
-	if channel == ChannelCard && m.CardElectricBP > 0 {
-		return m.CardElectricBP
+	if channel == ChannelTemp && m.TempBP > 0 {
+		return m.TempBP
+	}
+	if channel == ChannelCard && m.CardBP > 0 {
+		return m.CardBP
 	}
 	return 10000
 }
 
-func (m Multiplier) serviceBP(channel Channel) int32 {
-	if channel == ChannelTemp && m.TempServiceBP > 0 {
-		return m.TempServiceBP
-	}
-	if channel == ChannelCard && m.CardServiceBP > 0 {
-		return m.CardServiceBP
-	}
-	return 10000
+// TimeCharge carries the settings that shape how a duration-billed session ends
+// rather than what it costs.
+type TimeCharge struct {
+	// StopWhenFull ends the session when the battery is full instead of running
+	// the clock out.
+	StopWhenFull bool `json:"stop_when_full"`
+	// MaxMinutes caps a duration session. Zero means uncapped.
+	MaxMinutes uint16 `json:"max_minutes,omitempty"`
+	// FloatPowerDeciWatts and FloatSeconds describe the low-current tail after
+	// the battery stops accepting full current.
+	FloatPowerDeciWatts uint16 `json:"float_power_deci_watts,omitempty"`
+	FloatSeconds        uint16 `json:"float_seconds,omitempty"`
 }
 
-// Spec is the complete, self-contained description of how money is computed.
-// Estimate and settlement both run this same structure through Cost so the two
-// sides can never drift apart.
+// Spec is the complete, self-contained description of how a session is priced.
+// Estimation and settlement both run this same structure through Cost, so the
+// two can never drift apart.
 type Spec struct {
-	Basis Basis  `json:"basis"`
-	Tiers []Tier `json:"tiers,omitempty"`
-	// TierPriceBasis is only read for BasisPowerTier.
+	Mode ChargeMode `json:"mode"`
+	// Electric is read for server-billed modes only. Device-billed modes leave
+	// it zero and ValidateSpec rejects one that tries to set it, because a
+	// rate on a device-billed tariff is a rate that will never be used and
+	// someone will eventually believe it is.
+	Electric *ElectricLine `json:"electric,omitempty"`
+	// Service is the second, independent line. Either may combine with the
+	// other freely — energy-based electricity with hourly service is a real
+	// and common combination.
+	Service *ServiceLine `json:"service,omitempty"`
+	// Multiplier is a rate card of its own and belongs to the electric line.
+	Multiplier *ChannelMultiplier `json:"multiplier,omitempty"`
+	// TierPriceBasis is only read by BasisRealtimePower, where a stored
+	// cents-per-hour rung has to become cents per kWh before it can be applied
+	// to a slice of energy. It stays an explicit stored choice because the
+	// industry conversion is a commercial decision, not an arithmetic fact.
 	TierPriceBasis TierPriceBasis `json:"tier_price_basis,omitempty"`
-	// Windows must cover the whole day for energy and power_tier, and must be a
-	// single all-day window for max_power. The flat bases ignore it entirely.
-	Windows []Window `json:"windows"`
-	// MaxPowerCentsPerHourPerKW is only read by BasisMaxPower.
-	MaxPowerCentsPerHourPerKW int64 `json:"max_power_cents_per_hour_per_kw,omitempty"`
-	// PerMinuteCents and PerSessionCents belong to the flat bases.
-	PerMinuteCents  int64      `json:"per_minute_cents,omitempty"`
-	PerSessionCents int64      `json:"per_session_cents,omitempty"`
-	Service         ServiceFee `json:"service"`
+	// LossRateBP inflates billable energy to cover line loss; 10000 is no loss.
+	LossRateBP int32 `json:"loss_rate_bp,omitempty"`
 	// FreeMinutes waives the whole session when it ends within this many
 	// minutes. Zero disables the waiver.
-	FreeMinutes int `json:"free_minutes"`
-	// MinElectricCents floors the electric line only; the service line is never
-	// used as a balance filler, unlike the old total-based minimum.
-	MinElectricCents int64 `json:"min_electric_cents"`
-	// LossRateBP inflates billable energy to cover line loss, 10000 = no loss.
-	LossRateBP int32 `json:"loss_rate_bp"`
-	// DefaultChannel is used when a session does not report one.
-	DefaultChannel Channel    `json:"default_channel,omitempty"`
-	Multipliers    Multiplier `json:"multipliers,omitempty"`
+	FreeMinutes int `json:"free_minutes,omitempty"`
+	// MinElectricCents floors the electric line only. The service line is never
+	// used as a balance filler.
+	MinElectricCents int64 `json:"min_electric_cents,omitempty"`
+	// TimeCharge only applies to duration-billed sessions.
+	TimeCharge *TimeCharge `json:"time_charge,omitempty"`
+	// SpendCapCents is the optional ceiling a running server-billed session is
+	// stopped at. Zero means no ceiling, in which case the session ends when
+	// the time or energy the platform granted runs out. It is a product control,
+	// not a protocol requirement: the board still honours its own allowance.
+	SpendCapCents int64 `json:"spend_cap_cents,omitempty"`
+	// StopGraceSeconds is how long the platform waits after asking the device
+	// to stop before treating the session as unbounded.
+	StopGraceSeconds int `json:"stop_grace_seconds,omitempty"`
+	// DefaultChargeWay is the default way a session is authorised on this
+	// device. It is presentation and policy, not arithmetic.
+	DefaultChargeWay string `json:"default_charge_way,omitempty"`
+	// CardMaxMinutes is the longest card-started session allowed.
+	CardMaxMinutes uint16 `json:"card_max_minutes,omitempty"`
+	// Display is what the mini program may reveal. It never changes what is
+	// charged, which is why it sits beside the spec rather than inside it.
+	Display Display `json:"display,omitempty"`
 }
 
 // Sample is one contiguous stretch of usage that stays inside a single rate
-// window. Callers that cannot guarantee this must split before calling Cost.
+// period. Callers that cannot guarantee this must split before calling Cost.
 type Sample struct {
 	Start    time.Time
 	End      time.Time
 	EnergyWh uint64
-	// PowerW is the average power over the sample. Zero means "derive it from
-	// energy and duration", which is what estimation has to do.
+	// PowerW is the power over the sample. Zero means "derive it from energy
+	// and duration", which is what estimation has to do.
 	PowerW uint32
 }
 
@@ -187,9 +188,6 @@ func (u Usage) channel(spec Spec) Channel {
 	if u.Channel != "" {
 		return u.Channel
 	}
-	if spec.DefaultChannel != "" {
-		return spec.DefaultChannel
-	}
 	return ChannelDefault
 }
 
@@ -203,29 +201,17 @@ func (u Usage) minutes() int64 {
 // Fee is the priced result. Basis is echoed so callers can render the right
 // unit without re-deriving it.
 type Fee struct {
-	Basis         Basis  `json:"basis"`
-	ElectricCents int64  `json:"electric_cents"`
-	ServiceCents  int64  `json:"service_cents"`
-	TotalCents    int64  `json:"total_cents"`
-	BillableWh    uint64 `json:"billable_wh"`
+	Basis         ServerBasis `json:"basis"`
+	ElectricCents int64       `json:"electric_cents"`
+	ServiceCents  int64       `json:"service_cents"`
+	TotalCents    int64       `json:"total_cents"`
+	BillableWh    uint64      `json:"billable_wh"`
 }
 
-const maxRateCents = 1000000
-
-// ValidateSpec is shared by publication and pricing: a tariff the editor
+// ValidateSpec is shared by publication and by pricing: a tariff the editor
 // accepts must always be one the settlement path can actually execute.
 func ValidateSpec(spec Spec) error {
-	switch spec.Basis {
-	case BasisEnergy, BasisPowerTier, BasisMaxPower, BasisPerMinute, BasisPerSession:
-	default:
-		return ErrInvalidPricing
-	}
-	if spec.TierPriceBasis == "" {
-		spec.TierPriceBasis = TierPerHourAtCeiling
-	}
-	switch spec.TierPriceBasis {
-	case TierPerHourAtCeiling, TierPerKWh:
-	default:
+	if !spec.Mode.Valid() {
 		return ErrInvalidPricing
 	}
 	if spec.FreeMinutes < 0 || spec.FreeMinutes > 1440 {
@@ -234,128 +220,123 @@ func ValidateSpec(spec Spec) error {
 	if spec.MinElectricCents < 0 || spec.MinElectricCents > maxRateCents {
 		return ErrInvalidPricing
 	}
+	if spec.SpendCapCents < 0 || spec.SpendCapCents > maxRateCents {
+		return ErrInvalidPricing
+	}
+	if spec.StopGraceSeconds < 0 || spec.StopGraceSeconds > 3600 {
+		return ErrInvalidPricing
+	}
 	if spec.LossRateBP < 0 || spec.LossRateBP > 100000 {
 		return ErrInvalidPricing
 	}
-	for _, bp := range []int32{spec.Multipliers.TempElectricBP, spec.Multipliers.TempServiceBP,
-		spec.Multipliers.CardElectricBP, spec.Multipliers.CardServiceBP} {
-		if bp < 0 || bp > 100000 {
-			return ErrInvalidPricing
+	if spec.Multiplier != nil {
+		for _, bp := range []int32{spec.Multiplier.TempBP, spec.Multiplier.CardBP} {
+			if bp < 0 || bp > 100000 {
+				return ErrInvalidPricing
+			}
 		}
 	}
-	for _, amount := range []int64{spec.MaxPowerCentsPerHourPerKW, spec.PerMinuteCents, spec.PerSessionCents} {
-		if amount < 0 || amount > maxRateCents {
-			return ErrInvalidPricing
-		}
-	}
-	for _, amount := range []int64{spec.Service.CentsPerKWh, spec.Service.CentsPerMinute,
-		spec.Service.CentsPerHour, spec.Service.CentsPerSession} {
-		if amount < 0 || amount > maxRateCents {
-			return ErrInvalidPricing
-		}
-	}
-	switch spec.Service.Mode {
-	case "", ServiceNone:
-		// An unset service mode means no service fee, so a zero-value Spec is
-		// still a coherent tariff.
-		spec.Service.Mode = ServiceNone
-	case ServiceEnergy, ServiceMinute, ServiceMinutePower, ServiceSession:
-	default:
+	if spec.CardMaxMinutes > 999 {
+		// The firmware's card session is one unsigned 16-bit field counted in
+		// minutes, and a value above this is rejected by the board rather than
+		// silently truncated.
 		return ErrInvalidPricing
 	}
-	if spec.Basis == BasisPowerTier {
-		if len(spec.Tiers) == 0 || len(spec.Tiers) > 32 {
+	if spec.TimeCharge != nil {
+		if spec.TimeCharge.MaxMinutes > 999 || spec.TimeCharge.FloatSeconds > 10800 || spec.TimeCharge.FloatPowerDeciWatts > 500 {
 			return ErrInvalidPricing
 		}
-		previousHigh := int64(-1)
-		for _, tier := range spec.Tiers {
-			if tier.HighW == 0 || int64(tier.LowW) >= int64(tier.HighW) || tier.HighW > 100000 {
-				return ErrInvalidPricing
-			}
-			if int64(tier.LowW) <= previousHigh {
-				return ErrInvalidPricing
-			}
-			if tier.CentsPerHour < 0 || tier.CentsPerHour > maxRateCents ||
-				tier.ServiceCentsPerHour < 0 || tier.ServiceCentsPerHour > maxRateCents {
-				return ErrInvalidPricing
-			}
-			previousHigh = int64(tier.HighW)
-		}
-	} else if len(spec.Tiers) > 0 {
-		return ErrInvalidPricing
 	}
-	if spec.Basis == BasisPerSession || spec.Basis == BasisPerMinute {
-		// These bases ignore time-of-use entirely, so requiring a full-day
-		// window table would be noise the editor must fill in for nothing.
-		if len(spec.Windows) > 0 {
+	if spec.Service != nil {
+		if !spec.Service.Basis.Valid() {
+			return ErrInvalidPricing
+		}
+		for _, amount := range []int64{spec.Service.CentsPerKWh, spec.Service.CentsPerMinute, spec.Service.CentsPerSession} {
+			if amount < 0 || amount > maxRateCents {
+				return ErrInvalidPricing
+			}
+		}
+	}
+	if !spec.Mode.ServerBilled() {
+		// A device-billed tariff carries no rates at all. Rejecting stray ones
+		// is cheaper than shipping a tariff that reads as priced when it is not.
+		if spec.Electric != nil || spec.Service != nil || spec.Multiplier != nil {
 			return ErrInvalidPricing
 		}
 		return nil
 	}
-	if spec.Basis == BasisMaxPower {
-		// Peak-power pricing bills one peak against the whole session, so a
-		// mid-session tariff change would have to be time-weighted. Rather
-		// than implement that quietly, require a single all-day rate.
-		if len(spec.Windows) != 1 || spec.Windows[0].Start != "00:00" || spec.Windows[0].End != "24:00" {
-			return ErrInvalidPricing
-		}
-		if spec.Windows[0].CentsPerHourPerKW < 0 || spec.Windows[0].CentsPerHourPerKW > maxRateCents {
-			return ErrInvalidPricing
+	if spec.Electric == nil {
+		return ErrInvalidPricing
+	}
+	if spec.Electric.Basis != spec.Mode.BasisFor() {
+		// The mode and the tariff must describe the same tariff. A device
+		// configured for peak power but holding an energy tariff would bill by
+		// something nobody agreed to.
+		return ErrInvalidPricing
+	}
+	for _, period := range spec.Electric.Periods {
+		if err := validateTiers(spec.Electric.Basis, period); err != nil {
+			return err
 		}
 	}
-	_, err := compileWindows(spec.Windows)
+	_, err := compilePeriods(spec.Electric.Periods)
 	return err
 }
 
-func compileWindows(windows []Window) ([1440]Window, error) {
-	var schedule [1440]Window
-	var filled [1440]bool
-	if len(windows) == 0 || len(windows) > 48 {
+// compilePeriods expands the stored chain into a per-minute lookup, and is
+// where the chain invariant is enforced: strictly increasing end minutes that
+// begin at zero and finish at 1440. That single rule makes a gap or an overlap
+// unrepresentable, so there is no separate coverage check to get wrong.
+func compilePeriods(periods []Period) ([1440]Period, error) {
+	var schedule [1440]Period
+	if len(periods) == 0 || len(periods) > 48 {
 		return schedule, ErrInvalidPricing
 	}
-	for _, window := range windows {
-		start, err := clockMinute(window.Start)
-		if err != nil || start == 1440 {
+	cursor := 0
+	for _, period := range periods {
+		if period.EndMinute <= cursor || period.EndMinute > 1440 {
 			return schedule, ErrInvalidPricing
 		}
-		end, err := clockMinute(window.End)
-		if err != nil || end == start || window.CentsPerKWh < 0 || window.CentsPerKWh > maxRateCents {
-			return schedule, ErrInvalidPricing
+		for minute := cursor; minute < period.EndMinute; minute++ {
+			schedule[minute] = period
 		}
-		if window.ServiceCentsPerKWh != nil && (*window.ServiceCentsPerKWh < 0 || *window.ServiceCentsPerKWh > maxRateCents) {
-			return schedule, ErrInvalidPricing
-		}
-		if end < start {
-			end += 1440
-		}
-		if end-start > 1440 {
-			return schedule, ErrInvalidPricing
-		}
-		for minute := start; minute < end; minute++ {
-			index := minute % 1440
-			if filled[index] {
-				return schedule, ErrInvalidPricing
-			}
-			filled[index] = true
-			schedule[index] = window
-		}
+		cursor = period.EndMinute
 	}
-	for _, isFilled := range filled {
-		if !isFilled {
-			return schedule, ErrInvalidPricing
-		}
+	if cursor != 1440 {
+		return schedule, ErrInvalidPricing
 	}
 	return schedule, nil
 }
 
-// Period is the legacy time-of-use pair kept for the admin API payloads that
-// still speak in period/price language.
-type Period struct {
-	Period             string `json:"period"`
-	Start              string `json:"start"`
-	End                string `json:"end"`
-	ElectricPriceCents int64  `json:"electric_price_cents"`
-	ServicePriceCents  *int64 `json:"service_price_cents,omitempty"`
+// validateTiers enforces the ladder chain inside one period, and keeps the two
+// shapes from coexisting. Whether a ladder is allowed at all is decided by the
+// electric basis: energy has exactly one rate, the power bases have exactly one
+// ladder, and a period carrying both is a tariff the operator cannot explain.
+func validateTiers(basis ServerBasis, period Period) error {
+	if period.ElectricCents < 0 || period.ElectricCents > maxRateCents {
+		return ErrInvalidPricing
+	}
+	if basis == BasisEnergy {
+		if len(period.Tiers) > 0 {
+			return ErrInvalidPricing
+		}
+		return nil
+	}
+	if period.ElectricCents != 0 || len(period.Tiers) == 0 || len(period.Tiers) > 8 {
+		return ErrInvalidPricing
+	}
+	previous := -1
+	for _, tier := range period.Tiers {
+		if tier.MaxWatts < 0 || tier.MaxWatts <= previous || tier.MaxWatts > 9990 {
+			return ErrInvalidPricing
+		}
+		if tier.ElectricCents < 0 || tier.ElectricCents > maxRateCents ||
+			tier.ServiceCents < 0 || tier.ServiceCents > maxRateCents {
+			return ErrInvalidPricing
+		}
+		previous = tier.MaxWatts
+	}
+	return nil
 }
 
 func clockMinute(value string) (int, error) {
@@ -377,25 +358,42 @@ func clockMinute(value string) (int, error) {
 // way. Where it does, distributing energy evenly is exact rather than an
 // assumption, so an unsegmented meter can be settled without review.
 func specIsUniformOver(spec Spec, start, end time.Time) bool {
-	if spec.Basis != BasisEnergy && spec.Basis != BasisPowerTier {
-		// Peak, per-minute and per-session tariffs do not read the rate off the
-		// clock, so a flat spread never misprices them.
+	if spec.Electric == nil || (spec.Electric.Basis != BasisEnergy && spec.Electric.Basis != BasisRealtimePower) {
+		// Peak-power and flat tariffs do not read the rate off the clock, so an
+		// even spread never misprices them.
 		return true
 	}
-	schedule, err := compileWindows(spec.Windows)
+	schedule, err := compilePeriods(spec.Electric.Periods)
 	if err != nil {
 		return false
 	}
-	var first *Window
+	var first *Period
 	at := start.In(beijing).Truncate(time.Minute)
 	for !at.After(end.In(beijing).Truncate(time.Minute)) {
-		window := schedule[at.Hour()*60+at.Minute()]
+		period := schedule[at.Hour()*60+at.Minute()]
 		if first == nil {
-			first = &window
-		} else if window.CentsPerKWh != first.CentsPerKWh {
+			first = &period
+		} else if !sameRate(*first, period) {
 			return false
 		}
 		at = at.Add(time.Minute)
+	}
+	return true
+}
+
+// sameRate reports whether two periods price identically. It compares the
+// single rate and the ladder both, because a basis carries exactly one of them
+// and comparing only the ladder would make every energy tariff look uniform —
+// which would let a session that spans a tariff change settle on a guess
+// instead of going to review.
+func sameRate(a, b Period) bool {
+	if a.ElectricCents != b.ElectricCents || len(a.Tiers) != len(b.Tiers) {
+		return false
+	}
+	for i := range a.Tiers {
+		if a.Tiers[i] != b.Tiers[i] {
+			return false
+		}
 	}
 	return true
 }

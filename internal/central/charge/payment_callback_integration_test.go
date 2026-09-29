@@ -43,7 +43,7 @@ func TestVerifiedPaymentCreatesOneChargeOrderAfterCallback(t *testing.T) {
 		Port: ScanResult{Kind: "port", DeviceID: "paid-device", StationID: 9,
 			Port: &ScanPort{PortID: "paid-device:1", DeviceID: "paid-device", PortNo: 1, Online: true, Available: true}},
 		Energy: "1", Minutes: 60,
-		Rule: pricing.Rule{ID: 3, StationID: 9, Version: 1, Spec: pricing.Spec{Basis: pricing.BasisEnergy, Windows: []pricing.Window{{Start: "00:00", End: "24:00", CentsPerKWh: 100}}, Service: pricing.ServiceFee{Mode: pricing.ServiceEnergy, CentsPerKWh: 40}}}}
+		Rule: pricing.Rule{ID: 3, StationID: 9, Version: 1, Spec: pricing.Spec{Mode: pricing.ModeServerEnergy, Electric: &pricing.ElectricLine{Basis: pricing.BasisEnergy, Periods: []pricing.Period{{EndMinute: 1440, ElectricCents: 100}}}, Service: &pricing.ServiceLine{Basis: pricing.ServiceEnergy, CentsPerKWh: 40}}}}
 	intent, err := (PaymentIntentStore{DB: testGORMDB(t, db)}).Reserve(ctx, input)
 	if err != nil {
 		t.Fatal(err)
@@ -111,7 +111,7 @@ func TestLateVerifiedPaymentQueuesRefundWithoutChargeOrder(t *testing.T) {
 		Port: ScanResult{Kind: "port", DeviceID: "late-device", StationID: 9,
 			Port: &ScanPort{PortID: "late-device:1", DeviceID: "late-device", PortNo: 1, Online: true, Available: true}},
 		Energy: "1", Minutes: 60,
-		Rule: pricing.Rule{ID: 3, StationID: 9, Version: 1, Spec: pricing.Spec{Basis: pricing.BasisEnergy, Windows: []pricing.Window{{Start: "00:00", End: "24:00", CentsPerKWh: 100}}, Service: pricing.ServiceFee{Mode: pricing.ServiceEnergy, CentsPerKWh: 40}}}}
+		Rule: pricing.Rule{ID: 3, StationID: 9, Version: 1, Spec: pricing.Spec{Mode: pricing.ModeServerEnergy, Electric: &pricing.ElectricLine{Basis: pricing.BasisEnergy, Periods: []pricing.Period{{EndMinute: 1440, ElectricCents: 100}}}, Service: &pricing.ServiceLine{Basis: pricing.ServiceEnergy, CentsPerKWh: 40}}}}
 	intent, err := (PaymentIntentStore{DB: testGORMDB(t, db)}).Reserve(ctx, input)
 	if err != nil {
 		t.Fatal(err)

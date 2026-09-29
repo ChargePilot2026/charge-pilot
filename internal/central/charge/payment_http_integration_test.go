@@ -47,7 +47,7 @@ func TestSimulationHTTPPaymentCreatesChargeOnlyAfterCallback(t *testing.T) {
 	}
 	stationID, _ := station.LastInsertId()
 	defer adminDB.ExecContext(ctx, "DELETE FROM station WHERE id = ?", stationID)
-	rule, err := adminDB.ExecContext(ctx, "INSERT INTO pricing_rule (name,station_id,spec_json) VALUES (?,?,?)", "Payment Test", stationID, `{"basis":"energy","windows":[{"start":"00:00","end":"24:00","cents_per_kwh":100}],"service":{"mode":"energy","cents_per_kwh":40}}`)
+	rule, err := adminDB.ExecContext(ctx, "INSERT INTO pricing_rule (name,station_id,spec_json) VALUES (?,?,?)", "Payment Test", stationID, `{"mode":"server_energy","electric":{"basis":"energy","periods":[{"end_minute":1440,"electric_cents":100}]},"service":{"basis":"energy","cents_per_kwh":40}}`)
 	if err != nil {
 		t.Fatal(err)
 	}

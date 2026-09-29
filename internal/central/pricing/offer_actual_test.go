@@ -7,16 +7,21 @@ import (
 
 func TestConfiguredOfferSettlement(t *testing.T) {
 	start := time.Date(2026, 9, 29, 2, 0, 0, 0, time.UTC)
-	rule := Rule{ID: 1, StationID: 2, Version: 1, Spec: Spec{Basis: BasisEnergy,
-		Windows: []Window{{Start: "00:00", End: "24:00", CentsPerKWh: 100}},
-		Service: ServiceFee{Mode: ServiceEnergy, CentsPerKWh: 100}}}
+	rule := Rule{ID: 1, StationID: 2, Version: 1, Spec: Spec{
+		Mode:     ModeServerEnergy,
+		Electric: &ElectricLine{Basis: BasisEnergy, Periods: []Period{{EndMinute: 1440, ElectricCents: 100}}},
+		Service:  &ServiceLine{Basis: ServiceEnergy, CentsPerKWh: 100},
+	}}
+	// Half an hour at 1kWh: 100c of electricity plus 100c of service.
 	meter := ActualMeter{StartedAt: start, EndedAt: start.Add(30 * time.Minute), ChargedWh: 1000, ChargedSeconds: 1800}
 	tests := []struct {
 		name  string
 		offer Offer
 		total int64
 	}{
-		{"package half used", Offer{ID: 1, StationID: 2, Code: "P60", Name: "套餐", Mode: "package", PriceCents: 600, DurationMinutes: 60}, 300},
+		// A fixed-span package charges only for the part of the span used, so an
+		// abandoned session hands back the rest.
+		{"package half used", Offer{ID: 1, StationID: 2, Code: "P60", Name: "套餐", Mode: "package", PriceCents: 600, DurationMinutes: 60}, 100},
 		{"amount cap", Offer{ID: 2, StationID: 2, Code: "A1", Name: "金额", Mode: "amount", PriceCents: 100}, 100},
 	}
 	for _, tc := range tests {
@@ -26,13 +31,14 @@ func TestConfiguredOfferSettlement(t *testing.T) {
 				t.Fatal(err)
 			}
 			if got.TotalCents != tc.total || got.ElectricCents+got.ServiceCents != tc.total {
-				t.Fatalf("fee=%+v", got)
+				t.Fatalf("fee=%+v, want a total of %d split without loss", got, tc.total)
 			}
 		})
 	}
+	// A package bought and never used must come back in full.
 	zero := ActualMeter{StartedAt: start, EndedAt: start, ChargedWh: 0, ChargedSeconds: 0}
 	got, err := PriceOfferActual(rule, &tests[0].offer, zero)
 	if err != nil || got.TotalCents != 0 {
-		t.Fatalf("unused package must be fully refunded: fee=%+v err=%v", got, err)
+		t.Fatalf("an unused package must be fully refunded: fee=%+v err=%v", got, err)
 	}
 }

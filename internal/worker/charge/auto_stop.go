@@ -90,13 +90,21 @@ func (s AutoStopper) Run(ctx context.Context) (int, error) {
 				}
 				if !stop && contract.Offer.Mode == "amount" {
 					if latest, ok := latestMeter(samples, order.PortNo, now); ok {
-						pseudo := protocol.Event{DeviceID: order.DeviceID, Port: order.PortNo, Type: protocol.ChargeEnd, StartedAt: latest.at.Add(-time.Duration(latest.seconds) * time.Second), EndedAt: latest.at, ReceivedAt: latest.at, ChargedSeconds: latest.seconds, EnergyMilliKWh: latest.wh}
-						segments := measuredSegments(order.StartedAt, pseudo, samples)
-						fee, feeErr := pricing.PriceActual(contract.Rule, pricing.ActualMeter{StartedAt: order.StartedAt, EndedAt: latest.at, ChargedWh: latest.wh, ChargedSeconds: latest.seconds, Segments: segments})
+						fee, feeErr := pricing.PriceActual(contract.Rule, measuredMeter(order, latest, samples))
 						if feeErr == nil && fee.TotalCents >= contract.Offer.PriceCents {
 							stop = true
 						}
 					}
+				}
+				// A spend cap is a promise the rider was shown, and under server
+				// billing nothing on the board is watching it: the device is running
+				// under a time or energy allowance the platform handed it at start,
+				// and it has no idea money is being spent. So the cap is enforced
+				// here, off the same meter the settlement will use. The rule itself
+				// lives in the pricing engine, so a poller, an operator and a test
+				// all apply the same decision.
+				if !stop && spendCapReached(contract.Rule, samples, order, now) {
+					stop = true
 				}
 			}
 			if stop {
@@ -109,6 +117,61 @@ func (s AutoStopper) Run(ctx context.Context) (int, error) {
 		afterID = orders[len(orders)-1].ID
 	}
 	return stopped, nil
+}
+
+// spendCapReached reports whether a running server-billed session has hit the
+// ceiling its tariff declares.
+//
+// A cap of zero means no cap, and the session is then stopped by the allowance
+// the board was given at start, as it would be without one. A tariff the engine
+// can no longer price produces no decision either: this is a stop rule, and a
+// rule derived from a tariff the engine rejects is not a reason to cut somebody's
+// charge off. Both return false and leave the existing rules in charge.
+func spendCapReached(rule pricing.Rule, samples []protocol.Event, order autoStopOrder, now time.Time) bool {
+	spec := rule.Spec
+	if !spec.Mode.ServerBilled() || spec.SpendCapCents <= 0 {
+		return false
+	}
+	latest, ok := latestMeter(samples, order.PortNo, now)
+	if !ok {
+		// No fresh reading means no claim about how much has been spent. An
+		// unreachable board is a separate problem handled elsewhere; guessing
+		// from a stale meter here would stop sessions that are nowhere near the
+		// ceiling.
+		return false
+	}
+	plan, err := pricing.StopAtMeter(rule, measuredMeter(order, latest, samples))
+	if err != nil {
+		// A meter that could not be settled on is a question for the settlement
+		// review, not a reason to stop a charge. ErrMeterReview here means the
+		// segments do not add up, which is a billing problem, not a cap breach.
+		return false
+	}
+	return plan.ShouldStop
+}
+
+// measuredMeter builds the meter record for a running session out of the latest
+// reading and whatever segments the telemetry could prove, so the spend-cap
+// check and the settlement price the same measurement.
+func measuredMeter(order autoStopOrder, latest meterReading, samples []protocol.Event) pricing.ActualMeter {
+	ended := latest.at
+	meter := pricing.ActualMeter{
+		StartedAt:      order.StartedAt,
+		EndedAt:        ended,
+		ChargedWh:      latest.wh,
+		ChargedSeconds: latest.seconds,
+	}
+	// measuredSegments needs a terminating event to measure up to, so the
+	// reading itself is dressed as one. It is a view of the same telemetry, not
+	// a second measurement.
+	terminal := protocol.Event{
+		DeviceID: order.DeviceID, Port: order.PortNo, Type: protocol.ChargeEnd,
+		StartedAt: ended.Add(-time.Duration(latest.seconds) * time.Second),
+		EndedAt:   ended, ReceivedAt: ended,
+		ChargedSeconds: latest.seconds, EnergyMilliKWh: latest.wh,
+	}
+	meter.Segments = measuredSegments(order.StartedAt, terminal, samples)
+	return meter
 }
 
 type meterReading struct {

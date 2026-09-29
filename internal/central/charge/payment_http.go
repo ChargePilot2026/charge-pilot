@@ -49,7 +49,7 @@ func (a PaymentStartAPI) offers(c *gin.Context) {
 		httpapi.Write(c, http.StatusNotFound, 1004, "端口不存在", nil)
 		return
 	}
-	rows, err := a.Pricing.ActiveOffers(c.Request.Context(), port.StationID)
+	rows, err := a.Pricing.ActiveOffers(c.Request.Context(), port.StationID, port.DeviceID)
 	if err != nil {
 		httpapi.Write(c, http.StatusServiceUnavailable, 5003, "充电方案暂时无法读取", nil)
 		return
@@ -109,7 +109,7 @@ func (a PaymentStartAPI) start(c *gin.Context) {
 		httpapi.Write(c, http.StatusConflict, 2001, "port unavailable", nil)
 		return
 	}
-	rule, err := a.Pricing.ActiveStationRule(c.Request.Context(), port.StationID)
+	rule, err := a.Pricing.ActiveDeviceRule(c.Request.Context(), port.StationID, port.DeviceID)
 	if errors.Is(err, pricing.ErrRuleUnavailable) || errors.Is(err, pricing.ErrInvalidPricing) {
 		httpapi.Write(c, http.StatusConflict, 2004, "pricing unavailable", nil)
 		return
@@ -118,7 +118,7 @@ func (a PaymentStartAPI) start(c *gin.Context) {
 		httpapi.Write(c, http.StatusServiceUnavailable, 5003, "pricing storage unavailable", nil)
 		return
 	}
-	selected, lookupErr := a.Pricing.ActiveOffer(c.Request.Context(), port.StationID, body.OfferID)
+	selected, lookupErr := a.Pricing.ActiveOffer(c.Request.Context(), port.StationID, port.DeviceID, body.OfferID)
 	if errors.Is(lookupErr, pricing.ErrOfferUnavailable) {
 		httpapi.Write(c, http.StatusConflict, 2004, "充电方案已下架", nil)
 		return
