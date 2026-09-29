@@ -1,0 +1,35 @@
+groups:
+  - name: chargepilot-local
+    rules:
+      - alert: ChargePilotServiceDown
+        expr: up{job=~"gateway|central|worker"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.job }} 指标抓取失败"
+          description: "检查服务进程、/metrics 和 Prometheus 网络。"
+      - alert: ChargePilotHighHTTPErrorRate
+        expr: |
+          sum by (job) (rate(chargepilot_http_requests_total{status=~"5.."}[5m]))
+          /
+          sum by (job) (rate(chargepilot_http_requests_total[5m])) > 0.05
+          and on (job) sum by (job) (increase(chargepilot_http_requests_total[5m])) >= 20
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.job }} 五分钟内 HTTP 5xx 超过 5%"
+          description: "仅在五分钟请求不少于 20 次时生效。"
+      - alert: ChargePilotSlowHTTP
+        expr: |
+          histogram_quantile(0.95, sum by (job, le)
+            (rate(chargepilot_http_request_duration_seconds_bucket{route!="/metrics"}[5m]))) > 2
+          and on (job) sum by (job)
+            (increase(chargepilot_http_request_duration_seconds_count{route!="/metrics"}[5m])) >= 20
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.job }} HTTP p95 超过 2 秒"
+          description: "仅在五分钟请求不少于 20 次时生效。"

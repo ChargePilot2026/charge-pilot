@@ -1,0 +1,19 @@
+rule_files:
+  - alerts.yml
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    input_series:
+      - series: 'up{job="central",instance="central:8080"}'
+        values: '0+0x7'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: ChargePilotServiceDown
+        exp_alerts:
+          - exp_labels:
+              job: central
+              instance: central:8080
+              severity: critical
+            exp_annotations:
+              summary: central 指标抓取失败
+              description: 检查服务进程、/metrics 和 Prometheus 网络。
