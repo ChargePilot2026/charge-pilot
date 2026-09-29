@@ -332,8 +332,19 @@ func settleWalletRecharge(tx *gorm.DB, order PaymentOrderRecord, payment Verifie
 	}).Error; err != nil {
 		return err
 	}
-	// Published so a later activity rule (first-recharge rewards) can react to
-	// the credit without this settlement path having to know about coupons.
+	// The first-recharge campaign is evaluated inside this same transaction, so
+	// a reward can never be paid for a credit that then rolls back. A rule that
+	// does not apply is not an error and never fails the settlement.
+	if _, err := ApplyActivityRules(tx, activityEvent{
+		TriggerType: "first_recharge",
+		UserID:      order.UserID,
+		EventKey:    activityEventKeyForRecharge(request.RequestID),
+		AmountCents: payment.PaidCents,
+		Now:         paidAt,
+	}); err != nil && !errors.Is(err, errActivityNotApplicable) {
+		return err
+	}
+
 	eventID := "W" + digest[:32]
 	envelope, err := json.Marshal(map[string]any{"event_id": eventID, "user_id": order.UserID,
 		"payment_order_id": order.ID, "recharge_request_id": request.RequestID, "amount_cents": payment.PaidCents})
