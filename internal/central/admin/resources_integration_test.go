@@ -203,37 +203,86 @@ func TestAdminPagesIntegration(t *testing.T) {
 	call(adminToken, "GET", "stations?keyword=更新&page_size=1", nil, 200)
 	call(adminToken, "GET", "stations?page_size=101", nil, 400)
 
-	// A pricing rule is now a template plus an application to a station, so the
-	// station appears in the apply call rather than at creation time.
-	periods := []gin.H{{"period": "flat", "start": "00:00", "end": "24:00", "electric_price_cents": 50}}
-	ruleTemplate := gin.H{"name": "集成分时规则", "mode": "kwh", "time_of_use": periods, "service_fee_cents_per_kwh": 20, "service_fee_cents_per_min": 0, "min_charge_cents": 10}
-	ruleTemplateID := fmt.Sprintf("%.0f", data(call(adminToken, "POST", "settings/pricing-rule-templates", ruleTemplate, 200))["id"].(float64))
-	call(fin1, "POST", "settings/pricing-rule-templates", ruleTemplate, 403)
-	call(adminToken, "POST", "settings/pricing-rule-templates", gin.H{"name": "坏时段", "mode": "kwh", "time_of_use": []gin.H{{"start": "01:00", "end": "24:00", "electric_price_cents": 50}}, "service_fee_cents_per_kwh": 0, "service_fee_cents_per_min": 0, "min_charge_cents": 0}, 400)
-	call(adminToken, "POST", "settings/pricing-rule-templates/"+ruleTemplateID+"/apply", gin.H{"request_id": "aa000000-0000-4000-8000-000000000000", "station_id": 0, "expected_version": 0}, 400)
-	call(adminToken, "POST", "settings/pricing-rule-templates/999999999999/apply", gin.H{"request_id": "aa000000-0000-4000-8000-0000000000ff", "station_id": sid, "expected_version": 0}, 404)
+	// A pricing template carries the tariff, its packages and the display
+	// switches as one object, and is applied to a station as one copy.
+	spec := gin.H{
+		"basis":              "energy",
+		"windows":            []gin.H{{"start": "00:00", "end": "24:00", "cents_per_kwh": 50}},
+		"service":            gin.H{"mode": "energy", "cents_per_kwh": 20},
+		"min_electric_cents": 10,
+	}
+	tmpl := gin.H{
+		"name": "集成计费模板", "remark": "集成用例",
+		"spec":    spec,
+		"display": gin.H{"show_energy": true, "show_power": true, "show_fee_split": true},
+		"packages": []gin.H{
+			{"name": "2元", "kind": "amount", "price_cents": 200, "duration_minutes": 0, "stop_when_full": false, "status": "active"},
+			{"name": "2小时", "kind": "package", "price_cents": 0, "duration_minutes": 120, "stop_when_full": true, "status": "active"},
+		},
+	}
+	pricingTemplateID := fmt.Sprintf("%.0f", data(call(adminToken, "POST", "settings/pricing-templates", tmpl, 200))["id"].(float64))
+	call(fin1, "POST", "settings/pricing-templates", tmpl, 403)
+	// A tariff that leaves part of the day unpriced is refused at the door.
+	call(adminToken, "POST", "settings/pricing-templates", gin.H{"name": "坏时段", "spec": gin.H{
+		"basis": "energy", "windows": []gin.H{{"start": "01:00", "end": "24:00", "cents_per_kwh": 50}}}}, 400)
+	// A power-tier tariff with no tiers is equally unpriceable.
+	call(adminToken, "POST", "settings/pricing-templates", gin.H{"name": "空档位", "spec": gin.H{
+		"basis": "power_tier", "windows": []gin.H{{"start": "00:00", "end": "24:00", "cents_per_kwh": 50}}, "tiers": []gin.H{}}}, 400)
+	// A package without the terms that make it priceable is refused too.
+	call(adminToken, "POST", "settings/pricing-templates", gin.H{"name": "残缺套餐", "spec": spec,
+		"packages": []gin.H{{"name": "无价", "kind": "amount", "price_cents": 0, "status": "active"}}}, 400)
+	call(adminToken, "POST", "settings/pricing-templates/"+pricingTemplateID+"/apply", gin.H{"request_id": "aa000000-0000-4000-8000-000000000000", "station_id": 0, "expected_version": 0}, 400)
+	call(adminToken, "POST", "settings/pricing-templates/999999999999/apply", gin.H{"request_id": "aa000000-0000-4000-8000-0000000000ff", "station_id": sid, "expected_version": 0}, 404)
 
-	applyPath := "settings/pricing-rule-templates/" + ruleTemplateID + "/apply"
+	applyPath := "settings/pricing-templates/" + pricingTemplateID + "/apply"
 	apply := gin.H{"request_id": "aa000000-0000-4000-8000-000000000001", "station_id": sid, "expected_version": 0}
 	firstRule := data(call(adminToken, "POST", applyPath, apply, 200))
 	replayRule := data(call(adminToken, "POST", applyPath, apply, 200))
 	if firstRule["id"] != replayRule["id"] || replayRule["replayed"] != true {
 		t.Fatal("apply replay must preserve rule")
 	}
+	// Applying copies the packages to the station in the same transaction.
+	var offers int64
+	adb.Table("charge_offer").Where("station_id=? AND template_id=? AND status='active'", sid, pricingTemplateID).Count(&offers)
+	if offers != 2 {
+		t.Fatalf("applying a template must publish every package, got %d offers", offers)
+	}
+	// Two packages at one station is the case a leftover UNIQUE(station_id)
+	// would break, so the count above is the regression guard for it.
 	// The same template cannot be applied while one of its rules is active at
-	// the station; the station has to disable it first, exactly as a charge
-	// package has to.
+	// the station; the station has to disable it first.
 	apply["request_id"] = "aa000000-0000-4000-8000-000000000002"
 	call(adminToken, "POST", applyPath, apply, 409)
 	call(fin1, "POST", applyPath, apply, 403)
 	call(adminToken, "POST", applyPath, gin.H{"request_id": "aa000000-0000-4000-8000-000000000003", "station_id": sid, "expected_version": 9}, 409)
 
 	// Editing the template must not reach the rule the station is charging under.
-	call(adminToken, "PUT", "settings/pricing-rule-templates/"+ruleTemplateID, gin.H{"name": "改价后的模板", "mode": "kwh", "time_of_use": periods, "service_fee_cents_per_kwh": 20, "service_fee_cents_per_min": 0, "min_charge_cents": 99, "version": 1}, 200)
-	var appliedMinimum int64
-	adb.Table("pricing_rule").Where("id=?", firstRule["id"]).Pluck("min_charge_cents", &appliedMinimum)
-	if appliedMinimum != 10 {
-		t.Fatalf("applied rule minimum changed to %d when the template was edited; it is a snapshot", appliedMinimum)
+	edited := gin.H{"name": "改价后的模板", "spec": gin.H{
+		"basis": "energy", "windows": []gin.H{{"start": "00:00", "end": "24:00", "cents_per_kwh": 99}},
+		"service": gin.H{"mode": "energy", "cents_per_kwh": 20}, "min_electric_cents": 10},
+		"packages": []gin.H{{"name": "5元", "kind": "amount", "price_cents": 500,
+			"duration_minutes": 0, "stop_when_full": false, "status": "active"}},
+		"version": 1}
+	call(adminToken, "PUT", "settings/pricing-templates/"+pricingTemplateID, edited, 200)
+	var appliedSpec string
+	adb.Table("pricing_rule").Where("id=?", firstRule["id"]).Pluck("spec_json", &appliedSpec)
+	var snapshot struct {
+		Windows []struct {
+			CentsPerKWh int64 `json:"cents_per_kwh"`
+		} `json:"windows"`
+	}
+	if err := json.Unmarshal([]byte(appliedSpec), &snapshot); err != nil || len(snapshot.Windows) != 1 || snapshot.Windows[0].CentsPerKWh != 50 {
+		t.Fatalf("applied rule changed to %s when the template was edited; it is a snapshot", appliedSpec)
+	}
+
+	// Copying leaves the original running and creates an independent template.
+	copied := fmt.Sprintf("%.0f", data(call(adminToken, "POST", "settings/pricing-templates/"+pricingTemplateID+"/copy", gin.H{"name": "模板副本"}, 200))["id"].(float64))
+	if copied == pricingTemplateID {
+		t.Fatal("copy must create a new template")
+	}
+	detail := data(call(adminToken, "GET", "settings/pricing-templates/"+copied, nil, 200))
+	if len(detail["packages"].([]any)) != 1 {
+		t.Fatal("copy must carry the packages across")
 	}
 
 	// After the station disables the rule, the template can be applied again and
@@ -254,8 +303,10 @@ func TestAdminPagesIntegration(t *testing.T) {
 
 	// Two operators applying different templates against the same station
 	// version cannot both win.
-	otherID := fmt.Sprintf("%.0f", data(call(adminToken, "POST", "settings/pricing-rule-templates", gin.H{"name": "并发模板", "mode": "kwh", "time_of_use": periods, "service_fee_cents_per_kwh": 30, "service_fee_cents_per_min": 0, "min_charge_cents": 0}, 200))["id"].(float64))
-	otherPath := "settings/pricing-rule-templates/" + otherID + "/apply"
+	otherID := fmt.Sprintf("%.0f", data(call(adminToken, "POST", "settings/pricing-templates", gin.H{
+		"name": "并发模板", "spec": gin.H{"basis": "energy",
+			"windows": []gin.H{{"start": "00:00", "end": "24:00", "cents_per_kwh": 30}}}}, 200))["id"].(float64))
+	otherPath := "settings/pricing-templates/" + otherID + "/apply"
 	codes := make(chan int, 2)
 	for _, requestID := range []string{"aa000000-0000-4000-8000-000000000005", "aa000000-0000-4000-8000-000000000006"} {
 		body := gin.H{"request_id": requestID, "station_id": sid, "expected_version": 2}
@@ -278,7 +329,7 @@ func TestAdminPagesIntegration(t *testing.T) {
 	if activeRules != 1 {
 		t.Fatalf("active rules %d", activeRules)
 	}
-	exec(adb, "INSERT INTO pricing_rule(name,station_id) VALUES('legacy unbound',NULL)")
+	exec(adb, "INSERT INTO pricing_rule(name,station_id,spec_json) VALUES('legacy unbound',NULL,'{}')")
 	var unboundID uint64
 	adb.Table("pricing_rule").Where("name='legacy unbound'").Pluck("id", &unboundID)
 	call(adminToken, "POST", fmt.Sprintf("settings/charge-rules/%d/disable", unboundID), nil, 200)

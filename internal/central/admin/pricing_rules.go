@@ -1,36 +1,44 @@
 package admin
 
 import (
-	"github.com/ChargePilot2026/charge-pilot/internal/central/pricing"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/httpapi"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
-type pricingPublication struct {
-	RequestID       string           `json:"request_id"`
-	Name            string           `json:"name"`
-	StationID       uint64           `json:"station_id"`
-	ExpectedVersion uint32           `json:"expected_version"`
-	Mode            string           `json:"mode"`
-	Periods         []pricing.Period `json:"time_of_use"`
-	ServiceKWh      int64            `json:"service_fee_cents_per_kwh"`
-	ServiceMinute   int64            `json:"service_fee_cents_per_min"`
-	Minimum         int64            `json:"min_charge_cents"`
-}
-
 // registerPricing keeps only the station-scoped views. Creating a rule is no
 // longer a direct write: a template is created first and then applied to a
 // station, so the endpoints that bound a station at creation time are gone.
 func (a ResourceAPI) registerPricing(r *gin.Engine) {
 	r.GET("/api/v1/admin/settings/charge-rules", a.Auth.Require("pricing.read"), a.pricingRules)
+	r.GET("/api/v1/admin/settings/pricing-rule-templates/:id/usage", a.Auth.Require("pricing.read"), a.pricingTemplateUsage)
 	r.POST("/api/v1/admin/settings/charge-rules/:id/disable", a.Auth.Require("pricing.rule.update"), a.disablePricing)
 }
 
 func (a ResourceAPI) pricingRules(c *gin.Context) {
 	rows := []map[string]any{}
-	err := a.Store.AdminDB.WithContext(c.Request.Context()).Table("pricing_rule r").Select("r.id,r.name,r.station_id,s.name AS station_name,r.mode,r.time_of_use_json,r.service_fee_cents_per_kwh,r.service_fee_cents_per_min,r.min_charge_cents,r.version,r.status,r.effective_from,r.effective_to").Joins("LEFT JOIN station s ON s.id=r.station_id AND s.deleted_at IS NULL").Where("r.deleted_at IS NULL").Order("r.id DESC").Find(&rows).Error
+	err := a.Store.AdminDB.WithContext(c.Request.Context()).Table("pricing_rule r").Select("r.id,r.name,r.station_id,s.name AS station_name,r.template_id,r.spec_json,r.channel,r.version,r.status,r.effective_from,r.effective_to").Joins("LEFT JOIN station s ON s.id=r.station_id AND s.deleted_at IS NULL").Where("r.deleted_at IS NULL").Order("r.id DESC").Find(&rows).Error
+	if err != nil {
+		resourceFailure(c, err)
+		return
+	}
+	normalizeRows(rows)
+	httpapi.OK(c, gin.H{"items": rows, "permissions": c.MustGet("admin_profile").(Profile).Permissions})
+}
+
+// pricingTemplateUsage reports which stations a template is currently running,
+// so an operator can see the blast radius before disabling or editing it.
+func (a ResourceAPI) pricingTemplateUsage(c *gin.Context) {
+	id, ok := pathID(c)
+	if !ok {
+		return
+	}
+	rows := []map[string]any{}
+	err := a.Store.AdminDB.WithContext(c.Request.Context()).Table("pricing_rule r").
+		Select("r.id AS rule_id,r.station_id,s.name AS station_name,r.version,r.status").
+		Joins("JOIN station s ON s.id=r.station_id AND s.deleted_at IS NULL").
+		Where("r.template_id=? AND r.deleted_at IS NULL", id).Order("r.station_id,r.version DESC").Find(&rows).Error
 	if err != nil {
 		resourceFailure(c, err)
 		return
