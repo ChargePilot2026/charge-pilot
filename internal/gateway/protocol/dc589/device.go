@@ -196,6 +196,54 @@ func BuildTimeRequest() Frame {
 	return Frame{Command: TimeRequest, Data: make([]byte, 6)}
 }
 
+// ParseTimeReply reads A9, the server's answer to that request.
+//
+// A board that has just logged in has no business trusting its own clock, and
+// the settlement is timed on the board's timestamps, so this is how a device
+// learns what time the platform believes it is. The payload is the same six BCD
+// bytes A1 carries in the same civil timezone, and it is read by the same
+// decoder — a second implementation would be a second place for the timezone
+// assumption to be wrong.
+func ParseTimeReply(frame Frame) (time.Time, error) {
+	if frame.Command != TimeReply || len(frame.Data) != 6 {
+		return time.Time{}, ErrPayload
+	}
+	return decodeTime(frame.Data)
+}
+
+// ChargingBandReport is what a board sends on C2 when it changes power tier.
+//
+// Banding discounts time, not money: the board keeps supplying, but it reports
+// how much time is left *after* the discount rather than before it. Both
+// band numbers are 1-based, which is the opposite of the zero-based ladder the
+// port-status reply counts, so each side pins its own base.
+type ChargingBandReport struct {
+	Port           byte
+	BandBefore     byte
+	BandAfter      byte
+	MinutesBefore  uint16
+	MinutesAfter   uint16
+	PowerDeciWatts uint16
+}
+
+// BuildChargingBand encodes C2. It is the mirror of ParseChargingBand, and
+// without it the codec has a decoder for an uplink no device can produce — the
+// gateway's telemetry path was reachable from no code path at all.
+func BuildChargingBand(report ChargingBandReport) (Frame, error) {
+	if report.Port == 0 || report.BandBefore < 1 || report.BandBefore > 5 ||
+		report.BandAfter < 1 || report.BandAfter > 5 {
+		return Frame{}, ErrPayload
+	}
+	data := make([]byte, 9)
+	data[0] = report.Port
+	data[1] = report.BandBefore
+	binary.LittleEndian.PutUint16(data[2:4], report.MinutesBefore)
+	binary.LittleEndian.PutUint16(data[4:6], report.MinutesAfter)
+	data[6] = report.BandAfter
+	binary.LittleEndian.PutUint16(data[7:9], report.PowerDeciWatts)
+	return Frame{Command: ChargingBand, Data: data}, nil
+}
+
 // ParseRegisterReply reads A1. The session bytes in the frame header are the
 // board's new session, so a device adopts them for every frame it sends after.
 func ParseRegisterReply(frame Frame) (status byte, at time.Time, err error) {

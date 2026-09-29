@@ -155,15 +155,68 @@ func serveOnce(ctx context.Context, config Config) error {
 	return board.loop(ctx)
 }
 
+// deciWattSecondsPerMilliWh converts the board's energy accumulator into
+// milliwatt-hours: a milliwatt-hour is 3.6 watt-seconds, and the accumulator
+// counts tenths of a watt-second, so one milliwatt-hour is 36 of them.
+//
+// Accumulating in 0.1W·s and converting only when a figure goes on the wire is
+// what keeps the metering exact. The alternative — banking a fixed number of
+// milliwatt-hours per tick — cannot be reconciled with the power the board
+// reports, because the two then become independent constants: a board claiming
+// 150W while banking 3.6kWh every hour over-delivers by 24x, and every number
+// in the settlement still looks like a plausible one.
+const deciWattSecondsPerMilliWh = 36
+
 // charge is the state of one running charge.
 type charge struct {
-	port       byte
-	orderBCD   [8]byte
-	startedAt  time.Time
-	charged    uint32 // milliwatt-hours delivered so far
+	port      byte
+	orderBCD  [8]byte
+	mode      dc589.ChargeMode
+	startedAt time.Time
+	// wattDeciSeconds is the energy delivered so far, in tenths of a watt-second.
+	wattDeciSeconds uint64
+	// targetMilliWh is what the order paid for, in milliwatt-hours. It is only
+	// read on an energy-billed charge; a time-billed one carries its limit in
+	// remaining instead.
+	targetMilliWh uint32
+	// remaining is the time left on a time-billed charge.
 	remaining  time.Duration
 	stopReason byte
 	faultSent  bool
+}
+
+// energyBilled reports whether the order's quantity is an energy figure rather
+// than a duration.
+//
+// The wire carries a single unsigned field for both, and the charge mode is the
+// only thing that says which one it is. Reading an energy order as a duration
+// is how a 1Wh order becomes a one-second charge that reports several times the
+// energy it was sold.
+func energyBilled(mode dc589.ChargeMode) bool {
+	return mode == dc589.ByEnergy || mode == dc589.LongEnergy
+}
+
+// chargedMilliWh is the energy delivered so far.
+func (c *charge) chargedMilliWh() uint32 {
+	return uint32(c.wattDeciSeconds / deciWattSecondsPerMilliWh)
+}
+
+// remainingMilliWh is what the order still owes, never negative.
+func (c *charge) remainingMilliWh() uint32 {
+	if delivered := c.chargedMilliWh(); delivered < c.targetMilliWh {
+		return c.targetMilliWh - delivered
+	}
+	return 0
+}
+
+// complete reports whether the charge has delivered everything the order paid
+// for. An energy order finishes on the meter and a time order on the clock,
+// because that is the thing the user actually bought.
+func (c *charge) complete() bool {
+	if energyBilled(c.mode) {
+		return c.chargedMilliWh() >= c.targetMilliWh
+	}
+	return c.remaining <= 0
 }
 
 type board struct {
@@ -175,6 +228,12 @@ type board struct {
 	mu       sync.Mutex
 	session  [6]byte
 	charging map[byte]*charge
+	// clockOffset is how far the board's own clock trails the server's, seeded
+	// from the register reply and refreshed by every A9. Settlement is timed on
+	// the timestamps the board stamps itself, so an uncorrected clock does not
+	// merely look wrong in a log — it places the whole session in the wrong
+	// time, and the readings that follow it are compared against those times.
+	clockOffset time.Duration
 	// heartbeat is re-armed whenever the platform sets a new period, and
 	// portTelemetry records whether port data is included. Both are server
 	// decisions since 5.8.6, so the board keeps them rather than assuming its
@@ -184,14 +243,63 @@ type board struct {
 	configTable   dc589.ConfigTable
 }
 
+// factoryTable is the parameter table a board ships with.
+//
+// It exists because the zero value is not a legal table. The firmware refuses a
+// temperature guard outside 50-100 with 0xFF as the only escape, and likewise
+// bounds the float charge and the removal timer, so a board that had never been
+// configured would fail its own validation and answer a read with "rejected" —
+// the platform would conclude its tariff had failed to land when in fact nobody
+// had ever sent one.
+func factoryTable() dc589.ConfigTable {
+	return dc589.ConfigTable{
+		RunMode:          0,   // 先充电后按键
+		LocalCoinTime:    60,  // 本地投币一次 60 分钟
+		LocalCardTime:    60,  // 本地刷卡一次 60 分钟
+		CardAmountCents:  100, // 刷卡一次 1.00 元
+		CardRefund:       0,   // 刷卡不退费
+		TierWatts:        [5]uint16{100, 200, 300, 400, 500},
+		TierRatioPercent: [5]byte{100, 80, 60, 40, 20},
+		StopWhenFull:     0,    // 充满不停
+		FloatDeciWatts:   50,   // 浮充 5.0W
+		FloatSeconds:     1800, // 浮充 30 分钟
+		RemoveSeconds:    300,  // 5 分钟未拔则停
+		TemperatureGuard: 80,   // 80℃ 保护
+	}
+}
+
 func newBoard(config Config, conn net.Conn) *board {
 	return &board{
-		config:   config,
-		conn:     conn,
-		reader:   bufio.NewReader(conn),
-		writer:   &frameWriter{conn: conn},
-		charging: map[byte]*charge{},
+		config:      config,
+		conn:        conn,
+		reader:      bufio.NewReader(conn),
+		writer:      &frameWriter{conn: conn},
+		charging:    map[byte]*charge{},
+		configTable: factoryTable(),
 	}
+}
+
+// now is the time the board believes it is, expressed in the civil timezone the
+// protocol carries. encodeTime writes the calendar fields of whatever location
+// it is handed, so a board stamping an event in the host's local zone would have
+// it read back by the server as a different instant.
+func (b *board) now() time.Time {
+	b.mu.Lock()
+	offset := b.clockOffset
+	b.mu.Unlock()
+	return dc589.Civil(time.Now().Add(offset))
+}
+
+// setClock adopts the server's time. The correction is kept as an offset rather
+// than as a new time base, so the board's clock keeps advancing at the host's
+// real rate and a second sync measures the drift instead of re-deriving it.
+func (b *board) setClock(server time.Time) {
+	offset := server.Sub(time.Now())
+	b.mu.Lock()
+	previous := b.clockOffset
+	b.clockOffset = offset
+	b.mu.Unlock()
+	b.config.Log.Printf("server time %s adopted, clock moved %s", server.Format(time.RFC3339), (offset - previous).Truncate(time.Second))
 }
 
 // register performs the A0/A1 exchange and adopts the session bytes the server
@@ -221,8 +329,20 @@ func (b *board) register(ctx context.Context) error {
 	}
 	b.mu.Lock()
 	b.session = reply.Session
+	// The register reply already carries the server's time, so the board is
+	// calibrated before it sends anything else. Reading it here rather than
+	// waiting for the A9 means even a gateway that never answers a time request
+	// cannot leave the board stamping settlements from an uncorrected clock.
+	b.clockOffset = at.Sub(time.Now())
 	b.mu.Unlock()
 	b.config.Log.Printf("registered at %s with server time %s", b.config.Gateway, at.Format(time.RFC3339))
+	// Ask for time explicitly as well. The server answers an A8 with an A9 and
+	// records a time-sync event, and that event is the only place a clock
+	// correction becomes visible in the session audit — without it, a board that
+	// drifted after login would be corrected silently and never traceable.
+	if err := b.writer.send(dc589.BuildTimeRequest()); err != nil {
+		return fmt.Errorf("send time request: %w", err)
+	}
 	return nil
 }
 
@@ -247,7 +367,10 @@ func (b *board) loop(ctx context.Context) error {
 	}()
 
 	b.heartbeat = time.NewTicker(b.config.Heartbeat)
-	defer b.heartbeat.Stop()
+	// Through a closure, because the field is replaced every time the platform
+	// sets a new period: evaluating it now would stop the original ticker on the
+	// way out and leave the one actually in use running.
+	defer func() { b.heartbeat.Stop() }()
 	// Metering advances on its own cadence so a charge progresses between
 	// heartbeats even when the server is not asking.
 	meter := time.NewTicker(time.Second)
@@ -286,11 +409,19 @@ func (b *board) handle(ctx context.Context, frame dc589.Frame) error {
 			return fmt.Errorf("parse stop command: %w", err)
 		}
 		return b.stop(port, 0)
-	case dc589.TimeRequest:
-		if len(frame.Data) != 6 {
-			return nil
+	case dc589.TimeReply:
+		// A9 is the server's answer to the A8 this board sent at registration.
+		// Handling A8 here instead was dead code on two counts: the gateway never
+		// sends A8, because A8 travels board to server, and the A9 it does send
+		// fell through to the default branch and was dropped without trace. The
+		// correction therefore never happened even though the server was offering
+		// one on every connection.
+		server, err := dc589.ParseTimeReply(frame)
+		if err != nil {
+			return fmt.Errorf("parse time reply: %w", err)
 		}
-		return b.writer.send(dc589.BuildTimeRequest())
+		b.setClock(server)
+		return nil
 	case dc589.HeartbeatInterval:
 		// Since 5.8.6 this also decides whether port telemetry appears in each
 		// heartbeat. A board that ignores it would be reporting whatever its
@@ -318,8 +449,20 @@ func (b *board) handle(ctx context.Context, frame dc589.Frame) error {
 			return b.writer.send(dc589.BuildConfigAck(1))
 		}
 		return b.writer.send(report)
+	case dc589.RegisterReply, dc589.HeartbeatReply, dc589.ChargeEndReply, dc589.FaultReply:
+		// Acknowledgements of frames this board has already sent. Answering an
+		// acknowledgement would start a loop, so silence is the correct reading
+		// of the protocol rather than a gap in the switch.
+		return nil
 	default:
-		// Register, heartbeat, charge-end and fault replies need no answer.
+		// Anything else is a downlink this build does not implement, and
+		// swallowing it is the one response that makes it undiagnosable: the
+		// command vanishes with no record on either side, so "the simulator
+		// never implemented it" and "the gateway never sent it" look identical
+		// from the outside. Naming the byte is the whole difference — a remote
+		// control or a power control showing up here means the product grew a
+		// caller for a command the simulator is not yet answering.
+		b.config.Log.Printf("unhandled downlink 0x%02X (%d bytes) ignored", frame.Command, len(frame.Data))
 		return nil
 	}
 }
@@ -371,18 +514,32 @@ func (b *board) start(ctx context.Context, command dc589.StartCommand) error {
 	if port == 0 || int(port) > b.config.PortCount {
 		return fmt.Errorf("start for port %d, but the board has %d ports", port, b.config.PortCount)
 	}
-	now := time.Now()
-	// The quantity means minutes for a time-based charge and milliwatt-hours
-	// for an energy-based one, which is why it is a single field on the wire.
-	remaining := time.Duration(command.Quantity) * time.Minute
-	if command.Mode == dc589.ByEnergy || command.Mode == dc589.LongEnergy {
-		remaining = time.Duration(command.Quantity) * time.Millisecond * 1000
+	running := &charge{port: port, orderBCD: command.OrderBCD, mode: command.Mode, startedAt: b.now()}
+	// The quantity means minutes on a time order and watt-hours on an energy
+	// one, which is why one field carries both and the mode is the only thing
+	// that says which it is. Treating the energy figure as a count of seconds
+	// finished a 1Wh order in one second while still reporting several watt-hours
+	// against it.
+	if energyBilled(command.Mode) {
+		running.targetMilliWh = uint32(command.Quantity) * 1000
+	} else {
+		running.remaining = time.Duration(command.Quantity) * time.Minute
 	}
-	if b.config.Scenario == ScenarioStopOnCommand {
-		remaining = time.Hour // effectively unbounded; B9 ends it
+	if b.config.Scenario == ScenarioStopOnCommand || b.config.Scenario == ScenarioFault {
+		// These two end on a command or a fault rather than on their own, so the
+		// limit only has to sit far enough away never to be the reason. It still
+		// has to be a real figure in both modes: the heartbeat reports the
+		// projected time left, and a charge answering "zero remaining" reads on
+		// the platform as one that is about to end on its own.
+		const unbounded = 24 * time.Hour
+		running.remaining = unbounded
+		if running.targetMilliWh == 0 {
+			running.targetMilliWh = uint32(uint64(b.config.PowerDeciWatts) *
+				uint64(unbounded/time.Second) / deciWattSecondsPerMilliWh)
+		}
 	}
 	b.mu.Lock()
-	b.charging[port] = &charge{port: port, orderBCD: command.OrderBCD, startedAt: now, remaining: remaining}
+	b.charging[port] = running
 	b.mu.Unlock()
 	b.config.Log.Printf("started charge on port %d, mode %d, quantity %d", port, command.Mode, command.Quantity)
 	return nil
@@ -413,13 +570,13 @@ func (b *board) stop(port byte, reason byte) error {
 }
 
 func (b *board) reportEnd(running *charge, reason byte) error {
-	ended := time.Now()
+	ended := b.now()
 	frame, err := dc589.BuildChargeEnd(dc589.ChargeEndReport{
 		Port:           running.port,
 		OrderBCD:       running.orderBCD,
 		StartedAt:      running.startedAt,
 		EndedAt:        ended,
-		ChargedMWh:     running.charged,
+		ChargedMWh:     running.chargedMilliWh(),
 		PowerDeciWatts: b.config.PowerDeciWatts,
 		StopReason:     reason,
 		ConsumerType:   2,
@@ -430,8 +587,27 @@ func (b *board) reportEnd(running *charge, reason byte) error {
 	if err := b.writer.send(frame); err != nil {
 		return err
 	}
-	b.config.Log.Printf("finished charge on port %d: %d mWh over %s", running.port, running.charged, ended.Sub(running.startedAt).Truncate(time.Second))
+	b.config.Log.Printf("finished charge on port %d: %d mWh over %s", running.port, running.chargedMilliWh(), ended.Sub(running.startedAt).Truncate(time.Second))
 	return nil
+}
+
+// remainingSecs projects how much longer a charge will run, in seconds.
+//
+// The heartbeat's remaining field asks the same question in both billing modes,
+// so an energy-billed charge is projected from the energy it still owes divided
+// by the power it is actually drawing. Answering zero there would tell the
+// platform a charge is about to end when it has barely begun.
+func (b *board) remainingSecs(running *charge) uint32 {
+	if !energyBilled(running.mode) {
+		if running.remaining <= 0 {
+			return 0
+		}
+		return uint32(running.remaining / time.Second)
+	}
+	if b.config.PowerDeciWatts == 0 {
+		return 0
+	}
+	return uint32(uint64(running.remainingMilliWh()) * deciWattSecondsPerMilliWh / uint64(b.config.PowerDeciWatts))
 }
 
 // advance moves every running charge forward one second of simulated time.
@@ -439,10 +615,15 @@ func (b *board) advance() {
 	b.mu.Lock()
 	var finished []*charge
 	for port, running := range b.charging {
-		// A milliwatt-hour per second is 3.6 kWh per hour, the rate a board
-		// would report at roughly 3.6 kW.
-		running.charged += 3600
-		running.remaining -= time.Second
+		// One tick is one second, so the board delivers the power the platform
+		// configured for that second. Deriving the energy from the same figure it
+		// reports is the point: a settlement that disagrees with the power
+		// reading by a constant ratio is one nobody ever catches, because the
+		// energy still lands within a range an operator would call reasonable.
+		running.wattDeciSeconds += uint64(b.config.PowerDeciWatts)
+		if !energyBilled(running.mode) {
+			running.remaining -= time.Second
+		}
 		if b.config.Scenario == ScenarioFault && !running.faultSent && time.Since(running.startedAt) >= b.config.FaultAfter {
 			running.faultSent = true
 			b.config.Log.Printf("reporting a fault on port %d", port)
@@ -450,7 +631,7 @@ func (b *board) advance() {
 				_ = b.writer.send(frame)
 			}
 		}
-		if running.remaining > 0 {
+		if !running.complete() {
 			continue
 		}
 		switch b.config.Scenario {
@@ -470,21 +651,28 @@ func (b *board) advance() {
 	}
 }
 
-// sendHeartbeat reports the board and, when something is charging, the state of
-// each charging port. The extended form is what feeds the live curve.
+// sendHeartbeat reports the board and, when the platform asked for port data
+// and something is charging, the state of each charging port.
+//
+// Whether the port block appears at all is the platform's decision since 5.8.6,
+// taken in A6. Reporting it unconditionally would make "this build ignores what
+// it was told" indistinguishable from "this build is fine", which is the exact
+// ambiguity the command exists to remove — and it would mean a platform that
+// had deliberately turned port telemetry off still saw it arrive.
 func (b *board) sendHeartbeat() {
 	b.mu.Lock()
 	var status *dc589.PortStatus
-	if len(b.charging) > 0 {
+	if b.portTelemetry && len(b.charging) > 0 {
 		ports := make([]byte, b.config.PortCount)
 		charging := make([]protocol.PortTelemetry, 0, len(b.charging))
 		for port, running := range b.charging {
 			ports[port-1] = 1
 			charging = append(charging, protocol.PortTelemetry{
 				Port:           port,
-				RemainingSecs:  uint32(max64(running.remaining.Seconds(), 0)),
+				RemainingSecs:  b.remainingSecs(running),
 				ChargedSeconds: uint32(time.Since(running.startedAt).Seconds()),
-				ChargedMWh:     running.charged,
+				RemainingMWh:   running.remainingMilliWh(),
+				ChargedMWh:     running.chargedMilliWh(),
 				PowerDeciWatts: b.config.PowerDeciWatts,
 			})
 		}
@@ -505,13 +693,6 @@ func (b *board) sendHeartbeat() {
 func (b *board) readFrame() (dc589.Frame, error) {
 	_ = b.conn.SetReadDeadline(time.Now().Add(120 * time.Second))
 	return dc589.ReadFrame(b.reader)
-}
-
-func max64(a, b float64) float64 {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 // frameWriter serialises writes. The heartbeat, the command replies and the

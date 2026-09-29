@@ -105,7 +105,7 @@ func (a ResourceAPI) devicePricingMatrix(c *gin.Context) {
 	httpapi.OK(c, gin.H{
 		"station_id": station.ID, "items": rows,
 		"station_latest_version": stationLatest.Version,
-		"permissions":           c.MustGet("admin_profile").(Profile).Permissions,
+		"permissions":            c.MustGet("admin_profile").(Profile).Permissions,
 	})
 }
 
