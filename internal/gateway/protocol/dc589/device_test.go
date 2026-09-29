@@ -390,3 +390,31 @@ func TestBuildChargingBandRefusesABandOutsideOneToFive(t *testing.T) {
 		t.Fatal("a report for port 0 was accepted")
 	}
 }
+
+// The register reply and the time reply carry the same instant in the same
+// encoding, and a board calibrates itself from the first and re-calibrates from
+// the second. Answering them from different timezones made the board see the
+// server correct itself by eight hours on every connection, and adopt that
+// correction — so a gateway running in a container on UTC shipped a pile a
+// clock skewed by exactly the offset it was meant to be removing.
+func TestRegisterReplyAndTimeReplyAgreeOnTheSameInstant(t *testing.T) {
+	// A host in a zone the protocol does not use, which is the normal case for a
+	// container and the only case where the two can disagree at all.
+	host := time.Date(2026, 9, 29, 18, 39, 2, 0, time.UTC)
+	_, registeredAt, err := ParseRegisterReply(BuildRegisterReply([6]byte{1, 2, 3, 4, 5, 6}, host))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repliedAt, err := ParseTimeReply(BuildTimeReply([6]byte{1, 2, 3, 4, 5, 6}, host))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !registeredAt.Equal(repliedAt) {
+		t.Fatalf("the register reply said %s but the time reply said %s for the same instant",
+			registeredAt.Format(time.RFC3339), repliedAt.Format(time.RFC3339))
+	}
+	if !registeredAt.Equal(host) {
+		t.Fatalf("the register reply read back as %s, want the instant it was given (%s)",
+			registeredAt.Format(time.RFC3339), host.Format(time.RFC3339))
+	}
+}

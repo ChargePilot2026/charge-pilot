@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"sync"
 )
@@ -69,7 +70,16 @@ func Serve(ctx context.Context, endpoints []Endpoint, sink Sink, maxConnections 
 							connMu.Unlock()
 							<-limit
 						}()
-						_ = adapter.ServeConn(ctx, conn, sink)
+						// A session that ends in an error used to end in silence:
+						// an unknown device, a malformed registration or a payload
+						// the board could not read all closed the socket with
+						// nothing written anywhere, so the only symptom an operator
+						// had was a pile that never came online. The normal end of a
+						// session is not an error and is left unlogged; this is the
+						// same distinction the board's own silent branch needed.
+						if err := adapter.ServeConn(ctx, conn, sink); err != nil && ctx.Err() == nil {
+							log.Printf("device session ended on %s: %v", adapter.Name(), err)
+						}
 					}()
 				default:
 					_ = conn.Close()
