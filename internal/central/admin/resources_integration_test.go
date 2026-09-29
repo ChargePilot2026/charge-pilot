@@ -478,6 +478,29 @@ func TestAdminPagesIntegration(t *testing.T) {
 		t.Fatalf("expected exactly one active offer at the target, found %d", onSale)
 	}
 
+	// The device matrix, the switch log and the metering declaration are all
+	// reachable from the pricing screens, and until now none of them had a test.
+	// Five defects in a row turned out to be routes no test executed, so the
+	// rule this file follows now is that every route the pricing screens can
+	// reach is called here — and what it wrote is read back, not merely
+	// answered 200.
+	matrix := data(call(adminToken, "GET",
+		"settings/device-pricing?station_id="+fmt.Sprintf("%v", sid), nil, 200))
+	rows, _ := matrix["items"].([]any)
+	if len(rows) == 0 {
+		t.Fatal("the matrix returned no rows for a station that has a published rule")
+	}
+	row := rows[0].(map[string]any)
+	if row["spec_json"] == nil {
+		t.Fatal("the matrix has no spec_json, so it cannot answer what a device is charging")
+	}
+	call(adminToken, "GET", "settings/switch-tasks", nil, 200)
+	call(adminToken, "GET", "settings/pricing-template-candidates?station_id="+fmt.Sprintf("%v", sid), nil, 200)
+	// A device that is not in the yard is refused by name rather than silently
+	// resetting whatever happens to be at that id.
+	call(adminToken, "POST", "settings/device-pricing/reset",
+		gin.H{"station_id": sid, "device_id": "NOSUCHDEVICE01"}, 404)
+
 	// Every read endpoint is walked, not just the ones believed to be affected.
 	//
 	// A column or an expression the Go code names but the database does not
