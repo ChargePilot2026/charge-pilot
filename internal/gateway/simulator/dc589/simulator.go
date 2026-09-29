@@ -1,4 +1,4 @@
-// Package simulator runs a local stand-in for a dc589 charging board.
+// Package dc589sim runs a local stand-in for a dc589 charging board.
 //
 // It speaks the real 5.8.9 wire protocol over TCP, so it exercises the same
 // framing, the same payload validation and the same session handling the
@@ -8,7 +8,13 @@
 // The reason it exists is that the charge path cannot otherwise be walked end
 // to end without vendor hardware. It is a development and test tool and must
 // never be wired into a production process.
-package simulator
+//
+// Simulators are per protocol: a second vendor, or an MQTT board, gets its own
+// package beside this one rather than a flag on a shared implementation,
+// because the behaviours they can express are not the same. The package is
+// named dc589sim rather than dc589 so it can still import the protocol codec it
+// implements.
+package dc589sim
 
 import (
 	"bufio"

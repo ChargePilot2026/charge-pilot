@@ -1,4 +1,4 @@
-package simulator
+package dc589sim
 
 import (
 	"context"

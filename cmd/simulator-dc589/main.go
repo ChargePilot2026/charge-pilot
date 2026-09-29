@@ -1,8 +1,11 @@
-// Command simulator runs a local stand-in for a dc589 charging board.
+// Command simulator-dc589 runs a local stand-in for a dc589 charging board.
 //
 // It is a development and test tool. It speaks the real 5.8.9 wire protocol to
 // a running gateway, so the charge path can be exercised without vendor
 // hardware. It must never be started in a production process.
+//
+// One command per protocol: a second vendor or an MQTT board gets its own
+// command beside this one.
 package main
 
 import (
@@ -21,7 +24,7 @@ import (
 	"time"
 
 	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol/dc589"
-	"github.com/ChargePilot2026/charge-pilot/internal/gateway/simulator"
+	"github.com/ChargePilot2026/charge-pilot/internal/gateway/simulator/dc589"
 )
 
 // The board id is sixteen decimal digits on the wire, so a default that is
@@ -30,7 +33,7 @@ const defaultBoardID = "5348240514082652"
 
 func main() {
 	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, "simulator:", err)
+		fmt.Fprintln(os.Stderr, "simulator-dc589:", err)
 		os.Exit(1)
 	}
 }
@@ -46,7 +49,7 @@ func run() error {
 		sim           = flag.String("sim", "89860000000000000001", "SIM id, twenty digits")
 		strength      = flag.Int("signal", 4, "reported signal strength")
 		ports         = flag.Int("ports", 2, "number of charging ports on the board")
-		scenario      = flag.String("scenario", string(simulator.ScenarioByEnergy), "behaviour: by-energy, by-time, stop-on-command, reject-start, fault, silent, reconnect")
+		scenario      = flag.String("scenario", string(dc589sim.ScenarioByEnergy), "behaviour: by-energy, by-time, stop-on-command, reject-start, fault, silent, reconnect")
 		heartbeat     = flag.Duration("heartbeat", 15*time.Second, "heartbeat interval")
 		power         = flag.Uint("power", 1500, "draw while charging, in tenths of a watt")
 		reconnect     = flag.Duration("reconnect-after", 3*time.Second, "pause before reconnecting in the reconnect scenario")
@@ -59,16 +62,16 @@ func run() error {
 	)
 	flag.Parse()
 
-	logger := log.New(os.Stdout, "simulator ", log.LstdFlags)
+	logger := log.New(os.Stdout, "dc589sim ", log.LstdFlags)
 	if err := checkBoardID(*boardID); err != nil {
 		return err
 	}
-	choice := simulator.Scenario(*scenario)
+	choice := dc589sim.Scenario(*scenario)
 	if err := checkScenario(choice); err != nil {
 		return err
 	}
 
-	config := simulator.Config{
+	config := dc589sim.Config{
 		Identity: dc589.DeviceIdentity{
 			BoardID:         *boardID,
 			HardwareVersion: *hardware,
@@ -100,7 +103,7 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	logger.Printf("connecting to %s, scenario %s", *gateway, choice)
-	return simulator.Run(ctx, config)
+	return dc589sim.Run(ctx, config)
 }
 
 // checkBoardID rejects identifiers the frame cannot carry before any connection
@@ -118,15 +121,15 @@ func checkBoardID(id string) error {
 	return nil
 }
 
-func checkScenario(s simulator.Scenario) error {
-	known := map[simulator.Scenario]bool{
-		simulator.ScenarioByEnergy:      true,
-		simulator.ScenarioByTime:        true,
-		simulator.ScenarioStopOnCommand: true,
-		simulator.ScenarioRejectStart:   true,
-		simulator.ScenarioFault:         true,
-		simulator.ScenarioSilent:        true,
-		simulator.ScenarioReconnect:     true,
+func checkScenario(s dc589sim.Scenario) error {
+	known := map[dc589sim.Scenario]bool{
+		dc589sim.ScenarioByEnergy:      true,
+		dc589sim.ScenarioByTime:        true,
+		dc589sim.ScenarioStopOnCommand: true,
+		dc589sim.ScenarioRejectStart:   true,
+		dc589sim.ScenarioFault:         true,
+		dc589sim.ScenarioSilent:        true,
+		dc589sim.ScenarioReconnect:     true,
 	}
 	if !known[s] {
 		names := make([]string, 0, len(known))
