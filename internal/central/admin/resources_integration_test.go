@@ -409,6 +409,30 @@ func TestAdminPagesIntegration(t *testing.T) {
 	// is refused rather than half of it, and the message names the board.
 	call(adminToken, "POST", "device-imports", gin.H{"import_id": "33333333-3333-4333-8333-333333333334", "devices": []gin.H{{"device_id": "PAGESDEV02", "vendor_id": vid, "station_id": sid, "port_count": 2}}}, 409)
 	call(adminToken, "GET", "devices?keyword=PAGESDEV01", nil, 200)
+	// Every read endpoint is walked, not just the ones believed to be affected.
+	//
+	// A column or an expression the Go code names but the database does not
+	// accept is not a compile error and not a unit-test failure — it is a 500
+	// that only a real query against a real schema can find. One such query
+	// survived a full round of review here because the endpoint was simply
+	// never called: IF() takes three arguments, the list query passed it four,
+	// and the package-template page returned 503 for the whole time.
+	for _, path := range []string{
+		"settings/pricing-templates",
+		"settings/package-templates",
+		"settings/station-policies",
+		"settings/switch-tasks",
+		"settings/pricing-template-candidates",
+		"settings/device-pricing?station_id=" + fmt.Sprintf("%v", sid),
+		"stations?page=1&page_size=5",
+		"devices?page=1&page_size=5",
+		"orders?page=1&page_size=5",
+		"device-imports",
+		"exports",
+		"exports/resources",
+	} {
+		call(adminToken, "GET", path, nil, 200)
+	}
 	// Real rows exercise charge detail joins, manual reservations, double signing,
 	// channel reconciliation, and duplicate provider receipt accounting.
 	exec(udb, "INSERT INTO payment_order(order_no,biz_type,biz_id,user_id,pay_method,total_cents,paid_cents,wechat_transaction_id,status,created_month) VALUES ('PAGES_PAY','charge',0,?,'wechat',1000,1000,'SIMPAGES_PAY','paid',DATE_FORMAT(UTC_TIMESTAMP(),'%Y-%m-01'))", uid)

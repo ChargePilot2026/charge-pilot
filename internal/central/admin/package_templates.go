@@ -79,7 +79,7 @@ func (a ResourceAPI) packageTemplates(c *gin.Context) {
 	err := a.Store.AdminDB.WithContext(c.Request.Context()).Table("pricing_package_template p").
 		Select("p.id,p.name,p.kind,p.price_cents,p.duration_minutes,p.min_charge_cents," +
 			"p.show_remark,p.card_default,p.sort_order,p.status,p.version," +
-			"(SELECT GROUP_CONCAT(DISTINCT CONCAT(IF(o.device_id IS NULL,'全场','设备 ',o.device_id)) ORDER BY o.station_id SEPARATOR '、')" +
+			"(SELECT GROUP_CONCAT(DISTINCT CONCAT(IF(o.device_id IS NULL,'全场','设备 '),o.device_id) ORDER BY o.station_id SEPARATOR '、')" +
 			" FROM charge_offer o WHERE o.package_template_id=p.id AND o.status='active' AND o.deleted_at IS NULL) AS applied_targets").
 		Where("p.deleted_at IS NULL").Order("p.sort_order,p.id").Find(&rows).Error
 	if err != nil {
