@@ -985,4 +985,24 @@ CONCAT(IF(o.device_id IS NULL,'全场','设备 ',o.device_id))
 
    > these route guards name a permission that was never seeded, so the route answers 403 to everyone: [device.update]
 
-   能失败的测试才算测试；改回去之后才提交。
+      能失败的测试才算测试；改回去之后才提交。
+
+### 第六个：退费策略（两维正交）保存接口从未成功过
+
+继续查「写了没生效」，这次把**写操作**也走了一遍——前面只扫了只读端点。
+
+`PUT /api/v1/admin/settings/station-policies/:id` 注册成了 `:station_id`，而 `pathID()` 读的是 `c.Param("id")`。参数名对不上，`c.Param("id")` 永远为空，于是 `saveStationPolicy` 对**每一个请求**都回「ID 必须为正整数」。
+
+这个端点是本轮 0042 迁移的产物——退费从单枚举拆成 `path`/`rule` 两个正交字段，拆完却存不进去。`GET` 能读（因为没有路径参数），`PUT` 永远失败。**症状只有一个验证错误消息，出现在一个还没人打开过的页面上。**
+
+同一个成因，第四次。前三次分别是协议回执、套餐模板池列表、计量能力端点，**共同点是「这一段代码从来没有被成功执行过一次」**。
+
+扫了全包的路由参数名，确认只有这一处不匹配（其余带参路由都叫 `:id`，或者用的是 `withdraw_no`/`refund_no` 这类字符串键，本来就不走 `pathID`）。
+
+处置：参数名改回 `:id`；在集成测试里补上这个写操作，并断言**读回来的 path 与 rule 是两个独立字段**。同样先改回 bug 验证测试会红，报的是
+
+> PUT settings/station-policies/1 got 400 want 200: {"message":"ID 必须为正整数"}
+
+再改回来提交。开发栈实跑：保存返回 200/version=1，列表读回 `scan_refund_path=balance`、`scan_refund_rule=time_limited`、卡侧两个字段同样分立。
+
+**四处同类缺陷的共同结论**：一个端点/分支是不是活的，不能靠「代码写了、单测过了」判断，**只能靠真的成功执行过一次**。每加一个对外能力，就把「成功执行一次」写进集成测试——不是断言它返回 200，而是断言它**写进去的东西读得回来**。
