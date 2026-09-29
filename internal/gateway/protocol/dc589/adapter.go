@@ -250,6 +250,69 @@ func (a TCPAdapter) ServeConn(ctx context.Context, conn net.Conn, sink protocol.
 			if err := sink.Record(ctx, event); err != nil {
 				return err
 			}
+		case HeartbeatSetReply, ConfigAck, ConfigReport, cmdPowerControlReply:
+			// The board's answer to something this platform just asked it.
+			//
+			// These are ordinary traffic on a healthy link, and before they were
+			// handled they fell through to the default branch below — which meant
+			// a board refusing a parameter table was recorded as "sent a command
+			// we do not recognise" and the reason vanished. That is the same
+			// mistake the stop path was making with 0x00 and 0x04: a refusal
+			// treated as a non-event is a refusal nobody can diagnose.
+			//
+			// A decode failure is not fatal. A board that answers with a shape
+			// this build does not know is still a board that is talking, and
+			// dropping the link over it would make it unreachable for a reason
+			// that has nothing to do with the pile being broken.
+			event.Type = protocol.ConfigResult
+			event.Signal = frame.Command
+			switch frame.Command {
+			case HeartbeatSetReply:
+				accepted, err := ParseHeartbeatSetReply(frame)
+				if err == nil {
+					if accepted {
+						event.ResultCode = 0
+					} else {
+						// The board kept the period it already had, so the read
+						// timeout this connection uses no longer matches the link.
+						event.ResultCode = 1
+					}
+				}
+			case ConfigAck:
+				if err := ParseConfigAck(frame); err == nil {
+					event.ResultCode = 0
+				} else {
+					var rejected ErrConfigRejected
+					if errors.As(err, &rejected) {
+						// The code names the field that was out of range, which
+						// is the difference between an operator fixing a value
+						// and an operator guessing at one.
+						event.ResultCode = rejected.Code
+					} else {
+						event.ResultCode = 0xFF
+					}
+				}
+			case ConfigReport:
+				// The board telling us what it is actually running. Decoded only
+				// to tell a readable report from an unreadable one; the bytes are
+				// left as they arrived, because RawPayload is the replay record
+				// and replacing it with a re-encoding would mean the thing you
+				// replay is no longer the thing the board sent.
+				if _, err := DecodeConfig(frame); err != nil {
+					event.ResultCode = 0xFF
+				}
+			default: // cmdPowerControlReply
+				if _, err := ParsePowerControlReply(frame); err != nil {
+					if errors.Is(err, ErrPowerControlRejected) {
+						event.ResultCode = 1
+					} else {
+						event.ResultCode = 0xFF
+					}
+				}
+			}
+			if err := sink.Record(ctx, event); err != nil {
+				return err
+			}
 		default:
 			// An unrecognised command is recorded and skipped, not fatal.
 			//

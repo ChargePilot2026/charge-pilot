@@ -25,6 +25,13 @@ const (
 	ChargeEnd    EventType = "charge_end"
 	Fault        EventType = "fault"
 	RemoteResult EventType = "remote_result"
+	// ConfigResult covers the board's answer to the settings the platform sent
+	// it: the heartbeat-period acknowledgement, the parameter-table write
+	// result, and the power-control reply. They are recorded because a rejected
+	// setting is the one thing about a pile that an operator cannot see any
+	// other way — the board keeps running with the values it already had, and
+	// nothing about the session looks wrong.
+	ConfigResult EventType = "config_result"
 	Telemetry    EventType = "telemetry"
 	TimeSync     EventType = "time_sync"
 )
