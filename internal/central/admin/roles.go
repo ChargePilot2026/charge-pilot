@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/httpapi"
 	"github.com/gin-gonic/gin"
@@ -66,6 +67,7 @@ func (a ResourceAPI) registerRoles(r *gin.Engine) {
 	r.GET("/api/v1/admin/permissions", a.Auth.Require("admin_user.read"), a.listPermissions)
 	r.POST("/api/v1/admin/roles", a.Auth.Require("role.create"), a.createRole)
 	r.PUT("/api/v1/admin/roles/:id", a.Auth.Require("role.update"), a.updateRole)
+	r.DELETE("/api/v1/admin/roles/:id", a.Auth.Require("role.delete"), a.deleteRole)
 }
 
 // permissionCodesFor returns the permission codes held by the given roles.
@@ -272,4 +274,75 @@ func replaceRolePermissions(tx *gorm.DB, roleID uint64, codes []string) error {
 		}
 	}
 	return nil
+}
+
+// deleteRole retires a role that nobody holds.
+//
+// Three things are refused rather than guessed at. A built-in role carries the
+// operators' own access, so removing it could lock the last administrator out of
+// their own console. A role that still has accounts cannot be retired, because
+// those accounts would silently lose every permission the moment it went — the
+// operator would have to reassign them first, and doing that silently is worse
+// than making them do it on purpose. And nobody may retire the role they are
+// acting through, which is the same self-lockout by another route.
+//
+// The row is soft-deleted so the audit trail and historical actor names keep
+// resolving.
+func (a ResourceAPI) deleteRole(c *gin.Context) {
+	id, ok := pathID(c)
+	if !ok {
+		return
+	}
+	profile := c.MustGet("admin_profile").(Profile)
+	var role RoleRow
+	if err := a.Store.AdminDB.WithContext(c.Request.Context()).Table("role").
+		Where("id = ? AND deleted_at IS NULL", id).Take(&role).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			httpapi.Write(c, http.StatusNotFound, 1004, "角色不存在", nil)
+			return
+		}
+		resourceFailure(c, err)
+		return
+	}
+	if role.IsBuiltin {
+		httpapi.Write(c, http.StatusConflict, 2009, "内置角色不可删除：它承载运营自身的访问权限", nil)
+		return
+	}
+	if role.Code == profile.Role {
+		httpapi.Write(c, http.StatusConflict, 2009, "不能删除自己正在使用的角色", nil)
+		return
+	}
+	var held int64
+	if err := a.Store.AdminDB.WithContext(c.Request.Context()).Table("admin_user_role").
+		Where("role_id = ? AND deleted_at IS NULL", id).Count(&held).Error; err != nil {
+		resourceFailure(c, err)
+		return
+	}
+	if held > 0 {
+		httpapi.Write(c, http.StatusConflict, 2009,
+			"该角色下仍有账号，请先改派后再删除", nil)
+		return
+	}
+	var auditPending []auditEntry
+	err := a.Store.AdminDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+		changed := tx.Table("role").Where("id = ? AND deleted_at IS NULL", id).
+			Updates(map[string]any{"deleted_at": time.Now().UTC()})
+		if changed.Error != nil {
+			return changed.Error
+		}
+		if changed.RowsAffected != 1 {
+			return gorm.ErrRecordNotFound
+		}
+		if err := tx.Exec("DELETE FROM role_permission WHERE role_id = ?", id).Error; err != nil {
+			return err
+		}
+		auditPending = []auditEntry{{"delete", "role", id, role, nil, ""}}
+		return nil
+	})
+	if err != nil {
+		resourceFailure(c, err)
+		return
+	}
+	a.flushAudit(c, auditPending)
+	httpapi.OK(c, gin.H{"id": id})
 }
