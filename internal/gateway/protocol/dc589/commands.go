@@ -13,16 +13,26 @@ const (
 	Register       byte = 0xA0
 	RegisterReply  byte = 0xA1
 	RemoteControl  byte = 0xA2
+	RemoteResult   byte = 0xA3
 	Heartbeat      byte = 0xA4
 	HeartbeatReply byte = 0xA5
-	StartCharge    byte = 0xB7
-	StartReply     byte = 0xB8
-	StopCharge     byte = 0xB9
-	StopReply      byte = 0xBA
-	ChargeEnd      byte = 0xBB
+	// TimeRequest is the board asking the server for civil time; TimeReply is
+	// the server's answer. They are named so both ends of the link stop
+	// referring to the pair as bare hex literals.
+	TimeRequest byte = 0xA8
+	TimeReply   byte = 0xA9
+	StartCharge byte = 0xB7
+	StartReply  byte = 0xB8
+	StopCharge  byte = 0xB9
+	StopReply   byte = 0xBA
+	ChargeEnd   byte = 0xBB
+	// ChargeEndReply acknowledges a charge end.
 	ChargeEndReply byte = 0xBC
 	Fault          byte = 0xC0
 	FaultReply     byte = 0xC1
+	// ChargingBand is the unsolicited per-port report the board may send while
+	// a charge runs.
+	ChargingBand byte = 0xC2
 )
 
 var ErrPayload = errors.New("invalid 5.8.9 payload")
