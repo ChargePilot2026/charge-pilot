@@ -1356,6 +1356,8 @@ user 服务在单库事务中锁定模板，校验用户有效、模板处于发
 
 ### `POST /api/v1/admin/settings/split-templates/{tpl_id}/parties`
 
+> **Go 实现修订**：此路径在 Go 服务中接受完整 `parties` 数组并原子替换，服务端立即校验 2–8 方及比例总和恰好 10000。已绑定站点的模板禁止修改；可新建模板后停用站点，并在该站点尚无交易历史时调用 `PUT /api/v1/admin/stations/{id}/split-template` 切换。上表旧的单条 `PUT/DELETE /settings/parties/{id}` 未在 Go 服务实现，完整数组替换是当前契约。实际接口以 [Go 后台业务页面](go-admin-pages.md#分账模板) 为准。以下旧实现说明已废止。
+
 **鉴权**:[角色] `split_template.update`(客户管理员)
 
 **请求体**:

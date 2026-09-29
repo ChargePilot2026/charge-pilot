@@ -2617,6 +2617,426 @@
           }
         }
       }
+    },
+    "/api/v1/admin/settings/split-templates": {
+      "get": {
+        "summary": "分账模板列表",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "finance.read",
+        "description": "分页查询，可按 status 与 keyword 筛选。",
+        "responses": {
+          "200": {
+            "description": "成功"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "会话失效"
+          },
+          "403": {
+            "description": "权限不足"
+          },
+          "404": {
+            "description": "记录不存在"
+          },
+          "409": {
+            "description": "模板已绑定或并发条件冲突"
+          },
+          "503": {
+            "description": "存储不可用"
+          }
+        }
+      },
+      "post": {
+        "summary": "创建分账模板",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "finance.split_template.create",
+        "description": "模板与完整参与方在一个事务中创建并审计。",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "code",
+                  "name",
+                  "mode",
+                  "parties"
+                ],
+                "properties": {
+                  "code": {
+                    "type": "string",
+                    "maxLength": 64
+                  },
+                  "name": {
+                    "type": "string",
+                    "maxLength": 128
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "mode_a",
+                      "mode_b"
+                    ]
+                  },
+                  "parties": {
+                    "type": "array",
+                    "minItems": 2,
+                    "maxItems": 8,
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "party_code",
+                        "party_name",
+                        "ratio_bp"
+                      ],
+                      "properties": {
+                        "party_code": {
+                          "type": "string",
+                          "maxLength": 64
+                        },
+                        "party_name": {
+                          "type": "string",
+                          "maxLength": 128
+                        },
+                        "ratio_bp": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 9999
+                        },
+                        "bank_account": {
+                          "type": "string",
+                          "maxLength": 64
+                        },
+                        "bank_name": {
+                          "type": "string",
+                          "maxLength": 128
+                        }
+                      }
+                    },
+                    "description": "ratio_bp 合计必须为 10000，party_code 不重复"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "会话失效"
+          },
+          "403": {
+            "description": "权限不足"
+          },
+          "404": {
+            "description": "记录不存在"
+          },
+          "409": {
+            "description": "模板已绑定或并发条件冲突"
+          },
+          "503": {
+            "description": "存储不可用"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/settings/split-templates/{id}": {
+      "get": {
+        "summary": "分账模板详情",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "finance.read",
+        "description": "银行账户仅返回末四位。",
+        "responses": {
+          "200": {
+            "description": "成功"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "会话失效"
+          },
+          "403": {
+            "description": "权限不足"
+          },
+          "404": {
+            "description": "记录不存在"
+          },
+          "409": {
+            "description": "模板已绑定或并发条件冲突"
+          },
+          "503": {
+            "description": "存储不可用"
+          }
+        }
+      },
+      "put": {
+        "summary": "更新分账模板",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "finance.split_template.create",
+        "description": "模板已绑定站点时只允许改名称。",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "name",
+                  "mode",
+                  "status"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "maxLength": 128
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "mode_a",
+                      "mode_b"
+                    ]
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "active",
+                      "disabled"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "会话失效"
+          },
+          "403": {
+            "description": "权限不足"
+          },
+          "404": {
+            "description": "记录不存在"
+          },
+          "409": {
+            "description": "模板已绑定或并发条件冲突"
+          },
+          "503": {
+            "description": "存储不可用"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/settings/split-templates/{id}/parties": {
+      "get": {
+        "summary": "分账参与方列表",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "finance.read",
+        "description": "银行账户仅返回末四位。",
+        "responses": {
+          "200": {
+            "description": "成功"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "会话失效"
+          },
+          "403": {
+            "description": "权限不足"
+          },
+          "404": {
+            "description": "记录不存在"
+          },
+          "409": {
+            "description": "模板已绑定或并发条件冲突"
+          },
+          "503": {
+            "description": "存储不可用"
+          }
+        }
+      },
+      "post": {
+        "summary": "原子替换参与方",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "finance.split_party.create",
+        "description": "已绑定站点的模板不可修改；比例合计必须为 10000。",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "parties"
+                ],
+                "properties": {
+                  "parties": {
+                    "type": "array",
+                    "minItems": 2,
+                    "maxItems": 8,
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "party_code",
+                        "party_name",
+                        "ratio_bp"
+                      ],
+                      "properties": {
+                        "party_code": {
+                          "type": "string",
+                          "maxLength": 64
+                        },
+                        "party_name": {
+                          "type": "string",
+                          "maxLength": 128
+                        },
+                        "ratio_bp": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 9999
+                        },
+                        "bank_account": {
+                          "type": "string",
+                          "maxLength": 64
+                        },
+                        "bank_name": {
+                          "type": "string",
+                          "maxLength": 128
+                        }
+                      }
+                    },
+                    "description": "ratio_bp 合计必须为 10000，party_code 不重复"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "会话失效"
+          },
+          "403": {
+            "description": "权限不足"
+          },
+          "404": {
+            "description": "记录不存在"
+          },
+          "409": {
+            "description": "模板已绑定或并发条件冲突"
+          },
+          "503": {
+            "description": "存储不可用"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/stations/{id}/split-template": {
+      "put": {
+        "summary": "绑定站点分账模板",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "station.update + finance.split_template.create",
+        "description": "站点须停用；已有交易历史的设备站点不可改绑。",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "template_id",
+                  "expected_template_id"
+                ],
+                "properties": {
+                  "template_id": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "expected_template_id": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "会话失效"
+          },
+          "403": {
+            "description": "权限不足"
+          },
+          "404": {
+            "description": "记录不存在"
+          },
+          "409": {
+            "description": "模板已绑定或并发条件冲突"
+          },
+          "503": {
+            "description": "存储不可用"
+          }
+        }
+      }
     }
   },
   "components": {

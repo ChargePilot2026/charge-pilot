@@ -99,6 +99,13 @@ GET `/settings/charge-rules` 返回规则完整时段、站点、状态、版本
 
 - `GET /exports`、`GET /exports/resources`、`POST /exports`、`GET /exports/{id}/download`：`export.create` 写、`finance.read` 读。创建需 UUID `request_id` 与已授权的 `resource`（`orders`/`stations`/`devices`/`settlements`）。下载时重新校验归属与资源权限；文件 24 小时过期，过期请求返回 410 并删除文件。
 
+### 分账模板
+
+- `GET /settings/split-templates`、`GET /settings/split-templates/{id}`、`GET /settings/split-templates/{id}/parties` 需要 `finance.read`。列表支持 `page`、`page_size`、`status`、`keyword`。
+- `POST /settings/split-templates` 需要 `finance.split_template.create`，请求含 `code`、`name`、`mode`（`mode_a` 或 `mode_b`）与完整 `parties` 数组；`PUT /settings/split-templates/{id}` 可改名称、模式与状态。参与方须为 2–8 个、代码不重复、各比例大于零且合计恰好 10000 基点。创建、修改和审计在同一事务完成。
+- `POST /settings/split-templates/{id}/parties` 需要 `finance.split_party.create`，以完整 `parties` 数组原子替换参与方；模板一旦绑定任一站点，模式、状态和参与方不可修改，应新建模板再在站点停用后切换。读取参与方时银行账户只返回末四位。
+- `PUT /stations/{id}/split-template` 同时需要 `station.update` 与 `finance.split_template.create`，请求 `{template_id,expected_template_id}`，未绑定时预期 ID 为 0。站点须已停用；有设备时还需停用满五分钟，且这些设备从未产生支付意图或充电订单。已产生历史交易的站点暂不能改绑，避免延迟结算使用新模板重分账。新建站点也可在创建请求中提供有效的 `split_template_id`。绑定仅接受启用且比例有效的模板，并写审计。站点重新启用仍走原站点更新接口。
+
 ### 风控配置
 
 - `PUT /risk-config`：`alert.risk_config.update`，按 key 写入 JSON 值。

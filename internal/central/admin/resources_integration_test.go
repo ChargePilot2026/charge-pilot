@@ -108,6 +108,38 @@ func TestAdminPagesIntegration(t *testing.T) {
 	call(adminToken, "GET", "billing/meter-reviews?status=invalid", nil, 400)
 	station := gin.H{"code": "PAGES_STATION", "name": "分页站点", "longitude": 116.3, "latitude": 39.9, "status": "active"}
 	sid := data(call(adminToken, "POST", "stations", station, 200))["id"]
+	parties := []gin.H{{"party_code": "operator", "party_name": "运营方", "ratio_bp": 6000},
+		{"party_code": "property", "party_name": "物业", "ratio_bp": 4000, "bank_account": "6222000012345678"}}
+	call("", "POST", "settings/split-templates", gin.H{"code": "PAGES_SPLIT", "name": "页面验收分账", "mode": "mode_a", "parties": parties}, 401)
+	template := data(call(adminToken, "POST", "settings/split-templates", gin.H{"code": "PAGES_SPLIT", "name": "页面验收分账", "mode": "mode_a", "parties": parties}, 200))
+	call(adminToken, "POST", "settings/split-templates", gin.H{"code": "PAGES_SPLIT", "name": "重复编码", "mode": "mode_a", "parties": parties}, 409)
+	templateID := uint64(template["id"].(float64))
+	templatePath := fmt.Sprintf("settings/split-templates/%d", templateID)
+	if template["status"] != "active" || len(template["parties"].([]any)) != 2 {
+		t.Fatal("split template was not activated with two parties", template)
+	}
+	firstParty := template["parties"].([]any)[1].(map[string]any)
+	if firstParty["bank_account_last4"] != "5678" {
+		t.Fatal("split party bank account must be masked", firstParty)
+	}
+	call(fin1, "GET", templatePath, nil, 200)
+	call(fin1, "GET", templatePath+"/parties", nil, 200)
+	call(fin1, "GET", "settings/split-templates?status=active", nil, 200)
+	call(adminToken, "POST", templatePath+"/parties", gin.H{"parties": []gin.H{{"party_code": "operator", "party_name": "运营方", "ratio_bp": 7000}, {"party_code": "property", "party_name": "物业", "ratio_bp": 2000}}}, 400)
+	call(adminToken, "POST", templatePath+"/parties", gin.H{"parties": []gin.H{{"party_code": "operator", "party_name": "运营方", "ratio_bp": 5000}, {"party_code": "property", "party_name": "物业", "ratio_bp": 5000}}}, 200)
+	station["status"] = "disabled"
+	delete(station, "code")
+	stationPath := fmt.Sprintf("stations/%.0f", sid)
+	call(adminToken, "PUT", stationPath, station, 200)
+	call(fin1, "PUT", stationPath+"/split-template", gin.H{"template_id": templateID, "expected_template_id": 0}, 403)
+	call(adminToken, "PUT", stationPath+"/split-template", gin.H{"template_id": templateID, "expected_template_id": 0}, 200)
+	call(adminToken, "PUT", stationPath+"/split-template", gin.H{"template_id": templateID, "expected_template_id": 0}, 409)
+	station["status"] = "active"
+	call(adminToken, "PUT", stationPath, station, 200)
+	call(adminToken, "POST", templatePath+"/parties", gin.H{"parties": parties}, 409)
+	call(adminToken, "PUT", templatePath, gin.H{"name": "已绑定模板", "mode": "mode_b", "status": "active"}, 409)
+	call(adminToken, "PUT", templatePath, gin.H{"name": "名称可更新", "mode": "mode_a", "status": "active"}, 200)
+	station["code"] = "PAGES_STATION"
 	call(adminToken, "POST", "stations", station, 409)
 	station["name"] = "更新站点"
 	delete(station, "code")
@@ -238,6 +270,13 @@ func TestAdminPagesIntegration(t *testing.T) {
 	exec(udb, "INSERT INTO charge_order(order_no,user_id,device_id,port_no,payment_order_id,status,created_month) VALUES ('PAGES_ORDER',?,'PAGESDEV01',1,?,'completed',DATE_FORMAT(UTC_TIMESTAMP(),'%Y-%m-01'))", uid, payID)
 	udb.Table("charge_order").Where("order_no='PAGES_ORDER'").Pluck("id", &orderID)
 	exec(udb, "UPDATE payment_order SET biz_id=? WHERE id=?", orderID, payID)
+	newTemplate := data(call(adminToken, "POST", "settings/split-templates", gin.H{"code": "PAGES_SPLIT_NEXT", "name": "新分账模板", "mode": "mode_b", "parties": parties}, 200))
+	station["status"] = "disabled"
+	call(adminToken, "PUT", stationPath, station, 200)
+	exec(adb, "UPDATE station SET updated_at = DATE_SUB(UTC_TIMESTAMP(), INTERVAL 6 MINUTE) WHERE id = ?", sid)
+	call(adminToken, "PUT", stationPath+"/split-template", gin.H{"template_id": newTemplate["id"], "expected_template_id": templateID}, 409)
+	station["status"] = "active"
+	call(adminToken, "PUT", stationPath, station, 200)
 	exec(udb, `INSERT INTO charge_prepay(payment_order_id,prepay_id,params_json) VALUES (?,'SIM', '{"provider":"simulation"}')`, payID)
 	op := fmt.Sprintf("orders/%d", orderID)
 	call(adminToken, "GET", op, nil, 200)

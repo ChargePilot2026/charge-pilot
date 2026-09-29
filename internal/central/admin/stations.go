@@ -14,28 +14,30 @@ import (
 )
 
 type Station struct {
-	ID           uint64  `json:"id" gorm:"primaryKey"`
-	Code         string  `json:"code"`
-	Name         string  `json:"name"`
-	Address      *string `json:"address"`
-	Longitude    float64 `json:"longitude"`
-	Latitude     float64 `json:"latitude"`
-	Status       string  `json:"status"`
-	OpenHours    *string `json:"open_hours"`
-	ContactPhone *string `json:"contact_phone"`
+	ID              uint64  `json:"id" gorm:"primaryKey"`
+	Code            string  `json:"code"`
+	Name            string  `json:"name"`
+	Address         *string `json:"address"`
+	Longitude       float64 `json:"longitude"`
+	Latitude        float64 `json:"latitude"`
+	Status          string  `json:"status"`
+	OpenHours       *string `json:"open_hours"`
+	ContactPhone    *string `json:"contact_phone"`
+	SplitTemplateID *uint64 `json:"split_template_id" gorm:"column:split_template_id"`
 }
 
 func (Station) TableName() string { return "station" }
 
 type StationInput struct {
-	Code         *string  `json:"code"`
-	Name         string   `json:"name"`
-	Address      *string  `json:"address"`
-	Longitude    *float64 `json:"longitude"`
-	Latitude     *float64 `json:"latitude"`
-	Status       string   `json:"status"`
-	OpenHours    *string  `json:"open_hours"`
-	ContactPhone *string  `json:"contact_phone"`
+	Code            *string  `json:"code"`
+	Name            string   `json:"name"`
+	Address         *string  `json:"address"`
+	Longitude       *float64 `json:"longitude"`
+	Latitude        *float64 `json:"latitude"`
+	Status          string   `json:"status"`
+	OpenHours       *string  `json:"open_hours"`
+	ContactPhone    *string  `json:"contact_phone"`
+	SplitTemplateID *uint64  `json:"split_template_id"`
 }
 
 var stationCodePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
@@ -45,6 +47,9 @@ func (input StationInput) valid(create bool) bool {
 		return false
 	}
 	if create && (input.Code == nil || !stationCodePattern.MatchString(*input.Code)) {
+		return false
+	}
+	if input.SplitTemplateID != nil && *input.SplitTemplateID == 0 {
 		return false
 	}
 	for value, max := range map[*string]int{input.Address: 255, input.OpenHours: 64, input.ContactPhone: 32} {
@@ -110,17 +115,22 @@ func (a ResourceAPI) saveStation(c *gin.Context, create bool) {
 	if !decodeResource(c, &input) {
 		return
 	}
-	if !input.valid(create) || (!create && input.Code != nil) {
+	if !input.valid(create) || (!create && (input.Code != nil || input.SplitTemplateID != nil)) {
 		httpapi.BadRequest(c, "站点参数无效：请检查名称、编码、经纬度和状态；编码不可修改")
 		return
 	}
-	row := Station{ID: id, Name: strings.TrimSpace(input.Name), Address: input.Address, Longitude: *input.Longitude, Latitude: *input.Latitude, Status: input.Status, OpenHours: input.OpenHours, ContactPhone: input.ContactPhone}
+	row := Station{ID: id, Name: strings.TrimSpace(input.Name), Address: input.Address, Longitude: *input.Longitude, Latitude: *input.Latitude, Status: input.Status, OpenHours: input.OpenHours, ContactPhone: input.ContactPhone, SplitTemplateID: input.SplitTemplateID}
 	if create {
 		row.Code = *input.Code
 	}
 	p := c.MustGet("admin_profile").(Profile)
 	err := a.Store.AdminDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
 		if create {
+			if input.SplitTemplateID != nil {
+				if err := requireUsableSplitTemplate(tx, *input.SplitTemplateID); err != nil {
+					return err
+				}
+			}
 			// The stable registry serializes concurrent creates and prevents code reuse.
 			if err := tx.Table("station_code_identity").Create(map[string]any{"code": row.Code}).Error; err != nil {
 				return err
@@ -135,6 +145,7 @@ func (a ResourceAPI) saveStation(c *gin.Context, create bool) {
 			return err
 		}
 		row.Code = before.Code
+		row.SplitTemplateID = before.SplitTemplateID
 		if err := tx.Model(&Station{}).Where("id = ?", id).Updates(map[string]any{"name": row.Name, "address": row.Address, "longitude": row.Longitude, "latitude": row.Latitude, "status": row.Status, "open_hours": row.OpenHours, "contact_phone": row.ContactPhone}).Error; err != nil {
 			return err
 		}
