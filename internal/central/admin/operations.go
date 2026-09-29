@@ -38,7 +38,6 @@ func (a ResourceAPI) registerOperations(r *gin.Engine) {
 		})
 	}
 	get("users", "admin_user.read", "admin_user_role", "id,username,display_name,role_id,status", true)
-	get("roles", "admin_user.read", "role", "id,code,name", true)
 	get("alerts", "alert.read", "alert_event", "id,device_id,severity,metric,status,created_at", false)
 	get("announcements", "announcement.read", "announcement", "id,title,content,scope,target_ids,status,start_at,end_at", true)
 	get("customer-service", "customer_service.read", "customer_service_config", "id,agent_wechat,agent_name,path,priority,enabled,working_hours_json", false)
