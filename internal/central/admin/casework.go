@@ -74,6 +74,7 @@ func (a ResourceAPI) replyFeedback(c *gin.Context) {
 		return
 	}
 	p := c.MustGet("admin_profile").(Profile)
+	var auditPending []auditEntry
 	err := a.Store.UserDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
 		var row struct{ Status string }
 		if err := tx.Table("feedback").Clauses(clause.Locking{Strength: "UPDATE"}).Where("id=? AND deleted_at IS NULL", id).Take(&row).Error; err != nil {
@@ -92,12 +93,14 @@ func (a ResourceAPI) replyFeedback(c *gin.Context) {
 		if err := tx.Table("feedback").Where("id=?", id).Updates(v).Error; err != nil {
 			return err
 		}
-		return resourceAudit(tx, p, in.Action, "feedback", id, row, v, c.ClientIP(), "")
+		auditPending = []auditEntry{{in.Action, "feedback", id, row, v, ""}}
+		return nil
 	})
 	if err != nil {
 		resourceFailure(c, err)
 		return
 	}
+	a.flushAudit(c, auditPending)
 	httpapi.OK(c, gin.H{"saved": true})
 }
 func (a ResourceAPI) faultHistory(c *gin.Context) {
@@ -162,6 +165,7 @@ func (a ResourceAPI) dispatchFault(c *gin.Context) {
 		return
 	}
 	p := c.MustGet("admin_profile").(Profile)
+	var auditPending []auditEntry
 	err = a.Store.UserDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
 		var row faultRow
 		if err := tx.Table("device_fault_report").Clauses(clause.Locking{Strength: "UPDATE"}).Where("id=? AND deleted_at IS NULL", id).Take(&row).Error; err != nil {
@@ -183,12 +187,14 @@ func (a ResourceAPI) dispatchFault(c *gin.Context) {
 		if err := tx.Table("device_fault_report_event").Create(map[string]any{"report_id": id, "actor_id": p.ID, "event_type": event, "from_status": row.Status, "to_status": "dispatched", "assigned_to": in.AssignedTo, "note": in.Note, "user_visible": true}).Error; err != nil {
 			return err
 		}
-		return resourceAudit(tx, p, event, "device_fault_report", id, row, in, c.ClientIP(), "")
+		auditPending = []auditEntry{{event, "device_fault_report", id, row, in, ""}}
+		return nil
 	})
 	if err != nil {
 		resourceFailure(c, err)
 		return
 	}
+	a.flushAudit(c, auditPending)
 	httpapi.OK(c, gin.H{"assigned_to": in.AssignedTo, "status": "dispatched"})
 }
 func (a ResourceAPI) resolveFault(c *gin.Context) {
@@ -208,6 +214,7 @@ func (a ResourceAPI) resolveFault(c *gin.Context) {
 		return
 	}
 	p := c.MustGet("admin_profile").(Profile)
+	var auditPending []auditEntry
 	err := a.Store.UserDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
 		var row faultRow
 		if err := tx.Table("device_fault_report").Clauses(clause.Locking{Strength: "UPDATE"}).Where("id=? AND deleted_at IS NULL", id).Take(&row).Error; err != nil {
@@ -228,11 +235,13 @@ func (a ResourceAPI) resolveFault(c *gin.Context) {
 		if err := tx.Table("device_fault_report_event").Create(map[string]any{"report_id": id, "actor_id": p.ID, "event_type": in.Status, "from_status": row.Status, "to_status": in.Status, "assigned_to": p.ID, "note": in.Note, "user_visible": true}).Error; err != nil {
 			return err
 		}
-		return resourceAudit(tx, p, in.Status, "device_fault_report", id, row, in, c.ClientIP(), "")
+		auditPending = []auditEntry{{in.Status, "device_fault_report", id, row, in, ""}}
+		return nil
 	})
 	if err != nil {
 		resourceFailure(c, err)
 		return
 	}
+	a.flushAudit(c, auditPending)
 	httpapi.OK(c, gin.H{"status": in.Status})
 }

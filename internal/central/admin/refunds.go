@@ -46,6 +46,7 @@ func (a ResourceAPI) manualRefund(c *gin.Context) {
 	sum := sha256.Sum256([]byte(in.RequestID))
 	refundNo := "MR" + hex.EncodeToString(sum[:16])
 	created := false
+	var auditPending []auditEntry
 	err := a.Store.UserDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
 		var order charge.ChargeOrderRecord
 		if err := tx.Where("id=? AND deleted_at IS NULL", id).Take(&order).Error; err != nil {
@@ -97,12 +98,14 @@ func (a ResourceAPI) manualRefund(c *gin.Context) {
 			return err
 		}
 		created = true
-		return resourceAudit(tx, p, "request", "refund", record.ID, nil, in, c.ClientIP(), in.RequestID)
+		auditPending = []auditEntry{{"request", "refund", record.ID, nil, in, in.RequestID}}
+		return nil
 	})
 	if err != nil {
 		resourceFailure(c, err)
 		return
 	}
+	a.flushAudit(c, auditPending)
 	httpapi.OK(c, gin.H{"created": created, "refund_no": refundNo, "request_id": in.RequestID})
 }
 
@@ -196,6 +199,7 @@ func (a ResourceAPI) reviewRefund(c *gin.Context) {
 		return
 	}
 	status := "rejected"
+	var auditPending []auditEntry
 	err := a.Store.UserDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
 		var r charge.RefundRecord
 		if err := tx.Where("refund_no=? AND deleted_at IS NULL", c.Param("refund_no")).Take(&r).Error; err != nil {
@@ -253,12 +257,14 @@ func (a ResourceAPI) reviewRefund(c *gin.Context) {
 				}
 			}
 		}
-		return resourceAudit(tx, p, status, "refund", r.ID, nil, in, c.ClientIP(), "")
+		auditPending = []auditEntry{{status, "refund", r.ID, nil, in, ""}}
+		return nil
 	})
 	if err != nil {
 		resourceFailure(c, err)
 		return
 	}
+	a.flushAudit(c, auditPending)
 	httpapi.OK(c, gin.H{"review_status": status})
 }
 func (a ResourceAPI) retryRefund(c *gin.Context) {
@@ -272,6 +278,7 @@ func (a ResourceAPI) retryRefund(c *gin.Context) {
 		httpapi.BadRequest(c, "请填写重试原因")
 		return
 	}
+	var auditPending []auditEntry
 	err := a.Store.UserDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
 		var r charge.RefundRecord
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("refund_no=? AND deleted_at IS NULL", c.Param("refund_no")).Take(&r).Error; err != nil {
@@ -283,11 +290,13 @@ func (a ResourceAPI) retryRefund(c *gin.Context) {
 		if err := tx.Table("refund_record").Where("id=?", r.ID).Update("next_attempt_at", time.Now().UTC()).Error; err != nil {
 			return err
 		}
-		return resourceAudit(tx, c.MustGet("admin_profile").(Profile), "retry", "refund", r.ID, nil, in, c.ClientIP(), "")
+		auditPending = []auditEntry{{"retry", "refund", r.ID, nil, in, ""}}
+		return nil
 	})
 	if err != nil {
 		resourceFailure(c, err)
 		return
 	}
+	a.flushAudit(c, auditPending)
 	httpapi.OK(c, gin.H{"scheduled": true})
 }

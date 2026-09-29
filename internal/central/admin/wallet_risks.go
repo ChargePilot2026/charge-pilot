@@ -100,6 +100,7 @@ func (a ResourceAPI) reviewWalletRisk(c *gin.Context) {
 		return
 	}
 	var response map[string]any
+	var auditPending []auditEntry
 	err := a.Store.UserDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
 		var req riskRequest
 		if err := tx.Table("wallet_refund_request").Clauses(clause.Locking{Strength: "UPDATE"}).Where("request_id=?", c.Param("request_id")).Take(&req).Error; err != nil {
@@ -138,12 +139,14 @@ func (a ResourceAPI) reviewWalletRisk(c *gin.Context) {
 		if err := tx.Table("wallet_risk_review").Create(map[string]any{"request_id": req.RequestID, "actor_id": p.ID, "approved": *in.Approved, "comment": in.Comment, "response_json": string(b)}).Error; err != nil {
 			return err
 		}
-		return resourceAudit(tx, p, "review", "wallet_risk", req.UserID, nil, gin.H{"request_id": req.RequestID, "review": response}, c.ClientIP(), req.RequestID)
+		auditPending = []auditEntry{{"review", "wallet_risk", req.UserID, nil, gin.H{"request_id": req.RequestID, "review": response}, req.RequestID}}
+		return nil
 	})
 	if err != nil {
 		resourceFailure(c, err)
 		return
 	}
+	a.flushAudit(c, auditPending)
 	httpapi.OK(c, response)
 }
 func reserveWalletRefund(tx *gorm.DB, req riskRequest) error {
@@ -216,6 +219,7 @@ func (a ResourceAPI) releaseWalletRisk(c *gin.Context) {
 		return
 	}
 	var response map[string]any
+	var auditPending []auditEntry
 	err := a.Store.UserDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
 		var req riskRequest
 		if err := tx.Table("wallet_refund_request").Clauses(clause.Locking{Strength: "UPDATE"}).Where("request_id=?", c.Param("request_id")).Take(&req).Error; err != nil {
@@ -278,11 +282,13 @@ func (a ResourceAPI) releaseWalletRisk(c *gin.Context) {
 		if err := tx.Table("wallet_risk_release").Create(map[string]any{"request_id": req.RequestID, "actor_id": p.ID, "comment": in.Comment, "response_json": string(b)}).Error; err != nil {
 			return err
 		}
-		return resourceAudit(tx, p, "release", "wallet_risk", req.UserID, nil, gin.H{"request_id": req.RequestID, "release": response}, c.ClientIP(), req.RequestID)
+		auditPending = []auditEntry{{"release", "wallet_risk", req.UserID, nil, gin.H{"request_id": req.RequestID, "release": response}, req.RequestID}}
+		return nil
 	})
 	if err != nil {
 		resourceFailure(c, err)
 		return
 	}
+	a.flushAudit(c, auditPending)
 	httpapi.OK(c, response)
 }

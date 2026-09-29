@@ -56,6 +56,7 @@ func (a ResourceAPI) reviewInvoice(c *gin.Context) {
 		return
 	}
 	status := "rejected"
+	var auditPending []auditEntry
 	err := a.Store.UserDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
 		var invoice struct {
 			ReviewStatus string
@@ -108,11 +109,13 @@ func (a ResourceAPI) reviewInvoice(c *gin.Context) {
 				return err
 			}
 		}
-		return resourceAudit(tx, p, status, "invoice", id, invoice, in, c.ClientIP(), "")
+		auditPending = []auditEntry{{status, "invoice", id, invoice, in, ""}}
+		return nil
 	})
 	if err != nil {
 		resourceFailure(c, err)
 		return
 	}
+	a.flushAudit(c, auditPending)
 	httpapi.OK(c, gin.H{"review_status": status})
 }

@@ -219,10 +219,7 @@ func (a ResourceAPI) createActivityRule(c *gin.Context) {
 	// The rule lives in user_db and audit_log lives in admin_db. Joining them in
 	// one transaction would be a cross-schema write, which this project does not
 	// do, so the audit is written through AdminDB once the change has committed.
-	if err := a.auditToAdmin(c, "create", id, nil, in); err != nil {
-		httpapi.Write(c, http.StatusServiceUnavailable, 5003, "活动已创建，但审计写入失败，请人工补记", nil)
-		return
-	}
+	a.auditToAdmin(c, "create", "coupon_activity", id, nil, in, "")
 	httpapi.OK(c, gin.H{"id": id})
 }
 
@@ -275,21 +272,8 @@ func (a ResourceAPI) updateActivityRule(c *gin.Context) {
 		resourceFailure(c, err)
 		return
 	}
-	if err := a.auditToAdmin(c, "update", id, before, in); err != nil {
-		httpapi.Write(c, http.StatusServiceUnavailable, 5003, "活动已更新，但审计写入失败，请人工补记", nil)
-		return
-	}
+	a.auditToAdmin(c, "update", "coupon_activity", id, before, in, "")
 	httpapi.OK(c, gin.H{"id": id})
-}
-
-// auditToAdmin writes the operator's action to admin_db.audit_log. Resource
-// changes that live in user_db must not reuse their own transaction for this:
-// audit_log only exists in admin_db, and joining the two would be a
-// cross-schema write.
-func (a ResourceAPI) auditToAdmin(c *gin.Context, action string, id uint64, before, after any) error {
-	return resourceAudit(a.Store.AdminDB.WithContext(c.Request.Context()),
-		c.MustGet("admin_profile").(Profile), action, "coupon_activity", id, before, after,
-		c.ClientIP(), httpapi.RequestID(c))
 }
 
 // couponUsable refuses a campaign that points at a coupon which cannot be

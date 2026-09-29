@@ -67,16 +67,19 @@ func (a ResourceAPI) createCoupon(c *gin.Context) {
 		return
 	}
 	in.Status = "active"
+	var auditPending []auditEntry
 	err := a.Store.UserDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Table("coupon").Create(&in).Error; err != nil {
 			return err
 		}
-		return resourceAudit(tx, c.MustGet("admin_profile").(Profile), "create", "coupon", in.ID, nil, in, c.ClientIP(), "")
+		auditPending = []auditEntry{{"create", "coupon", in.ID, nil, in, ""}}
+		return nil
 	})
 	if err != nil {
 		resourceFailure(c, err)
 		return
 	}
+	a.flushAudit(c, auditPending)
 	httpapi.OK(c, in)
 }
 func (a ResourceAPI) updateCoupon(c *gin.Context) {
@@ -95,6 +98,7 @@ func (a ResourceAPI) updateCoupon(c *gin.Context) {
 		httpapi.BadRequest(c, "名称或状态无效")
 		return
 	}
+	var auditPending []auditEntry
 	err := a.Store.UserDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
 		var before couponRow
 		if err := tx.Table("coupon").Clauses(clause.Locking{Strength: "UPDATE"}).Where("id=? AND deleted_at IS NULL", id).Take(&before).Error; err != nil {
@@ -103,12 +107,14 @@ func (a ResourceAPI) updateCoupon(c *gin.Context) {
 		if err := tx.Table("coupon").Where("id=?", id).Updates(map[string]any{"name": in.Name, "status": in.Status}).Error; err != nil {
 			return err
 		}
-		return resourceAudit(tx, c.MustGet("admin_profile").(Profile), "update", "coupon", id, before, in, c.ClientIP(), "")
+		auditPending = []auditEntry{{"update", "coupon", id, before, in, ""}}
+		return nil
 	})
 	if err != nil {
 		resourceFailure(c, err)
 		return
 	}
+	a.flushAudit(c, auditPending)
 	httpapi.OK(c, in)
 }
 func (a ResourceAPI) couponStats(c *gin.Context) {
@@ -158,6 +164,7 @@ func (a ResourceAPI) grantCoupon(c *gin.Context) {
 		return
 	}
 	var grantID uint64
+	var auditPending []auditEntry
 	err := a.Store.UserDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
 		var coupon couponRow
 		if err := tx.Table("coupon").Clauses(clause.Locking{Strength: "UPDATE"}).Where("id=? AND deleted_at IS NULL", id).Take(&coupon).Error; err != nil {
@@ -209,11 +216,13 @@ func (a ResourceAPI) grantCoupon(c *gin.Context) {
 		if err := tx.Table("coupon_grant_request").Create(map[string]any{"request_id": in.RequestID, "coupon_id": id, "user_id": in.UserID, "coupon_grant_id": grantID}).Error; err != nil {
 			return err
 		}
-		return resourceAudit(tx, c.MustGet("admin_profile").(Profile), "grant", "coupon", id, nil, in, c.ClientIP(), in.RequestID)
+		auditPending = []auditEntry{{"grant", "coupon", id, nil, in, in.RequestID}}
+		return nil
 	})
 	if err != nil {
 		resourceFailure(c, err)
 		return
 	}
+	a.flushAudit(c, auditPending)
 	httpapi.OK(c, gin.H{"coupon_grant_id": grantID, "request_id": in.RequestID})
 }

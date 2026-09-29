@@ -30,6 +30,7 @@ func (a ResourceAPI) Register(r *gin.Engine) {
 	a.registerPricing(r)
 	a.registerCoupons(r)
 	a.registerActivityRules(r)
+	a.registerAuditLogs(r)
 	a.registerCasework(r)
 	a.registerInvoices(r)
 	a.registerMeterReviews(r)

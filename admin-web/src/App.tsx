@@ -17,6 +17,7 @@ import CustomerServicePage from './pages/CustomerService';
 import CaseworkPage from './pages/Casework';
 import AlertRulesPage from './pages/AlertRules';
 import ExportsPage from './pages/Exports';
+import AuditLogsPage from './pages/AuditLogs';
 
 function RequireAuth({ children }: { children: JSX.Element }) {
   const token = localStorage.getItem('cp_token');
@@ -38,6 +39,7 @@ export default function App() {
         <Route path="alerts" element={<AlertsPage />} />
         <Route path="alert-rules" element={<AlertRulesPage />} />
         <Route path="exports" element={<ExportsPage />} />
+        <Route path="audit-logs" element={<AuditLogsPage />} />
         <Route path="coupons" element={<CouponsPage />} />
         <Route path="billing" element={<BillingPage />} />
         <Route path="settings" element={<SettingsPage />} />

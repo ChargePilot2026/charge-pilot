@@ -5,6 +5,7 @@ import {
   TeamOutlined, AlertOutlined, GiftOutlined, AccountBookOutlined,
   SettingOutlined, ApiOutlined, CloudUploadOutlined, NotificationOutlined,
   UserOutlined, LogoutOutlined, MessageOutlined, ToolOutlined, DownloadOutlined,
+  FileSearchOutlined,
 } from '@ant-design/icons';
 import { useEffect, useState } from 'react';
 import { apiPost, adminSession } from '../api/client';
@@ -28,6 +29,7 @@ const items = [
   { key: '/announcements', icon: <NotificationOutlined />, label: '公告' },
   { key: '/customer-service', icon: <MessageOutlined />, label: '客服坐席' },
   { key: '/casework', icon: <ToolOutlined />, label: '反馈与报修' },
+  { key: '/audit-logs', icon: <FileSearchOutlined />, label: '审计日志' },
   { key: '/settings', icon: <SettingOutlined />, label: '设置' },
 ];
 
@@ -36,7 +38,8 @@ const menuPermission: Record<string,string> = {
  '/users':'admin_user.read','/alerts':'alert.read','/alert-rules':'alert.read',
   '/exports':'finance.read','/coupons':'coupon.read','/billing':'finance.read',
  '/webhooks':'webhook.read','/ota':'ota.read','/announcements':'announcement.read',
- '/customer-service':'customer_service.read','/casework':'feedback.read','/settings':'whitelabel.read',
+ '/customer-service':'customer_service.read','/casework':'feedback.read','/audit-logs':'audit.read',
+  '/settings':'whitelabel.read',
 };
 
 export default function MainLayout() {
