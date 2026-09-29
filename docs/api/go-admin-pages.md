@@ -97,7 +97,7 @@ GET `/settings/charge-rules` 返回规则完整时段、站点、状态、版本
 
 ### 导出
 
-- `GET /exports`、`GET /exports/resources`、`POST /exports`、`GET /exports/{id}/download`：`export.create` 写、`finance.read` 读。创建需 UUID `request_id` 与已授权的 `resource`（`orders`/`stations`/`devices`/`settlements`）。下载时重新校验归属与资源权限；文件 24 小时过期，过期请求返回 410 并删除文件。
+- `GET /exports`、`GET /exports/{id}`、`GET /exports/resources`、`POST /exports`、`GET /exports/{id}/download`：`export.create` 写、`finance.read` 读。详情只返回任务状态与统计，不暴露服务器文件路径；创建需 UUID `request_id` 与已授权的 `resource`（`orders`/`stations`/`devices`/`settlements`）。下载时重新校验归属与资源权限；文件 24 小时过期，过期请求返回 410 并删除文件。
 
 ### 分账模板
 

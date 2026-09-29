@@ -114,7 +114,7 @@ docs/                   # 需求、API、数据与联调文档
 | 文档端点 | 影响 |
 | --- | --- |
 | `GET /internal/devices/{id}/historical-curve`（带 `order_id`/`port_no`/`granularity`） | 按订单时间窗取历史曲线。已实现的是不带这些参数、按设备与时间窗查询的 `GET /internal/devices/{id}/telemetry`，且会按窗口自动切换 15 分钟/小时聚合并在响应标注 `granularity` |
-| `GET /admin/export/tasks/{id}`、`GET /internal/export/tasks/{id}` | 导出任务单项详情；列表与下载已覆盖日常使用 |
+| `GET /internal/export/tasks/{id}` | 旧设计把导出任务交给 worker；当前 Go 实现由 central 的 admin_db 承载，已提供 `GET /admin/exports/{id}`。worker 旧路径不再是当前链路依赖，旧契约仍待逐条修订 |
 | `GET /internal/scheduled-tasks/{id}/last-run` | 定时任务上次执行记录 |
 | `POST /internal/refund-records/claim`、`/execution`、`/{id}/result` | 退款记录内部操作端点；退款走 worker 消费 Outbox，本就无此 HTTP 面 |
 | `POST /internal/device-sessions/cleanup-idle` | 空闲会话清理。**当前无对象可清**——会话只在内存，进程重启即清空，该端点仅在第 8 项落地后才有意义 |

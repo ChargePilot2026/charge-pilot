@@ -1484,6 +1484,8 @@ user 服务在单库事务中锁定模板，校验用户有效、模板处于发
 
 ### `GET /api/v1/admin/export/tasks/{task_id}/download`
 
+> **Go 实现修订**：导出任务由 central 的 `admin_db.export_task` 承载，当前查询详情为 `GET /api/v1/admin/exports/{id}`，下载为 `GET /api/v1/admin/exports/{id}/download`。旧的 worker 任务透传与 OSS 临时签名描述不适用于当前实现；下载时重新校验账号、权限与文件期限。详见 [Go 后台业务页面](go-admin-pages.md#导出)。
+
 **鉴权**:[角色] `export.download`
 
 当前返回 `503 ServiceUnavailable`。worker 任务状态接口、文件生成和对象存储签名尚未实现。

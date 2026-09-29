@@ -96,6 +96,22 @@ func TestAdminPagesIntegration(t *testing.T) {
 		return out
 	}
 	data := func(v map[string]any) map[string]any { return v["data"].(map[string]any) }
+	var exportCreator uint64
+	if e := adb.Table("admin_user_role").Where("username = ?", "pages-admin").Pluck("id", &exportCreator).Error; e != nil || exportCreator == 0 {
+		t.Fatalf("export fixture creator: %d %v", exportCreator, e)
+	}
+	exec(adb, "INSERT INTO export_task(task_no,resource,status,requested_by,row_count,file_path) VALUES('PAGES_EXPORT_DETAIL','orders','completed',?,2,'/private/tmp/internal-only.csv')", exportCreator)
+	var exportID uint64
+	if e := adb.Table("export_task").Where("task_no = ?", "PAGES_EXPORT_DETAIL").Pluck("id", &exportID).Error; e != nil || exportID == 0 {
+		t.Fatalf("export fixture id: %d %v", exportID, e)
+	}
+	exportPath := fmt.Sprintf("exports/%d", exportID)
+	if task := data(call(fin1, "GET", exportPath, nil, 200)); task["task_no"] != "PAGES_EXPORT_DETAIL" || task["file_path"] != nil {
+		t.Fatalf("export detail leaked path or wrong task: %v", task)
+	}
+	call("", "GET", exportPath, nil, 401)
+	call(fin1, "GET", "exports/not-an-id", nil, 400)
+	call(fin1, "GET", "exports/999999999999", nil, 404)
 	for _, path := range []string{"stations", "devices", "orders", "users", "roles", "alerts", "announcements", "customer-service", "webhooks", "ota/packages", "ota/schedules", "settings/charge-rules", "whitelabel", "coupons", "feedback", "device-fault-reports", "billing/meter-reviews", "billing/settlements", "billing/invoices", "billing/refunds", "billing/wallet-risks", "device-imports"} {
 		call(adminToken, "GET", path, nil, 200)
 		call("", "GET", path, nil, 401)

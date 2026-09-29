@@ -111,9 +111,25 @@ var exportRegistry = map[string]exportSpec{
 
 func (t ExportTask) register(r *gin.Engine) {
 	r.GET("/api/v1/admin/exports", t.Auth.Require("finance.read"), t.listTasks)
+	r.GET("/api/v1/admin/exports/:id", t.Auth.Require("finance.read"), t.detailTask)
 	r.POST("/api/v1/admin/exports", t.Auth.Require("export.create"), t.createTask)
 	r.GET("/api/v1/admin/exports/:id/download", t.Auth.Require("export.create"), t.downloadTask)
 	r.GET("/api/v1/admin/exports/resources", t.Auth.Require("export.create"), t.listResources)
+}
+
+func (t ExportTask) detailTask(c *gin.Context) {
+	id, ok := pathID(c)
+	if !ok {
+		return
+	}
+	var row exportRow
+	if err := t.Store.AdminDB.WithContext(c.Request.Context()).Table("export_task").Where("id = ?", id).Take(&row).Error; err != nil {
+		resourceFailure(c, err)
+		return
+	}
+	// exportRow.FilePath is excluded from JSON. Reading task status does not
+	// grant access to the file; download rechecks creator and resource rights.
+	httpapi.OK(c, row)
 }
 
 func (t ExportTask) listResources(c *gin.Context) {

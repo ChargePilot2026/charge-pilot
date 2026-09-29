@@ -3037,6 +3037,38 @@
           }
         }
       }
+    },
+    "/api/v1/admin/exports/{id}": {
+      "get": {
+        "summary": "读取单个导出任务状态",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "finance.read",
+        "description": "返回任务状态、行数及错误信息；服务器文件路径不返回，下载仍需重新授权。",
+        "responses": {
+          "200": {
+            "description": "导出任务详情"
+          },
+          "400": {
+            "description": "ID 无效"
+          },
+          "401": {
+            "description": "会话失效"
+          },
+          "403": {
+            "description": "权限不足"
+          },
+          "404": {
+            "description": "任务不存在"
+          },
+          "503": {
+            "description": "存储不可用"
+          }
+        }
+      }
     }
   },
   "components": {
