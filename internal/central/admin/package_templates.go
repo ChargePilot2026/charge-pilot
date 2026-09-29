@@ -210,6 +210,7 @@ func (a ResourceAPI) applyPackageTemplate(c *gin.Context) {
 	}
 	actor := c.MustGet("admin_profile").(Profile)
 	var offerID uint64
+	var replayed, relisted bool
 	err := a.Store.AdminDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
 		var pkg struct {
 			Name            string
@@ -246,26 +247,64 @@ func (a ResourceAPI) applyPackageTemplate(c *gin.Context) {
 				return errAlreadyReported
 			}
 		}
-		var existing int64
-		query := tx.Table("charge_offer").Where("package_template_id=? AND station_id=? AND deleted_at IS NULL", id, in.StationID)
+		// What is already at this exact target decides the answer, and the three
+		// cases are genuinely different.
+		//
+		// The status matters, and it did not before: a package taken off sale
+		// left a disabled offer behind, the check counted it, and putting the
+		// package back on sale was refused with "该套餐已在此处上架" for good. An
+		// operator had taken it down and could never put it back up.
+		existing := struct {
+			ID     uint64
+			Status string
+		}{}
+		query := tx.Table("charge_offer").Select("id, status").
+			Where("package_template_id=? AND station_id=? AND deleted_at IS NULL", id, in.StationID)
 		if in.DeviceID == "" {
 			query = query.Where("device_id IS NULL")
 		} else {
 			query = query.Where("device_id=?", in.DeviceID)
 		}
-		if err := query.Count(&existing).Error; err != nil {
-			return err
+		found := query.Take(&existing)
+		if found.Error != nil && !errors.Is(found.Error, gorm.ErrRecordNotFound) {
+			return found.Error
 		}
-		if existing > 0 {
-			httpapi.Write(c, 409, 1009, "该套餐已在此处上架", nil)
-			return errAlreadyReported
+		if found.Error == nil && existing.Status == "active" {
+			// Already on sale at this exact target. A retry after an uncertain
+			// response is the common reason to be here, and it must not look like
+			// a conflict: the caller cannot tell a duplicate from a failure
+			// unless the duplicate says so itself.
+			offerID, replayed = existing.ID, true
+			return nil
 		}
+		if found.Error == nil {
+			// Taken off sale, and the operator is asking for it back. Re-list the
+			// same offer rather than creating a second row for the same package
+			// at the same target, which would leave two rows that differ only in
+			// which one a rider can see.
+			if err := tx.Table("charge_offer").Where("id=?", existing.ID).
+				Updates(map[string]any{"status": "active", "version": gorm.Expr("version+1")}).Error; err != nil {
+				return err
+			}
+			offerID, relisted = existing.ID, true
+			return resourceAudit(tx, actor, "pricing.package_template.relist", "charge_offer", existing.ID,
+				map[string]any{"status": "disabled"}, map[string]any{"status": "active"},
+				c.ClientIP(), httpapi.RequestID(c))
+		}
+		// The code goes in with the row. It cannot be added afterwards: the
+		// column is NOT NULL with no default, so an insert that leaves it out
+		// fails outright. Writing it in a second statement after the create
+		// meant the create never succeeded, and putting a package on sale was
+		// impossible. The comment that used to sit above that second write
+		// claimed a code "can be written in the same insert", and the code did
+		// the opposite.
 		row := map[string]any{
 			"station_id": in.StationID, "device_id": nullableDevice(in.DeviceID),
 			"package_template_id": id, "name": pkg.Name, "mode": pkg.Kind,
 			"price_cents": pkg.PriceCents, "duration_minutes": pkg.DurationMinutes,
 			"min_charge_cents": pkg.MinChargeCents, "show_remark": pkg.ShowRemark,
 			"card_default": pkg.CardDefault, "status": "active", "version": 1,
+			"code": offerCodeFor(id, in.StationID, in.DeviceID),
 		}
 		if err := tx.Table("charge_offer").Create(row).Error; err != nil {
 			return err
@@ -273,13 +312,6 @@ func (a ResourceAPI) applyPackageTemplate(c *gin.Context) {
 		if err := tx.Raw("SELECT LAST_INSERT_ID()").Scan(&offerID).Error; err != nil {
 			return err
 		}
-		// The code is derived from the offer id, which is unique, so a code can
-		// be written in the same insert rather than patched in afterwards.
-		if err := tx.Table("charge_offer").Where("id=?", offerID).
-			Update("code", offerCodeFor(id, offerID)).Error; err != nil {
-			return err
-		}
-		row["code"] = offerCodeFor(id, offerID)
 		return resourceAudit(tx, actor, "pricing.package_template.apply", "charge_offer", offerID,
 			nil, map[string]any{"package_template_id": id, "station_id": in.StationID, "device_id": in.DeviceID},
 			c.ClientIP(), httpapi.RequestID(c))
@@ -291,5 +323,5 @@ func (a ResourceAPI) applyPackageTemplate(c *gin.Context) {
 		resourceFailure(c, err)
 		return
 	}
-	httpapi.OK(c, gin.H{"offer_id": offerID})
+	httpapi.OK(c, gin.H{"offer_id": offerID, "replayed": replayed, "relisted": relisted})
 }

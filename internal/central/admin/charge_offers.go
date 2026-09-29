@@ -1,6 +1,8 @@
 package admin
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/httpapi"
@@ -15,11 +17,22 @@ import (
 // published. The only operator action left is taking one off a station, which
 // is what disabling means here.
 
-// offerCode identifies a package on sale without exposing a sequential id. It
-// is derived from the package template and the offer row, both of which are
-// unique, so a yard can sell the same package at several targets.
-func offerCodeFor(packageTemplateID, offerID uint64) string {
-	return fmt.Sprintf("P%08d-%08d", packageTemplateID, offerID)
+// offerCode identifies a package on sale by what it is rather than by a row
+// number, so it is derived from the three things that make a sale unique: the
+// package, the station, and the device it is scoped to.
+//
+// It has to be derivable *before* the insert, because the code column is NOT
+// NULL with no default and an insert that leaves it out fails outright. That is
+// why this takes the target rather than the offer id.
+//
+// Uniqueness only has to hold within a station (uk_station_code), and a device
+// id runs to 64 characters, so the device part is a short digest and not the id.
+func offerCodeFor(packageTemplateID, stationID uint64, deviceID string) string {
+	if deviceID == "" {
+		return fmt.Sprintf("P%08d-%08d-Y", packageTemplateID, stationID)
+	}
+	sum := sha256.Sum256([]byte(deviceID))
+	return fmt.Sprintf("P%08d-%08d-D%s", packageTemplateID, stationID, hex.EncodeToString(sum[:4]))
 }
 
 func (a ResourceAPI) registerChargeOffers(r *gin.Engine) {

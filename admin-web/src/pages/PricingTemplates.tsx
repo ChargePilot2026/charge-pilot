@@ -135,7 +135,7 @@ export default function PricingTemplates() {
         remark: values.remark ?? '',
         spec: formToSpec(specForm),
         display: values.display || DEFAULT_DISPLAY,
-        version: editing?.version || 0,
+        expected_version: editing?.version || 0,
       };
       if (editing) await apiPut(`/api/v1/admin/settings/pricing-templates/${editing.id}`, body);
       else await apiPost('/api/v1/admin/settings/pricing-templates', body);

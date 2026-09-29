@@ -269,7 +269,7 @@ func TestAdminPagesIntegration(t *testing.T) {
 		"mode":     "server_energy",
 		"electric": gin.H{"basis": "energy", "periods": []gin.H{{"end_minute": 1440, "electric_cents": 99}}},
 		"service":  gin.H{"basis": "energy", "cents_per_kwh": 20}, "min_electric_cents": 10},
-		"version": 1}
+		"expected_version": 1}
 	call(adminToken, "PUT", "settings/pricing-templates/"+pricingTemplateID, edited, 200)
 	var appliedSpec string
 	adb.Table("pricing_rule").Where("id=?", firstRule["id"]).Pluck("spec_json", &appliedSpec)
@@ -436,6 +436,46 @@ func TestAdminPagesIntegration(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("the policy was accepted but is not in the list it is read from")
+	}
+
+	// A package that was taken off sale must be able to go back on sale.
+	//
+	// The check guarding a duplicate application counted a disabled offer as
+	// still selling, so an operator who took a package down could never put it
+	// back: the same request was refused with "该套餐已在此处上架" for good. Going
+	// down was one click and coming back was impossible.
+	pkg := gin.H{"name": "上下架套餐", "kind": "amount", "price_cents": 500,
+		"duration_minutes": 0, "sort_order": 1, "status": "active"}
+	packageID := data(call(adminToken, "POST", "settings/package-templates", pkg, 200))["id"]
+	applied := data(call(adminToken, "POST",
+		"settings/package-templates/"+fmt.Sprintf("%v", packageID)+"/apply",
+		gin.H{"station_id": sid}, 200))
+	offerID := fmt.Sprintf("%v", applied["offer_id"])
+	// A retry of the same request is a retry, not a conflict: the caller cannot
+	// tell a duplicate from a failure unless the duplicate says so itself.
+	retry := data(call(adminToken, "POST",
+		"settings/package-templates/"+fmt.Sprintf("%v", packageID)+"/apply",
+		gin.H{"station_id": sid}, 200))
+	if retry["replayed"] != true {
+		t.Fatalf("a repeated apply did not report itself as a replay: %v", retry)
+	}
+	call(adminToken, "POST", "settings/charge-offers/"+offerID+"/disable", nil, 200)
+	relisted := data(call(adminToken, "POST",
+		"settings/package-templates/"+fmt.Sprintf("%v", packageID)+"/apply",
+		gin.H{"station_id": sid}, 200))
+	if relisted["relisted"] != true {
+		t.Fatalf("putting a withdrawn package back on sale was not treated as a re-list: %v", relisted)
+	}
+	// One row, not two: a second row would differ from the first only in which
+	// one a rider can see.
+	var onSale int64
+	if err := adb.Table("charge_offer").
+		Where("station_id=? AND package_template_id=? AND status='active' AND deleted_at IS NULL", sid, packageID).
+		Count(&onSale).Error; err != nil {
+		t.Fatal(err)
+	}
+	if onSale != 1 {
+		t.Fatalf("expected exactly one active offer at the target, found %d", onSale)
 	}
 
 	// Every read endpoint is walked, not just the ones believed to be affected.

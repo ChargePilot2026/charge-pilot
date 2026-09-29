@@ -36,7 +36,11 @@ type pricingTemplateInput struct {
 	Remark  string           `json:"remark"`
 	Spec    pricing.Spec     `json:"spec"`
 	Display *pricing.Display `json:"display"`
-	Version uint32           `json:"version"`
+	// Named expected_version, not version, because every sibling that takes an
+	// optimistic lock spells it that way: the package template, the station
+	// policy, the device rule. One resource calling it something else turns a
+	// client written against the others into a 400 for no visible reason.
+	ExpectedVersion uint32 `json:"expected_version"`
 }
 
 // validTemplate is the single gate every create and update passes through, so
@@ -163,7 +167,7 @@ func (a ResourceAPI) updatePricingTemplate(c *gin.Context) {
 		httpapi.BadRequest(c, "计费模板参数无效：请检查计费口径是否可执行、套餐参数是否完整")
 		return
 	}
-	if in.Version == 0 {
+	if in.ExpectedVersion == 0 {
 		httpapi.BadRequest(c, "缺少版本号，请刷新后重试")
 		return
 	}
@@ -180,7 +184,7 @@ func (a ResourceAPI) updatePricingTemplate(c *gin.Context) {
 			Where("id=? AND deleted_at IS NULL", id).Take(&before).Error; err != nil {
 			return err
 		}
-		if before.Version != in.Version {
+		if before.Version != in.ExpectedVersion {
 			return errConflict
 		}
 		// Applied rules are deliberately untouched. Those rows are what stations
@@ -198,7 +202,7 @@ func (a ResourceAPI) updatePricingTemplate(c *gin.Context) {
 		resourceFailure(c, err)
 		return
 	}
-	httpapi.OK(c, gin.H{"id": id, "version": in.Version + 1})
+	httpapi.OK(c, gin.H{"id": id, "version": in.ExpectedVersion + 1})
 }
 
 // copyPricingTemplate duplicates a template so an operator can try a variant
