@@ -2,10 +2,12 @@ package admin
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/httpapi"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -23,7 +25,6 @@ import (
 var errAlreadyReported = errors.New("response already written")
 
 type chargePackageInput struct {
-	Code            string `json:"code"`
 	Name            string `json:"name"`
 	Mode            string `json:"mode"`
 	PriceCents      int64  `json:"price_cents"`
@@ -32,8 +33,14 @@ type chargePackageInput struct {
 	ExpectedVersion uint32 `json:"expected_version"`
 }
 
+// The code is derived from the auto-increment id, in the same shape as fee
+// receipts (FEE%020d). An operator never types it and never edits it, so two
+// packages cannot be given the same one and the value stays sortable by
+// creation order.
+func packageCode(id uint64) string { return fmt.Sprintf("PKG%08d", id) }
+
 func validChargePackage(in chargePackageInput) bool {
-	return validText(in.Code, 64) && validText(in.Name, 128) &&
+	return validText(in.Name, 128) &&
 		in.PriceCents > 0 && in.PriceCents <= 1000000 && (in.Status == "active" || in.Status == "disabled") &&
 		(in.Mode == "amount" && in.DurationMinutes == 0 || in.Mode == "package" && in.DurationMinutes > 0 && in.DurationMinutes <= 600)
 }
@@ -73,24 +80,32 @@ func (a ResourceAPI) createChargePackage(c *gin.Context) {
 		httpapi.BadRequest(c, "充电套餐参数无效")
 		return
 	}
-	in.Code, in.Name = strings.TrimSpace(in.Code), strings.TrimSpace(in.Name)
+	in.Name = strings.TrimSpace(in.Name)
 	p := c.MustGet("admin_profile").(Profile)
 	var id uint64
 	err := a.Store.AdminDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
-		row := map[string]any{"code": in.Code, "name": in.Name, "mode": in.Mode, "price_cents": in.PriceCents, "duration_minutes": in.DurationMinutes, "status": in.Status, "version": 1}
+		// The column is NOT NULL and unique, but the id it is derived from is
+		// only known after the insert, so a throwaway unique value is written
+		// first and replaced within the same transaction. Nothing outside this
+		// transaction ever observes the temporary code.
+		row := map[string]any{"code": "TMP-" + uuid.NewString(), "name": in.Name, "mode": in.Mode, "price_cents": in.PriceCents, "duration_minutes": in.DurationMinutes, "status": in.Status, "version": 1}
 		if err := tx.Table("charge_package").Create(row).Error; err != nil {
 			return err
 		}
 		if err := tx.Raw("SELECT LAST_INSERT_ID()").Scan(&id).Error; err != nil {
 			return err
 		}
+		if err := tx.Table("charge_package").Where("id=?", id).Update("code", packageCode(id)).Error; err != nil {
+			return err
+		}
+		row["code"] = packageCode(id)
 		return resourceAudit(tx, p, "charge_package.create", "charge_package", id, nil, row, c.ClientIP(), httpapi.RequestID(c))
 	})
 	if err != nil {
 		resourceFailure(c, err)
 		return
 	}
-	httpapi.OK(c, gin.H{"id": id, "version": 1})
+	httpapi.OK(c, gin.H{"id": id, "version": 1, "code": packageCode(id)})
 }
 
 func (a ResourceAPI) updateChargePackage(c *gin.Context) {
@@ -106,7 +121,7 @@ func (a ResourceAPI) updateChargePackage(c *gin.Context) {
 		httpapi.BadRequest(c, "充电套餐参数无效")
 		return
 	}
-	in.Code, in.Name = strings.TrimSpace(in.Code), strings.TrimSpace(in.Name)
+	in.Name = strings.TrimSpace(in.Name)
 	p := c.MustGet("admin_profile").(Profile)
 	err := a.Store.AdminDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
 		var before struct {
@@ -118,9 +133,12 @@ func (a ResourceAPI) updateChargePackage(c *gin.Context) {
 		if before.Version != in.ExpectedVersion {
 			return errConflict
 		}
-		// The price and duration are deliberately not propagated to the offers
-		// already applied. An offer is a snapshot of what the station sold.
-		row := map[string]any{"code": in.Code, "name": in.Name, "mode": in.Mode, "price_cents": in.PriceCents, "duration_minutes": in.DurationMinutes, "status": in.Status, "version": before.Version + 1}
+		// The code is not part of the update: it is derived from the id, and an
+		// offer already applied copies it, so changing it would strand the
+		// offers that reference the old one.
+		// The price and duration are likewise not propagated to those offers.
+		// An offer is a snapshot of what the station sold.
+		row := map[string]any{"name": in.Name, "mode": in.Mode, "price_cents": in.PriceCents, "duration_minutes": in.DurationMinutes, "status": in.Status, "version": before.Version + 1}
 		if err := tx.Table("charge_package").Where("id=?", id).Updates(row).Error; err != nil {
 			return err
 		}

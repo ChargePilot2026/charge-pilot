@@ -109,6 +109,7 @@ export default function ChargePackages() {
     // The form works in yuan because that is what an operator reads off a price
     // list; the API keeps integer cents.
     form.setFieldsValue(pkg ? { ...pkg, price_yuan: pkg.price_cents / 100 } : { mode: 'amount', status: 'active', duration_minutes: 0 });
+
     setOpen(true);
   };
 
@@ -118,7 +119,6 @@ export default function ChargePackages() {
       setSaving(true);
       setError('');
       const body = {
-        code: values.code,
         name: values.name,
         mode: values.mode,
         price_cents: Math.round(Number(values.price_yuan) * 100),
@@ -163,7 +163,9 @@ export default function ChargePackages() {
     <Modal title={editing ? '编辑充电套餐' : '新增充电套餐'} open={open} onCancel={() => setOpen(false)} onOk={() => void save()} confirmLoading={saving} okText="保存">
       {error && <Alert type="error" showIcon message={error} style={{ marginBottom: 12 }} />}
       <Form form={form} layout="vertical">
-        <Form.Item name="code" label="套餐编码" rules={[{ required: true, whitespace: true, max: 64 }]}><Input maxLength={64} /></Form.Item>
+        {/* The code is derived from the id on the server, so it is shown but
+            never typed; it is also not editable, because applied offers copied it. */}
+        {editing && <Form.Item label="套餐编码"><Input value={editing.code} disabled /></Form.Item>}
         <Form.Item name="name" label="套餐名称" rules={[{ required: true, whitespace: true, max: 128 }]}><Input maxLength={128} /></Form.Item>
         <Form.Item name="mode" label="充电方式" rules={[{ required: true }]}>
           <Select options={[{ value: 'amount', label: '金额充电' }, { value: 'package', label: '时长套餐' }]} />

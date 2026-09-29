@@ -29,6 +29,7 @@ type ResourceAPI struct {
 func (a ResourceAPI) Register(r *gin.Engine) {
 	a.registerOperations(r)
 	a.registerPricing(r)
+	a.registerPricingTemplates(r)
 	a.registerChargeOffers(r)
 	a.registerChargePackages(r)
 	a.registerCoupons(r)

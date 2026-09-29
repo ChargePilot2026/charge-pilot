@@ -85,10 +85,9 @@ func TestChargePackageTemplateAndApply(t *testing.T) {
 		return callAs(token, method, path, body, status)
 	}
 
-	code := "PKG-" + strconv.FormatInt(time.Now().UnixNano(), 36)
 	t.Cleanup(func() {
-		adb.Exec("DELETE FROM charge_offer WHERE code=?", code)
-		adb.Exec("DELETE FROM charge_package WHERE code=?", code)
+		adb.Exec("DELETE FROM charge_offer WHERE package_id IS NOT NULL")
+		adb.Exec("DELETE FROM charge_package WHERE name = ?", "月付套餐")
 	})
 
 	// A station to apply to.
@@ -104,23 +103,36 @@ func TestChargePackageTemplateAndApply(t *testing.T) {
 	// Creating a package must not require a station: that is the whole point of
 	// separating the template from the offer.
 	created := call("POST", "charge-packages", gin.H{
-		"code": code, "name": "月付套餐", "mode": "amount",
+		"name": "月付套餐", "mode": "amount",
 		"price_cents": 3000, "duration_minutes": 0, "status": "active",
 	}, 200)["data"].(map[string]any)
 	pkgID := uint64(created["id"].(float64))
 	version := uint32(created["version"].(float64))
 
+	// The code is generated from the id, in the same shape as fee receipts, so
+	// an operator cannot collide one by typing it and cannot change one later.
+	if got := created["code"]; got != packageCode(pkgID) {
+		t.Fatalf("generated code = %v, want %q", got, packageCode(pkgID))
+	}
+	var storedCode string
+	if e := adb.Table("charge_package").Where("id=?", pkgID).Pluck("code", &storedCode).Error; e != nil {
+		t.Fatal(e)
+	}
+	if storedCode != packageCode(pkgID) {
+		t.Fatalf("stored code = %q, want %q; the temporary value must not survive", storedCode, packageCode(pkgID))
+	}
+
 	var offers int64
-	adb.Table("charge_offer").Where("code=?", code).Count(&offers)
+	adb.Table("charge_offer").Where("package_id=?", pkgID).Count(&offers)
 	if offers != 0 {
 		t.Fatalf("creating a package created %d offers; it must create none", offers)
 	}
 
 	// Parameter validation still applies to the template itself.
-	call("POST", "charge-packages", gin.H{"code": "", "name": "x", "mode": "amount", "price_cents": 100, "status": "active"}, 400)
-	call("POST", "charge-packages", gin.H{"code": code + "B", "name": "x", "mode": "package", "price_cents": 100, "duration_minutes": 0, "status": "active"}, 400)
-	call("POST", "charge-packages", gin.H{"code": code + "C", "name": "x", "mode": "amount", "price_cents": 0, "status": "active"}, 400)
-	call("POST", "charge-packages", gin.H{"code": code + "D", "name": "x", "mode": "amount", "price_cents": 100, "status": "nope"}, 400)
+	call("POST", "charge-packages", gin.H{"name": "", "mode": "amount", "price_cents": 100, "status": "active"}, 400)
+	call("POST", "charge-packages", gin.H{"name": "x", "mode": "package", "price_cents": 100, "duration_minutes": 0, "status": "active"}, 400)
+	call("POST", "charge-packages", gin.H{"name": "x", "mode": "amount", "price_cents": 0, "status": "active"}, 400)
+	call("POST", "charge-packages", gin.H{"name": "x", "mode": "amount", "price_cents": 100, "status": "nope"}, 400)
 
 	// Applying needs a station.
 	call("POST", "charge-packages/"+strconv.FormatUint(pkgID, 10)+"/apply", gin.H{"station_id": 0}, 400)
@@ -150,14 +162,14 @@ func TestChargePackageTemplateAndApply(t *testing.T) {
 	// Applying the same package to the same station twice is refused, so the
 	// mini program never shows two indistinguishable entries.
 	call("POST", "charge-packages/"+strconv.FormatUint(pkgID, 10)+"/apply", gin.H{"station_id": stationID}, 409)
-	adb.Table("charge_offer").Where("code=?", code).Count(&offers)
+	adb.Table("charge_offer").Where("package_id=?", pkgID).Count(&offers)
 	if offers != 1 {
 		t.Fatalf("after a rejected re-apply there are %d offers, want 1", offers)
 	}
 
 	// Editing the package leaves the applied offer alone.
 	call("PUT", "charge-packages/"+strconv.FormatUint(pkgID, 10), gin.H{
-		"code": code, "name": "月付套餐改价", "mode": "amount",
+		"name": "月付套餐改价", "mode": "amount",
 		"price_cents": 5000, "duration_minutes": 0, "status": "active",
 		"expected_version": version,
 	}, 200)
@@ -169,7 +181,7 @@ func TestChargePackageTemplateAndApply(t *testing.T) {
 
 	// A stale version is refused rather than silently overwriting.
 	call("PUT", "charge-packages/"+strconv.FormatUint(pkgID, 10), gin.H{
-		"code": code, "name": "并发修改", "mode": "amount",
+		"name": "并发修改", "mode": "amount",
 		"price_cents": 6000, "duration_minutes": 0, "status": "active",
 		"expected_version": version,
 	}, 409)

@@ -203,40 +203,65 @@ func TestAdminPagesIntegration(t *testing.T) {
 	call(adminToken, "GET", "stations?keyword=更新&page_size=1", nil, 200)
 	call(adminToken, "GET", "stations?page_size=101", nil, 400)
 
-	tariff := gin.H{"request_id": "aa000000-0000-4000-8000-000000000001", "name": "集成分时规则", "station_id": sid, "expected_version": 0, "mode": "kwh", "time_of_use": []gin.H{{"period": "flat", "start": "00:00", "end": "24:00", "electric_price_cents": 50}}, "service_fee_cents_per_kwh": 20, "service_fee_cents_per_min": 0, "min_charge_cents": 10}
-	firstRule := data(call(adminToken, "POST", "settings/charge-rules", tariff, 200))
-	replayRule := data(call(adminToken, "POST", "settings/charge-rules", tariff, 200))
+	// A pricing rule is now a template plus an application to a station, so the
+	// station appears in the apply call rather than at creation time.
+	periods := []gin.H{{"period": "flat", "start": "00:00", "end": "24:00", "electric_price_cents": 50}}
+	ruleTemplate := gin.H{"name": "集成分时规则", "mode": "kwh", "time_of_use": periods, "service_fee_cents_per_kwh": 20, "service_fee_cents_per_min": 0, "min_charge_cents": 10}
+	ruleTemplateID := fmt.Sprintf("%.0f", data(call(adminToken, "POST", "settings/pricing-rule-templates", ruleTemplate, 200))["id"].(float64))
+	call(fin1, "POST", "settings/pricing-rule-templates", ruleTemplate, 403)
+	call(adminToken, "POST", "settings/pricing-rule-templates", gin.H{"name": "坏时段", "mode": "kwh", "time_of_use": []gin.H{{"start": "01:00", "end": "24:00", "electric_price_cents": 50}}, "service_fee_cents_per_kwh": 0, "service_fee_cents_per_min": 0, "min_charge_cents": 0}, 400)
+	call(adminToken, "POST", "settings/pricing-rule-templates/"+ruleTemplateID+"/apply", gin.H{"request_id": "aa000000-0000-4000-8000-000000000000", "station_id": 0, "expected_version": 0}, 400)
+	call(adminToken, "POST", "settings/pricing-rule-templates/999999999999/apply", gin.H{"request_id": "aa000000-0000-4000-8000-0000000000ff", "station_id": sid, "expected_version": 0}, 404)
+
+	applyPath := "settings/pricing-rule-templates/" + ruleTemplateID + "/apply"
+	apply := gin.H{"request_id": "aa000000-0000-4000-8000-000000000001", "station_id": sid, "expected_version": 0}
+	firstRule := data(call(adminToken, "POST", applyPath, apply, 200))
+	replayRule := data(call(adminToken, "POST", applyPath, apply, 200))
 	if firstRule["id"] != replayRule["id"] || replayRule["replayed"] != true {
-		t.Fatal("tariff replay must preserve rule")
+		t.Fatal("apply replay must preserve rule")
 	}
-	tariff["request_id"] = "aa000000-0000-4000-8000-000000000002"
-	call(adminToken, "POST", "settings/charge-rules", tariff, 409)
-	tariff["expected_version"] = 1
-	tariff["name"] = "第二版"
-	secondRule := data(call(adminToken, "POST", "settings/charge-rules", tariff, 200))
+	// The same template cannot be applied while one of its rules is active at
+	// the station; the station has to disable it first, exactly as a charge
+	// package has to.
+	apply["request_id"] = "aa000000-0000-4000-8000-000000000002"
+	call(adminToken, "POST", applyPath, apply, 409)
+	call(fin1, "POST", applyPath, apply, 403)
+	call(adminToken, "POST", applyPath, gin.H{"request_id": "aa000000-0000-4000-8000-000000000003", "station_id": sid, "expected_version": 9}, 409)
+
+	// Editing the template must not reach the rule the station is charging under.
+	call(adminToken, "PUT", "settings/pricing-rule-templates/"+ruleTemplateID, gin.H{"name": "改价后的模板", "mode": "kwh", "time_of_use": periods, "service_fee_cents_per_kwh": 20, "service_fee_cents_per_min": 0, "min_charge_cents": 99, "version": 1}, 200)
+	var appliedMinimum int64
+	adb.Table("pricing_rule").Where("id=?", firstRule["id"]).Pluck("min_charge_cents", &appliedMinimum)
+	if appliedMinimum != 10 {
+		t.Fatalf("applied rule minimum changed to %d when the template was edited; it is a snapshot", appliedMinimum)
+	}
+
+	// After the station disables the rule, the template can be applied again and
+	// the station moves to the next version.
+	call(adminToken, "POST", fmt.Sprintf("settings/charge-rules/%.0f/disable", firstRule["id"]), nil, 200)
+	call(adminToken, "POST", fmt.Sprintf("settings/charge-rules/%.0f/disable", firstRule["id"]), nil, 200)
+	apply["request_id"] = "aa000000-0000-4000-8000-000000000004"
+	apply["expected_version"] = 1
+	secondRule := data(call(adminToken, "POST", applyPath, apply, 200))
 	if secondRule["version"] != float64(2) {
-		t.Fatal("tariff version not allocated")
+		t.Fatal("rule version not allocated")
 	}
 	var oldStatus string
 	adb.Table("pricing_rule").Where("id=?", firstRule["id"]).Pluck("status", &oldStatus)
 	if oldStatus != "disabled" {
-		t.Fatal("prior tariff still active")
+		t.Fatal("prior rule still active")
 	}
-	call(fin1, "POST", "settings/charge-rules", tariff, 403)
-	tariff["request_id"] = "aa000000-0000-4000-8000-000000000003"
-	tariff["expected_version"] = 2
-	tariff["time_of_use"] = []gin.H{{"start": "01:00", "end": "24:00", "electric_price_cents": 50}}
-	call(adminToken, "POST", "settings/charge-rules", tariff, 400)
-	call(adminToken, "POST", fmt.Sprintf("settings/charge-rules/%.0f/disable", secondRule["id"]), nil, 200)
-	call(adminToken, "POST", fmt.Sprintf("settings/charge-rules/%.0f/disable", secondRule["id"]), nil, 200)
 
-	// Two editors publishing against the same station version cannot both win.
+	// Two operators applying different templates against the same station
+	// version cannot both win.
+	otherID := fmt.Sprintf("%.0f", data(call(adminToken, "POST", "settings/pricing-rule-templates", gin.H{"name": "并发模板", "mode": "kwh", "time_of_use": periods, "service_fee_cents_per_kwh": 30, "service_fee_cents_per_min": 0, "min_charge_cents": 0}, 200))["id"].(float64))
+	otherPath := "settings/pricing-rule-templates/" + otherID + "/apply"
 	codes := make(chan int, 2)
-	for _, requestID := range []string{"aa000000-0000-4000-8000-000000000004", "aa000000-0000-4000-8000-000000000005"} {
-		body := gin.H{"request_id": requestID, "name": "并发版本", "station_id": sid, "expected_version": 2, "mode": "kwh", "time_of_use": []gin.H{{"start": "00:00", "end": "24:00", "electric_price_cents": 50}}}
+	for _, requestID := range []string{"aa000000-0000-4000-8000-000000000005", "aa000000-0000-4000-8000-000000000006"} {
+		body := gin.H{"request_id": requestID, "station_id": sid, "expected_version": 2}
 		payload, _ := json.Marshal(body)
 		go func(payload []byte) {
-			req := httptest.NewRequest("POST", "/api/v1/admin/settings/charge-rules", strings.NewReader(string(payload)))
+			req := httptest.NewRequest("POST", "/api/v1/admin/"+otherPath, strings.NewReader(string(payload)))
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set("Authorization", "Bearer "+adminToken)
 			rec := httptest.NewRecorder()
@@ -246,7 +271,7 @@ func TestAdminPagesIntegration(t *testing.T) {
 	}
 	code1, code2 := <-codes, <-codes
 	if !((code1 == 200 && code2 == 409) || (code1 == 409 && code2 == 200)) {
-		t.Fatalf("concurrent tariff statuses %d,%d", code1, code2)
+		t.Fatalf("concurrent apply statuses %d,%d", code1, code2)
 	}
 	var activeRules int64
 	adb.Table("pricing_rule").Where("station_id=? AND status='active'", sid).Count(&activeRules)
