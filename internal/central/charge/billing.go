@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/ChargePilot2026/charge-pilot/internal/central/billing"
@@ -145,6 +147,11 @@ func (s BillingOrders) Apply(ctx context.Context, result billing.Result) error {
 		if err := tx.Model(&ChargeOrderRecord{}).Where("id=?", order.ID).Updates(map[string]any{"electric_cents": result.ElectricCents, "service_cents": result.ServiceCents, "total_cents": result.TotalCents}).Error; err != nil {
 			return err
 		}
+		// Order campaigns are evaluated here rather than when the device sent
+		// the end frame, because a threshold cannot be decided before the fee
+		// is known. This sits after the receipt insert, so a replayed
+		// settlement returns early and never grants twice.
+		applyOrderCampaigns(tx, order, result.TotalCents)
 		var reserved int64
 		if err := tx.Model(&RefundRecord{}).Select("COALESCE(SUM(refund_cents),0)").Where("payment_order_id=? AND status IN ('pending','processing') AND deleted_at IS NULL", payment.ID).Scan(&reserved).Error; err != nil {
 			return err
@@ -191,3 +198,25 @@ func (s BillingOrders) Apply(ctx context.Context, result billing.Result) error {
 }
 
 var _ billing.Orders = BillingOrders{}
+
+// applyOrderCampaigns grants any threshold or holiday coupon the order earned.
+//
+// Settlement is the money path: a coupon must never be able to fail or roll it
+// back. A rule that does not apply is not an error, and a rule that errors is
+// logged and swallowed, because the alternative — aborting the transaction —
+// would leave a real, already-done charge unbilled. The grant is idempotent on
+// the order number, so a later retry or a manual re-run can safely re-evaluate.
+func applyOrderCampaigns(tx *gorm.DB, order ChargeOrderRecord, totalCents int64) {
+	now := time.Now().UTC()
+	for _, trigger := range []string{"threshold_redeem", "holiday"} {
+		if _, err := ApplyActivityRules(tx, activityEvent{
+			TriggerType: trigger,
+			UserID:      order.UserID,
+			EventKey:    activityEventKeyForOrder(order.OrderNo),
+			AmountCents: totalCents,
+			Now:         now,
+		}); err != nil && !errors.Is(err, errActivityNotApplicable) {
+			log.Printf("ACTIVITY RULE FAILED trigger=%s order=%s user=%d: %v", trigger, order.OrderNo, order.UserID, err)
+		}
+	}
+}
