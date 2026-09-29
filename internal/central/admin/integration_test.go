@@ -16,6 +16,9 @@ import (
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/httpapi"
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
+	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 func TestAdminLoginLifecycle(t *testing.T) {
@@ -59,6 +62,46 @@ func TestAdminLoginLifecycle(t *testing.T) {
 	}
 	if err := store.Bootstrap(ctx, username, "Not-a-password-reset"); err != nil {
 		t.Fatal(err)
+	}
+	// Bootstrap only initialises a fresh installation and never resets an
+	// existing password, so against a database that already has accounts it
+	// correctly declines to create one. Everything below exercises the login
+	// lifecycle, so the account is arranged here the way a fresh install would
+	// have left it rather than by asking bootstrap to do it a second time — a
+	// shared development database is not empty, and silently depending on it
+	// being empty is what made this test fail for reasons that had nothing to do
+	// with login.
+	var created int
+	if err := db.QueryRow("SELECT COUNT(*) FROM admin_user_role WHERE username = ?", username).Scan(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created == 0 {
+		hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var role struct{ ID uint64 }
+		if err := orm.Table("role").Where("code = 'customer_admin' AND deleted_at IS NULL").Take(&role).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := orm.Transaction(func(tx *gorm.DB) error {
+			return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&Account{Username: username, PasswordHash: string(hash), RoleID: role.ID, Status: "active"}).Error
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// And the rule itself is worth stating rather than leaving implied: on an
+	// installation that is not fresh, bootstrap must leave what is there alone.
+	if err := store.Bootstrap(ctx, "bootstrap-must-not-appear", "Never-created-2026"); err != nil {
+		t.Fatal(err)
+	}
+	defer db.Exec("DELETE FROM admin_user_role WHERE username = ?", "bootstrap-must-not-appear")
+	var intruders int
+	if err := db.QueryRow("SELECT COUNT(*) FROM admin_user_role WHERE username = ?", "bootstrap-must-not-appear").Scan(&intruders); err != nil {
+		t.Fatal(err)
+	}
+	if intruders != 0 {
+		t.Fatal("bootstrap created an account on an installation that is not fresh")
 	}
 	a, err := store.Login(ctx, username, password, "127.0.0.1")
 	if err != nil {

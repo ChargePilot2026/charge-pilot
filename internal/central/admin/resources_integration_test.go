@@ -129,9 +129,15 @@ func TestAdminPagesIntegration(t *testing.T) {
 				"DELETE FROM invoice_request WHERE invoice_no = 'PAGES_INVOICE'",
 				"DELETE FROM feedback WHERE content LIKE '%pages_seat%' OR user_id IN (SELECT id FROM user WHERE " + pagesUsers + ")",
 				"DELETE FROM device_fault_report WHERE " + pagesDevices,
-				"DELETE FROM wallet_risk_freeze_link WHERE request_id IN ('55555555-5555-4555-8555-555555555555','44444444-4444-4444-8444-444444444444')",
+				"DELETE FROM wallet_risk_freeze_link WHERE request_id IN ('55555555-5555-4555-8555-555555555555','88888888-8888-4888-8888-888888888888','44444444-4444-4444-8444-444444444444')",
+				// The review and release tables record who signed off. That makes them
+				// run-specific: every run mints a fresh reviewer account, so a review
+				// left behind by the previous run is read as a replay by a different
+				// person and is refused as a conflict.
+				"DELETE FROM wallet_risk_review WHERE request_id IN ('55555555-5555-4555-8555-555555555555','88888888-8888-4888-8888-888888888888')",
+				"DELETE FROM wallet_risk_release WHERE request_id IN ('55555555-5555-4555-8555-555555555555','88888888-8888-4888-8888-888888888888')",
 				"DELETE FROM risk_freeze_log WHERE user_id IN (SELECT id FROM user WHERE " + pagesUsers + ")",
-				"DELETE FROM wallet_refund_request WHERE request_id = '55555555-5555-4555-8555-555555555555' OR user_id IN (SELECT id FROM user WHERE " + pagesUsers + ")",
+				"DELETE FROM wallet_refund_request WHERE request_id IN ('55555555-5555-4555-8555-555555555555','88888888-8888-4888-8888-888888888888') OR user_id IN (SELECT id FROM user WHERE " + pagesUsers + ")",
 				"DELETE FROM wallet_account WHERE user_id IN (SELECT id FROM user WHERE " + pagesUsers + ")",
 				"DELETE FROM coupon_grant_request WHERE coupon_id IN (SELECT id FROM coupon WHERE name IN ('测试优惠','已停用券'))",
 				"DELETE FROM coupon_grant WHERE coupon_id IN (SELECT id FROM coupon WHERE name IN ('测试优惠','已停用券'))",

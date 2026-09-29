@@ -29,6 +29,15 @@ func TestSubmitFeedbackRules(t *testing.T) {
 	userID := uint64(900001)
 	otherID := uint64(900002)
 	orderID := uint64(910000 + len(uuid.NewString())%1000)
+	// The ids here are fixed while the order number is not, so nothing left
+	// behind can be matched by name on the next run and the primary keys collide
+	// immediately. Without this the test passes once per database and reports a
+	// duplicate-key failure that looks like a product problem.
+	t.Cleanup(func() {
+		userDB.Exec("DELETE FROM feedback WHERE order_id IN (?,?)", orderID, orderID+1)
+		userDB.Exec("DELETE FROM charge_order WHERE id IN (?,?)", orderID, orderID+1)
+		userDB.Exec("DELETE FROM user WHERE id IN (?,?)", userID, otherID)
+	})
 
 	if err := userDB.Exec("INSERT INTO user (id, openid, status) VALUES (?,?,?),(?,?,?)",
 		userID, "qa-fb-"+uuid.NewString()[:8], "active", otherID, "qa-fb-"+uuid.NewString()[:8], "active").Error; err != nil {
