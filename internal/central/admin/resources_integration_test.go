@@ -409,6 +409,35 @@ func TestAdminPagesIntegration(t *testing.T) {
 	// is refused rather than half of it, and the message names the board.
 	call(adminToken, "POST", "device-imports", gin.H{"import_id": "33333333-3333-4333-8333-333333333334", "devices": []gin.H{{"device_id": "PAGESDEV02", "vendor_id": vid, "station_id": sid, "port_count": 2}}}, 409)
 	call(adminToken, "GET", "devices?keyword=PAGESDEV01", nil, 200)
+	// The refund policy is two independent fields per payment method, and this
+	// write refused every single request until now: the route was registered as
+	// "/station-policies/:station_id" while pathID reads c.Param("id"), so the
+	// parameter arrived empty and the handler answered "ID 必须为正整数" to
+	// everything. Nothing had ever called it, so nothing had ever failed.
+	policy := gin.H{"force_recharge": true, "min_balance_cents": 1000,
+		"scan_refund_path": "balance", "scan_refund_rule": "time_limited",
+		"card_refund_path": "original", "card_refund_rule": "time_limited_prorated",
+		"timeout_start_refund": true, "verify_phone_before_charge": false, "expected_version": 0}
+	call(adminToken, "PUT", "settings/station-policies/"+fmt.Sprintf("%v", sid), policy, 200)
+	saved, _ := data(call(adminToken, "GET", "settings/station-policies", nil, 200))["items"].([]any)
+	found := false
+	for _, row := range saved {
+		item := row.(map[string]any)
+		if fmt.Sprintf("%v", item["station_id"]) != fmt.Sprintf("%v", sid) {
+			continue
+		}
+		found = true
+		// The two dimensions come back as two fields, not one merged string. A
+		// single enum cannot answer "when" and "where" at once, which is why the
+		// migration split them.
+		if item["scan_refund_path"] != "balance" || item["scan_refund_rule"] != "time_limited" {
+			t.Fatalf("refund path and rule were not kept apart on read: %v", item)
+		}
+	}
+	if !found {
+		t.Fatal("the policy was accepted but is not in the list it is read from")
+	}
+
 	// Every read endpoint is walked, not just the ones believed to be affected.
 	//
 	// A column or an expression the Go code names but the database does not

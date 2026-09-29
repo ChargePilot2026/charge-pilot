@@ -22,7 +22,11 @@ func (a ResourceAPI) registerDevicePricing(r *gin.Engine) {
 	r.GET("/api/v1/admin/settings/device-pricing", a.Auth.Require("pricing.read"), a.devicePricingMatrix)
 	r.POST("/api/v1/admin/settings/device-pricing/reset", a.Auth.Require("pricing.rule.update"), a.resetDevicePricing)
 	r.GET("/api/v1/admin/settings/station-policies", a.Auth.Require("pricing.read"), a.stationPolicies)
-	r.PUT("/api/v1/admin/settings/station-policies/:station_id", a.Auth.Require("pricing.rule.update"), a.saveStationPolicy)
+	// The path parameter is named :id because pathID reads that name, and every
+	// other route in this package does the same. Naming it :station_id made
+	// c.Param("id") empty, so the handler refused every request with "ID 必须为
+	// 正整数" — a refund policy that could never be saved.
+	r.PUT("/api/v1/admin/settings/station-policies/:id", a.Auth.Require("pricing.rule.update"), a.saveStationPolicy)
 }
 
 // devicePricingMatrix returns, per device, the tariff it actually runs and the
