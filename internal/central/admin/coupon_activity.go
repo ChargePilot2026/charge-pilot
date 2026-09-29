@@ -210,13 +210,17 @@ func (a ResourceAPI) createActivityRule(c *gin.Context) {
 		}).Error; err != nil {
 			return err
 		}
-		if err := tx.Raw("SELECT LAST_INSERT_ID()").Scan(&id).Error; err != nil {
-			return err
-		}
-		return resourceAudit(tx, c.MustGet("admin_profile").(Profile), "create", "coupon_activity", id, nil, in, c.ClientIP(), "")
+		return tx.Raw("SELECT LAST_INSERT_ID()").Scan(&id).Error
 	})
 	if err != nil {
 		resourceFailure(c, err)
+		return
+	}
+	// The rule lives in user_db and audit_log lives in admin_db. Joining them in
+	// one transaction would be a cross-schema write, which this project does not
+	// do, so the audit is written through AdminDB once the change has committed.
+	if err := a.auditToAdmin(c, "create", id, nil, in); err != nil {
+		httpapi.Write(c, http.StatusServiceUnavailable, 5003, "活动已创建，但审计写入失败，请人工补记", nil)
 		return
 	}
 	httpapi.OK(c, gin.H{"id": id})
@@ -240,7 +244,9 @@ func (a ResourceAPI) updateActivityRule(c *gin.Context) {
 		httpapi.BadRequest(c, "活动券不存在或已停用")
 		return
 	}
-	var before any
+	// A typed snapshot, not `any`: GORM reflects on the destination and panics
+	// on a nil interface.
+	var before activityRuleRow
 	if err := a.Store.UserDB.WithContext(c.Request.Context()).
 		Table("coupon_activity_rule").Where("id = ? AND deleted_at IS NULL", id).Take(&before).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -263,13 +269,27 @@ func (a ResourceAPI) updateActivityRule(c *gin.Context) {
 		if changed.RowsAffected != 1 {
 			return gorm.ErrRecordNotFound
 		}
-		return resourceAudit(tx, c.MustGet("admin_profile").(Profile), "update", "coupon_activity", id, before, in, c.ClientIP(), "")
+		return nil
 	})
 	if err != nil {
 		resourceFailure(c, err)
 		return
 	}
+	if err := a.auditToAdmin(c, "update", id, before, in); err != nil {
+		httpapi.Write(c, http.StatusServiceUnavailable, 5003, "活动已更新，但审计写入失败，请人工补记", nil)
+		return
+	}
 	httpapi.OK(c, gin.H{"id": id})
+}
+
+// auditToAdmin writes the operator's action to admin_db.audit_log. Resource
+// changes that live in user_db must not reuse their own transaction for this:
+// audit_log only exists in admin_db, and joining the two would be a
+// cross-schema write.
+func (a ResourceAPI) auditToAdmin(c *gin.Context, action string, id uint64, before, after any) error {
+	return resourceAudit(a.Store.AdminDB.WithContext(c.Request.Context()),
+		c.MustGet("admin_profile").(Profile), action, "coupon_activity", id, before, after,
+		c.ClientIP(), httpapi.RequestID(c))
 }
 
 // couponUsable refuses a campaign that points at a coupon which cannot be

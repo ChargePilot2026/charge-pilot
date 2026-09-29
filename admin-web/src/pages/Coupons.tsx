@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { Table, Typography, Tag, Space, Button, Modal, Form, Input, InputNumber, Select, message } from 'antd';
+import { useCallback, useEffect, useState } from 'react';
+import { Tabs, Table, Typography, Tag, Space, Button, Modal, Form, Input, InputNumber, Select, DatePicker, message } from 'antd';
 import { PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import { apiGet, apiPost, apiPut } from '../api/client';
 
@@ -67,6 +67,9 @@ export default function CouponsPage() {
 
   return (
     <div className="page-container">
+      <Tabs items={[
+        { key: 'coupons', label: '优惠券', children: (
+      <>
       <Space style={{ marginBottom: 12 }}>
         <Title level={3} style={{ margin: 0 }}>优惠券</Title>
         <Button icon={<ReloadOutlined />} onClick={load}>刷新</Button>
@@ -135,6 +138,129 @@ export default function CouponsPage() {
           <Typography.Text>使用率：{(Number(couponStats.usage_rate || 0) * 100).toFixed(1)}%</Typography.Text>
         </Space>}
       </Modal>
+      </>
+        ) },
+        { key: 'activities', label: '活动规则', children: <ActivityRules coupons={data} reloadCoupons={load} /> },
+      ]} />
     </div>
+  );
+}
+
+const triggerLabel: Record<string, string> = {
+  first_recharge: '首充优惠', invite_reward: '邀请有奖', threshold_redeem: '满减满返', holiday: '节日活动',
+};
+
+// Activity rules are configured here rather than by hand-written SQL so a
+// campaign window and its budget can be changed while the system is running.
+function ActivityRules({ coupons, reloadCoupons }: { coupons: Coupon[]; reloadCoupons: () => void }) {
+  const [rows, setRows] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [form] = Form.useForm();
+  const trigger = Form.useWatch('trigger_type', form);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try { setRows((await apiGet<{ items: any[] }>('/api/v1/admin/coupon-activities')).items || []); }
+    catch (e: any) { message.error(e?.message || '活动规则读取失败'); } finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const onCreate = async () => {
+    try {
+      const v = await form.validateFields();
+      // The API speaks RFC3339; the picker hands back dayjs objects.
+      const body = {
+        ...v,
+        start_at: v.start_at.toISOString(),
+        end_at: v.end_at.toISOString(),
+        inviter_coupon_id: v.inviter_coupon_id ?? undefined,
+      };
+      await apiPost('/api/v1/admin/coupon-activities', body);
+      message.success('已创建活动规则');
+      setOpen(false); form.resetFields(); void load();
+    } catch (e: any) { if (e?.errorFields) return; message.error(e?.message || '创建失败'); }
+  };
+
+  const setStatus = async (row: any, status: string) => {
+    try {
+      await apiPut(`/api/v1/admin/coupon-activities/${row.id}`, {
+        rule_code: row.rule_code, name: row.name, trigger_type: row.trigger_type, coupon_id: row.coupon_id,
+        inviter_coupon_id: row.inviter_coupon_id ?? undefined, threshold_cents: row.threshold_cents,
+        max_grants: row.max_grants, per_user_limit: row.per_user_limit, status,
+        start_at: new Date(row.start_at).toISOString(), end_at: new Date(row.end_at).toISOString(),
+      });
+      message.success(status === 'active' ? '已启用' : '已停用');
+      void load();
+    } catch (e: any) { message.error(e?.message || '操作失败'); }
+  };
+
+  const couponOptions = coupons.filter(c => c.status === 'active').map(c => ({ value: c.id, label: `${c.name}（${c.code}）` }));
+
+  return (
+    <Space direction="vertical" style={{ width: '100%' }}>
+      <Space>
+        <Title level={3} style={{ margin: 0 }}>活动规则</Title>
+        <Button icon={<ReloadOutlined />} onClick={() => void load()} loading={loading}>刷新</Button>
+        <Button type="primary" icon={<PlusOutlined />} onClick={() => setOpen(true)}>新建活动</Button>
+      </Space>
+      <Typography.Text type="secondary">
+        规则在触发事实发生的同一事务内评估。满减未达门槛、活动过期、预算耗尽都不会发放，也不会影响支付或订单本身。
+      </Typography.Text>
+      <Table rowKey="id" loading={loading} dataSource={rows} scroll={{ x: 1000 }}
+        columns={[
+          { title: '规则码', dataIndex: 'rule_code', width: 150 },
+          { title: '名称', dataIndex: 'name' },
+          { title: '触发', dataIndex: 'trigger_type', width: 110, render: (v: string) => triggerLabel[v] || v },
+          { title: '活动券', dataIndex: 'coupon_name', width: 180 },
+          { title: '门槛', dataIndex: 'threshold_cents', width: 110,
+            render: (v: number, r: any) => r.trigger_type === 'threshold_redeem' ? `${v / 100} 元` : '—' },
+          { title: '预算 / 单人', key: 'quota', width: 130,
+            render: (_: unknown, r: any) => `${r.max_grants || '不限'} / 每人 ${r.per_user_limit}` },
+          { title: '已发放', dataIndex: 'granted_count', width: 90 },
+          { title: '窗口', key: 'window', width: 200,
+            render: (_: unknown, r: any) => `${new Date(r.start_at).toLocaleDateString()} → ${new Date(r.end_at).toLocaleDateString()}` },
+          { title: '状态', dataIndex: 'status', width: 90,
+            render: (s: string) => <Tag color={s === 'active' ? 'green' : 'default'}>{s === 'active' ? '启用' : '停用'}</Tag> },
+          { title: '操作', key: 'actions', width: 140, render: (_: unknown, r: any) =>
+            r.status === 'active'
+              ? <Button size="small" onClick={() => void setStatus(r, 'disabled')}>停用</Button>
+              : <Button size="small" onClick={() => void setStatus(r, 'active')}>启用</Button> },
+        ]} />
+      <Modal title="新建活动" open={open} onCancel={() => setOpen(false)} onOk={() => void onCreate()} confirmLoading={saving}>
+        <Form form={form} layout="vertical" initialValues={{ trigger_type: 'first_recharge', per_user_limit: 1, max_grants: 0, threshold_cents: 0 }}>
+          <Form.Item name="rule_code" label="规则码" rules={[{ required: true }, { pattern: /^[A-Za-z0-9_-]{3,64}$/, message: '3–64 位英文/数字/下划线/连字符' }]}>
+            <Input placeholder="如 FIRSTPAY5" />
+          </Form.Item>
+          <Form.Item name="name" label="名称" rules={[{ required: true }]}><Input /></Form.Item>
+          <Form.Item name="trigger_type" label="触发方式" rules={[{ required: true }]}>
+            <Select options={Object.entries(triggerLabel).map(([value, label]) => ({ value, label }))} />
+          </Form.Item>
+          <Form.Item name="coupon_id" label="活动券" rules={[{ required: true, message: '请选择活动券' }]}>
+            <Select options={couponOptions} placeholder={couponOptions.length ? '选择一张已启用的券' : '请先在“优惠券”页创建并启用一张券'} />
+          </Form.Item>
+          {trigger === 'invite_reward' && (
+            <Form.Item name="inviter_coupon_id" label="邀请人奖励券" rules={[{ required: true, message: '邀请有奖必须设置邀请人奖励' }]}>
+              <Select options={couponOptions} />
+            </Form.Item>
+          )}
+          {trigger === 'threshold_redeem' && (
+            <Form.Item name="threshold_cents" label="订单门槛（分）" rules={[{ required: true }]}>
+              <InputNumber min={1} style={{ width: '100%' }} placeholder="例如 3000 表示满 30 元" />
+            </Form.Item>
+          )}
+          <Form.Item name="max_grants" label="活动总发放上限" extra="0 表示不限">
+            <InputNumber min={0} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item name="per_user_limit" label="每人上限" rules={[{ required: true }]}>
+            <InputNumber min={1} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item name="start_at" label="开始时间" rules={[{ required: true }]}><DatePicker showTime style={{ width: '100%' }} /></Form.Item>
+          <Form.Item name="end_at" label="结束时间" rules={[{ required: true }]}><DatePicker showTime style={{ width: '100%' }} /></Form.Item>
+        </Form>
+      </Modal>
+    </Space>
   );
 }
