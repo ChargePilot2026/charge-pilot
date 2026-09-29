@@ -296,7 +296,7 @@ func TestSettleServerBilledCapOnlyEverLowers(t *testing.T) {
 }
 
 func TestSettleDeviceBilledTakesItsMoneyFromWhatWasPaid(t *testing.T) {
-	// The rider paid 100 cents. The bill is 100 cents. Nothing in the pricing
+	// The charging user paid 100 cents. The bill is 100 cents. Nothing in the pricing
 	// engine gets a vote.
 	spec := Spec{Mode: ModeDeviceDuration}
 	offer := Offer{ID: 1, StationID: 1, Name: "1元60分钟", Mode: "package", PriceCents: 100, DurationMinutes: 60}

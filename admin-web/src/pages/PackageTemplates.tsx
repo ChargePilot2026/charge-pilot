@@ -3,7 +3,7 @@ import { Alert, Button, Form, Input, InputNumber, Modal, Select, Space, Switch, 
 import { apiGet, apiPost, apiPut } from '../api/client';
 import { fromCents, toCents, type Station } from './pricing/model';
 
-// A package template is a prepaid cap a rider can pick. It is deliberately not
+// A package template is a prepaid cap a charging user can pick. It is deliberately not
 // part of a pricing template: the cap settles on its own price, so it stays
 // valid whichever tariff is running, and one tariff can be paired with several
 // different package sets. Applying one copies it into a charge_offer, which is
@@ -11,7 +11,7 @@ import { fromCents, toCents, type Station } from './pricing/model';
 //
 // The two kinds are mutually exclusive and the form says so rather than
 // leaving a price field that a duration package must leave empty: an amount is
-// a cap the rider pays for, a duration package is settled by the tariff.
+// a cap the charging user pays for, a duration package is settled by the tariff.
 
 type PackageTemplate = {
   id: number; name: string; kind: 'amount' | 'package';

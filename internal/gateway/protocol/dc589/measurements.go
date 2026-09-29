@@ -77,7 +77,7 @@ func ParseHeartbeat(frame Frame) (HeartbeatData, error) {
 // ChargeEndData is one settlement frame.
 //
 // The charge type and the amount are read as well as the energy. Neither is
-// used to decide what the rider owes — a device-billed session's money was
+// used to decide what the charging user owes — a device-billed session's money was
 // collected before the board ever reported anything — but both are the only
 // record of how a session actually ended, and a long-run session is
 // indistinguishable from an ordinary one without the type.

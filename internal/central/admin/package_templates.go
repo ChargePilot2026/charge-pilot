@@ -10,7 +10,7 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// A package template is a prepaid cap a rider can pick. It is deliberately not
+// A package template is a prepaid cap a charging user can pick. It is deliberately not
 // part of a pricing template: the cap settles on its own price, so it stays
 // valid whichever tariff is running, and one tariff can be paired with several
 // different package sets. Applying one to a station or a device copies it into
@@ -48,7 +48,7 @@ func validPackageTemplate(in packageTemplateInput) bool {
 		return in.PriceCents > 0 && in.PriceCents <= 1000000 && in.DurationMinutes == 0
 	case "package":
 		// A duration package is settled by the tariff, so it carries no cap of
-		// its own. Giving it one would silently cap a rider who keeps charging.
+		// its own. Giving it one would silently cap a charging user who keeps charging.
 		return in.PriceCents == 0 && in.DurationMinutes > 0 && in.DurationMinutes <= 600
 	default:
 		return false
@@ -63,7 +63,7 @@ func packageFields(in packageTemplateInput) map[string]any {
 		"price_cents": in.PriceCents, "duration_minutes": in.DurationMinutes,
 		"min_charge_cents": in.MinChargeCents,
 		"show_remark":      in.ShowRemark, "card_default": in.CardDefault, "status": in.Status,
-		// The display order is part of what a rider sees, so it is written
+		// The display order is part of what a charging user sees, so it is written
 		// rather than validated and dropped.
 		"sort_order": in.SortOrder,
 	}
@@ -311,7 +311,7 @@ func (a ResourceAPI) applyPackageTemplate(c *gin.Context) {
 			// Taken off sale, and the operator is asking for it back. Re-list the
 			// same offer rather than creating a second row for the same package
 			// at the same target, which would leave two rows that differ only in
-			// which one a rider can see.
+			// which one a charging user can see.
 			if err := tx.Table("charge_offer").Where("id=?", existing.ID).
 				Updates(map[string]any{"status": "active", "version": gorm.Expr("version+1")}).Error; err != nil {
 				return err

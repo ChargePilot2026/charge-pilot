@@ -108,7 +108,7 @@ type pricingRuleRow struct {
 //
 // On a device-billed mode there is no rate to spread against, so the estimate
 // is the prepaid amount and nothing else. Handing back a computed figure there
-// would show the rider one number and charge another.
+// would show the charging user one number and charge another.
 func EstimateCharge(rule Rule, energy string, minutes uint16, start time.Time, prepaidCents int64) (Estimate, error) {
 	if rule.ID == 0 || !rule.Spec.Mode.Valid() || minutes == 0 || minutes > 600 {
 		return Estimate{}, ErrInvalidPricing

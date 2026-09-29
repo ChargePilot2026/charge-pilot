@@ -17,12 +17,12 @@ import (
 )
 
 // A pricing template is the whole commercial offer in one object: what is
-// charged and on what basis, which packages a rider may pick, and what the mini
+// charged and on what basis, which packages a charging user may pick, and what the mini
 // program may reveal. It is inert until it is applied to a station, and the
 // application copies all three parts. Editing a template afterwards cannot
 // change a station that is already running it, nor a settled order.
 
-// 计费模板把一整套商业方案装在一个对象里：按什么口径收什么费、骑手可以选哪些套餐、
+// 计费模板把一整套商业方案装在一个对象里：按什么口径收什么费、充电用户可以选哪些套餐、
 // 小程序可以露出哪些内容。模板在被 apply 到站点之前完全不起作用，apply 会把这三部分一并复制出去；
 // 之后再改模板，既影响不到已在跑这份模板的站点，也影响不到已结算的订单。
 

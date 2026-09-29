@@ -5,7 +5,7 @@ import { fromCents, modeLabel, toCents, type Spec, type Station, type Template }
 
 // Everything about one station: what it charges, what each pile runs, and whether
 // the last switch actually landed. The three tabs answer three different
-// questions an operator has before opening a station: can a rider start, what is
+// questions an operator has before opening a station: can a charging user start, what is
 // each pile really charging, and did the change I made last week arrive.
 //
 // A station policy is about moving money, not about pricing a session, so it

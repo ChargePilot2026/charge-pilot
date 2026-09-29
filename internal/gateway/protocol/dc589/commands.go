@@ -103,7 +103,7 @@ const (
 	LongPlatformBilling ChargeMode = 12
 )
 
-// NormalChargeModes are the only charging types a rider-facing request may use.
+// NormalChargeModes are the only charging types a request from a charging user may use.
 var NormalChargeModes = map[ChargeMode]bool{
 	ByTime: true, ByEnergy: true, PlatformBilling: true,
 }

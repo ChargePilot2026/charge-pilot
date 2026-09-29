@@ -139,7 +139,7 @@ func (a ResourceAPI) resetDevicePricing(c *gin.Context) {
 }
 
 // A station policy is about moving money, not about pricing a session: whether
-// a rider must top up, and what happens to their money when a start fails.
+// a charging user must top up, and what happens to their money when a start fails.
 // A refund is two independent questions: when one is allowed, and where the
 // money lands. The commercial back office renders the pair as a single string
 // such as "限时退款(时效外不退款)-原路退回", which is how a single enum came to

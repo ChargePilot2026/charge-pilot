@@ -468,7 +468,7 @@ func TestAdminPagesIntegration(t *testing.T) {
 		t.Fatalf("putting a withdrawn package back on sale was not treated as a re-list: %v", relisted)
 	}
 	// One row, not two: a second row would differ from the first only in which
-	// one a rider can see.
+	// one a charging user can see.
 	var onSale int64
 	if err := adb.Table("charge_offer").
 		Where("station_id=? AND package_template_id=? AND status='active' AND deleted_at IS NULL", sid, packageID).

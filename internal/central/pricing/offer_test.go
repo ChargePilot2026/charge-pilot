@@ -30,7 +30,7 @@ func offerTestStore(t *testing.T) (Store, func()) {
 }
 
 // A package that was taken off sale must stop being offered. The admin list has
-// always filtered the retired column; the rider-facing read did not, so
+// always filtered the retired column; the charging-user read did not, so
 // something an operator believed was gone kept being sold.
 func TestRetiredOffersAreNotSold(t *testing.T) {
 	store, done := offerTestStore(t)
@@ -59,7 +59,7 @@ func TestRetiredOffersAreNotSold(t *testing.T) {
 	if len(offers) != 1 || offers[0].ID == 0 || offers[0].PriceCents != 100 {
 		t.Fatalf("a retired package is still being sold: %+v", offers)
 	}
-	// Asking for it by id must fail the same way, or the rider simply starts the
+	// Asking for it by id must fail the same way, or the charging user simply starts the
 	// one the list is hiding.
 	if _, err := store.ActiveOffer(exec, 9801, "", 7001); !errors.Is(err, ErrOfferUnavailable) {
 		t.Fatalf("a retired package is still startable: %v", err)
@@ -68,7 +68,7 @@ func TestRetiredOffersAreNotSold(t *testing.T) {
 
 // A device that sells a package on its own does not also get the station-wide
 // version of it. The comment on this function has always said so; the query
-// listed both, so the rider saw the same package twice.
+// listed both, so the charging user saw the same package twice.
 func TestDeviceOfferOverridesTheStationWideOne(t *testing.T) {
 	store, done := offerTestStore(t)
 	defer done()
