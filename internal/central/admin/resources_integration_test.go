@@ -98,7 +98,10 @@ func TestAdminPagesIntegration(t *testing.T) {
 				// which reads as a product bug and is not one.
 				"DELETE FROM pricing_publication WHERE rule_id IN (SELECT id FROM pricing_rule WHERE template_id IN (SELECT id FROM pricing_template WHERE " + pagesTemplates + "))",
 				"DELETE FROM pricing_switch_task WHERE template_id IN (SELECT id FROM pricing_template WHERE " + pagesTemplates + ")",
-				"DELETE FROM pricing_rule WHERE template_id IN (SELECT id FROM pricing_template WHERE " + pagesTemplates + ") OR station_id IN (SELECT id FROM station WHERE " + pagesStations + ")",
+				// The unbound legacy rule belongs to neither a template nor a station,
+				// so it is named outright — it is the one fixture here that neither
+				// reference reaches.
+				"DELETE FROM pricing_rule WHERE name = 'legacy unbound' OR template_id IN (SELECT id FROM pricing_template WHERE " + pagesTemplates + ") OR station_id IN (SELECT id FROM station WHERE " + pagesStations + ")",
 				"DELETE FROM pricing_template WHERE " + pagesTemplates,
 				"DELETE FROM announcement WHERE title LIKE '%pages%'",
 				"DELETE FROM webhook_subscription WHERE name LIKE '%pages%' OR url LIKE '%pages%'",
