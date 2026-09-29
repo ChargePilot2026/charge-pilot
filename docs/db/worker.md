@@ -1,17 +1,17 @@
 # worker_db 数据库表设计（当前迁移）
 
-**所属服务**：worker（后台 interval 循环与 Redis Stream 消费者）
+**所属服务**：worker（核心轮询、数据库计划调度与 Redis Stream 消费者）
 **Schema**：`worker_db`
 **字符集 / 引擎**：`utf8mb4_unicode_ci` / InnoDB
 
-> 本文逐列对应 `migrations/worker_db/0001_init.sql`。当前迁移创建 5 张表；文档中曾出现的 `export_task` 和额外 SAGA/DLQ 字段并未建表。
+> 本文以 `migrations/worker_db/0001_init.sql` 表结构为基础，并标出 `0002`、`0003` 的增量。文档中曾出现的 `export_task` 和额外 SAGA 字段并未建表。
 
 ## 表清单
 
 | 表 | 当前用途 | 分区 |
 | --- | --- | --- |
-| `scheduled_task` | 预留任务定义；当前没有由该表驱动的 scheduler | 否 |
-| `task_execution_log` | `task_code` 的执行日志表；当前 interval 循环尚未写入 | `created_month` 月分区 |
+| `scheduled_task` | 告警扫描与 Webhook 投递的 cron 计划和跨实例租约 | 否 |
+| `task_execution_log` | 上述任务每次执行的结果与人工触发原因 | `created_month` 月分区 |
 | `comp_tx_log` | `refund_completed` Stream 结果审计 | `created_month` 月分区 |
 | `dlq_log` | 预留的数据库 DLQ 管理表；当前消费者写 Redis `{stream}.dlq` | `created_month` 月分区 |
 | `retry_queue` | 预留的任务重试队列 | 否 |
@@ -32,7 +32,7 @@
 | `config_json` | `JSON` | 可空 |
 | `created_at` / `updated_at` | `DATETIME(3)` | 自动维护 |
 
-唯一索引：`uk_code(task_code)`。没有 `status`、handler、连续失败计数或软删除字段；worker 当前未读取此表。
+唯一索引：`uk_code(task_code)`。迁移 `0003_scheduled_execution.sql` 新增 `consecutive_fail_count`、`lease_token`、`lease_until` 和 `idx_due`，并预置 `alert_evaluate`、`webhook_dispatch`。handler 由代码中的 allowlist 绑定，不能从数据库任意指定。`enabled=0` 表示暂停；执行连续 5 次失败时自动暂停。
 
 ## `task_execution_log`
 
@@ -47,7 +47,7 @@
 | `error_msg` | `VARCHAR(512)` | 可空 |
 | `created_month` | `DATE` | 非空；分区键 |
 
-主键为 `(id, created_month)`，索引 `idx_task_time(task_code, started_at)`。按 `created_month` range 分区，迁移中包含 `p_init`、2026-10 至 2026-12 和 `p_max`。没有任务外键、耗时列或人工触发来源列；当前 worker 不写此表。
+主键为 `(id, created_month)`，索引 `idx_task_time(task_code, started_at)`。按 `created_month` range 分区，迁移中包含 `p_init`、2026-10 至 2026-12 和 `p_max`。迁移 `0003` 新增 `triggered_by`（`cron`/`admin_api`）与 `trigger_reason`；耗时由起止时间计算。
 
 ## `comp_tx_log`
 

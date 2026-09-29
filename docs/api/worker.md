@@ -1,15 +1,13 @@
 # worker 服务任务定义与 Stream 消费约定
 
-**服务**:`worker`(`services/worker`)
-**对外地址**:不提供业务 HTTP API；仅监听 `/health` 运维检查端点（8085，可由 `http_bind` 配置）。
+**服务**:`worker`(`cmd/worker`)
+**对外地址**:仅提供 `/health/live`、`/health/ready`、`/metrics` 及受服务令牌保护的内部运维接口。
 **当前实现**:
-- HTTP 只提供 `/health`。
-- 仅 3 个 interval 循环执行真实工作：遥测快照预热、公告过期、设备会话清理；公告和会话数据分别由 admin/gateway 服务内部 API 修改。
-- worker consumer group 注册 `webhook_retry_stream`、`ota_schedule_stream`、`comp_tx_stream`。Webhook 与 OTA 业务投递未实现，处理器返回失败；公共消费框架以 2s / 4s / 8s 间隔重试三次（加首次共四次尝试），再原子写入 Redis `{stream}.dlq` 并 ACK 原消息。`comp_tx_stream` 只接收 user 发布的 `refund_completed` 并幂等写入补偿结果审计记录，不执行退款或回滚。
-- `alert_stream` 由 admin 消费；worker 的快照预热通过定时 HTTP 查询实现，不消费 `device_event_stream`。billing 当前不消费 `comp_tx_stream`。
-- `scheduled_task` 尚未驱动 cron 或手动触发。账单结算、对账、OTA、Webhook、导出、归档、DLQ 重放等任务仍未完成。
+- 核心充电启停结果、已付款启动与 Outbox 每秒轮询；计费派发、退款派发、退款结果消费每 10 秒轮询。
+- 告警阈值扫描与 Webhook 待投递扫描由 `scheduled_task` 驱动，间隔 10 秒，执行日志落 `task_execution_log`；可查询上次执行并经服务令牌人工触发。
+- Redis 死信统计与重放由 worker 内部运维接口提供。对账外部渠道、数据冷归档等任务缺真实处理器，仍待接入。
 
-> **本文件覆盖范围**:worker 服务不提供业务 HTTP API，但承担系统异步事件消费与定时任务职责。本文件约定:
+> **本文件覆盖范围**:worker 服务只提供内部运维 HTTP API，并承担异步事件消费与定时任务职责。本文件约定:
 > 1. **Stream 消费契约**(消费哪些 Stream + 如何处理 + 发什么事件)
 > 2. **定时任务清单**(`scheduled_task` 表的所有 `task_code` + 触发时机 + 处理函数)
 > 3. **关键任务流程详述**(对账 / OTA 推送 / Webhook 重试 / 数据归档)
@@ -32,13 +30,13 @@
 ### 幂等保证(关键)
 
 - `comp_tx_stream` 当前处理器以 `event_id + created_month` 幂等；表唯一键为 `(tx_id, created_month)`。重复事件内容哈希或状态不同会报冲突并进入重试/DLQ。
-- 其他两个 Stream 处理器目前始终失败，直到外部投递能力配置完成；它们不会写 `comp_tx_log`。
+- 告警、Webhook、OTA 的现行处理链路分别在 `internal/worker/alerts`、`internal/worker/webhook` 和 central/gateway 的 OTA 执行器；本文件后续旧 Stream 方案仅供设计追溯，不能按未注册的旧 consumer group 推断当前运行行为。
 
 ### 错误处理与 DLQ
 
 - **Stream 消费失败**:首次尝试失败后按 2s / 4s / 8s 重试三次；随后原子写入 Redis `{stream}.dlq` 并确认原消息。当前不会写 `worker_db.dlq_log`、发告警或提供人工重放 API。若 DLQ 写入失败，原消息保留在 PEL。
-- **定时任务失败**:`consecutive_fail_count` 累计 → ≥ 5 → 自动 `status='paused'` + 发 `alert_stream`
-- **DLQ 重放**:尚未接入；`worker_db.dlq_log` 是预留表，当前没有消费者、管理接口或重放流程。
+- **已接入的定时任务失败**:`consecutive_fail_count` 累计至 5 后置 `enabled=0`；执行失败写 `task_execution_log`，可由本地 Prometheus 及上次执行接口查看。外部通知目标尚未配置。
+- **DLQ 重放**:worker 的 `/api/v1/internal/worker/ops/dlq/:stream/replay` 已提供滑动游标重放；`worker_db.dlq_log` 仍为预留表，不能据此认为所有旧 Stream 方案已接入。
 
 ### 与其他服务的关系
 
@@ -96,6 +94,8 @@
 
 ### `GET /api/v1/internal/scheduled-tasks/{task_code}/last-run`
 
+当前 Go 实现已注册该路由，须提供 `X-Service-Token`。仅能查询 `scheduled_task` 中存在的任务；无执行记录时各 `last_run_*` 字段为 `null`。
+
 **响应(200)**:
 ```json
 {
@@ -127,8 +127,8 @@
 **业务逻辑**:
 1. 查 `scheduled_task WHERE task_code=$code AND status IN ('enabled','paused')`
 2. `force=false` 时,仅 `enabled` 状态可触发;`force=true` 时允许 paused 状态
-3. 异步触发 `handler`(立即入队,不等下次 cron)
-4. 写 `task_execution_log(triggered_by='admin_api', trigger_reason=...)`
+3. 当前 Go 实现仅允许触发已绑定真实 handler 的任务；获得数据库租约后同步执行，最长 30 秒。执行期间重复触发返回 `1005`。
+4. 写 `task_execution_log(triggered_by='admin_api', trigger_reason=...)`；失败返回 `5003` 并保留失败记录。连续 5 次失败后自动暂停，`force=true` 可由受信服务令牌持有方人工复跑。
 
 **错误码**:
 - `1004`: 任务码不存在
@@ -206,10 +206,12 @@ worker 消费 webhook_retry_stream 事件
 
 ## 二、定时任务清单(`scheduled_task.task_code`)
 
-> 下表为需求清单，不代表已由 `worker_db.scheduled_task` 驱动。当前代码使用硬编码 interval；除本文件开头列出的三个实际 worker 循环外，其余未接入。`scheduled_task` 管理、执行日志、失败暂停与手动触发均未实现。
+> 下表是历史需求清单，多数任务尚无真实处理器。当前 Go 实现先接入 `alert_evaluate` 与 `webhook_dispatch` 两项，均为 `*/10 * * * * *`（含秒字段）；数据库租约保证同任务不并发运行，执行日志记录成功/失败与影响行数，连续 5 次失败暂停。其余充电、计费、退款和 Outbox 核心轮询暂保留固定频率。
 
 | task_code | 类型 | cron | handler | 说明 |
 | --- | --- | --- | --- | --- |
+| `alert_evaluate` | 已实现 | `*/10 * * * * *` | `alerts.Evaluator.Evaluate` | 从 gateway 遥测扫描告警 |
+| `webhook_dispatch` | 已实现 | `*/10 * * * * *` | `webhook.WebhookDeliverer.PublishBatch` | 投递待处理 Webhook 事件 |
 | `daily_refund_reconcile` | internal | `0 3 * * *`(每日 03:00) | `worker::reconcile::daily_refund` | 退款对账(微信账单 vs 内部 `refund_record`) |
 | `daily_order_reconcile` | internal | `0 3 * * *`(每日 03:00) | `worker::reconcile::daily_order` | 订单对账(微信支付 vs 内部 `payment_order`) |
 | `monthly_billing_settlement` | internal | `0 4 1 * *`(每月 1 日 04:00) | `worker::billing_cycle::monthly_settle` | 月结账单生成(分账参与方对账单) |

@@ -115,7 +115,7 @@ docs/                   # 需求、API、数据与联调文档
 | --- | --- |
 | `GET /internal/devices/{id}/historical-curve`（带 `order_id`/`port_no`/`granularity`） | **已补齐**：central 校验用户订单归属后调用 gateway，按设备、端口及订单时间窗查聚合曲线；边界桶近似值通过 `boundary_approximate` 标明 |
 | `GET /internal/export/tasks/{id}` | 旧设计把导出任务交给 worker；当前 Go 实现由 central 的 admin_db 承载，已提供 `GET /admin/exports/{id}`。worker 旧路径不再是当前链路依赖，旧契约仍待逐条修订 |
-| `GET /internal/scheduled-tasks/{id}/last-run` | 定时任务上次执行记录 |
+| `GET /internal/scheduled-tasks/{task_code}/last-run` | **已补齐**：worker 服务令牌接口查询上次执行状态、耗时与连续失败次数；另有 `POST /internal/scheduled-tasks/{task_code}/trigger` 人工触发。当前仅两个真实处理器绑定计划 |
 | `POST /internal/refund-records/claim`、`/execution`、`/{id}/result` | 退款记录内部操作端点；退款走 worker 消费 Outbox，本就无此 HTTP 面 |
 | `POST /internal/device-sessions/cleanup-idle` | 空闲会话清理。**当前无对象可清**——会话只在内存，进程重启即清空，该端点仅在第 8 项落地后才有意义 |
 | `GET /admin/roles`、`GET /admin/permissions` | **已于本会话补齐**（角色列表、权限字典、创建、调整、删除），此处仅作对照说明这些路径现已有实现 |
@@ -126,7 +126,7 @@ docs/                   # 需求、API、数据与联调文档
 | --- | --- | --- |
 | 监管报送 | `docs/需求分析.md` § 十二要求运营商、站点、设备、订单、告警、电池六类标准化对象；当前无监管适配器或报送队列 | 先定义可配置适配器与本地模拟接收/重试验收；真实平台字段、签名和国密联调仍需客户规范 |
 | 账单及对账导出格式 | 已扩展 `bills`/`reconciles` 资源、CSV/XLSX 和两个资源的汇总 PDF；导出任务保存格式与 31 天内日期筛选；使用 Excelize 与 go-pdf/fpdf 生成文件 | 本地接口和模拟数据可验收；客户正式账单样式及对账外部源字段仍待确认 |
-| 定时任务管理与记录 | `cmd/worker/main.go` 使用 1 秒、10 秒 ticker；`worker_db.scheduled_task` 和 `task_execution_log` 目前没有运行时读写 | 用成熟调度库驱动可配置任务并持久记录执行；再提供上次执行查询与安全的人工触发 |
+| 定时任务管理与记录 | 告警扫描、Webhook 待投递扫描已接入 `worker_db.scheduled_task`，由 cron 库解析计划并通过数据库租约避免并发重复；每次写执行日志，支持上次执行查询、服务令牌人工触发和连续五次失败暂停 | 其余核心 1 秒/10 秒轮询仍为固定频率；需求清单中对账、月结、归档等缺实际处理器和外部资料，不能仅加空计划冒充完成 |
 | 历史订单曲线 | central 用户端与 gateway 内部端已接线；订单归属在 central 校验，端口和时间窗在 gateway 限制 | 聚合桶边界可能混入相邻会话；若产品要求精确到订单边界，需另做原始遥测边界补点验收 |
 
 本表记录缺口，不将接口桩或本地模拟算作外部平台验收通过。

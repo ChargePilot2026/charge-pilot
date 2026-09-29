@@ -20,6 +20,7 @@ import (
 	"github.com/ChargePilot2026/charge-pilot/internal/worker/internaljob"
 	"github.com/ChargePilot2026/charge-pilot/internal/worker/outbox"
 	"github.com/ChargePilot2026/charge-pilot/internal/worker/refund"
+	"github.com/ChargePilot2026/charge-pilot/internal/worker/schedule"
 	webhookdelivery "github.com/ChargePilot2026/charge-pilot/internal/worker/webhook"
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
@@ -89,14 +90,6 @@ func run(ctx context.Context) error {
 		}
 		httpapi.OK(c, gin.H{"status": "outbox_ready"})
 	})
-	server := &http.Server{Addr: cfg.HTTPAddr, Handler: router, ReadHeaderTimeout: 5 * time.Second}
-	serverErr := make(chan error, 1)
-	go func() { serverErr <- server.ListenAndServe() }()
-	defer func() {
-		shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = server.Shutdown(shutdown)
-	}()
 	publishers := []outbox.Publisher{
 		{Source: "gateway", DB: orms["gateway"], Stream: stream},
 		{Source: "user", DB: orms["user"], Stream: stream},
@@ -114,6 +107,39 @@ func run(ctx context.Context) error {
 	// them exactly once and records each attempt in comp_tx_log.
 	refundResults := outbox.ResultConsumer{UserDB: orms["user"], WorkerDB: orms["worker"], Stream: stream, Group: "refund-result"}
 	alertEngine := alerts.Evaluator{GatewayDB: orms["gateway"], AdminDB: orms["admin"]}
+	scheduler := schedule.Scheduler{DB: orms["worker"], Handlers: map[string]schedule.Handler{
+		"alert_evaluate": func(ctx context.Context) (uint64, error) {
+			count, err := alertEngine.Evaluate(ctx)
+			return uint64(count), err
+		},
+		"webhook_dispatch": func(ctx context.Context) (uint64, error) {
+			count, err := webhooks.PublishBatch(ctx)
+			return uint64(count), err
+		},
+	}}
+	schedule.API{Scheduler: scheduler, ServiceToken: cfg.ServiceToken}.Register(router)
+	server := &http.Server{Addr: cfg.HTTPAddr, Handler: router, ReadHeaderTimeout: 5 * time.Second}
+	serverErr := make(chan error, 1)
+	go func() { serverErr <- server.ListenAndServe() }()
+	defer func() {
+		shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdown)
+	}()
+	go func() {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := scheduler.RunDue(ctx); err != nil && !errors.Is(err, context.Canceled) {
+					log.Printf("scheduled tasks: %v", err)
+				}
+			}
+		}
+	}()
 	refundCtx, stopRefunds := context.WithCancel(ctx)
 	defer stopRefunds()
 	go func() {
@@ -129,12 +155,6 @@ func run(ctx context.Context) error {
 				}
 				if err := refunds.Run(refundCtx); err != nil && !errors.Is(err, context.Canceled) {
 					log.Printf("refund dispatch: %v", err)
-				}
-				if _, err := alertEngine.Evaluate(refundCtx); err != nil && !errors.Is(err, context.Canceled) {
-					log.Printf("alert evaluation: %v", err)
-				}
-				if _, err := webhooks.PublishBatch(refundCtx); err != nil && !errors.Is(err, context.Canceled) {
-					log.Printf("webhook delivery: %v", err)
 				}
 				if _, err := refundResults.ConsumeOnce(refundCtx); err != nil && !errors.Is(err, context.Canceled) {
 					log.Printf("refund result consumer: %v", err)
