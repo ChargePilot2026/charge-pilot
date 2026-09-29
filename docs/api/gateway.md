@@ -415,7 +415,7 @@
 >
 > 现已补齐：TCP 与断线补传两条写入路径都在**同一事务内**批量 upsert 两张聚合表（每事件每粒度一条语句）；读侧 `chooseSource` 按窗口与点数预算自动选表，预算够走原表保留逐秒细节，超出走聚合。`GET /api/v1/internal/devices/{device_id}/telemetry` 的响应新增 `granularity`（`raw`/`15min`/`hourly`）与 `bucket`，调用方能明确知道自己看到的是哪种分辨率。
 >
-> **注意**：本节描述的 `historical-curve` 端点（带 `order_id`/`port_no`/`granularity` 参数）**仍未实现**；已实现的是不带这些参数、按设备与时间窗查询的 `GET /api/v1/internal/devices/{device_id}/telemetry`。不得按本节描述宣称历史曲线端点可用。
+> **Go 实现**：`historical-curve` 已接入，仅接受服务令牌。`order_id`、`port_no`、`started_at`、`granularity` 必填，`ended_at` 省略时取当前时间；粒度为 `15min` 或 `hourly`。订单归属由 central 在调用前校验。响应包含 `series`、功率/温度摘要和 `boundary_approximate`；若订单起止时间不与聚合桶对齐，该标志为 true，边界桶可能包含紧邻会话样本。请求超过三年保留期或当前粒度的最大点数时拒绝，不静默截断。
 
 ### `POST /api/v1/internal/device-sessions/cleanup-idle`
 

@@ -113,7 +113,7 @@ docs/                   # 需求、API、数据与联调文档
 
 | 文档端点 | 影响 |
 | --- | --- |
-| `GET /internal/devices/{id}/historical-curve`（带 `order_id`/`port_no`/`granularity`） | 按订单时间窗取历史曲线。已实现的是不带这些参数、按设备与时间窗查询的 `GET /internal/devices/{id}/telemetry`，且会按窗口自动切换 15 分钟/小时聚合并在响应标注 `granularity` |
+| `GET /internal/devices/{id}/historical-curve`（带 `order_id`/`port_no`/`granularity`） | **已补齐**：central 校验用户订单归属后调用 gateway，按设备、端口及订单时间窗查聚合曲线；边界桶近似值通过 `boundary_approximate` 标明 |
 | `GET /internal/export/tasks/{id}` | 旧设计把导出任务交给 worker；当前 Go 实现由 central 的 admin_db 承载，已提供 `GET /admin/exports/{id}`。worker 旧路径不再是当前链路依赖，旧契约仍待逐条修订 |
 | `GET /internal/scheduled-tasks/{id}/last-run` | 定时任务上次执行记录 |
 | `POST /internal/refund-records/claim`、`/execution`、`/{id}/result` | 退款记录内部操作端点；退款走 worker 消费 Outbox，本就无此 HTTP 面 |
@@ -127,7 +127,7 @@ docs/                   # 需求、API、数据与联调文档
 | 监管报送 | `docs/需求分析.md` § 十二要求运营商、站点、设备、订单、告警、电池六类标准化对象；当前无监管适配器或报送队列 | 先定义可配置适配器与本地模拟接收/重试验收；真实平台字段、签名和国密联调仍需客户规范 |
 | 账单及对账导出格式 | 已扩展 `bills`/`reconciles` 资源、CSV/XLSX 和两个资源的汇总 PDF；导出任务保存格式与 31 天内日期筛选；使用 Excelize 与 go-pdf/fpdf 生成文件 | 本地接口和模拟数据可验收；客户正式账单样式及对账外部源字段仍待确认 |
 | 定时任务管理与记录 | `cmd/worker/main.go` 使用 1 秒、10 秒 ticker；`worker_db.scheduled_task` 和 `task_execution_log` 目前没有运行时读写 | 用成熟调度库驱动可配置任务并持久记录执行；再提供上次执行查询与安全的人工触发 |
-| 历史订单曲线 | gateway 已有按设备时间窗的 `/telemetry`，尚无 `/historical-curve`；gateway 不持有 `user_db.charge_order` | 由 central 校验订单和用户授权，再按订单的设备、端口及时间窗向 gateway 取历史曲线 |
+| 历史订单曲线 | central 用户端与 gateway 内部端已接线；订单归属在 central 校验，端口和时间窗在 gateway 限制 | 聚合桶边界可能混入相邻会话；若产品要求精确到订单边界，需另做原始遥测边界补点验收 |
 
 本表记录缺口，不将接口桩或本地模拟算作外部平台验收通过。
 
@@ -504,7 +504,7 @@ count     = count + VALUES(count)
 
 **验证**：集成测试真实执行——同桶 3 个样本折叠为一个桶、均值 200、极值 100/300、设备级指标落 NULL 端口而非端口 0、小时粒度同样正确；再喂一次同一样本后 count 变 4 且滚动均值为 175，证明累加而非覆盖。端到端实跑：1 小时窗口返回 `granularity=raw` 361 点全细节，12 小时窗口返回 `granularity=hourly` 12 点且完整覆盖 12 个小时。
 
-**仍未实现**：`docs/api/gateway.md` 描述的 `historical-curve` 端点（带 `order_id`/`port_no`/`granularity` 参数、按订单时间窗取数）不存在。已实现的是不带这些参数、按设备与时间窗查询的 `/api/v1/internal/devices/{device_id}/telemetry`。已在该文档明确标注，避免再次被当成已交付。
+**后续补齐**：`docs/api/gateway.md` 描述的 `historical-curve` 端点现已实现。central 校验订单归属并传入设备、端口与精确订单时间窗；gateway 读取聚合表并给出摘要。聚合桶边界可能包含相邻会话的样本，响应通过 `boundary_approximate` 标明；订单精确结算电量来自 central 的订单记录。
 
 
 ### 2026-09-29 指标导出落地（/metrics）

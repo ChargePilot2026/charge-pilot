@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -50,6 +51,7 @@ func (a UserQueryAPI) Register(r *gin.Engine) {
 	r.GET("/api/v1/user/charge/ongoing/snapshot", a.snapshot)
 	r.GET("/api/v1/user/charge/ongoing/curve", a.curve)
 	r.GET("/api/v1/user/charge/history", a.history)
+	r.GET("/api/v1/user/charge/:order_no/curve", a.historyCurve)
 	r.GET("/api/v1/user/charge/:order_no", a.detail)
 }
 
@@ -226,7 +228,10 @@ func nullInt(v sql.NullInt64) any {
 // payload sits under data, not at the top level.
 type gatewayTelemetry struct {
 	Data struct {
-		Series []struct {
+		Granularity         string         `json:"granularity"`
+		BoundaryApproximate bool           `json:"boundary_approximate"`
+		Summary             map[string]any `json:"summary"`
+		Series              []struct {
 			TS           string   `json:"ts"`
 			PowerW       *float64 `json:"power_w"`
 			CurrentA     *float64 `json:"current_a"`
@@ -236,6 +241,67 @@ type gatewayTelemetry struct {
 			MeterKWh     *float64 `json:"meter_kwh"`
 		} `json:"series"`
 	} `json:"data"`
+}
+
+func (a UserQueryAPI) historyCurve(c *gin.Context) {
+	order, ok := a.resolveOrder(c, c.Param("order_no"))
+	if !ok {
+		return
+	}
+	if !order.StartedAt.Valid {
+		httpapi.Write(c, 409, 2009, "订单尚未开始充电", nil)
+		return
+	}
+	granularity := c.DefaultQuery("granularity", "15min")
+	if granularity != "15min" && granularity != "hourly" {
+		httpapi.BadRequest(c, "granularity 须为 15min 或 hourly")
+		return
+	}
+	started := order.StartedAt.Time.UTC()
+	ended := time.Now().UTC()
+	if order.EndedAt.Valid {
+		ended = order.EndedAt.Time.UTC()
+	}
+	if !started.Before(ended) {
+		httpapi.Write(c, 409, 2009, "订单时间窗无效", nil)
+		return
+	}
+	if started.Before(time.Now().UTC().AddDate(-3, 0, 0)) {
+		httpapi.Write(c, 422, 2018, "历史遥测已超过三年保留期", nil)
+		return
+	}
+	bucket := 15 * time.Minute
+	if granularity == "hourly" {
+		bucket = time.Hour
+	}
+	if int(ended.Truncate(bucket).Sub(started.Truncate(bucket))/bucket)+1 > 2000 {
+		httpapi.BadRequest(c, "订单时间窗超过当前粒度的最大点数，请使用更粗粒度")
+		return
+	}
+	query := url.Values{}
+	query.Set("order_id", order.OrderNo)
+	query.Set("port_no", fmt.Sprint(order.PortNo))
+	query.Set("started_at", started.Format(time.RFC3339Nano))
+	query.Set("ended_at", ended.Format(time.RFC3339Nano))
+	query.Set("granularity", granularity)
+	var telemetry gatewayTelemetry
+	path := "/api/v1/internal/devices/" + url.PathEscape(order.DeviceID) + "/historical-curve?" + query.Encode()
+	if err := a.Gateway.GetJSON(c.Request.Context(), a.GatewayURL, a.ServiceToken, path, &telemetry); err != nil {
+		httpapi.Write(c, 503, 5003, "历史充电曲线暂时无法读取", nil)
+		return
+	}
+	summary := telemetry.Data.Summary
+	if summary == nil {
+		summary = map[string]any{}
+	}
+	if order.ChargedKWh.Valid {
+		summary["total_kwh"] = order.ChargedKWh.String
+	}
+	httpapi.OK(c, gin.H{
+		"order_id": order.ID, "order_no": order.OrderNo, "granularity": granularity,
+		"series": telemetry.Data.Series, "summary": summary,
+		"boundary_approximate": telemetry.Data.BoundaryApproximate,
+	})
 }
 
 // fee reads the settled amounts for an order. The receipt is the authoritative

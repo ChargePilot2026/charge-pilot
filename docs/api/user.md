@@ -776,17 +776,17 @@ Wechatpay-Nonce: ...
 
 ---
 
-### `GET /api/v1/user/charge/{order_id}/curve`
+### `GET /api/v1/user/charge/{order_no}/curve`
 
 **鉴权**:[JWT]
-**限流**:每 user 10 req/min
+**限流**:按用户会话鉴权；独立曲线限流待接入
 **触发场景**:小程序"订单详情"页面 → 用户点击"查看充电曲线"
-**业务目标**:返回历史订单的充电曲线(从聚合表查,与 `ongoing/curve` 数据源不同)
+**业务目标**:返回本人订单在设备对应端口、订单时间窗内的聚合曲线。
 
 **路径参数**:
 | 参数 | 类型 | 说明 |
 | --- | --- | --- |
-| `order_id` | int | 订单 ID |
+| `order_no` | string | 业务订单号 |
 
 **请求 query**:
 | 参数 | 类型 | 默认 | 说明 |
@@ -799,42 +799,45 @@ Wechatpay-Nonce: ...
   "code": 0,
   "data": {
     "order_id": 12345,
+    "order_no": "ORD-12345",
     "granularity": "15min",
     "series": [
       {
-        "bucket_start": "2026-09-25T14:00:00Z",
-        "voltage_v_avg": "220.5",
-        "voltage_v_max": "221.0",
-        "current_a_avg": "3.20",
-        "current_a_max": "3.40",
-        "temperature_c_avg": "32.5",
-        "temperature_c_max": "34.0",
-        "battery_soc_end": 62,
-        "meter_kwh_end": "0.080"
+        "ts": "2026-09-25T14:00:00Z",
+        "voltage_v": 220.5,
+        "current_a": 3.20,
+        "temperature_c": 32.5,
+        "battery_soc": 62,
+        "meter_kwh": 0.080
       }
     ],
     "summary": {
       "max_power_w": "750.0",
       "max_temperature_c": "36.2",
-      "total_kwh": "0.520",
+      "total_kwh": "0.5200",
       "avg_power_w": "700.0"
-    }
+    },
+    "boundary_approximate": true
   }
 }
 ```
 
 **业务逻辑**(P1-7 修正:跨库走 HTTP):
-1. 校验 `order_id` 属于当前 user
+1. 校验 `order_no` 属于当前 user
 2. 查 `user_db.charge_order.started_at` + `ended_at` 确定时间窗
-3. **HTTP 调 gateway**:`GET /api/v1/internal/devices/{device_id}/historical-curve?order_id={order_id}&port_no={port_no}&started_at={started_at}&ended_at={ended_at}&granularity={15min|hourly}`(详见 `gateway.md` § 四):
+3. **HTTP 调 gateway**:`GET /api/v1/internal/devices/{device_id}/historical-curve?order_id={order_no}&port_no={port_no}&started_at={started_at}&ended_at={ended_at}&granularity={15min|hourly}`(详见 `gateway.md` § 四):
    - gateway 在 `gateway_db` 内部查对应聚合表(`telemetry_aggregate_15min` / `telemetry_aggregate_hourly`)
    - gateway 返回采样后的时间序列
-4. 算 `summary` 字段(gateway 侧完成)
+4. gateway 计算功率与温度摘要；central 使用订单已结算电量填写精确的 `summary.total_kwh`。
 5. 返回时间序列 + 摘要
 
 **错误码**:
 - `1001` / `1003` / `1004`(同上)
-- `2018`: 订单时间窗超过聚合表保留期(3 年)
+- `2018`: 订单开始时间超过聚合表保留期(3 年)，central 在调用 gateway 前拒绝。
+- `1003`: 参数无效，或当前粒度对应的时间窗超过 2000 个聚合点；可改用 `hourly` 重试。
+- `5003`: gateway 暂时不可读。
+
+`boundary_approximate=true` 表示起止时间与聚合桶不对齐，边界桶可能含相邻会话读数；不能把聚合桶值当成精确的订单结算电量。
 
 ---
 

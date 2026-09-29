@@ -24,6 +24,7 @@ type TelemetryAPI struct {
 
 func (a TelemetryAPI) Register(router *gin.Engine) {
 	router.GET("/api/v1/internal/devices/:device_id/telemetry", a.curve)
+	router.GET("/api/v1/internal/devices/:device_id/historical-curve", a.historicalCurve)
 	router.POST("/api/v1/internal/devices/:device_id/backfill", a.backfill)
 }
 
@@ -119,6 +120,10 @@ func (a TelemetryAPI) curve(c *gin.Context) {
 // read pivots the long telemetry rows into per-timestamp points. Readings are
 // grouped in SQL so the response size stays bounded regardless of sample rate.
 func (a TelemetryAPI) read(ctx context.Context, deviceID string, from, to time.Time, limit int, table string) ([]CurvePoint, error) {
+	return a.readPort(ctx, deviceID, 0, from, to, limit, table)
+}
+
+func (a TelemetryAPI) readPort(ctx context.Context, deviceID string, portNo int, from, to time.Time, limit int, table string) ([]CurvePoint, error) {
 	// Column names differ from the Go field names; without the tags GORM scans
 	// zero values and every point comes back empty.
 	type reading struct {
@@ -133,17 +138,23 @@ func (a TelemetryAPI) read(ctx context.Context, deviceID string, from, to time.T
 	// happen, the request is served from the rollups instead.
 	rows := []reading{}
 	if table == "telemetry" {
-		if err := a.DB.WithContext(ctx).Table("telemetry").
+		query := a.DB.WithContext(ctx).Table("telemetry").
 			Select("ts, metric, value_num").
-			Where("device_id = ? AND ts >= ? AND ts <= ? AND value_num IS NOT NULL", deviceID, from, to).
-			Order("ts DESC").Limit(limit * 8).Find(&rows).Error; err != nil {
+			Where("device_id = ? AND ts >= ? AND ts <= ? AND value_num IS NOT NULL", deviceID, from, to)
+		if portNo > 0 {
+			query = query.Where("port_no = ?", portNo)
+		}
+		if err := query.Order("ts DESC").Limit(limit * 8).Find(&rows).Error; err != nil {
 			return nil, err
 		}
 	} else {
-		if err := a.DB.WithContext(ctx).Table(table).
+		query := a.DB.WithContext(ctx).Table(table).
 			Select("bucket_start AS ts, metric, avg_value AS value_num").
-			Where("device_id = ? AND bucket_start >= ? AND bucket_start <= ?", deviceID, from, to).
-			Order("bucket_start DESC").Limit(limit * 8).Find(&rows).Error; err != nil {
+			Where("device_id = ? AND bucket_start >= ? AND bucket_start <= ?", deviceID, from, to)
+		if portNo > 0 {
+			query = query.Where("port_no = ?", portNo)
+		}
+		if err := query.Order("bucket_start DESC").Limit(limit * 8).Find(&rows).Error; err != nil {
 			return nil, err
 		}
 	}

@@ -151,7 +151,7 @@
 | user | gateway | 充电结束通知(`charge_ended_stream` 消费关轮询) | `charge_ended_stream.user-cg` | `gateway.md` § 五 + `技术规格 § 5.3` |
 | user | gateway | 设备实时状态查询(轮询快照 cache miss 时) | `/api/v1/internal/devices/{id}` | `gateway.md` § 四 |
 | user | gateway | 端口列表(扫描设备码时) | `/api/v1/internal/devices/{id}/ports` | `gateway.md` § 四 |
-| user | gateway | 历史曲线查询(订单回看 + 充电中 detail) | `/api/v1/internal/devices/{id}/curve?order_id={id}&window=last_5min` + `/historical-curve?granularity=15min` | `gateway.md` § 四 |
+| central | gateway | 当前充电及历史订单曲线 | `/api/v1/internal/devices/{id}/telemetry` + `/api/v1/internal/devices/{id}/historical-curve?order_id=...&port_no=...&started_at=...&granularity=...` | `gateway.md` § 四 |
 | user | billing | 预扣费预估(scan/start 时报价) | `/api/v1/internal/quote` | `billing.md` § 二 |
 | user | billing | 计费快照查询(订单详情页) | `/api/v1/internal/orders/{order_id}/fee-breakdown` | `billing.md` § 二 |
 | user | admin | 当前告警查询(充电中页轮询) | `/api/v1/internal/alerts?device_id={id}&status=active` | `admin.md` § E |
