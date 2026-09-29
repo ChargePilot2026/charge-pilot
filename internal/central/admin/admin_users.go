@@ -16,24 +16,30 @@ import (
 	"gorm.io/gorm/clause"
 )
 
+// AdminUserRow 是 PC 后台管理员账号（admin_user_role 表）的列表行映射。
+// 账号归属 admin_db，与终端用户 user_db.user 分开存放；一个账号一个主角色，权限由 role 展开。
 type AdminUserRow struct {
-	ID            uint64  `json:"id"`
-	Username      string  `json:"username"`
-	DisplayName   *string `json:"display_name"`
-	RoleID        *uint64 `json:"role_id"`
-	RoleCode      *string `json:"role_code"`
-	Phone         *string `json:"phone"`
-	Email         *string `json:"email"`
-	Status        string  `json:"status"`
-	MFAEnabled    bool    `json:"mfa_enabled"`
-	LastLoginAt   *string `json:"last_login_at"`
-	LockedUntil   *string `json:"locked_until"`
-	FailedLogins  uint32  `json:"failed_login_count"`
-	DeletePending bool    `json:"-"`
+	ID            uint64  `json:"id"`                 // 账号主键
+	Username      string  `json:"username"`           // 登录用户名，全局唯一；本接口只读，不提供新建
+	DisplayName   *string `json:"display_name"`       // 显示名称；nil 表示未设置
+	RoleID        *uint64 `json:"role_id"`            // 主角色 ID；nil 表示尚未分配角色
+	RoleCode      *string `json:"role_code"`          // 主角色编码（如 customer_admin），由 role 表联查得出；角色已删时为 nil
+	Phone         *string `json:"phone"`              // 备用手机号；nil 表示未登记
+	Email         *string `json:"email"`              // 邮箱；nil 表示未登记
+	Status        string  `json:"status"`             // 账号状态：active 正常 / disabled 停用 / locked 因连续登录失败临时锁定
+	MFAEnabled    bool    `json:"mfa_enabled"`        // 是否已启用双因素认证
+	LastLoginAt   *string `json:"last_login_at"`      // 最近一次登录时间；nil 表示从未登录
+	LockedUntil   *string `json:"locked_until"`       // 锁定到期时间；未锁定时为 nil
+	FailedLogins  uint32  `json:"failed_login_count"` // 连续登录失败次数，成功登录或被解锁后归零
+	DeletePending bool    `json:"-"`                  // 是否有待处理的下线流程，本列表不使用、不输出
 }
 
+// usernamePattern 是登录用户名的格式约束：字母、数字、下划线、点、短横，3–64 位。
 var usernamePattern = regexp.MustCompile(`^[A-Za-z0-9_.-]{3,64}$`)
 
+// registerAdminUsers 注册管理员账号的六个后台接口，覆盖账号管理页的读写与安全操作。
+// 改角色、解锁、改双因素用 admin_user.update，重置密码另用 admin_user.reset_password，
+// 删除账号用 admin_user.delete——权限拆开是为了让"能改人"不等于"能删人"。
 func (a ResourceAPI) registerAdminUsers(r *gin.Engine) {
 	r.GET("/api/v1/admin/admin-users", a.Auth.Require("admin_user.read"), a.listAdminUsers)
 	r.PUT("/api/v1/admin/admin-users/:id", a.Auth.Require("admin_user.update"), a.updateAdminUser)
@@ -43,6 +49,8 @@ func (a ResourceAPI) registerAdminUsers(r *gin.Engine) {
 	r.POST("/api/v1/admin/admin-users/:id/mfa", a.Auth.Require("admin_user.update"), a.adminUserMFA)
 }
 
+// listAdminUsers 分页返回管理员账号列表，支持按状态（active / disabled / locked）和用户名/显示名关键词过滤，
+// 并联查角色编码。本接口只读，不暴露密码哈希、MFA 密钥等敏感字段。
 func (a ResourceAPI) listAdminUsers(c *gin.Context) {
 	page, ok := parsePage(c, "active disabled locked")
 	if !ok {
@@ -75,6 +83,9 @@ func (a ResourceAPI) listAdminUsers(c *gin.Context) {
 // assignableRole confirms the target role exists and that the acting operator
 // does not grant powers beyond their own, so privilege cannot be escalated by
 // creating or editing an account.
+
+// assignableRole 校验目标角色可以授予：角色必须存在且至少带一项权限，
+// 并且每一项权限操作者自己都有——否则通过新建或编辑账号就能自我提权。
 func (a ResourceAPI) assignableRole(p Profile, roleID uint64) error {
 	var codes []string
 	if err := a.Store.AdminDB.WithContext(context.Background()).Table("role AS r").
@@ -93,8 +104,13 @@ func (a ResourceAPI) assignableRole(p Profile, roleID uint64) error {
 	return nil
 }
 
+// errInsufficient 表示要授予的权限超出了操作者自己拥有的范围，由 assignableRole 判定。
 var errInsufficient = errors.New("不能授予自己未拥有的权限")
 
+// updateAdminUser 修改管理员账号的显示名、手机号、邮箱、角色和状态。
+// 字段用指针表示"传了才改"；状态只允许 active / disabled。
+// 两条硬约束：不能把自己停用或降级（避免把最后一个管理员锁在控制台外）；
+// 改角色会顺带把 auth_version + 1，令该账号已签发的会话全部失效。
 func (a ResourceAPI) updateAdminUser(c *gin.Context) {
 	id, ok := pathID(c)
 	if !ok {
@@ -177,6 +193,7 @@ func (a ResourceAPI) updateAdminUser(c *gin.Context) {
 	httpapi.OK(c, gin.H{"id": id})
 }
 
+// roleFailure 角色相关失败的出口：越权授予返回 403，其余走通用处理。
 func (a ResourceAPI) roleFailure(c *gin.Context, err error) {
 	if errors.Is(err, errInsufficient) {
 		httpapi.Write(c, http.StatusForbidden, 1003, "不能授予自己未拥有的权限", nil)
@@ -185,6 +202,9 @@ func (a ResourceAPI) roleFailure(c *gin.Context, err error) {
 	resourceFailure(c, err)
 }
 
+// deleteAdminUser 软删除管理员账号（离职场景，审计要留痕，不做物理删除）。
+// 两条硬约束：不能删自己；删完之后系统里必须还剩至少一个 active 的客户管理员账号。
+// 删除同时把状态置为 disabled 并让 auth_version + 1，已签发的会话随即失效。
 func (a ResourceAPI) deleteAdminUser(c *gin.Context) {
 	id, ok := pathID(c)
 	if !ok {
@@ -226,6 +246,8 @@ func (a ResourceAPI) deleteAdminUser(c *gin.Context) {
 	httpapi.OK(c, gin.H{"id": id, "deleted": true})
 }
 
+// unlockAdminUser 解锁一个因连续登录失败被临时锁定的账号：
+// 状态恢复 active、清空锁定到期时间、失败计数归零。
 func (a ResourceAPI) unlockAdminUser(c *gin.Context) {
 	id, ok := pathID(c)
 	if !ok {
@@ -251,6 +273,8 @@ func (a ResourceAPI) unlockAdminUser(c *gin.Context) {
 	httpapi.OK(c, gin.H{"id": id, "unlocked": true})
 }
 
+// resetAdminPassword 由管理员为账号重置密码，密码须为 12–72 字节，存 bcrypt 哈希。
+// 重置同时让 auth_version + 1，该账号所有已签发会话立即失效，并清空锁定状态与失败计数。
 func (a ResourceAPI) resetAdminPassword(c *gin.Context) {
 	id, ok := pathID(c)
 	if !ok {
@@ -294,6 +318,12 @@ func (a ResourceAPI) resetAdminPassword(c *gin.Context) {
 
 // adminUserMFA enrols, confirms or removes the second factor. A secret is only
 // persisted after the operator proves the authenticator works.
+
+// adminUserMFA 为某账号启用、确认或关闭双因素认证（TOTP），按 action 分三种：
+// enrol 生成密钥并以"未启用"状态落库（密钥在 confirm 之前不生效）；
+// confirm 校验一次验证码通过后才真正置为启用；disable 清空密钥。
+// 不允许对自己操作，必须走本人账号的安全设置，避免把验证器绑到错误的身份上。
+// 三种动作成功时都会让 auth_version + 1，已签发会话随之失效。
 func (a ResourceAPI) adminUserMFA(c *gin.Context) {
 	id, ok := pathID(c)
 	if !ok {

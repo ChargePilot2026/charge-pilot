@@ -525,7 +525,6 @@
 | --- | --- | --- | --- | --- |
 | `id` | `BIGINT UNSIGNED` | PK, AUTO_INCREMENT | — | 主键 |
 | `station_name` | `VARCHAR(128)` | NOT NULL | — | 站点名称(用户可见,如"万达广场地下停车场") |
-| `station_code` | `VARCHAR(32)` | UNIQUE, NOT NULL | — | 站点编码(客户运营自定,便于批量管理) |
 | `address` | `VARCHAR(256)` | NOT NULL | — | 详细地址 |
 | `longitude` | `DECIMAL(10,6)` | NOT NULL | — | 经度 |
 | `latitude` | `DECIMAL(10,6)` | NOT NULL | — | 纬度 |
@@ -548,7 +547,6 @@
 | 索引名 | 字段 | 类型 | 用途 |
 | --- | --- | --- | --- |
 | `pk_station` | `id` | 主键 | — |
-| `uk_station_code` | `station_code` | 唯一 | 按编码查 |
 | `idx_station_geo` | `longitude`, `latitude` | 普通 | 地理范围查询(找桩) |
 | `idx_station_status_deleted` | `status`, `deleted_at` | 普通 | 客户运营查站点列表 |
 | `idx_station_deleted_at` | `deleted_at` | 普通 | 物理归档扫描 |

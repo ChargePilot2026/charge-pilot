@@ -42,7 +42,7 @@ func lastID(t *testing.T, orm *gorm.DB) uint64 {
 type activityFixture struct {
 	userID    uint64
 	couponID  uint64
-	ruleCode  string
+	ruleID    uint64
 	eventKey  string
 	cleanup   func()
 	grantRows func(t *testing.T) int64
@@ -59,25 +59,25 @@ func newActivityFixture(t *testing.T, orm *gorm.DB, ruleTrigger string, perUserL
 		t.Fatal(err)
 	}
 	if err := orm.Exec(`INSERT INTO coupon
-		(code, name, discount_type, discount_value_cents, valid_hours, total_quota, per_user_quota, status, start_at, end_at)
-		VALUES (?, ?, 'amount', 500, 72, 0, 0, 'active', ?, ?)`, "AC"+uuid.NewString()[:8], "活动券", now.Add(-time.Hour), now.Add(365*24*time.Hour)).Error; err != nil {
+		(name, discount_type, discount_value_cents, valid_hours, total_quota, per_user_quota, status, start_at, end_at)
+		VALUES (?, 'amount', 500, 72, 0, 0, 'active', ?, ?)`, "活动券", now.Add(-time.Hour), now.Add(365*24*time.Hour)).Error; err != nil {
 		t.Fatal(err)
 	}
 	couponID := lastID(t, orm)
-	ruleCode := "R" + uuid.NewString()[:8]
 	if err := orm.Exec(`INSERT INTO coupon_activity_rule
-		(rule_code, name, trigger_type, coupon_id, threshold_cents, max_grants, per_user_limit, status, start_at, end_at)
-		VALUES (?, ?, ?, ?, 0, ?, ?, 'active', ?, ?)`,
-		ruleCode, "验收规则", ruleTrigger, couponID, maxGrants, perUserLimit, now.Add(-time.Hour), now.Add(24*time.Hour)).Error; err != nil {
+		(name, trigger_type, coupon_id, threshold_cents, max_grants, per_user_limit, status, start_at, end_at)
+		VALUES (?, ?, ?, 0, ?, ?, 'active', ?, ?)`,
+		"验收规则", ruleTrigger, couponID, maxGrants, perUserLimit, now.Add(-time.Hour), now.Add(24*time.Hour)).Error; err != nil {
 		t.Fatal(err)
 	}
+	ruleID := lastID(t, orm)
 	eventKey := uuid.NewString()
 	return activityFixture{
-		userID: userID, couponID: couponID, ruleCode: ruleCode, eventKey: eventKey,
+		userID: userID, couponID: couponID, ruleID: ruleID, eventKey: eventKey,
 		cleanup: func() {
 			_ = orm.Exec("DELETE FROM coupon_grant_request WHERE user_id = ?", userID)
 			_ = orm.Exec("DELETE FROM coupon_grant WHERE coupon_id = ?", couponID)
-			_ = orm.Exec("DELETE FROM coupon_activity_rule WHERE rule_code = ?", ruleCode)
+			_ = orm.Exec("DELETE FROM coupon_activity_rule WHERE id = ?", ruleID)
 			_ = orm.Exec("DELETE FROM coupon WHERE id = ?", couponID)
 			_ = orm.Exec("DELETE FROM wallet_account WHERE user_id = ?", userID)
 			_ = orm.Exec("DELETE FROM user WHERE id = ?", userID)
@@ -139,7 +139,7 @@ func TestThresholdRuleOnlyFiresAboveThreshold(t *testing.T) {
 	fx := newActivityFixture(t, orm, "threshold_redeem", 5, 0)
 	defer fx.cleanup()
 	now := time.Now().UTC()
-	if err := orm.Exec("UPDATE coupon_activity_rule SET threshold_cents = 3000 WHERE rule_code = ?", fx.ruleCode).Error; err != nil {
+	if err := orm.Exec("UPDATE coupon_activity_rule SET threshold_cents = 3000 WHERE id = ?", fx.ruleID).Error; err != nil {
 		t.Fatal(err)
 	}
 	// Below the threshold nothing is granted.
@@ -177,13 +177,13 @@ func TestExpiredAndDisabledRulesDoNotGrant(t *testing.T) {
 	fx := newActivityFixture(t, orm, "first_recharge", 1, 0)
 	defer fx.cleanup()
 	now := time.Now().UTC()
-	if err := orm.Exec("UPDATE coupon_activity_rule SET end_at = ? WHERE rule_code = ?", now.Add(-time.Minute), fx.ruleCode).Error; err != nil {
+	if err := orm.Exec("UPDATE coupon_activity_rule SET end_at = ? WHERE id = ?", now.Add(-time.Minute), fx.ruleID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if got := runActivity(t, orm, activityEvent{TriggerType: "first_recharge", UserID: fx.userID, EventKey: fx.eventKey, Now: now}); len(got) != 0 {
 		t.Fatalf("an expired rule still granted: %+v", got)
 	}
-	if err := orm.Exec("UPDATE coupon_activity_rule SET end_at = ?, status = 'disabled' WHERE rule_code = ?", now.Add(24*time.Hour), fx.ruleCode).Error; err != nil {
+	if err := orm.Exec("UPDATE coupon_activity_rule SET end_at = ?, status = 'disabled' WHERE id = ?", now.Add(24*time.Hour), fx.ruleID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if got := runActivity(t, orm, activityEvent{TriggerType: "first_recharge", UserID: fx.userID, EventKey: fx.eventKey, Now: now}); len(got) != 0 {

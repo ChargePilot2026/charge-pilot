@@ -2,6 +2,7 @@ package admin
 
 import (
 	"errors"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -12,40 +13,58 @@ import (
 	"gorm.io/gorm/clause"
 )
 
+// resourceCodePattern guards the operator-supplied business codes that are
+// still around. The station code used to live here too and is gone as of
+// migration 0044; what is left is the split template and its parties.
+// resourceCodePattern 约束运营手工填写的业务编码：只允许字母、数字、下划线、短横，1–64 位。
+// 站点编码原先也走这里，已随 0044 迁移删除，现在只剩分账模板编码和参与方编码。
+var resourceCodePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
+// splitTemplateRow 是分账模板（split_template 表）的行映射。
+// 分账模板定义一份多方分账方案，由站点绑定后被结算流程读取，本身不含金额。
 type splitTemplateRow struct {
-	ID     uint64 `json:"id" gorm:"column:id"`
-	Code   string `json:"code" gorm:"column:code"`
-	Name   string `json:"name" gorm:"column:name"`
-	Mode   string `json:"mode" gorm:"column:mode"`
-	Status string `json:"status" gorm:"column:status"`
+	ID     uint64 `json:"id" gorm:"column:id"`         // 模板主键
+	Code   string `json:"code" gorm:"column:code"`     // 模板业务编码，全局唯一，编码创建后不再可改
+	Name   string `json:"name" gorm:"column:name"`     // 模板名称，不超过 128 个字符
+	Mode   string `json:"mode" gorm:"column:mode"`     // 分账模式：mode_a 电费与服务费全部分账；mode_b 仅服务费分账、电费全额归运营商
+	Status string `json:"status" gorm:"column:status"` // 模板状态：active 可被站点绑定；disabled 不能被新站点绑定
 }
 
+// splitPartyRow 是分账参与方（split_party 表）的行映射：一份模板下的一个分成方及其比例与收款信息。
 type splitPartyRow struct {
-	ID              uint64  `json:"id" gorm:"column:id"`
-	SplitTemplateID uint64  `json:"-" gorm:"column:split_template_id"`
-	PartyCode       string  `json:"party_code" gorm:"column:party_code"`
-	PartyName       string  `json:"party_name" gorm:"column:party_name"`
-	RatioBP         uint32  `json:"ratio_bp" gorm:"column:ratio_bp"`
-	BankAccount     *string `json:"-" gorm:"column:bank_account"`
-	BankName        *string `json:"bank_name,omitempty" gorm:"column:bank_name"`
+	ID              uint64  `json:"id" gorm:"column:id"`                         // 参与方主键
+	SplitTemplateID uint64  `json:"-" gorm:"column:split_template_id"`           // 所属分账模板 ID，不对外输出
+	PartyCode       string  `json:"party_code" gorm:"column:party_code"`         // 参与方编码，同一模板下唯一
+	PartyName       string  `json:"party_name" gorm:"column:party_name"`         // 参与方名称，如"万达物业""平台运营"
+	RatioBP         uint32  `json:"ratio_bp" gorm:"column:ratio_bp"`             // 分账比例，单位基点（万分之一），同一模板下所有参与方合计恰好 10000
+	BankAccount     *string `json:"-" gorm:"column:bank_account"`                // 收款银行账号，完整值不出接口（只回后四位）；nil 表示未登记
+	BankName        *string `json:"bank_name,omitempty" gorm:"column:bank_name"` // 开户行；nil 表示未登记
 }
 
+// splitPartyInput 是分账参与方的写入入参，比例用基点整数表达，避免浮点误差把 10000 凑不齐。
 type splitPartyInput struct {
-	PartyCode   string  `json:"party_code"`
-	PartyName   string  `json:"party_name"`
-	RatioBP     uint32  `json:"ratio_bp"`
-	BankAccount *string `json:"bank_account"`
-	BankName    *string `json:"bank_name"`
+	PartyCode   string  `json:"party_code"`   // 参与方编码，同一模板下不可重复，须匹配 resourceCodePattern
+	PartyName   string  `json:"party_name"`   // 参与方名称，非空且不超过 128 个字符
+	RatioBP     uint32  `json:"ratio_bp"`     // 分账比例（基点），必须大于 0 且小于 10000，同一模板合计恰好 10000
+	BankAccount *string `json:"bank_account"` // 收款银行账号，nil 表示不登记；长度不超过 64
+	BankName    *string `json:"bank_name"`    // 开户行，nil 表示不登记；不超过 128 个字符
 }
 
+// splitTemplateDetail 是分账模板的读取视图：模板本体加上展开后的参与方列表。
+// 参与方在输出时已做脱敏，账号只保留后四位。
 type splitTemplateDetail struct {
 	splitTemplateRow
-	Parties []gin.H `json:"parties"`
+	Parties []gin.H `json:"parties"` // 参与方列表，账号已截断为后四位
 }
 
+// errSplitTemplateReferenced 表示模板已被站点绑定，模式和参与方就此冻结（名称仍可改）。
 var errSplitTemplateReferenced = errors.New("分账模板已绑定站点，参与方和模式不可修改；请新建模板")
+
+// errSplitParties 表示参与方数量不在 2–8 之间，或比例合计不等于 10000 基点。
 var errSplitParties = errors.New("分账参与方须为 2–8 个，比例合计须为 10000 基点")
 
+// validSplitParties 校验参与方集合：数量 2–8、编码不重复、名称与账号长度合规、
+// 每方比例大于 0 且小于 10000，且全部比例合计恰好 10000 基点。
 func validSplitParties(parties []splitPartyInput) bool {
 	if len(parties) < 2 || len(parties) > 8 {
 		return false
@@ -53,7 +72,7 @@ func validSplitParties(parties []splitPartyInput) bool {
 	codes := make(map[string]bool, len(parties))
 	var sum uint64
 	for _, party := range parties {
-		if !stationCodePattern.MatchString(party.PartyCode) || codes[party.PartyCode] ||
+		if !resourceCodePattern.MatchString(party.PartyCode) || codes[party.PartyCode] ||
 			strings.TrimSpace(party.PartyName) == "" || utf8.RuneCountInString(party.PartyName) > 128 ||
 			party.RatioBP == 0 || party.RatioBP >= 10000 ||
 			(party.BankAccount != nil && len(*party.BankAccount) > 64) ||
@@ -66,6 +85,8 @@ func validSplitParties(parties []splitPartyInput) bool {
 	return sum == 10000
 }
 
+// registerSplitTemplates 注册分账模板的五个后台接口：
+// 读取要 finance.read，创建模板和改模式要 finance.split_template.create，换参与方要 finance.split_party.create。
 func (a ResourceAPI) registerSplitTemplates(r *gin.Engine) {
 	r.GET("/api/v1/admin/settings/split-templates", a.Auth.Require("finance.read"), a.splitTemplates)
 	r.GET("/api/v1/admin/settings/split-templates/:id", a.Auth.Require("finance.read"), a.splitTemplate)
@@ -75,6 +96,7 @@ func (a ResourceAPI) registerSplitTemplates(r *gin.Engine) {
 	r.POST("/api/v1/admin/settings/split-templates/:id/parties", a.Auth.Require("finance.split_party.create"), a.replaceSplitParties)
 }
 
+// splitTemplates 分页返回分账模板列表，支持按状态（active / disabled）和编码/名称关键词过滤。
 func (a ResourceAPI) splitTemplates(c *gin.Context) {
 	page, ok := parsePage(c, "active disabled")
 	if !ok {
@@ -100,6 +122,7 @@ func (a ResourceAPI) splitTemplates(c *gin.Context) {
 	httpapi.OK(c, out)
 }
 
+// splitTemplate 返回单份分账模板详情（含参与方），站点绑定接口改绑完成后也复用它回显。
 func (a ResourceAPI) splitTemplate(c *gin.Context) {
 	id, ok := pathID(c)
 	if !ok {
@@ -113,6 +136,7 @@ func (a ResourceAPI) splitTemplate(c *gin.Context) {
 	httpapi.OK(c, detail)
 }
 
+// splitTemplateParties 只返回某份模板的参与方列表，供不需要模板本体的场景使用。
 func (a ResourceAPI) splitTemplateParties(c *gin.Context) {
 	id, ok := pathID(c)
 	if !ok {
@@ -126,6 +150,8 @@ func (a ResourceAPI) splitTemplateParties(c *gin.Context) {
 	httpapi.OK(c, gin.H{"items": detail.Parties})
 }
 
+// loadSplitTemplate 读出一份模板及其参与方，是详情、参与方列表、创建/修改回显和站点绑定回显的共同读取路径。
+// 输出时银行账号一律截断为后四位，完整账号只留在库里。
 func (a ResourceAPI) loadSplitTemplate(c *gin.Context, id uint64) (splitTemplateDetail, error) {
 	var row splitTemplateRow
 	db := a.Store.AdminDB.WithContext(c.Request.Context())
@@ -151,6 +177,8 @@ func (a ResourceAPI) loadSplitTemplate(c *gin.Context, id uint64) (splitTemplate
 	return detail, nil
 }
 
+// createSplitTemplate 新建分账模板：校验编码、名称、模式（mode_a / mode_b）和整组参与方，
+// 模板与参与方在同一个事务里写入，初始状态 active。成功后直接回显完整详情。
 func (a ResourceAPI) createSplitTemplate(c *gin.Context) {
 	var input struct {
 		Code    string            `json:"code"`
@@ -161,7 +189,7 @@ func (a ResourceAPI) createSplitTemplate(c *gin.Context) {
 	if !decodeResource(c, &input) {
 		return
 	}
-	if !stationCodePattern.MatchString(input.Code) || strings.TrimSpace(input.Name) == "" || utf8.RuneCountInString(input.Name) > 128 ||
+	if !resourceCodePattern.MatchString(input.Code) || strings.TrimSpace(input.Name) == "" || utf8.RuneCountInString(input.Name) > 128 ||
 		!oneOf(input.Mode, "mode_a mode_b") || input.Mode == "" || !validSplitParties(input.Parties) {
 		httpapi.BadRequest(c, errSplitParties.Error())
 		return
@@ -192,6 +220,7 @@ func (a ResourceAPI) createSplitTemplate(c *gin.Context) {
 	httpapi.OK(c, detail)
 }
 
+// insertSplitParties 把一组参与方逐条写入指定模板，全成或全不成（由外层事务保证）。
 func insertSplitParties(tx *gorm.DB, templateID uint64, parties []splitPartyInput) error {
 	for _, party := range parties {
 		if err := tx.Table("split_party").Create(map[string]any{"split_template_id": templateID, "party_code": party.PartyCode,
@@ -203,6 +232,7 @@ func insertSplitParties(tx *gorm.DB, templateID uint64, parties []splitPartyInpu
 	return nil
 }
 
+// splitPartyAudit 把参与方整理成可写审计的形态：只留编码、名称、比例和账号后四位，完整账号不进审计日志。
 func splitPartyAudit(parties []splitPartyInput) []gin.H {
 	out := make([]gin.H, 0, len(parties))
 	for _, party := range parties {
@@ -219,6 +249,8 @@ func splitPartyAudit(parties []splitPartyInput) []gin.H {
 	return out
 }
 
+// updateSplitTemplate 修改模板的名称、模式和状态。约束：一旦被站点绑定，模式和状态就不能再改
+// （结算时读的是站点当时绑定的模板），只能改名称；改回 active 之前会先复核参与方比例是否仍合法。
 func (a ResourceAPI) updateSplitTemplate(c *gin.Context) {
 	id, ok := pathID(c)
 	if !ok {
@@ -274,6 +306,8 @@ func (a ResourceAPI) updateSplitTemplate(c *gin.Context) {
 	a.splitTemplate(c)
 }
 
+// replaceSplitParties 整体替换某份模板的参与方：先校验新集合合法，再确认模板尚未被站点绑定，
+// 然后在锁内先删后插，并把改前改后两组参与方（脱敏后）写进审计。
 func (a ResourceAPI) replaceSplitParties(c *gin.Context) {
 	id, ok := pathID(c)
 	if !ok {
@@ -326,12 +360,15 @@ func (a ResourceAPI) replaceSplitParties(c *gin.Context) {
 	a.splitTemplate(c)
 }
 
+// splitTemplateBound 判断模板是否已被某个未删除的站点绑定，是"模板冻结"这条规则的判定入口。
 func splitTemplateBound(tx *gorm.DB, id uint64) (bool, error) {
 	var count int64
 	err := tx.Table("station").Where("split_template_id = ? AND deleted_at IS NULL", id).Count(&count).Error
 	return count > 0, err
 }
 
+// splitTemplateRatiosValid 读出模板下现存参与方并按同一套规则复核一遍，
+// 用于"重新启用模板"和"站点绑定模板"这两个入口。
 func splitTemplateRatiosValid(tx *gorm.DB, id uint64) (bool, error) {
 	var parties []splitPartyRow
 	if err := tx.Table("split_party").Where("split_template_id = ?", id).Find(&parties).Error; err != nil {
@@ -345,6 +382,8 @@ func splitTemplateRatiosValid(tx *gorm.DB, id uint64) (bool, error) {
 	return validSplitParties(inputs), nil
 }
 
+// splitTemplateFailure 分账侧的失败出口：模板已绑定和参与方非法都是 409 业务冲突，
+// 其余错误走通用处理。
 func splitTemplateFailure(c *gin.Context, err error) {
 	if errors.Is(err, errSplitTemplateReferenced) || errors.Is(err, errSplitParties) {
 		httpapi.Write(c, 409, 2009, err.Error(), nil)
@@ -353,6 +392,8 @@ func splitTemplateFailure(c *gin.Context, err error) {
 	resourceFailure(c, err)
 }
 
+// requireUsableSplitTemplate 在给站点绑定模板之前加行锁读一遍：
+// 模板必须存在、未删除、状态 active，且参与方比例仍然合法，避免把一份不可用的模板绑到站上。
 func requireUsableSplitTemplate(tx *gorm.DB, id uint64) error {
 	var row splitTemplateRow
 	if err := tx.Table("split_template").Clauses(clause.Locking{Strength: "UPDATE"}).
@@ -372,6 +413,10 @@ func requireUsableSplitTemplate(tx *gorm.DB, id uint64) error {
 // Rebinding an existing station is allowed only before it has any payment or
 // charge history. Settlement reads the bound template when it runs; preserving
 // history avoids reallocating a delayed settlement under a different template.
+
+// bindStationSplitTemplate 给站点改绑分账模板。约束：必须带 expected_template_id 做乐观锁（未绑定时传 0），
+// 目标模板必须可用；站点只允许在没有任何充值订单、没有充电订单、且已被停用时才可改绑，
+// 避免历史（含延迟到账的）结算被按新模板重新分配。改绑完成后回显站点详情。
 func (a ResourceAPI) bindStationSplitTemplate(c *gin.Context) {
 	id, ok := pathID(c)
 	if !ok {

@@ -17,11 +17,11 @@ func settlementFixture(t *testing.T, ctx context.Context, mode string, ratios []
 	t.Helper()
 	adminDB := openSettlementDB(t, "TEST_ADMIN_DATABASE_URL")
 	station := uuid.NewString()
-	if err := adminDB.Exec("INSERT INTO station(code,name,longitude,latitude,split_template_id) VALUES(?,?,0,0,NULL)", station, station).Error; err != nil {
+	if err := adminDB.Exec("INSERT INTO station(name,longitude,latitude,split_template_id) VALUES(?,0,0,NULL)", station).Error; err != nil {
 		t.Fatal(err)
 	}
 	var stationID uint64
-	adminDB.Table("station").Where("code=?", station).Pluck("id", &stationID)
+	adminDB.Table("station").Where("name=?", station).Pluck("id", &stationID)
 	if err := adminDB.Exec("INSERT INTO split_template(code,name,mode) VALUES(?,?,?)", "tpl"+station, "分账模板", mode).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -205,10 +205,10 @@ func TestSettlementRejectsInvalidTemplateRatios(t *testing.T) {
 	var bare uint64
 	name := "bare-" + uuid.NewString()
 	adminDB := openSettlementDB(t, "TEST_ADMIN_DATABASE_URL")
-	if err := adminDB.Exec("INSERT INTO station(code,name,longitude,latitude) VALUES(?,?,0,0)", name, name).Error; err != nil {
+	if err := adminDB.Exec("INSERT INTO station(name,longitude,latitude) VALUES(?,0,0)", name).Error; err != nil {
 		t.Fatal(err)
 	}
-	adminDB.Table("station").Where("code=?", name).Pluck("id", &bare)
+	adminDB.Table("station").Where("name=?", name).Pluck("id", &bare)
 	if _, err := resolver.Resolve(ctx, bare); err == nil {
 		t.Fatal("station without split template accepted")
 	}

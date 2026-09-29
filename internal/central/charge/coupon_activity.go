@@ -31,7 +31,6 @@ var errActivityNotApplicable = errors.New("no activity rule applies")
 // rather than a map keeps a schema change from silently changing behaviour.
 type activityRule struct {
 	ID              uint64        `gorm:"column:id"`
-	RuleCode        string        `gorm:"column:rule_code"`
 	TriggerType     string        `gorm:"column:trigger_type"`
 	CouponID        uint64        `gorm:"column:coupon_id"`
 	InviterCouponID sql.NullInt64 `gorm:"column:inviter_coupon_id"`
@@ -61,7 +60,7 @@ type activityEvent struct {
 }
 
 type activityResult struct {
-	RuleCode   string `json:"rule_code"`
+	RuleID     uint64 `json:"rule_id"`
 	CouponID   uint64 `json:"coupon_id"`
 	InviterGot bool   `json:"inviter_rewarded"`
 	Already    bool   `json:"already_granted"`
@@ -107,7 +106,7 @@ func activeRules(tx *gorm.DB, event activityEvent) ([]activityRule, error) {
 }
 
 func grantFromRule(tx *gorm.DB, rule activityRule, event activityEvent) (activityResult, error) {
-	result := activityResult{RuleCode: rule.RuleCode, CouponID: rule.CouponID}
+	result := activityResult{RuleID: rule.ID, CouponID: rule.CouponID}
 
 	// A customer cannot invite themselves, and the inviter must be someone who
 	// already used the platform. Without the second check an attacker can
@@ -161,7 +160,7 @@ func grantFromRule(tx *gorm.DB, rule activityRule, event activityEvent) (activit
 		return result, errActivityNotApplicable
 	}
 
-	eventID := activityEventID(rule.RuleCode, event)
+	eventID := activityEventID(rule.ID, event)
 	var grantID uint64
 	if err := tx.Table("coupon_grant").Create(map[string]any{
 		"coupon_id": rule.CouponID, "user_id": event.UserID, "grant_source": grantSourceFor(rule.TriggerType),
@@ -213,7 +212,7 @@ func grantToInviter(tx *gorm.DB, rule activityRule, event activityEvent, eventID
 	if err := tx.Table("coupon_grant").Create(map[string]any{
 		"coupon_id": couponID, "user_id": event.InviterID, "grant_source": "invite_reward",
 		"status": "unused", "expired_at": grantExpiry(tx, inviterRule, event.Now),
-		"source_event_id": activityEventID(rule.RuleCode+":inviter", inviterEvent) + ":" + eventID,
+		"source_event_id": activityEventID(rule.ID, inviterEvent, "inviter") + ":" + eventID,
 	}).Error; err != nil {
 		return false, err
 	}
@@ -234,8 +233,18 @@ func grantSourceFor(triggerType string) string {
 // activityEventID derives the idempotency key. The same rule and the same
 // trigger always produce the same key, so a replayed payment or settlement finds
 // the existing grant instead of paying out again.
-func activityEventID(ruleCode string, event activityEvent) string {
-	sum := sha256.Sum256([]byte(ruleCode + "\x00" + fmt.Sprint(event.UserID) + "\x00" + event.EventKey))
+//
+// The rule is identified by its primary key, not by a code. That key is what
+// coupon_grant.source_event_id was being seeded from, and a row id is just as
+// stable as a code would have been -- it cannot be edited out from under a live
+// campaign, which a code could. The optional scope separates the inviter grant
+// from the invitee's own so one rule firing once cannot collide with itself.
+func activityEventID(ruleID uint64, event activityEvent, scope ...string) string {
+	key := fmt.Sprint(ruleID)
+	for _, s := range scope {
+		key += "\x00" + s
+	}
+	sum := sha256.Sum256([]byte(key + "\x00" + fmt.Sprint(event.UserID) + "\x00" + event.EventKey))
 	return hex.EncodeToString(sum[:16])
 }
 

@@ -24,40 +24,47 @@ import (
 // OtaAPI manages firmware packages and rollout plans. admin_db owns the schedule
 // and the package metadata; the device push and its acknowledgement live in
 // gateway_db and are driven through the service-token internal API.
+// OtaAPI 管理固件包与推送计划:计划与包元数据在管理库,真正下发和回执在网关库,
+// 所以这里通过 GatewayURL + ServiceToken 调网关的内部接口,中台不去直连网关库。
 type OtaAPI struct {
-	Store                    ResourceStore
-	Auth                     API
-	GatewayURL, ServiceToken string
+	Store                    ResourceStore // 数据库连接集合,固件包与推送计划都读写管理库
+	Auth                     API           // 鉴权器,OTA 的读、改包、下发、取消各有独立权限
+	GatewayURL, ServiceToken string        // GatewayURL 是网关服务地址;ServiceToken 是调网关内部接口的服务令牌
 }
 
+// otaPackage 是一个固件包(管理库 ota_package 表),只保存固件文件的元数据与下载地址;
+// 文件本体必须在外部 HTTPS 存储里,中台不托管二进制。
 type otaPackage struct {
-	ID             uint64  `json:"id"`
-	Code           string  `json:"code"`
-	VendorID       *uint64 `json:"vendor_id"`
-	Version        string  `json:"version"`
-	StorageURL     string  `json:"storage_url"`
-	SizeBytes      uint64  `json:"size_bytes"`
-	ChecksumSHA256 string  `json:"checksum_sha256"`
-	Sign           *string `json:"sign"`
-	ReleaseNotes   *string `json:"release_notes"`
-	Status         string  `json:"status"`
-	CreatedAt      string  `json:"created_at"`
+	ID             uint64  `json:"id"`              // 固件包主键 ID
+	Code           string  `json:"code"`            // 厂商固件编码,同一编码下用 version 区分不同版本
+	VendorID       *uint64 `json:"vendor_id"`       // 厂商 ID(可空),为空表示该固件不限厂商
+	Version        string  `json:"version"`         // 版本号,允许字母数字与 . _ -
+	StorageURL     string  `json:"storage_url"`     // 固件文件 HTTPS 下载地址
+	SizeBytes      uint64  `json:"size_bytes"`      // 固件大小,单位字节,上限 2GiB
+	ChecksumSHA256 string  `json:"checksum_sha256"` // 文件 sha256 校验和,小写 64 位十六进制
+	Sign           *string `json:"sign"`            // 厂商固件签名(可空),最长 512 字符
+	ReleaseNotes   *string `json:"release_notes"`   // 更新说明(可空),最长 20000 字符
+	Status         string  `json:"status"`          // 包状态:draft 草稿 / published 已发布(可建推送计划) / archived 已归档
+	CreatedAt      string  `json:"created_at"`      // 创建时间
 }
 
+// otaSchedule 是一条固件推送计划(管理库 ota_schedule 表),描述“把哪个包、按什么策略、推给哪些设备”。
+// 实际下发由网关执行,中台只维护计划状态并展示进度。
 type otaSchedule struct {
-	ID        uint64 `json:"id"`
-	PackageID uint64 `json:"package_id"`
+	ID        uint64 `json:"id"`         // 推送计划主键 ID
+	PackageID uint64 `json:"package_id"` // 固件包 ID,必须指向 published 状态的包
 	// TargetFilter is decoded after the query; the column is JSON.
-	TargetFilter    map[string]any `json:"target_filter" gorm:"-"`
-	RolloutStrategy string         `json:"rollout_strategy"`
-	BatchSize       *uint32        `json:"batch_size"`
-	Status          string         `json:"status"`
-	ScheduledAt     *string        `json:"scheduled_at"`
-	StartedAt       *string        `json:"started_at"`
-	CompletedAt     *string        `json:"completed_at"`
-	Progress        map[string]any `json:"progress" gorm:"-"`
+	TargetFilter    map[string]any `json:"target_filter" gorm:"-"` // 目标设备筛选条件,查询后从 target_filter_json 解析回填,目前识别 station_ids
+	RolloutStrategy string         `json:"rollout_strategy"`       // 发布策略:all 全量 / canary 灰度 / batch 分批 / manual 手动
+	BatchSize       *uint32        `json:"batch_size"`             // canary 策略的每批设备数(可空),取值 1-10000
+	Status          string         `json:"status"`                 // 计划状态:pending 待触发 / running 进行中 / completed 已完成 / cancelled 已取消 / failed 失败
+	ScheduledAt     *string        `json:"scheduled_at"`           // 计划执行时间(可空),为空表示不定时,完全靠人工触发
+	StartedAt       *string        `json:"started_at"`             // 首次触发时间(可空)
+	CompletedAt     *string        `json:"completed_at"`           // 完成或取消时间(可空)
+	Progress        map[string]any `json:"progress" gorm:"-"`      // 下发进度统计(总数/已回执/失败/待回执),查询时逐台向网关查得
 }
 
+// registerOta 注册 OTA 固件包与推送计划路由;读、改包、下发、取消各自独立授权。
 func (a OtaAPI) registerOta(r *gin.Engine) {
 	r.GET("/api/v1/admin/ota/packages", a.Auth.Require("ota.read"), a.listPackages)
 	r.POST("/api/v1/admin/ota/packages", a.Auth.Require("ota.package.create"), a.createPackage)
@@ -68,8 +75,10 @@ func (a OtaAPI) registerOta(r *gin.Engine) {
 	r.POST("/api/v1/admin/ota/schedules/:id/cancel", a.Auth.Require("ota.schedule.trigger"), a.cancelSchedule)
 }
 
+// firmwareVersionPattern 限定版本号格式,避免任意字符串进入后续拼 URL 的下发链路。
 var firmwareVersionPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
+// listPackages 分页返回固件包,支持按状态和关键字(编码或版本号)过滤,按 ID 倒序。
 func (a OtaAPI) listPackages(c *gin.Context) {
 	page, ok := parsePage(c, "draft published archived")
 	if !ok {
@@ -96,17 +105,19 @@ func (a OtaAPI) listPackages(c *gin.Context) {
 
 // createPackage records firmware metadata. The artifact itself must already be
 // in HTTPS storage; only a checksum-verifiable reference is accepted here.
+// createPackage 登记一个固件包:校验编码、版本、HTTPS 地址、大小上限与 sha256 格式后写入,
+// publish=true 直接置为 published,否则存为草稿;厂商存在性与审计流水在同一事务里完成。
 func (a OtaAPI) createPackage(c *gin.Context) {
 	var in struct {
-		Code           string  `json:"code"`
-		VendorID       *uint64 `json:"vendor_id"`
-		Version        string  `json:"version"`
-		StorageURL     string  `json:"storage_url"`
-		SizeBytes      uint64  `json:"size_bytes"`
-		ChecksumSHA256 string  `json:"checksum_sha256"`
-		Sign           *string `json:"sign"`
-		ReleaseNotes   *string `json:"release_notes"`
-		Publish        bool    `json:"publish"`
+		Code           string  `json:"code"`            // 厂商固件编码,最长 64 字符
+		VendorID       *uint64 `json:"vendor_id"`       // 厂商 ID(可空);传了就必须指向未删除的厂商
+		Version        string  `json:"version"`         // 版本号,需匹配版本格式
+		StorageURL     string  `json:"storage_url"`     // 固件下载地址,必须是 HTTPS
+		SizeBytes      uint64  `json:"size_bytes"`      // 固件大小,单位字节,不能为 0 且不超过 2GiB
+		ChecksumSHA256 string  `json:"checksum_sha256"` // sha256 校验和,64 位十六进制,入库时转小写
+		Sign           *string `json:"sign"`            // 固件签名(可空),最长 512 字符
+		ReleaseNotes   *string `json:"release_notes"`   // 更新说明(可空),最长 20000 字符
+		Publish        bool    `json:"publish"`         // 是否立即发布;为 false 时存为草稿,草稿不能建推送计划
 	}
 	if !decodeResource(c, &in) {
 		return
@@ -165,6 +176,7 @@ func (a OtaAPI) createPackage(c *gin.Context) {
 	httpapi.OK(c, gin.H{"id": id, "status": status})
 }
 
+// verifyChecksumFormat 校验固件校验和是不是 64 位十六进制 sha256(比较时忽略大小写)。
 func verifyChecksumFormat(value string) error {
 	decoded, err := hex.DecodeString(strings.ToLower(strings.TrimSpace(value)))
 	if err != nil || len(decoded) != sha256.Size {
@@ -173,6 +185,8 @@ func verifyChecksumFormat(value string) error {
 	return nil
 }
 
+// deletePackage 归档并软删固件包:有 running 状态的推送计划时拒绝删除,
+// 否则设备会被留在一个后端已不再提供的固件上;删除前留快照并写审计流水。
 func (a OtaAPI) deletePackage(c *gin.Context) {
 	id, ok := pathID(c)
 	if !ok {
@@ -205,13 +219,15 @@ func (a OtaAPI) deletePackage(c *gin.Context) {
 	httpapi.OK(c, gin.H{"id": id, "deleted": true})
 }
 
+// createSchedule 新建推送计划:固件包必须是 published,策略限定 all/canary/batch/manual,
+// canary 必须给出 1-10000 的批次数量,目标筛选条件存 JSON;计划初始为 pending,不会自动下发。
 func (a OtaAPI) createSchedule(c *gin.Context) {
 	var in struct {
-		PackageID       uint64         `json:"package_id"`
-		TargetFilter    map[string]any `json:"target_filter"`
-		RolloutStrategy string         `json:"rollout_strategy"`
-		BatchSize       *uint32        `json:"batch_size"`
-		ScheduledAt     *time.Time     `json:"scheduled_at"`
+		PackageID       uint64         `json:"package_id"`       // 固件包 ID,必须存在、未删除且状态为 published
+		TargetFilter    map[string]any `json:"target_filter"`    // 目标设备筛选条件,如 {"station_ids":[1,2]};为空表示全部设备
+		RolloutStrategy string         `json:"rollout_strategy"` // 发布策略:all / canary / batch / manual
+		BatchSize       *uint32        `json:"batch_size"`       // canary 每批设备数(可空),取值 1-10000
+		ScheduledAt     *time.Time     `json:"scheduled_at"`     // 计划执行时间(可空),格式 RFC3339
 	}
 	if !decodeResource(c, &in) {
 		return
@@ -233,7 +249,7 @@ func (a OtaAPI) createSchedule(c *gin.Context) {
 	var id uint64
 	err = a.Store.AdminDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
 		var pkg struct {
-			Status string
+			Status string // 固件包状态,只有 published 能建推送计划
 		}
 		if err := tx.Table("ota_package").Where("id = ? AND deleted_at IS NULL", *&in.PackageID).Take(&pkg).Error; err != nil {
 			return err
@@ -259,6 +275,7 @@ func (a OtaAPI) createSchedule(c *gin.Context) {
 	httpapi.OK(c, gin.H{"id": id, "status": "pending"})
 }
 
+// listSchedules 分页返回推送计划并支持按状态过滤;进度要逐台问网关,目标筛选 JSON 读回后再解析。
 func (a OtaAPI) listSchedules(c *gin.Context) {
 	page, ok := parsePage(c, "pending running completed cancelled failed")
 	if !ok {
@@ -292,6 +309,8 @@ func (a OtaAPI) listSchedules(c *gin.Context) {
 
 // scheduleProgress reports how many devices acknowledged the push, read from
 // gateway through the internal status API rather than from admin_db.
+// scheduleProgress 汇总一次推送的进度:先按目标筛选算出设备清单,再逐台问网关最新指令状态;
+// 网关不可用或没有目标设备时返回 available=false,让前端显示“进度未知”而不是“全部待回执”。
 func (a OtaAPI) scheduleProgress(ctx context.Context, scheduleID uint64) map[string]any {
 	var row struct {
 		PackageID  uint64  `gorm:"column:package_id"`
@@ -320,6 +339,8 @@ func (a OtaAPI) scheduleProgress(ctx context.Context, scheduleID uint64) map[str
 }
 
 // deviceOtaStatus returns the latest command status for one device.
+// deviceOtaStatus 通过网关内部接口取某台设备最近一条 OTA 指令状态;
+// 网关没有记录时按 pending 处理,请求失败或返回非 200 时返回 ok=false 交调用方兜底。
 func (a OtaAPI) deviceOtaStatus(ctx context.Context, deviceID string) (string, bool) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		strings.TrimSuffix(a.GatewayURL, "/")+"/api/v1/internal/ota/status?device_id="+url.QueryEscape(deviceID), nil)
@@ -351,6 +372,8 @@ func (a OtaAPI) deviceOtaStatus(ctx context.Context, deviceID string) (string, b
 
 // targetDevicesByCode resolves the rollout filter against gateway devices, which
 // is where the authoritative active-device list lives.
+// targetDevicesByCode 按厂商与站点筛选条件解析目标设备号列表(读管理库 device_meta),
+// 最多返回 2000 台,设备号非空且不超过 64 字符才保留,结果按设备号升序。
 func (a OtaAPI) targetDevicesByCode(ctx context.Context, raw *string, vendorID *uint64) ([]string, error) {
 	query := a.Store.AdminDB.WithContext(ctx).Table("device_meta").Where("deleted_at IS NULL")
 	if vendorID != nil {
@@ -358,7 +381,7 @@ func (a OtaAPI) targetDevicesByCode(ctx context.Context, raw *string, vendorID *
 	}
 	if raw != nil && *raw != "" && *raw != "null" {
 		var filter struct {
-			StationIDs []uint64 `json:"station_ids"`
+			StationIDs []uint64 `json:"station_ids"` // 目标筛选条件里解析出的站点 ID 列表,非空时只推这些站点
 		}
 		if err := json.Unmarshal([]byte(*raw), &filter); err == nil && len(filter.StationIDs) > 0 {
 			query = query.Where("station_id IN ?", filter.StationIDs)
@@ -381,18 +404,20 @@ func (a OtaAPI) targetDevicesByCode(ctx context.Context, raw *string, vendorID *
 
 // triggerSchedule pushes the first batch to gateway. Batches advance on explicit
 // operator triggers so a failed rollout can be halted before the next wave.
+// triggerSchedule 手动触发一批下发:只有 pending/running 计划可触发,固件包必须仍是 published,
+// 解析目标设备后按 canary 批次量截取再推给网关;成功后计划置为 running 并首次写入开始时间。
 func (a OtaAPI) triggerSchedule(c *gin.Context) {
 	id, ok := pathID(c)
 	if !ok {
 		return
 	}
 	var schedule struct {
-		ID              uint64
-		PackageID       uint64  `gorm:"column:package_id"`
-		RolloutStrategy string  `gorm:"column:rollout_strategy"`
-		BatchSize       *uint32 `gorm:"column:batch_size"`
-		Status          string  `gorm:"column:status"`
-		TargetJSON      *string `gorm:"column:target_filter_json"`
+		ID              uint64  // 计划 ID
+		PackageID       uint64  `gorm:"column:package_id"`         // 固件包 ID
+		RolloutStrategy string  `gorm:"column:rollout_strategy"`   // 发布策略:all/canary/batch/manual
+		BatchSize       *uint32 `gorm:"column:batch_size"`         // canary 批次数量(可空)
+		Status          string  `gorm:"column:status"`             // 当前状态,只有 pending 或 running 允许继续触发
+		TargetJSON      *string `gorm:"column:target_filter_json"` // 目标筛选条件 JSON 原文(可空)
 	}
 	if err := a.Store.AdminDB.WithContext(c.Request.Context()).Table("ota_schedule").Where("id = ?", id).Take(&schedule).Error; err != nil {
 		resourceFailure(c, err)
@@ -403,12 +428,12 @@ func (a OtaAPI) triggerSchedule(c *gin.Context) {
 		return
 	}
 	var pkg struct {
-		Code     string  `gorm:"column:code"`
-		Version  string  `gorm:"column:version"`
-		URL      string  `gorm:"column:storage_url"`
-		Checksum string  `gorm:"column:checksum_sha256"`
-		Status   string  `gorm:"column:status"`
-		VendorID *uint64 `gorm:"column:vendor_id"`
+		Code     string  `gorm:"column:code"`            // 固件编码
+		Version  string  `gorm:"column:version"`         // 固件版本号
+		URL      string  `gorm:"column:storage_url"`     // 固件下载地址
+		Checksum string  `gorm:"column:checksum_sha256"` // sha256 校验和
+		Status   string  `gorm:"column:status"`          // 包状态,下发时必须为 published
+		VendorID *uint64 `gorm:"column:vendor_id"`       // 厂商 ID(可空),用于把下发范围限制在该厂商的设备上
 	}
 	if err := a.Store.AdminDB.WithContext(c.Request.Context()).Table("ota_package").Where("id = ? AND deleted_at IS NULL", schedule.PackageID).Take(&pkg).Error; err != nil {
 		resourceFailure(c, err)
@@ -458,6 +483,8 @@ func (a OtaAPI) triggerSchedule(c *gin.Context) {
 }
 
 // targetDevices resolves the rollout filter against provisioned, active devices.
+// targetDevices 是下发链路用的设备解析,与 targetDevicesByCode 同一套筛选规则:
+// 按厂商与站点过滤,上限 2000 台,返回升序的设备号列表。
 func (a OtaAPI) targetDevices(c *gin.Context, raw *string, vendorID *uint64) ([]string, error) {
 	query := a.Store.AdminDB.WithContext(c.Request.Context()).Table("device_meta").Where("deleted_at IS NULL")
 	if vendorID != nil {
@@ -465,7 +492,7 @@ func (a OtaAPI) targetDevices(c *gin.Context, raw *string, vendorID *uint64) ([]
 	}
 	if raw != nil && *raw != "" && *raw != "null" {
 		var filter struct {
-			StationIDs []uint64 `json:"station_ids"`
+			StationIDs []uint64 `json:"station_ids"` // 目标筛选条件里解析出的站点 ID 列表,非空时只推这些站点
 		}
 		if err := json.Unmarshal([]byte(*raw), &filter); err == nil && len(filter.StationIDs) > 0 {
 			query = query.Where("station_id IN ?", filter.StationIDs)
@@ -486,13 +513,15 @@ func (a OtaAPI) targetDevices(c *gin.Context, raw *string, vendorID *uint64) ([]
 	return out, nil
 }
 
+// pushToGateway 把这一批设备连同固件信息 POST 给网关的内部下发接口,带服务令牌鉴权;
+// 响应非 2xx 一律视为失败,并把网关返回的错误正文带回,便于排查。
 func (a OtaAPI) pushToGateway(c *gin.Context, scheduleID uint64, pkg struct {
-	Code     string  `gorm:"column:code"`
-	Version  string  `gorm:"column:version"`
-	URL      string  `gorm:"column:storage_url"`
-	Checksum string  `gorm:"column:checksum_sha256"`
-	Status   string  `gorm:"column:status"`
-	VendorID *uint64 `gorm:"column:vendor_id"`
+	Code     string  `gorm:"column:code"`            // 固件编码
+	Version  string  `gorm:"column:version"`         // 固件版本号
+	URL      string  `gorm:"column:storage_url"`     // 固件下载地址
+	Checksum string  `gorm:"column:checksum_sha256"` // sha256 校验和
+	Status   string  `gorm:"column:status"`          // 包状态(下发时应为 published)
+	VendorID *uint64 `gorm:"column:vendor_id"`       // 厂商 ID(可空)
 }, devices []string) error {
 	body, err := json.Marshal(map[string]any{
 		"schedule_id": scheduleID, "package_id": pkg.Code, "package_version": pkg.Version,
@@ -520,6 +549,8 @@ func (a OtaAPI) pushToGateway(c *gin.Context, scheduleID uint64, pkg struct {
 	return nil
 }
 
+// cancelSchedule 取消推送计划:行锁内只允许 pending/running 转 cancelled 并写完成时间,
+// 已经结束的计划不能再取消;取消同样写审计流水。
 func (a OtaAPI) cancelSchedule(c *gin.Context) {
 	id, ok := pathID(c)
 	if !ok {
@@ -528,7 +559,7 @@ func (a OtaAPI) cancelSchedule(c *gin.Context) {
 	profile := c.MustGet("admin_profile").(Profile)
 	err := a.Store.AdminDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
 		var row struct {
-			Status string `gorm:"column:status"`
+			Status string `gorm:"column:status"` // 当前状态,只有 pending 或 running 能取消
 		}
 		if err := tx.Table("ota_schedule").Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", id).Take(&row).Error; err != nil {
 			return err

@@ -1,15 +1,9 @@
 package charge
 
 import (
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"math"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +11,7 @@ import (
 	"github.com/ChargePilot2026/charge-pilot/internal/central/identity"
 	"github.com/ChargePilot2026/charge-pilot/internal/central/payment"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/httpapi"
+	"github.com/ChargePilot2026/charge-pilot/internal/platform/phonecrypto"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/serviceclient"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -54,7 +49,7 @@ func (a UserAccountAPI) Register(r *gin.Engine) {
 	r.GET("/api/v1/user/announcement/list", a.announcements)
 	r.GET("/api/v1/user/customer-service/entry", a.supportEntry)
 	r.GET("/api/v1/user/station/nearby", a.nearbyStations)
-	r.GET("/api/v1/user/station/:code", a.stationDetail)
+	r.GET("/api/v1/user/station/:id", a.stationDetail)
 	r.POST("/api/v1/user/phone/bind", a.bindPhone)
 	r.POST("/api/v1/user/phone/unbind", a.unbindPhone)
 	r.POST("/api/v1/user/device/report-fault", a.reportFault)
@@ -428,7 +423,7 @@ func (a UserAccountAPI) myCoupons(c *gin.Context) {
 	err := a.UserDB.WithContext(c.Request.Context()).Table("coupon_grant AS g").
 		Joins("JOIN coupon AS c2 ON c2.id = g.coupon_id AND c2.deleted_at IS NULL AND c2.status = 'active'").
 		Where("g.user_id = ? AND g.deleted_at IS NULL", userID).
-		Select("g.id, g.coupon_id, g.id AS grant_id, g.status, g.expired_at, c2.code, c2.name, c2.discount_type, c2.discount_value_cents, c2.discount_percent, c2.min_charge_cents").
+		Select("g.id, g.coupon_id, g.id AS grant_id, g.status, g.expired_at, c2.name, c2.discount_type, c2.discount_value_cents, c2.discount_percent, c2.min_charge_cents").
 		Order("g.status ASC, g.expired_at ASC, g.id ASC").Find(&rows).Error
 	if err != nil {
 		httpapi.Write(c, 503, 5003, "优惠券暂时无法读取", nil)
@@ -443,7 +438,7 @@ func (a UserAccountAPI) myCoupons(c *gin.Context) {
 			continue
 		}
 		out = append(out, gin.H{
-			"coupon_code": row.Code, "name": row.Name, "grant_id": row.GrantID,
+			"coupon_id": row.CouponID, "name": row.Name, "grant_id": row.GrantID,
 			"discount_type": row.Type, "discount_value_cents": row.Amount,
 			"discount_percent": row.Percent, "min_charge_cents": row.MinCharge,
 			"status": row.Status, "expires_at": row.ExpiresAt, "usable": usable,
@@ -537,7 +532,6 @@ func (a UserAccountAPI) nearbyStations(c *gin.Context) {
 	ctx := c.Request.Context()
 	type station struct {
 		ID         uint64   `gorm:"column:id"`
-		Code       string   `gorm:"column:code"`
 		Name       string   `gorm:"column:name"`
 		Address    *string  `gorm:"column:address"`
 		Longitude  string   `gorm:"column:longitude"`
@@ -551,7 +545,7 @@ func (a UserAccountAPI) nearbyStations(c *gin.Context) {
 	// ordering and paging happen before the rows are truncated.
 	rows := []station{}
 	err := a.AdminDB.WithContext(ctx).Raw(`
-		SELECT id, code, name, address,
+		SELECT id, name, address,
 		       CAST(longitude AS CHAR) AS longitude, CAST(latitude AS CHAR) AS latitude,
 		       status, open_hours, contact_phone,
 		       ROUND(6371 * ACOS(LEAST(1, COS(RADIANS(?)) * COS(RADIANS(latitude)) * COS(RADIANS(longitude) - RADIANS(?))
@@ -571,7 +565,7 @@ func (a UserAccountAPI) nearbyStations(c *gin.Context) {
 			continue
 		}
 		items = append(items, gin.H{
-			"id": row.ID, "code": row.Code, "name": row.Name, "address": row.Address,
+			"id": row.ID, "name": row.Name, "address": row.Address,
 			"longitude": row.Longitude, "latitude": row.Latitude, "status": row.Status,
 			"open_hours": row.OpenHours, "contact_phone": row.Phone, "distance_km": row.DistanceKM,
 		})
@@ -580,14 +574,13 @@ func (a UserAccountAPI) nearbyStations(c *gin.Context) {
 }
 
 func (a UserAccountAPI) stationDetail(c *gin.Context) {
-	code := strings.TrimSpace(c.Param("code"))
-	if code == "" || len(code) > 64 {
-		httpapi.BadRequest(c, "站点编码无效")
+	id, err := strconv.ParseUint(strings.TrimSpace(c.Param("id")), 10, 64)
+	if err != nil || id == 0 {
+		httpapi.BadRequest(c, "站点 ID 无效")
 		return
 	}
 	var row struct {
 		ID        uint64  `gorm:"column:id"`
-		Code      string  `gorm:"column:code"`
 		Name      string  `gorm:"column:name"`
 		Address   *string `gorm:"column:address"`
 		Longitude string  `gorm:"column:longitude"`
@@ -596,9 +589,9 @@ func (a UserAccountAPI) stationDetail(c *gin.Context) {
 		OpenHours *string `gorm:"column:open_hours"`
 		Phone     *string `gorm:"column:contact_phone"`
 	}
-	err := a.AdminDB.WithContext(c.Request.Context()).Table("station").
-		Select("id, code, name, address, CAST(longitude AS CHAR) AS longitude, CAST(latitude AS CHAR) AS latitude, status, open_hours, contact_phone").
-		Where("code = ? AND deleted_at IS NULL", code).Take(&row).Error
+	err = a.AdminDB.WithContext(c.Request.Context()).Table("station").
+		Select("id, name, address, CAST(longitude AS CHAR) AS longitude, CAST(latitude AS CHAR) AS latitude, status, open_hours, contact_phone").
+		Where("id = ? AND deleted_at IS NULL", id).Take(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		httpapi.Write(c, 404, 1004, "站点不存在", nil)
 		return
@@ -612,7 +605,7 @@ func (a UserAccountAPI) stationDetail(c *gin.Context) {
 		return
 	}
 	httpapi.OK(c, gin.H{
-		"id": row.ID, "code": row.Code, "name": row.Name, "address": row.Address,
+		"id": row.ID, "name": row.Name, "address": row.Address,
 		"longitude": row.Longitude, "latitude": row.Latitude, "status": row.Status,
 		"open_hours": row.OpenHours, "contact_phone": row.Phone,
 	})
@@ -633,7 +626,7 @@ func (a UserAccountAPI) bindPhone(c *gin.Context) {
 		httpapi.BadRequest(c, "手机号请求无效")
 		return
 	}
-	if !mainlandMobile.MatchString(in.Phone) {
+	if !phonecrypto.Valid(in.Phone) {
 		httpapi.BadRequest(c, "请输入有效的中国大陆手机号")
 		return
 	}
@@ -642,8 +635,8 @@ func (a UserAccountAPI) bindPhone(c *gin.Context) {
 		httpapi.Write(c, 503, 5003, "手机号加密未配置，暂不可绑定", nil)
 		return
 	}
-	hash := phoneHash(in.Phone)
-	encrypted, err := encryptPhone(a.PhoneKey, in.Phone)
+	hash := phonecrypto.Hash(in.Phone)
+	encrypted, err := phonecrypto.Encrypt(a.PhoneKey, in.Phone)
 	if err != nil {
 		httpapi.Write(c, 503, 5003, "手机号保护失败，请稍后重试", nil)
 		return
@@ -666,7 +659,7 @@ func (a UserAccountAPI) bindPhone(c *gin.Context) {
 	case err != nil:
 		resourceWriteFailure(c, err)
 	default:
-		httpapi.OK(c, gin.H{"bound": true, "phone_masked": maskPhone(in.Phone)})
+		httpapi.OK(c, gin.H{"bound": true, "phone_masked": phonecrypto.Mask(in.Phone)})
 	}
 }
 
@@ -999,18 +992,6 @@ func mustJSON(value any) string {
 	return string(encoded)
 }
 
-func phoneHash(phone string) string {
-	sum := sha256.Sum256([]byte(strings.TrimSpace(phone)))
-	return hex.EncodeToString(sum[:])
-}
-
-func maskPhone(phone string) string {
-	if len(phone) < 7 {
-		return "***"
-	}
-	return phone[:3] + "****" + phone[len(phone)-4:]
-}
-
 // resourceWriteFailure maps storage errors onto the shared envelope.
 func resourceWriteFailure(c *gin.Context, err error) {
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -1018,27 +999,4 @@ func resourceWriteFailure(c *gin.Context, err error) {
 		return
 	}
 	httpapi.Write(c, 503, 5003, "数据暂时无法保存，请稍后重试", nil)
-}
-
-// mainlandMobile accepts the shapes Chinese carriers actually issue. The
-// verification code is deliberately not checked here: without a real SMS
-// provider the platform cannot prove ownership, and pretending otherwise would
-// let anyone bind a number they do not control.
-var mainlandMobile = regexp.MustCompile(`^1[3-9][0-9]{9}$`)
-
-// encryptPhone protects the stored number with AES-GCM under the deployment key.
-func encryptPhone(key []byte, phone string) ([]byte, error) {
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
-		return nil, err
-	}
-	return gcm.Seal(nonce, nonce, []byte(strings.TrimSpace(phone)), nil), nil
 }

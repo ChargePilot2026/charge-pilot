@@ -41,7 +41,7 @@ func TestSimulationHTTPPaymentCreatesChargeOnlyAfterCallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	station, err := adminDB.ExecContext(ctx, "INSERT INTO station (code,name,longitude,latitude) VALUES (?,?,113.90000000,22.50000000)", "pay-"+uuid.NewString(), "Payment Test")
+	station, err := adminDB.ExecContext(ctx, "INSERT INTO station (name,longitude,latitude) VALUES (?,113.90000000,22.50000000)", "Payment Test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func TestSimulationHTTPPaymentCreatesChargeOnlyAfterCallback(t *testing.T) {
 	}
 	ruleID, _ := rule.LastInsertId()
 	defer adminDB.ExecContext(ctx, "DELETE FROM pricing_rule WHERE id = ?", ruleID)
-	offer, err := adminDB.ExecContext(ctx, "INSERT INTO charge_offer (station_id,code,name,mode,price_cents,duration_minutes) VALUES (?,?,?,'package',600,60)", stationID, "P60", "60 minute package")
+	offer, err := adminDB.ExecContext(ctx, "INSERT INTO charge_offer (station_id,name,mode,price_cents,duration_minutes) VALUES (?,?,'package',600,60)", stationID, "60 minute package")
 	if err != nil {
 		t.Fatal(err)
 	}

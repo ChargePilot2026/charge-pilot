@@ -14,6 +14,36 @@
 - 本轮只交付 Go 后端与接口；原计划不含前端重建；根据后续问题反馈，本轮追加现有 PC 后台页面接口修复和浏览器验收，小程序仍待后续适配。旧 API/数据库文档与新需求冲突时，以《需求分析》和《Go 技术规格》为准并修订契约。
 - 区块链存证、国密、特定监管平台等缺外部规范的可选能力先提供可配置边界和本地模拟验收；真实联调待规范到位。支付测试资料、`dc589` 实机及厂商 OTA 回滚证明缺失期间，生产切换保持关闭。
 
+## 2026-09-30 业务编码清理:只删了真正冗余的那几列
+
+上一节删的是站点编码。这一轮按"删掉多此一举的编码"继续,结果是**28 列里只动了 7 项**,其余每查一个就多一个不能删的理由。分类错了三次,记在这里:
+
+1. **`role.active_code` 不是独立字段**,是 `GENERATED ALWAYS AS (IF(deleted_at IS NULL, code, NULL)) STORED` 的生成列,作用是让"编码在未删除行中唯一"可表达——因为 `(code, deleted_at)` 唯一索引表达不了(每个 NULL 都被当作不同)。它支撑的是保留的 `role.code`,删了就废。`coupon.active_code` 同构,但派生自要删的 `coupon.code`,两者一起走。
+2. **`scheduled_task.task_code` 是 Go↔DB 的编译期契约键**。`cmd/worker/main.go` 用 `"alert_evaluate"` / `"webhook_dispatch"` 注册 handler,`worker_db/0003` 用同样字符串播种,调度器靠 `s.Handlers[task.Code]` 与库表 join。Go 编译期不可能知道库里的自增 id。原写的 `worker_db/0007` 迁移据此作废,未应用。
+3. **`ota_package.code` 是跨版本身份**:`uk_code_version (code, version, deleted_at)` 唯一,没有独立的包父实体。删它要新增分组列,属表结构重设计。`split_party.party_code` 同理——它就是财务引擎里的参与方身份(`finance.Party.ID` 存的是 code 字符串),并被 `settlement` 两张快照表引用。
+
+实际删除(迁移 `admin_db/0045`、`user_db/0037`):
+
+- **`customer.code`**:全应用零引用的死列,只带一个唯一索引。
+- **`charge_offer.code`**:由 `offerCodeFor()` 每次上架时从"套餐+站点+设备"派生,只为满足 `uk_station_code`。它还逼着上架路径把 64 字符的设备编号压成摘要才能塞进编码。offer 实际是按 `station_id + device_id` 查的,没人查过编码。
+- **`coupon.code` / `active_code` / `coupon_activity_rule.rule_code` / `coupon_redemption.coupon_code`**:核销表原本**只有 code 没有 `coupon_id`**,是字符串外键,迁移先加 `coupon_id` 并回填再删 code。活动规则的 `rule_code` 还在给 `coupon_grant.source_event_id` 当幂等键种子,改用 `rule.id`——行 id 一样稳定,而且不会被运营改掉。
+
+**顺带修掉一个真实缺陷**:`coupon_redemption` 上有 `uk_redemption (coupon_code)` 唯一索引,而核销是按 `coupon_grant` 逐笔发生的、`coupon.total_quota` 明确支持多次发放——**同一张券全系统只可能被核销一次**,与 `coupons.go` 的配额逻辑直接矛盾。删除该唯一键后换为普通索引。
+
+两处踩坑:迁移版本号按迁移日志里的 `current version` 推算,读错了 schema(那行属于 gateway_db),`user_db` 实际已到 0036,写 0010 直接撞版本号 panic;活动规则的错误文案里还留着"规则码 3–64 位",校验删了提示没删,冒烟时才暴露。
+
+验证:`gofmt`/`go build`/`go vet`/`go test ./...`/`tsc --noEmit` 全绿;开发栈应用 0045/0037 后,`admin_db` 与 `user_db` 中残留的 `code` 列恰好只有 `ota_package`、`permission`、`role`、`split_template`、`split_party` 这几个判定为保留的;冒烟覆盖建券、券列表无 code、建活动规则、规则列表无 rule_code、建站、套餐模板创建、上架返回 `offer_id`、offer 列表无 code。测试数据已清理。
+
+## 2026-09-29 站点编码移除与场地/站点术语统一
+
+- **站点不再有编码，统一用主键 `id`**。迁移 `admin_db/0044` 先 `DROP INDEX uk_code` 再 `DROP COLUMN code`，并删除只为保证编码全局唯一且永不复用而存在的 `station_code_identity` 注册表。先删索引再删列是照搬 0041 的教训：复合唯一索引不会随首列删除而消失。
+- **顺带修好一个一直坏着的 C 端接口**。`GET /api/v1/user/station/:code` 原按 `code` 查站点，但小程序 `nearby.js:26` 和 `index.ts:55` 一直传的是 `?id=<station.id>`，`docs/api/user.md` 写的也一直是 `{station_id}`——**文档是对的，代码是错的**，该页面此前只有在站点编码恰好等于数字 ID 时才可能打开。现改为按 `id` 查，路由同步改为 `:id`，实测返回 200。
+- 后台建站不再要求编码；仍提交 `code` 字段会得到 400「编码已移除：站点统一使用主键 ID，请勿提交 code 字段」，而不是被静默丢弃。设备查询不再返回 `station_code`，站点与设备的关键词搜索也不再匹配编码。
+- **`charge_offer`、`split_template`、`permission`、`role` 等其余编码一律保留**：前两者是运营自定业务编码，后两者是 RBAC 词汇表本身（前端到处 `permissions.includes('station.create')`，迁移 0043 也按 `r.code` 匹配内置角色），`port_code` 则是 `dc589` 协议里设备端口的身份。删除范围仅限 `station.code`。
+- **术语统一为「站点」**。此前同一个实体在中文里叫「站点」也叫「场地」、英文里 `station` 和 `yard` 混用，最明显的是 `StationPricing.tsx` 同一行里 `title: '场地'` 与 `` `站点 #${r.station_id}` `` 并存。已统一 18 个文件 110 处，SQL 别名 `yard` 与其派生的 JSON 字段 `yard_version` 同步改为 `station_default` / `station_version`（该字段仅本系统前端使用，两端同改）。
+- `migrations/admin_db/0042` 与 `docs/pricing-model-0042.md` 中的「场地」**有意保留**：前者是已应用的迁移且含已落库的 `COMMENT`，后者记录的是**客户现有后台**的界面用语，改了就不再是准确的观察记录。
+- 验证：`gofmt`/`go build`/`go vet`/`go test ./...`/`tsc --noEmit` 全绿；开发栈应用 0044 后 `station` 只剩 `PRIMARY` 与 `idx_geo`，冒烟覆盖不带编码建站、带编码被拒、C 端按 id 取详情、404 与非法 id。设备列表查询跑在已无 `code` 列的 schema 上仍返回 200，证明无残留 SQL 引用。
+
 ## 2026-09-28 本地验证记录
 
 - 使用新的 `compose.dev.yaml` 清空原开发测试卷后从空 MySQL 运行五个 schema 的 Goose 迁移，`gateway`、`central`、`worker` 三个 Go 容器均启动，三个 `/health/ready` 返回成功。健康检查只说明当前已接线的数据库和 Redis 可用。
@@ -1067,3 +1097,33 @@ Error 1364 (HY000): Field 'code' doesn't have a default value
 | `ActiveOffers` | 加上它没有覆盖的场地版 | 被覆盖的也列出来 |
 
 **「注释说要做 A、代码在做 B」是一类可以主动搜的缺陷**，比逐个读函数更省事：凡是写着「应当/不会/必须/正是为了」的句子，都值得拿代码对一遍。
+
+## 2026-09-30 充电用户列表：一个不存在的词，和三处会 500 的写法
+
+后台一直看得到订单、反馈、报障，但每处都只带一个裸 `user_id`——客服接到投诉时没法把人找出来。新增「充电用户」资源时连着踩了四个坑，都记在这里。
+
+### 第一处：`rider` 是个错的词
+
+新权限最初起名 `rider.read`，理由是避开 `admin_user.read`。**理由本身站不住**：那只是一个「人眼容易看串」的撞名，为此选了一个业务上根本不存在的词——英文里的 rider 指外卖/快递骑手，而二轮车充电的用户是「充电用户」。为躲一个软问题换来一个硬错误。
+
+改为 `charge_user.read`，同样避开了 `user.read` 与 `admin_user.read` 的混淆，但用的是界面上真实存在的词。**教训**：起名时如果理由是「和别的词不像」而不是「这个说法是对的」，先怀疑是不是在用一个错误的词绕开问题。
+
+因为 0046 尚未提交、只在本地应用过，**把库回退到 45 再重新应用**改名后的迁移，而不是再补一个 0047——本地状态必须和全新部署完全一致。
+
+### 第二处：GORM 按结构体名推导表名
+
+`Model(&ChargeUserRow{})` 没有 `TableName()`，GORM 推出 `charge_user_rows`，这张表不存在，列表接口直接 5003。
+
+难查的地方在于**报错完全不提示表名**——`resourceFailure` 把所有非冲突错误都映射成「数据暂时无法读取或保存」，容器日志也是空的。最后靠写临时测试直接调 store 才拿到原文。仓库里凡是走 `Model(&X{})` 的结构体都有 `TableName()`（`Station`→`station`、`Account`→`admin_user_role`），唯独新写的这个漏了。**这条规矩是现成的，照着做就不会漏。**
+
+### 第三处：`station_id` 不在 `charge_order` 上
+
+写最近订单摘要时顺手 `SELECT c.station_id`，想当然以为订单表存了站点。真实 schema 里没有这一列——**后台查订单所属站点一直靠 `charge_payment_intent` 关联**，而那张表对 `charge_order_id` 建了唯一键，一单至多一条意图，LEFT JOIN 不会放大行数。
+
+同一条查询里还有个更隐蔽的坑：`charge_order` 按 `created_month` 做 RANGE 分区，`created_month` 是分区键且**没有默认值**，必须显式写入。
+
+### 第四处：GORM 把切片字段当关联，拒绝整条查询
+
+券与报障计数原本 `Scan(&detail)`，而 `ChargeUserDetail` 带着 `RecentOrders []ChargeUserOrderBrief`，GORM 解析到关联字段后直接以「未定义外键」失败。**报错发生在解析阶段，跟 SQL 对不对完全无关**——三条 SQL 单独在库里跑全是正确的。改为扫一个只含三个计数的小结构体再赋值。
+
+**这一处的教训最值钱**：接口 500 但 SQL 单独执行没问题时，先怀疑 GORM 的结构体解析，而不是继续调 SQL。能绕开的路径是：先确认每条 SQL 在库上正确（`information_schema` 查真实列名，别靠印象），再把 GORM 层拆开逐个验证。

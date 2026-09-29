@@ -18,7 +18,7 @@ func TestApplyOrderCampaignsGrantsThresholdOnce(t *testing.T) {
 	fx := newActivityFixture(t, orm, "threshold_redeem", 5, 0)
 	defer fx.cleanup()
 	now := time.Now().UTC()
-	if err := orm.Exec("UPDATE coupon_activity_rule SET threshold_cents = 3000 WHERE rule_code = ?", fx.ruleCode).Error; err != nil {
+	if err := orm.Exec("UPDATE coupon_activity_rule SET threshold_cents = 3000 WHERE id = ?", fx.ruleID).Error; err != nil {
 		t.Fatal(err)
 	}
 	order := ChargeOrderRecord{OrderNo: "AC" + uuid.NewString()[:10], UserID: fx.userID}
@@ -86,14 +86,14 @@ func TestApplyOrderCampaignsSurvivesBrokenRule(t *testing.T) {
 	defer func() { _ = orm.Exec("DELETE FROM user WHERE id = ?", userID) }()
 
 	now := time.Now().UTC()
-	ruleCode := "R" + uuid.NewString()[:8]
 	if err := orm.Exec(`INSERT INTO coupon_activity_rule
-		(rule_code, name, trigger_type, coupon_id, threshold_cents, max_grants, per_user_limit, status, start_at, end_at)
-		VALUES (?, '坏规则', 'threshold_redeem', 99999999, 100, 0, 1, 'active', ?, ?)`,
-		ruleCode, now.Add(-time.Hour), now.Add(time.Hour)).Error; err != nil {
+		(name, trigger_type, coupon_id, threshold_cents, max_grants, per_user_limit, status, start_at, end_at)
+		VALUES ('坏规则', 'threshold_redeem', 99999999, 100, 0, 1, 'active', ?, ?)`,
+		now.Add(-time.Hour), now.Add(time.Hour)).Error; err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = orm.Exec("DELETE FROM coupon_activity_rule WHERE rule_code = ?", ruleCode) }()
+	badRuleID := lastID(t, orm)
+	defer func() { _ = orm.Exec("DELETE FROM coupon_activity_rule WHERE id = ?", badRuleID) }()
 
 	order := ChargeOrderRecord{OrderNo: "AC" + uuid.NewString()[:10], UserID: userID}
 	// Must not panic and must not surface an error to the caller.

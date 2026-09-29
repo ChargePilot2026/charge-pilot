@@ -495,11 +495,11 @@ export default function PricingTemplates() {
       <Alert type="warning" showIcon style={{ marginBottom: 12 }}
         message="应用后该范围立即按此模板计费并生成新版本。本次只发布计费规则，不会产生任何套餐；套餐请到「套餐模板池」单独上架。" />
       <Space direction="vertical" style={{ width: '100%' }}>
-        <Select showSearch allowClear aria-label="选择站点" placeholder="输入站点编码、名称或地址进行筛选"
+        <Select showSearch allowClear aria-label="选择站点" placeholder="输入站点名称或地址进行筛选"
           value={selectedStation ?? undefined} loading={stationsLoading} filterOption={false}
           onSearch={value => void searchStations(value)} onChange={value => setSelectedStation(value ?? null)}
-          options={stations.map(s => ({ value: s.id, label: `${s.name}（${s.code}）` }))} style={{ width: '100%' }} />
-        <Input aria-label="设备编号" placeholder="设备编号（留空表示发布为场地默认规则）" maxLength={64}
+          options={stations.map(s => ({ value: s.id, label: s.name }))} style={{ width: '100%' }} />
+        <Input aria-label="设备编号" placeholder="设备编号（留空表示发布为站点默认规则）" maxLength={64}
           value={applyDevice} onChange={e => setApplyDevice(e.target.value)} />
       </Space>
       {stations.length === 0 && !stationsLoading && <div style={{ marginTop: 8, color: '#999' }}>没有匹配的运营中站点</div>}

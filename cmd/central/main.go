@@ -114,7 +114,7 @@ func run(ctx context.Context) error {
 	regulatory.API{Queue: regulatory.Queue{DB: adminDB}, ServiceToken: cfg.ServiceToken}.Register(router)
 	billing.Service{Store: billing.Store{DB: billingORM}, Orders: charge.BillingOrders{DB: userORM}, Splits: billing.SplitResolver{AdminDB: adminORM}, ServiceToken: cfg.ServiceToken,
 		Bills: charge.BillIssuer{Store: charge.BillStore{DB: userORM}}}.Register(router)
-	admin.ResourceAPI{Store: admin.ResourceStore{AdminDB: adminORM, UserDB: userORM, BillingDB: billingORM}, Auth: adminAPI, GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken, ExportDir: os.Getenv("EXPORT_DIR")}.Register(router)
+	admin.ResourceAPI{Store: admin.ResourceStore{AdminDB: adminORM, UserDB: userORM, BillingDB: billingORM}, Auth: adminAPI, GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken, ExportDir: os.Getenv("EXPORT_DIR"), PhoneKey: []byte(cfg.PhoneEncryptionKey)}.Register(router)
 	exportCleanup := admin.ExportTask{Store: admin.ResourceStore{AdminDB: adminORM}, ExportDir: os.Getenv("EXPORT_DIR")}
 	go func() {
 		ticker := time.NewTicker(time.Hour)

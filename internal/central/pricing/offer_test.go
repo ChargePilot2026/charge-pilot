@@ -37,7 +37,7 @@ func TestRetiredOffersAreNotSold(t *testing.T) {
 	defer done()
 	exec := t.Context()
 	if err := store.DB.Exec(
-		"INSERT INTO station(id,code,name,status,longitude,latitude) VALUES(9801,'RETIRED-A','下架场地','active',116.4,39.9)").Error; err != nil {
+		"INSERT INTO station(id,name,status,longitude,latitude) VALUES(9801,'下架站点','active',116.4,39.9)").Error; err != nil {
 		t.Fatal(err)
 	}
 	defer store.DB.Exec("DELETE FROM charge_offer WHERE station_id=9801")
@@ -46,9 +46,9 @@ func TestRetiredOffersAreNotSold(t *testing.T) {
 	// possibly be getting wrong is the deleted_at filter — which is the defect.
 	for i, retired := range []string{"live", "retired"} {
 		if err := store.DB.Exec(
-			"INSERT INTO charge_offer(station_id,device_id,code,name,mode,price_cents,status,version,package_template_id,deleted_at) "+
-				"VALUES(9801,NULL,?,'套餐','amount',100,'active',1,?,IF(?='retired',UTC_TIMESTAMP(),NULL))",
-			"RETIRED-"+string(rune('A'+i)), 7000+i, retired).Error; err != nil {
+			"INSERT INTO charge_offer(station_id,device_id,name,mode,price_cents,status,version,package_template_id,deleted_at) "+
+				"VALUES(9801,NULL,'套餐','amount',100,'active',1,?,IF(?='retired',UTC_TIMESTAMP(),NULL))",
+			7000+i, retired).Error; err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -56,7 +56,7 @@ func TestRetiredOffersAreNotSold(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(offers) != 1 || offers[0].Code != "RETIRED-A" {
+	if len(offers) != 1 || offers[0].ID == 0 || offers[0].PriceCents != 100 {
 		t.Fatalf("a retired package is still being sold: %+v", offers)
 	}
 	// Asking for it by id must fail the same way, or the rider simply starts the
@@ -66,14 +66,14 @@ func TestRetiredOffersAreNotSold(t *testing.T) {
 	}
 }
 
-// A device that sells a package on its own does not also get the yard-wide
+// A device that sells a package on its own does not also get the station-wide
 // version of it. The comment on this function has always said so; the query
 // listed both, so the rider saw the same package twice.
-func TestDeviceOfferOverridesTheYardWideOne(t *testing.T) {
+func TestDeviceOfferOverridesTheStationWideOne(t *testing.T) {
 	store, done := offerTestStore(t)
 	defer done()
 	if err := store.DB.Exec(
-		"INSERT INTO station(id,code,name,status,longitude,latitude) VALUES(9802,'OVERRIDE-A','覆盖场地','active',116.4,39.9)").Error; err != nil {
+		"INSERT INTO station(id,name,status,longitude,latitude) VALUES(9802,'覆盖站点','active',116.4,39.9)").Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := store.DB.Exec(
@@ -84,20 +84,21 @@ func TestDeviceOfferOverridesTheYardWideOne(t *testing.T) {
 	defer store.DB.Exec("DELETE FROM device_meta WHERE device_id='OVRDEVICE1'")
 	defer store.DB.Exec("DELETE FROM station WHERE id=9802")
 
-	// Package 7100 is sold yard-wide and also, differently, on this one device.
-	// Package 7200 is sold yard-wide only.
+	// Package 7100 is sold station-wide and also, differently, on this one device.
+	// Package 7200 is sold station-wide only.
+	// Offers are told apart by which template they sell and which device they
+	// are scoped to, not by a code: the column is gone as of admin_db/0045.
 	rows := []struct {
-		code     string
 		pkg      int
 		deviceID any
 	}{
-		{"YARD-OVR", 7100, nil}, {"DEVICE-OVR", 7100, "OVRDEVICE1"},
-		{"YARD-ONLY", 7200, nil},
+		{7100, nil}, {7100, "OVRDEVICE1"},
+		{7200, nil},
 	}
 	for _, row := range rows {
 		if err := store.DB.Exec(
-			"INSERT INTO charge_offer(station_id,device_id,code,name,mode,price_cents,status,version,package_template_id) "+
-				"VALUES(9802,?,?,'套餐','amount',100,'active',1,?)", row.deviceID, row.code, row.pkg).Error; err != nil {
+			"INSERT INTO charge_offer(station_id,device_id,name,mode,price_cents,status,version,package_template_id) "+
+				"VALUES(9802,?,'套餐','amount',100,'active',1,?)", row.deviceID, row.pkg).Error; err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -105,29 +106,35 @@ func TestDeviceOfferOverridesTheYardWideOne(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	seen := map[string]bool{}
+	// Offers are told apart by device scope. The device must see exactly one
+	// station-wide offer -- the 7200 -- and the 7100 only in its own copy.
+	stationWide, deviceScoped := 0, 0
 	for _, offer := range offers {
-		seen[offer.Code] = true
+		if offer.DeviceID == "" {
+			stationWide++
+			continue
+		}
+		deviceScoped++
+		if offer.DeviceID != "OVRDEVICE1" {
+			t.Fatalf("an offer for another device leaked in: %+v", offer)
+		}
 	}
-	if seen["YARD-OVR"] {
-		t.Fatalf("the device-scoped package did not override the yard-wide one: %+v", offers)
+	if stationWide != 1 || deviceScoped != 1 {
+		t.Fatalf("the device-scoped package did not override the station-wide one: %+v", offers)
 	}
-	if !seen["DEVICE-OVR"] || !seen["YARD-ONLY"] {
-		t.Fatalf("an offer that should be on sale is missing: %+v", offers)
-	}
-	// A different device on the same yard still sees the yard-wide version,
+	// A different device on the same station still sees the station-wide version,
 	// which is the point of scoping an offer to one pile.
 	others, err := store.ActiveOffers(context.Background(), 9802, "OTHERDEVICE9")
 	if err != nil {
 		t.Fatal(err)
 	}
-	found := false
-	for _, offer := range others {
-		if offer.Code == "YARD-OVR" {
-			found = true
-		}
+	// A device that does not override anything sees both station-wide offers.
+	if len(others) != 2 {
+		t.Fatalf("a station-wide package disappeared for a device that does not override it: %+v", others)
 	}
-	if !found {
-		t.Fatalf("a yard-wide package disappeared for a device that does not override it: %+v", others)
+	for _, offer := range others {
+		if offer.DeviceID != "" {
+			t.Fatalf("a device-scoped offer leaked to a device that does not own it: %+v", offer)
+		}
 	}
 }

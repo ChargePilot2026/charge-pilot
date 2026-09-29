@@ -14,9 +14,14 @@ import (
 	"github.com/xuri/excelize/v2"
 )
 
+// reportFont 是编译期内嵌的中文 PDF 字体子集,汇总 PDF 的标题与数字都用它,
+// 避免 PDF 阅读器因为找不到中文字体而显示成方块。
+//
 //go:embed fonts/NotoSansSC-Subset.ttf
 var reportFont []byte
 
+// validExportPeriod 校验财务类导出的时间窗:只认 from/to 两个 YYYY-MM-DD 键,
+// 要求 to 不早于 from 且跨度不超过 31 天,防止一次导出拖垮数据库。
 func validExportPeriod(filter map[string]any) bool {
 	fromRaw, fromOK := filter["from"].(string)
 	toRaw, toOK := filter["to"].(string)
@@ -28,11 +33,14 @@ func validExportPeriod(filter map[string]any) bool {
 	return err1 == nil && err2 == nil && !to.Before(from) && to.Sub(from) <= 30*24*time.Hour
 }
 
+// nextExportDate 把 to 当天推一天,用于把 issued_at 的右开区间凑成整天的闭区间。
 func nextExportDate(raw any) string {
 	date, _ := time.Parse("2006-01-02", raw.(string))
 	return date.AddDate(0, 0, 1).Format("2006-01-02")
 }
 
+// safeSpreadsheetCell 防止表格公式注入:首字符是 = + - @ 且整串不是数字时,前面补一个单引号;
+// 纯数字(负数金额)保持原样,不影响导出的取值。
 func safeSpreadsheetCell(value string) string {
 	if value == "" {
 		return value
@@ -45,6 +53,8 @@ func safeSpreadsheetCell(value string) string {
 	return value
 }
 
+// writeExport 按格式把表头和数据行写出去:csv 走标准转义,xlsx 走流式写入避免大文件占内存,
+// pdf 只支持账单与对账的汇总页,其余格式或资源一律返回错误。
 func writeExport(w io.Writer, format, resource string, headers []string, lines [][]string, period map[string]any) error {
 	switch format {
 	case "csv":
@@ -94,6 +104,8 @@ func writeExport(w io.Writer, format, resource string, headers []string, lines [
 	}
 }
 
+// writeSummaryPDF 生成财务汇总 PDF:按中文表头定位需要合计的列并求和,
+// 输出标题、统计期间、记录数、各列合计与生成时间;列缺失或值不是整数都会直接报错。
 func writeSummaryPDF(w io.Writer, resource string, headers []string, lines [][]string, period map[string]any) error {
 	var title string
 	var columns []string

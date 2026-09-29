@@ -162,7 +162,7 @@ func TestAdminPagesIntegration(t *testing.T) {
 		call(fin1, "POST", "billing/meter-reviews/1/"+action, gin.H{}, 400)
 	}
 	call(adminToken, "GET", "billing/meter-reviews?status=invalid", nil, 400)
-	station := gin.H{"code": "PAGES_STATION", "name": "分页站点", "longitude": 116.3, "latitude": 39.9, "status": "active"}
+	station := gin.H{"name": "分页站点", "longitude": 116.3, "latitude": 39.9, "status": "active"}
 	sid := data(call(adminToken, "POST", "stations", station, 200))["id"]
 	parties := []gin.H{{"party_code": "operator", "party_name": "运营方", "ratio_bp": 6000},
 		{"party_code": "property", "party_name": "物业", "ratio_bp": 4000, "bank_account": "6222000012345678"}}
@@ -184,7 +184,6 @@ func TestAdminPagesIntegration(t *testing.T) {
 	call(adminToken, "POST", templatePath+"/parties", gin.H{"parties": []gin.H{{"party_code": "operator", "party_name": "运营方", "ratio_bp": 7000}, {"party_code": "property", "party_name": "物业", "ratio_bp": 2000}}}, 400)
 	call(adminToken, "POST", templatePath+"/parties", gin.H{"parties": []gin.H{{"party_code": "operator", "party_name": "运营方", "ratio_bp": 5000}, {"party_code": "property", "party_name": "物业", "ratio_bp": 5000}}}, 200)
 	station["status"] = "disabled"
-	delete(station, "code")
 	stationPath := fmt.Sprintf("stations/%.0f", sid)
 	call(adminToken, "PUT", stationPath, station, 200)
 	call(fin1, "PUT", stationPath+"/split-template", gin.H{"template_id": templateID, "expected_template_id": 0}, 403)
@@ -195,8 +194,10 @@ func TestAdminPagesIntegration(t *testing.T) {
 	call(adminToken, "POST", templatePath+"/parties", gin.H{"parties": parties}, 409)
 	call(adminToken, "PUT", templatePath, gin.H{"name": "已绑定模板", "mode": "mode_b", "status": "active"}, 409)
 	call(adminToken, "PUT", templatePath, gin.H{"name": "名称可更新", "mode": "mode_a", "status": "active"}, 200)
+	// A station code is gone as of admin_db/0044. A client still sending one
+	// gets told so rather than having it silently dropped.
 	station["code"] = "PAGES_STATION"
-	call(adminToken, "POST", "stations", station, 409)
+	call(adminToken, "POST", "stations", station, 400)
 	station["name"] = "更新站点"
 	delete(station, "code")
 	call(adminToken, "PUT", fmt.Sprintf("stations/%.0f", sid), station, 200)
@@ -358,7 +359,7 @@ func TestAdminPagesIntegration(t *testing.T) {
 	exec(udb, "INSERT INTO user(openid,nickname) VALUES ('pages-user','页面验收')")
 	var uid uint64
 	udb.Table("user").Where("openid='pages-user'").Pluck("id", &uid)
-	coupon := gin.H{"code": "PAGES_COUPON", "name": "测试优惠", "discount_type": "amount", "discount_value_cents": 100, "min_charge_cents": 0, "valid_hours": 24, "total_quota": 1, "per_user_quota": 1}
+	coupon := gin.H{"name": "测试优惠", "discount_type": "amount", "discount_value_cents": 100, "min_charge_cents": 0, "valid_hours": 24, "total_quota": 1, "per_user_quota": 1}
 	cid := data(call(adminToken, "POST", "coupons", coupon, 200))["id"]
 	cp := fmt.Sprintf("coupons/%.0f", cid)
 	grant := gin.H{"request_id": "11111111-1111-4111-8111-111111111111", "user_id": uid}
@@ -405,7 +406,7 @@ func TestAdminPagesIntegration(t *testing.T) {
 	batch := gin.H{"import_id": "33333333-3333-4333-8333-333333333333", "devices": []gin.H{{"device_id": "PAGESDEV01", "vendor_id": vid, "station_id": sid, "port_count": 2, "model": "测试型号", "charge_mode": "server_energy", "reports_energy": true, "reports_segmented_power": true}}}
 	call(adminToken, "POST", "device-imports", batch, 200)
 	call(adminToken, "POST", "device-imports", batch, 200)
-	// A board that declares nothing cannot join a metered yard. The whole batch
+	// A board that declares nothing cannot join a metered station. The whole batch
 	// is refused rather than half of it, and the message names the board.
 	call(adminToken, "POST", "device-imports", gin.H{"import_id": "33333333-3333-4333-8333-333333333334", "devices": []gin.H{{"device_id": "PAGESDEV02", "vendor_id": vid, "station_id": sid, "port_count": 2}}}, 409)
 	call(adminToken, "GET", "devices?keyword=PAGESDEV01", nil, 200)
@@ -496,7 +497,7 @@ func TestAdminPagesIntegration(t *testing.T) {
 	}
 	call(adminToken, "GET", "settings/switch-tasks", nil, 200)
 	call(adminToken, "GET", "settings/pricing-template-candidates?station_id="+fmt.Sprintf("%v", sid), nil, 200)
-	// A device that is not in the yard is refused by name rather than silently
+	// A device that is not in the station is refused by name rather than silently
 	// resetting whatever happens to be at that id.
 	call(adminToken, "POST", "settings/device-pricing/reset",
 		gin.H{"station_id": sid, "device_id": "NOSUCHDEVICE01"}, 404)

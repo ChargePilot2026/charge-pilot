@@ -5,7 +5,7 @@ import { apiGet, apiPost, apiPut } from '../api/client';
 
 const { Title } = Typography;
 
-interface Coupon { id: number; code: string; name: string; discount_type: string;
+interface Coupon { id: number; name: string; discount_type: string;
   discount_value_cents?: number; discount_percent?: number;
   min_charge_cents: number; total_quota: number; per_user_quota: number; status: string; }
 
@@ -77,7 +77,6 @@ export default function CouponsPage() {
       </Space>
       <Table rowKey="id" loading={loading} dataSource={data}
         columns={[
-          { title: '编码', dataIndex: 'code', width: 140 },
           { title: '名称', dataIndex: 'name' },
           { title: '类型', dataIndex: 'discount_type', width: 100 },
           { title: '优惠', dataIndex: 'discount_value_cents',
@@ -96,7 +95,6 @@ export default function CouponsPage() {
       />
       <Modal title="新建优惠券" open={open} onCancel={() => setOpen(false)} onOk={onCreate}>
         <Form name="coupon_create" form={form} layout="vertical">
-          <Form.Item name="code" label="编码" rules={[{ required: true }]}><Input /></Form.Item>
           <Form.Item name="name" label="名称" rules={[{ required: true }]}><Input /></Form.Item>
           <Form.Item name="discount_type" label="类型" rules={[{ required: true }]}>
             <Select options={[
@@ -187,7 +185,7 @@ function ActivityRules({ coupons, reloadCoupons }: { coupons: Coupon[]; reloadCo
   const setStatus = async (row: any, status: string) => {
     try {
       await apiPut(`/api/v1/admin/coupon-activities/${row.id}`, {
-        rule_code: row.rule_code, name: row.name, trigger_type: row.trigger_type, coupon_id: row.coupon_id,
+        name: row.name, trigger_type: row.trigger_type, coupon_id: row.coupon_id,
         inviter_coupon_id: row.inviter_coupon_id ?? undefined, threshold_cents: row.threshold_cents,
         max_grants: row.max_grants, per_user_limit: row.per_user_limit, status,
         start_at: new Date(row.start_at).toISOString(), end_at: new Date(row.end_at).toISOString(),
@@ -197,7 +195,7 @@ function ActivityRules({ coupons, reloadCoupons }: { coupons: Coupon[]; reloadCo
     } catch (e: any) { message.error(e?.message || '操作失败'); }
   };
 
-  const couponOptions = coupons.filter(c => c.status === 'active').map(c => ({ value: c.id, label: `${c.name}（${c.code}）` }));
+  const couponOptions = coupons.filter(c => c.status === 'active').map(c => ({ value: c.id, label: c.name }));
 
   return (
     <Space direction="vertical" style={{ width: '100%' }}>
@@ -211,7 +209,6 @@ function ActivityRules({ coupons, reloadCoupons }: { coupons: Coupon[]; reloadCo
       </Typography.Text>
       <Table rowKey="id" loading={loading} dataSource={rows} scroll={{ x: 1000 }}
         columns={[
-          { title: '规则码', dataIndex: 'rule_code', width: 150 },
           { title: '名称', dataIndex: 'name' },
           { title: '触发', dataIndex: 'trigger_type', width: 110, render: (v: string) => triggerLabel[v] || v },
           { title: '活动券', dataIndex: 'coupon_name', width: 180 },
@@ -231,9 +228,6 @@ function ActivityRules({ coupons, reloadCoupons }: { coupons: Coupon[]; reloadCo
         ]} />
       <Modal title="新建活动" open={open} onCancel={() => setOpen(false)} onOk={() => void onCreate()} confirmLoading={saving}>
         <Form form={form} layout="vertical" initialValues={{ trigger_type: 'first_recharge', per_user_limit: 1, max_grants: 0, threshold_cents: 0 }}>
-          <Form.Item name="rule_code" label="规则码" rules={[{ required: true }, { pattern: /^[A-Za-z0-9_-]{3,64}$/, message: '3–64 位英文/数字/下划线/连字符' }]}>
-            <Input placeholder="如 FIRSTPAY5" />
-          </Form.Item>
           <Form.Item name="name" label="名称" rules={[{ required: true }]}><Input /></Form.Item>
           <Form.Item name="trigger_type" label="触发方式" rules={[{ required: true }]}>
             <Select options={Object.entries(triggerLabel).map(([value, label]) => ({ value, label }))} />

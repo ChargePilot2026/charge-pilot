@@ -5,6 +5,7 @@ import LoginPage from './pages/Login';
 import MainLayout from './layouts/MainLayout';
 import DashboardPage from './pages/Dashboard';
 import OrdersPage from './pages/Orders';
+import ChargeUsersPage from './pages/ChargeUsers';
 import DevicesPage from './pages/Devices';
 import StationsPage from './pages/Stations';
 import UsersPage from './pages/Users';
@@ -42,11 +43,12 @@ export default function App() {
       <Route path="/" element={<RequireAuth><MainLayout /></RequireAuth>}>
         <Route index element={<DashboardPage />} />
         <Route path="orders" element={<OrdersPage />} />
+        <Route path="charge-users" element={<ChargeUsersPage />} />
         <Route path="devices" element={<DevicesPage />} />
         <Route path="stations" element={<StationsPage />} />
         <Route path="pricing-templates" element={<ConfigPage title="计费模板"><PricingTemplates /></ConfigPage>} />
         <Route path="package-templates" element={<ConfigPage title="套餐模板池"><PackageTemplates /></ConfigPage>} />
-        <Route path="station-pricing" element={<ConfigPage title="场地计费"><StationPricing /></ConfigPage>} />
+        <Route path="station-pricing" element={<ConfigPage title="站点计费"><StationPricing /></ConfigPage>} />
 
         <Route path="users" element={<UsersPage />} />
         <Route path="alerts" element={<AlertsPage />} />

@@ -12,6 +12,9 @@ x-go: &go
     - go-build:/root/.cache/go-build
   environment: &go-env
     GOTOOLCHAIN: auto
+    # proxy.golang.org is unreachable from mainland China; goproxy.cn is the
+    # working mirror. Remove once the team standardizes on a reachable proxy.
+    GOPROXY: https://goproxy.cn,direct
     JWT_SECRET: local-dev-jwt-secret-do-not-use-in-production
     SERVICE_TOKEN: local-dev-service-token-do-not-use-in-production
     WECHAT_APPID: wx_local_dev
@@ -75,6 +78,7 @@ services:
       - go-modules:/go/pkg/mod
       - go-build:/root/.cache/go-build
     environment:
+      GOPROXY: https://goproxy.cn,direct
       DATABASE_URL_GATEWAY: mysql://chargepilot:chargepilot_dev@mysql:3306/gateway_db
       DATABASE_URL_USER: mysql://chargepilot:chargepilot_dev@mysql:3306/user_db
       DATABASE_URL_ADMIN: mysql://chargepilot:chargepilot_dev@mysql:3306/admin_db

@@ -25,7 +25,6 @@ var (
 type CouponGrant struct {
 	ID          uint64    `json:"id" gorm:"column:id"`
 	CouponID    uint64    `json:"coupon_id" gorm:"column:coupon_id"`
-	Code        string    `json:"code" gorm:"column:code"`
 	Name        string    `json:"name" gorm:"column:name"`
 	GrantID     uint64    `json:"grant_id" gorm:"column:grant_id"`
 	Status      string    `json:"status" gorm:"column:status"`
@@ -48,7 +47,7 @@ func (s CouponStore) AvailableCoupons(ctx context.Context, userID uint64) ([]Cou
 	err := s.DB.WithContext(ctx).Table("coupon_grant AS g").
 		Joins("JOIN coupon AS c ON c.id = g.coupon_id AND c.deleted_at IS NULL AND c.status = 'active'").
 		Where("g.user_id = ? AND g.status = 'unused' AND g.deleted_at IS NULL AND g.expired_at > UTC_TIMESTAMP(3)", userID).
-		Select("g.id, g.coupon_id, g.id AS grant_id, g.status, g.expired_at, c.code, c.name, c.discount_type, c.discount_value_cents, c.discount_percent, c.min_charge_cents").
+		Select("g.id, g.coupon_id, g.id AS grant_id, g.status, g.expired_at, c.name, c.discount_type, c.discount_value_cents, c.discount_percent, c.min_charge_cents").
 		Order("g.expired_at, g.id").Find(&rows).Error
 	return rows, err
 }
@@ -130,7 +129,7 @@ func (s CouponStore) Redeem(ctx context.Context, userID, grantID uint64, orderNo
 			return ErrCouponExhausted
 		}
 		return tx.Table("coupon_redemption").Create(map[string]any{
-			"coupon_code": grant.Code, "user_id": userID, "biz_type": "charge",
+			"coupon_id": grant.CouponID, "user_id": userID, "biz_type": "charge",
 			"biz_id": paymentOrderID, "discount_cents": discount, "order_no": orderNo,
 		}).Error
 	}, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
@@ -169,7 +168,7 @@ func loadGrant(ctx context.Context, db *gorm.DB, userID, grantID uint64) (Coupon
 		Joins("JOIN coupon AS c ON c.id = g.coupon_id AND c.deleted_at IS NULL AND c.status = 'active'").
 		Clauses(clause.Locking{Strength: "UPDATE"}).
 		Where("g.id = ? AND g.user_id = ? AND g.deleted_at IS NULL", grantID, userID).
-		Select("g.id, g.coupon_id, g.id AS grant_id, g.status, g.expired_at, c.code, c.name, c.discount_type, c.discount_value_cents, c.discount_percent, c.min_charge_cents").
+		Select("g.id, g.coupon_id, g.id AS grant_id, g.status, g.expired_at, c.name, c.discount_type, c.discount_value_cents, c.discount_percent, c.min_charge_cents").
 		Take(&grant).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return grant, ErrCouponNotFound
@@ -235,7 +234,7 @@ func redeemCouponInTx(tx *gorm.DB, intent PaymentIntentRecord, order PaymentOrde
 		return ErrCouponExhausted
 	}
 	return tx.Table("coupon_redemption").Create(map[string]any{
-		"coupon_code": grant.Code, "user_id": intent.UserID, "biz_type": "charge",
+		"coupon_id": grant.CouponID, "user_id": intent.UserID, "biz_type": "charge",
 		"biz_id": order.ID, "discount_cents": discount, "order_no": reference,
 	}).Error
 }
@@ -264,7 +263,7 @@ func (a CouponAPI) list(c *gin.Context) {
 	}
 	out := make([]gin.H, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, gin.H{"coupon_code": row.Code, "name": row.Name, "grant_id": row.GrantID,
+		out = append(out, gin.H{"coupon_id": row.CouponID, "name": row.Name, "grant_id": row.GrantID,
 			"discount_type": row.Type, "min_charge_cents": row.MinCharge, "expires_at": row.ExpiresAt})
 	}
 	httpapi.OK(c, gin.H{"items": out})

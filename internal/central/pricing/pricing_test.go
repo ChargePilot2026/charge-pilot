@@ -276,7 +276,7 @@ func TestSettleServerBilledCapOnlyEverLowers(t *testing.T) {
 		Segments: []MeterSegment{{StartedAt: time.Date(2026, 1, 2, 10, 0, 0, 0, beijing),
 			EndedAt: time.Date(2026, 1, 2, 11, 0, 0, 0, beijing), EnergyWh: 1000, PeakW: 500}},
 	}
-	cap := Offer{ID: 1, StationID: 1, Code: "c", Name: "cap", Mode: "amount", PriceCents: 50}
+	cap := Offer{ID: 1, StationID: 1, Name: "cap", Mode: "amount", PriceCents: 50}
 	settlement, err := SettleSession(spec, meter, &cap, ActualFromMeter(meter))
 	if err != nil {
 		t.Fatalf("SettleSession: %v", err)
@@ -299,7 +299,7 @@ func TestSettleDeviceBilledTakesItsMoneyFromWhatWasPaid(t *testing.T) {
 	// The rider paid 100 cents. The bill is 100 cents. Nothing in the pricing
 	// engine gets a vote.
 	spec := Spec{Mode: ModeDeviceDuration}
-	offer := Offer{ID: 1, StationID: 1, Code: "p", Name: "1元60分钟", Mode: "package", PriceCents: 100, DurationMinutes: 60}
+	offer := Offer{ID: 1, StationID: 1, Name: "1元60分钟", Mode: "package", PriceCents: 100, DurationMinutes: 60}
 	meter := ActualMeter{StartedAt: time.Now(), EndedAt: time.Now().Add(time.Hour), ChargedWh: 5000, ChargedSeconds: 3600}
 	settlement, err := SettleSession(spec, meter, &offer, &SessionActual{UsedSeconds: 3600, Reported: true, StopReason: StopExhaustedTime})
 	if err != nil {
@@ -323,7 +323,7 @@ func TestSettleDeviceBilledWithoutPaymentIsRefused(t *testing.T) {
 
 func TestDevicePowerResidualIsReportedNotWrittenOff(t *testing.T) {
 	spec := Spec{Mode: ModeDevicePower}
-	offer := Offer{ID: 1, StationID: 1, Code: "b", Name: "1元", Mode: "amount", PriceCents: 100}
+	offer := Offer{ID: 1, StationID: 1, Name: "1元", Mode: "amount", PriceCents: 100}
 	// The device stopped on its sampling grid and spent 96 of the 100 it was
 	// given. The 4-cent difference has to stay visible; rounding it away is how
 	// a board with too coarse a grid becomes invisible.
