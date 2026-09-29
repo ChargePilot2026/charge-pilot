@@ -1,6 +1,8 @@
 package charge
 
 import (
+	"errors"
+
 	"github.com/ChargePilot2026/charge-pilot/internal/central/pricing"
 	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol"
 	"testing"
@@ -15,15 +17,26 @@ func TestMeasuredSegmentsUseElapsedCumulativeMeter(t *testing.T) {
 	if len(segments) != 2 || segments[0].EnergyWh != 200 || segments[1].EnergyWh != 800 || !segments[0].EndedAt.Equal(start.Add(30*time.Minute)) {
 		t.Fatalf("measured segments %+v", segments)
 	}
-	rule := pricing.Rule{ID: 1, Version: 1, Mode: "kwh", ServiceCentsPerKWh: 25, Periods: []pricing.Period{{Start: "00:00", End: "12:00", ElectricPriceCents: 50}, {Start: "12:00", End: "24:00", ElectricPriceCents: 80}}}
+	rule := pricing.Rule{ID: 1, Version: 1, Spec: pricing.Spec{Basis: pricing.BasisEnergy, Windows: []pricing.Window{{Start: "00:00", End: "12:00", CentsPerKWh: 50}, {Start: "12:00", End: "24:00", CentsPerKWh: 80}}, Service: pricing.ServiceFee{Mode: pricing.ServiceEnergy, CentsPerKWh: 25}}}
 	fee, err := pricing.PriceActual(rule, pricing.ActualMeter{StartedAt: start, EndedAt: end.EndedAt, ChargedWh: 1000, ChargedSeconds: 3600, Segments: segments})
 	if err != nil || fee.TotalCents != 99 {
 		t.Fatalf("measured tariff %+v %v", fee, err)
 	}
 	// The report arrived after the tariff boundary; its elapsed clock, rather
 	// than arrival time, identifies the 200 Wh measured before that boundary.
-	if _, err := pricing.PriceActual(rule, pricing.ActualMeter{StartedAt: start, EndedAt: end.EndedAt, ChargedWh: 1000, ChargedSeconds: 3600}); err == nil {
-		t.Fatal("missing boundary accepted")
+	//
+	// Without segments the engine has to spread the energy evenly, which under
+	// a tariff that changes mid-session is a guess about what the operator is
+	// charged. That is sent to review instead of being settled.
+	if _, err := pricing.PriceActual(rule, pricing.ActualMeter{StartedAt: start, EndedAt: end.EndedAt, ChargedWh: 1000, ChargedSeconds: 3600}); !errors.Is(err, pricing.ErrMeterReview) {
+		t.Fatalf("an unsegmented meter across a tariff change must go to review, got %v", err)
+	}
+	// A flat tariff is a different case: spreading is exact, so the same meter
+	// settles without anyone looking at it.
+	flat := pricing.Rule{ID: 1, Version: 1, Spec: pricing.Spec{Basis: pricing.BasisEnergy,
+		Windows: []pricing.Window{{Start: "00:00", End: "24:00", CentsPerKWh: 50}}}}
+	if _, err := pricing.PriceActual(flat, pricing.ActualMeter{StartedAt: start, EndedAt: end.EndedAt, ChargedWh: 1000, ChargedSeconds: 3600}); err != nil {
+		t.Fatalf("a flat tariff must settle an unsegmented meter: %v", err)
 	}
 	tests := []struct {
 		name   string

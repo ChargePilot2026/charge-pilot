@@ -38,8 +38,7 @@ func TestPaymentIntentHoldsPortWithoutCreatingChargeOrder(t *testing.T) {
 		Port: ScanResult{Kind: "port", DeviceID: "intent-device", StationID: 9,
 			Port: &ScanPort{PortID: portCode, DeviceID: "intent-device", PortNo: 1, Online: true, Available: true}},
 		Energy: "1", Minutes: 60,
-		Rule: pricing.Rule{ID: 3, StationID: 9, Version: 1, Mode: "kwh", ServiceCentsPerKWh: 40,
-			Periods: []pricing.Period{{Start: "00:00", End: "24:00", ElectricPriceCents: 100}}}}
+		Rule: pricing.Rule{ID: 3, StationID: 9, Version: 1, Spec: pricing.Spec{Basis: pricing.BasisEnergy, Windows: []pricing.Window{{Start: "00:00", End: "24:00", CentsPerKWh: 100}}, Service: pricing.ServiceFee{Mode: pricing.ServiceEnergy, CentsPerKWh: 40}}}}
 	store := PaymentIntentStore{DB: testGORMDB(t, db)}
 	first, err := store.Reserve(ctx, input)
 	if err != nil || first.PaymentOrderID == 0 || first.Estimate.TotalCents != 140 {

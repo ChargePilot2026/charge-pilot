@@ -68,9 +68,9 @@ func TestActualBillingPersistsAndRefundsOnce(t *testing.T) {
 		var id uint64
 		userDB.Table("charge_order").Where("order_no=?", name).Pluck("id", &id)
 		exec(userDB, "UPDATE payment_order SET biz_id=? WHERE id=?", id, pid)
-		rule := pricing.Rule{ID: 1, StationID: 1, Version: 1, Mode: "kwh", ServiceCentsPerKWh: 25, Periods: []pricing.Period{{Start: "00:00", End: "24:00", ElectricPriceCents: 50}}}
+		rule := pricing.Rule{ID: 1, StationID: 1, Version: 1, Spec: pricing.Spec{Basis: pricing.BasisEnergy, Windows: []pricing.Window{{Start: "00:00", End: "24:00", CentsPerKWh: 50}}, Service: pricing.ServiceFee{Mode: pricing.ServiceEnergy, CentsPerKWh: 25}}}
 		if variable {
-			rule.Periods = []pricing.Period{{Start: "00:00", End: "12:00", ElectricPriceCents: 50}, {Start: "12:00", End: "24:00", ElectricPriceCents: 100}}
+			rule.Spec.Windows = []pricing.Window{{Start: "00:00", End: "12:00", CentsPerKWh: 50}, {Start: "12:00", End: "24:00", CentsPerKWh: 100}}
 		}
 		snap, _ := json.Marshal(map[string]any{"rule": rule})
 		meter, _ := json.Marshal(EndMeter{ChargedWh: wh, ChargedSeconds: 3600, EndedAt: end})
@@ -130,7 +130,7 @@ func TestActualBillingPersistsAndRefundsOnce(t *testing.T) {
 	if err := sourceOrders.Apply(ctx, result); !errors.Is(err, billing.ErrConflict) {
 		t.Fatalf("tampered result accepted: %v", err)
 	}
-	source.Rule.ServiceCentsPerKWh++
+	source.Rule.Spec.Service.CentsPerKWh++
 	if _, err := store.Calculate(ctx, source); !errors.Is(err, billing.ErrConflict) {
 		t.Fatalf("modified snapshot accepted: %v", err)
 	}
