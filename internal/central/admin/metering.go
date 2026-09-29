@@ -167,7 +167,7 @@ func checkMetering(mode pricing.ChargeMode, targets []switchTarget) []string {
 }
 
 func (a ResourceAPI) registerDeviceMetering(r *gin.Engine) {
-	r.PUT("/api/v1/admin/settings/device-metering", a.Auth.Require("device.update"), a.updateDeviceMetering)
+	r.PUT("/api/v1/admin/settings/device-metering", a.Auth.Require("device.metering"), a.updateDeviceMetering)
 }
 
 type meteringInput struct {
