@@ -21,6 +21,8 @@ import AlertRulesPage from './pages/AlertRules';
 import ExportsPage from './pages/Exports';
 import AuditLogsPage from './pages/AuditLogs';
 import PricingTemplates from './pages/PricingTemplates';
+import PackageTemplates from './pages/PackageTemplates';
+import StationPricing from './pages/StationPricing';
 
 function ConfigPage({ title, children }: { title: string; children: ReactNode }) {
   return <div className="page-container"><Typography.Title level={3}>{title}</Typography.Title>{children}</div>;
@@ -43,7 +45,9 @@ export default function App() {
         <Route path="devices" element={<DevicesPage />} />
         <Route path="stations" element={<StationsPage />} />
         <Route path="pricing-templates" element={<ConfigPage title="计费模板"><PricingTemplates /></ConfigPage>} />
-        
+        <Route path="package-templates" element={<ConfigPage title="套餐模板池"><PackageTemplates /></ConfigPage>} />
+        <Route path="station-pricing" element={<ConfigPage title="场地计费"><StationPricing /></ConfigPage>} />
+
         <Route path="users" element={<UsersPage />} />
         <Route path="alerts" element={<AlertsPage />} />
         <Route path="alert-rules" element={<AlertRulesPage />} />

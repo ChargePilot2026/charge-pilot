@@ -21,6 +21,8 @@ const sections: NavSection[] = [
     { key: '/stations', label: '站点', permission: 'station.read' },
     { key: '/devices', label: '设备', permission: 'device.read' },
     { key: '/pricing-templates', label: '计费模板', permission: 'pricing.read' },
+    { key: '/package-templates', label: '套餐模板池', permission: 'pricing.read' },
+    { key: '/station-pricing', label: '场地计费', permission: 'pricing.read' },
   ] },
   { key: 'users', icon: <GiftOutlined />, label: '用户运营', children: [
     { key: '/coupons', label: '优惠券', permission: 'coupon.read' },

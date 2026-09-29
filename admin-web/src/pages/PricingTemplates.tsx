@@ -1,67 +1,23 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Alert, Button, Collapse, Descriptions, Divider, Form, Input, InputNumber, Modal, Select, Space, Steps, Switch, Table, Tabs, Tag, message } from 'antd';
+import { useEffect, useState } from 'react';
+import { Alert, Button, Collapse, Descriptions, Divider, Form, Input, InputNumber, Modal, Select, Space, Steps, Switch, Table, Tag, message } from 'antd';
 import { apiGet, apiPost, apiPut } from '../api/client';
+import {
+  DEFAULT_DISPLAY, MODE_META, MODE_OPTIONS, SERVICE_OPTIONS, blankPeriod, describeSpec, defaultSpecForm,
+  formToSpec, insertPeriod, insertTier, isServerBilled, minuteToClock, modeLabel, removePeriod, removeTier,
+  specToForm, validateSpecForm, type ChargeMode, type PeriodForm, type SpecForm, type Station, type Template, type TierForm,
+} from './pricing/model';
 
-// A pricing template is the whole commercial offer in one object: what is
-// charged and on what basis, which packages a rider may pick, and what the
-// mini program may reveal. It is inert until applied to a station, and applying
-// copies all three parts. Editing it afterwards cannot change a station that is
-// already running it.
+// A pricing template is only the tariff: what is charged, on what basis, and
+// what the mini program may reveal. Packages are a separate pool (see
+// PackageTemplates) because a prepaid cap settles on its own price and stays
+// valid whichever tariff is running.
 //
-// The form is built around one idea: only the fields the chosen basis actually
-// uses are shown. A per-session tariff has no use for a time-of-use table, and
-// showing one anyway is how operators end up filling in fields that are quietly
-// ignored at settlement.
-
-type Basis = 'energy' | 'power_tier' | 'max_power' | 'per_minute' | 'per_session';
-type ServiceMode = 'none' | 'energy' | 'minute' | 'minute_power' | 'session';
-
-type Window = { start: string; end: string; cents_per_kwh?: number; service_cents_per_kwh?: number; cents_per_hour_per_kw?: number };
-type Tier = { low_w: number; high_w: number; cents_per_hour: number; service_cents_per_hour: number };
-type Spec = {
-  basis: Basis;
-  tier_price_basis?: 'per_hour_at_ceiling' | 'per_kwh';
-  windows?: Window[];
-  tiers?: Tier[];
-  max_power_cents_per_hour_per_kw?: number;
-  per_minute_cents?: number;
-  per_session_cents?: number;
-  service?: { mode: ServiceMode; cents_per_kwh?: number; cents_per_minute?: number; cents_per_hour?: number; cents_per_session?: number };
-  free_minutes?: number;
-  min_electric_cents?: number;
-  loss_rate_bp?: number;
-};
-type Display = {
-  show_energy: boolean; show_power: boolean; show_tariff: boolean; show_fee_split: boolean;
-  fee_split_inline: boolean; show_fee_on_end: boolean; show_method: boolean; show_rule: boolean; hide_unit: boolean;
-};
-type TemplatePackage = { id?: number; name: string; kind: 'amount' | 'package'; price_cents: number; duration_minutes: number; stop_when_full: boolean; status: string };
-type Template = { id: number; name: string; remark: string; status: string; version: number; spec?: Spec; display?: Display; packages?: TemplatePackage[]; applied_stations?: string };
-type SiteRule = { id: number; name: string; station_id: number; station_name?: string; template_id?: number; version: number; status: string; spec_json?: Spec };
-type Station = { id: number; code: string; name: string };
-
-const BASIS_OPTIONS: { value: Basis; label: string; hint: string }[] = [
-  { value: 'energy', label: '按电量计费', hint: '费率作用于充进去的电量，单位元/度。适用于普通按量收费。' },
-  { value: 'power_tier', label: '按功率档位计费', hint: '按充电功率落入的档位定价，档位越高单价越高，用于鼓励错峰、惩罚占位。' },
-  { value: 'max_power', label: '按最大功率计费', hint: '整场按出现过的最高功率 × 时长计费，短暂冲高也按峰值收。' },
-  { value: 'per_minute', label: '按时长计费', hint: '不区分电量与时段，按分钟固定计费。' },
-  { value: 'per_session', label: '按次计费', hint: '整场固定金额，不看电量。' },
-];
-const SERVICE_OPTIONS: { value: ServiceMode; label: string; field: string; unit: string }[] = [
-  { value: 'none', label: '不收服务费', field: '', unit: '' },
-  { value: 'energy', label: '按电量', field: 'cents_per_kwh', unit: '元/度' },
-  { value: 'minute', label: '按充电时长', field: 'cents_per_minute', unit: '元/分钟' },
-  { value: 'minute_power', label: '按功率档位', field: 'cents_per_hour', unit: '元/小时（随档位）' },
-  { value: 'session', label: '按次', field: 'cents_per_session', unit: '元/次' },
-];
-
-const yuan = (cents = 0) => `¥${(cents / 100).toFixed(2)}`;
-const toCents = (value?: number) => Math.round(Number(value || 0) * 100);
-const BASIS_LABEL: Record<Basis, string> = Object.fromEntries(BASIS_OPTIONS.map(o => [o.value, o.label])) as Record<Basis, string>;
+// The wizard's second step shows only the fields the chosen mode actually
+// reads. A device-billed mode has no rate anywhere in the system, so it gets
+// no rate input at all rather than inputs that would be silently ignored.
 
 export default function PricingTemplates() {
   const [templates, setTemplates] = useState<Template[]>([]);
-  const [rules, setRules] = useState<SiteRule[]>([]);
   const [permissions, setPermissions] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -70,21 +26,26 @@ export default function PricingTemplates() {
   const [step, setStep] = useState(0);
   const [open, setOpen] = useState(false);
   const [formError, setFormError] = useState('');
+  const [localErrors, setLocalErrors] = useState<string[]>([]);
 
   const [viewing, setViewing] = useState<Template | null>(null);
   const [applying, setApplying] = useState<Template | null>(null);
   const [stations, setStations] = useState<Station[]>([]);
   const [stationsLoading, setStationsLoading] = useState(false);
   const [selectedStation, setSelectedStation] = useState<number | null>(null);
+  const [applyDevice, setApplyDevice] = useState('');
   const [applyError, setApplyError] = useState('');
 
   const [form] = Form.useForm();
-  const basis = Form.useWatch< Basis>('basis', form) || 'energy';
-  const serviceMode = Form.useWatch<ServiceMode>('service_mode', form) || 'none';
-  const serviceField = SERVICE_OPTIONS.find(o => o.value === serviceMode)?.field ?? '';
-  const usesWindows = basis === 'energy' || basis === 'power_tier';
-  const usesTiers = basis === 'power_tier';
-  const basisHint = BASIS_OPTIONS.find(o => o.value === basis)?.hint ?? '';
+  const mode = Form.useWatch<ChargeMode>('mode', form) || 'server_realtime_power';
+  const serviceBasis = Form.useWatch<string>('service_basis', form) || 'none';
+  const tierPriceBasis = Form.useWatch<string>('tier_price_basis', form) || 'per_hour_at_ceiling';
+  const multiplierOn = !!Form.useWatch('multiplier_on', form);
+  const showFeeSplit = !!Form.useWatch(['display', 'show_fee_split'], form);
+  const periods: PeriodForm[] = Form.useWatch('periods', form) || [];
+  const energyBasis = mode === 'server_energy';
+  const server = isServerBilled(mode);
+  const tierUnit = mode === 'server_max_power' || (mode === 'server_realtime_power' && tierPriceBasis === 'per_kwh') ? '元/小时' : '元/度';
 
   const load = async () => {
     setLoading(true);
@@ -92,8 +53,6 @@ export default function PricingTemplates() {
       const result = await apiGet<{ items: Template[]; permissions: string[] }>('/api/v1/admin/settings/pricing-templates');
       setTemplates(result.items || []);
       setPermissions(result.permissions || []);
-      const applied = await apiGet<{ items: SiteRule[] }>('/api/v1/admin/settings/charge-rules');
-      setRules(applied.items || []);
     } catch (e: any) {
       message.error(e.message);
     } finally {
@@ -117,67 +76,25 @@ export default function PricingTemplates() {
     }
   };
 
-  // toForm flattens the stored spec into the yuan-denominated shape the editor
-  // shows. Working in cents in the form is what made the previous screens
-  // confusing to read.
-  const toForm = (source?: Template) => {
-    const spec = source?.spec;
-    const windows = spec?.windows?.length ? spec.windows : [{ start: '00:00', end: '24:00', cents_per_kwh: 60 }];
-    return {
-      name: source?.name ?? '',
-      remark: source?.remark ?? '',
-      basis: spec?.basis ?? 'energy',
-      tier_price_basis: spec?.tier_price_basis ?? 'per_hour_at_ceiling',
-      windows: windows.map(w => ({
-        start: w.start, end: w.end,
-        electric_yuan: (w.cents_per_kwh ?? 0) / 100,
-        service_yuan: w.service_cents_per_kwh === undefined ? undefined : w.service_cents_per_kwh / 100,
-        max_power_yuan: (w.cents_per_hour_per_kw ?? 60) / 100,
-      })),
-      tiers: spec?.tiers?.length ? spec.tiers.map(t => ({
-        low_w: t.low_w, high_w: t.high_w,
-        electric_yuan: t.cents_per_hour / 100, service_yuan: t.service_cents_per_hour / 100,
-      })) : [{ low_w: 0, high_w: 200, electric_yuan: 0.17, service_yuan: 0.6 }],
-      fallback_yuan: (windows[0]?.cents_per_kwh ?? 100) / 100,
-      per_minute_yuan: (spec?.per_minute_cents ?? 0) / 100,
-      per_session_yuan: (spec?.per_session_cents ?? 0) / 100,
-      service_mode: spec?.service?.mode ?? 'none',
-      service_kwh_yuan: (spec?.service?.cents_per_kwh ?? 0) / 100,
-      service_min_yuan: (spec?.service?.cents_per_minute ?? 0) / 100,
-      service_hour_yuan: (spec?.service?.cents_per_hour ?? 0) / 100,
-      service_session_yuan: (spec?.service?.cents_per_session ?? 0) / 100,
-      free_minutes: spec?.free_minutes ?? 0,
-      min_electric_yuan: (spec?.min_electric_cents ?? 0) / 100,
-      loss_rate_percent: ((spec?.loss_rate_bp ?? 0) / 100) || 0,
-      packages: source?.packages?.length ? source.packages.map(p => ({
-        name: p.name, kind: p.kind,
-        price_yuan: p.price_cents / 100, duration_minutes: p.duration_minutes, stop_when_full: p.stop_when_full, status: p.status,
-      })) : [],
-      display: source?.display ?? {
-        show_energy: true, show_power: true, show_tariff: false, show_fee_split: true,
-        fee_split_inline: true, show_fee_on_end: true, show_method: true, show_rule: false, hide_unit: false,
-      },
-    };
-  };
-
-  const edit = async (source?: Template) => {
-    setEditing(source || null);
-    setStep(0);
+  const openEditor = async (source?: Template) => {
     setFormError('');
-    form.resetFields();
+    setLocalErrors([]);
+    setStep(0);
     if (source) {
       // The detail endpoint is the authority; the list row carries only summary
-      // fields, so editing straight from the table would silently drop packages.
+      // fields, so editing from the table would drop the tariff itself.
       try {
         const detail = await apiGet<Template>(`/api/v1/admin/settings/pricing-templates/${source.id}`);
         setEditing(detail);
-        form.setFieldsValue(toForm(detail));
+        form.setFieldsValue({ ...specToForm(detail.spec), name: detail.name, remark: detail.remark, display: detail.display || DEFAULT_DISPLAY });
       } catch (e: any) {
         message.error(e.message);
         return;
       }
     } else {
-      form.setFieldsValue(toForm());
+      setEditing(null);
+      form.resetFields();
+      form.setFieldsValue({ ...defaultSpecForm('server_realtime_power'), name: '', remark: '', display: DEFAULT_DISPLAY });
     }
     setOpen(true);
   };
@@ -190,56 +107,34 @@ export default function PricingTemplates() {
     }
   };
 
-  const buildSpec = (values: any): Spec => {
-    const service: any = { mode: values.service_mode };
-    if (values.service_mode === 'energy') service.cents_per_kwh = toCents(values.service_kwh_yuan);
-    if (values.service_mode === 'minute') service.cents_per_minute = toCents(values.service_min_yuan);
-    if (values.service_mode === 'minute_power') service.cents_per_hour = toCents(values.service_hour_yuan);
-    if (values.service_mode === 'session') service.cents_per_session = toCents(values.service_session_yuan);
-    const spec: Spec = { basis: values.basis, service, free_minutes: values.free_minutes || 0, min_electric_cents: toCents(values.min_electric_yuan), loss_rate_bp: Math.round((values.loss_rate_percent || 0) * 100) };
-    if (values.basis === 'power_tier') {
-      spec.tier_price_basis = values.tier_price_basis;
-      spec.tiers = (values.tiers || []).map((t: any) => ({
-        low_w: Number(t.low_w), high_w: Number(t.high_w),
-        cents_per_hour: toCents(t.electric_yuan), service_cents_per_hour: toCents(t.service_yuan),
-      }));
-      // Above the top tier the window rate is the fallback, so it is written to
-      // every window rather than being a second, separately editable number
-      // that could disagree with the visible table.
-      const fallback = toCents(values.fallback_yuan);
-      spec.windows = (values.windows || []).map((w: any) => ({ start: w.start, end: w.end, cents_per_kwh: fallback }));
-    } else if (values.basis === 'energy') {
-      spec.windows = (values.windows || []).map((w: any) => ({
-        start: w.start, end: w.end, cents_per_kwh: toCents(w.electric_yuan),
-        service_cents_per_kwh: w.service_yuan === undefined ? undefined : toCents(w.service_yuan),
-      }));
-    } else if (values.basis === 'max_power') {
-      spec.windows = [{ start: '00:00', end: '24:00', cents_per_hour_per_kw: toCents((values.windows || [])[0]?.max_power_yuan) }];
-    } else if (values.basis === 'per_minute') {
-      spec.per_minute_cents = toCents(values.per_minute_yuan);
-    } else if (values.basis === 'per_session') {
-      spec.per_session_cents = toCents(values.per_session_yuan);
-    }
-    return spec;
+  const switchMode = (next: ChargeMode) => {
+    const previous = form.getFieldValue('mode') as ChargeMode;
+    if (previous === next) return;
+    form.setFieldsValue(specToForm({ mode: next }));
   };
 
   const save = async () => {
+    let values: any;
     try {
-      const values = await form.validateFields();
-      setSaving(true);
-      setFormError('');
+      values = await form.validateFields();
+    } catch {
+      return;
+    }
+    const specForm: SpecForm = { ...specToForm({ mode }), mode, service_basis: serviceBasis, tier_price_basis: tierPriceBasis, periods, ...values };
+    const errors = validateSpecForm(specForm);
+    setLocalErrors(errors);
+    if (errors.length > 0) {
+      setFormError('费率配置还不满足保存条件，请按下方提示修改后再保存。');
+      return;
+    }
+    setSaving(true);
+    setFormError('');
+    try {
       const body = {
         name: values.name,
         remark: values.remark ?? '',
-        spec: buildSpec(values),
-        display: values.display,
-        packages: (values.packages || []).map((p: any) => ({
-          name: p.name, kind: p.kind,
-          price_cents: p.kind === 'amount' ? toCents(p.price_yuan) : 0,
-          duration_minutes: p.kind === 'package' ? Number(p.duration_minutes || 0) : 0,
-          stop_when_full: !!p.stop_when_full,
-          status: p.status || 'active',
-        })),
+        spec: formToSpec(specForm),
+        display: values.display || DEFAULT_DISPLAY,
         version: editing?.version || 0,
       };
       if (editing) await apiPut(`/api/v1/admin/settings/pricing-templates/${editing.id}`, body);
@@ -248,7 +143,7 @@ export default function PricingTemplates() {
       setOpen(false);
       await load();
     } catch (e: any) {
-      if (!e.errorFields) setFormError(e.message || '保存失败');
+      setFormError(e.message || '保存失败');
     } finally {
       setSaving(false);
     }
@@ -258,6 +153,7 @@ export default function PricingTemplates() {
     setApplying(template);
     setApplyError('');
     setSelectedStation(null);
+    setApplyDevice('');
     setStations([]);
     await searchStations('');
   };
@@ -271,9 +167,11 @@ export default function PricingTemplates() {
     setSaving(true);
     setApplyError('');
     try {
-      const current = rules.filter(r => r.station_id === selectedStation).reduce((max, r) => Math.max(max, r.version), 0);
       const result = await apiPost<{ version: number }>(`/api/v1/admin/settings/pricing-templates/${applying.id}/apply`, {
-        station_id: selectedStation, request_id: crypto.randomUUID(), expected_version: current,
+        station_id: selectedStation,
+        device_id: applyDevice.trim(),
+        request_id: crypto.randomUUID(),
+        expected_version: 0,
       });
       message.success(`已应用，当前版本 v${result.version}`);
       setApplying(null);
@@ -313,234 +211,221 @@ export default function PricingTemplates() {
     },
   });
 
-  const disableRule = (rule: SiteRule) => Modal.confirm({
-    title: '停用站点计费规则',
-    content: `停用「${rule.station_name || rule.station_id}」的 v${rule.version} 后，该站点没有有效规则时将无法发起新支付。已有支付保留原规则快照。`,
-    okText: '停用',
-    onOk: async () => {
-      await apiPost(`/api/v1/admin/settings/charge-rules/${rule.id}/disable`);
-      message.success('已停用');
-      await load();
-    },
-  });
+  const setPeriods = (next: PeriodForm[]) => form.setFieldValue('periods', next);
+  const setTiers = (pi: number, next: TierForm[]) => {
+    const copy = periods.map((p, i) => (i === pi ? { ...p, tiers: next } : p));
+    setPeriods(copy);
+  };
 
-  const stepItems = useMemo(() => [
-    {
-      key: 'basic', label: '基本信息',
-      children: <Form form={form} name="pricing_template" layout="vertical">
-        <Space align="start" wrap>
-          <Form.Item name="name" label="模板名称" rules={[{ required: true, whitespace: true, max: 64 }]}><Input maxLength={64} placeholder="如：二轮标准梯度价" /></Form.Item>
-          <Form.Item name="remark" label="模板备注" rules={[{ max: 255 }]}><Input maxLength={255} placeholder="选填，说明适用范围" /></Form.Item>
-        </Space>
-      </Form>,
-    },
-    {
-      key: 'tariff', label: '计费口径',
-      children: <Form form={form} name="pricing_tariff" layout="vertical">
-        <Form.Item name="basis" label="计费方式" rules={[{ required: true }]}>
-          <Select style={{ width: 280 }} options={BASIS_OPTIONS.map(o => ({ value: o.value, label: o.label }))} />
+  const stepOne = (
+    <Form form={form} name="pricing_mode" layout="vertical">
+      <Space align="start" wrap>
+        <Form.Item name="name" label="模板名称" rules={[{ required: true, whitespace: true, max: 64 }]}>
+          <Input maxLength={64} placeholder="如：二轮标准梯度价" style={{ width: 240 }} />
         </Form.Item>
-        {basisHint && <Alert type="info" showIcon message={basisHint} style={{ marginBottom: 12 }} />}
+        <Form.Item name="remark" label="模板备注" rules={[{ max: 255 }]}>
+          <Input maxLength={255} placeholder="选填，说明适用范围" style={{ width: 300 }} />
+        </Form.Item>
+      </Space>
+      <Form.Item name="mode" label="计费方式" rules={[{ required: true }]}>
+        <Select
+          style={{ width: 420 }}
+          options={MODE_OPTIONS as never}
+          onChange={(value: ChargeMode) => switchMode(value)}
+        />
+      </Form.Item>
+      <Alert type="info" showIcon message={MODE_META[mode]?.hint} />
+    </Form>
+  );
 
-        {usesTiers && <>
-          <Form.Item name="tier_price_basis" label="档位单价口径" rules={[{ required: true }]}>
-            <Select style={{ width: 320 }} options={[
-              { value: 'per_hour_at_ceiling', label: '元/小时，按档位上限折算' },
-              { value: 'per_kwh', label: '元/度，直接作为电价' },
-            ]} />
-          </Form.Item>
-          <Alert type="warning" showIcon style={{ marginBottom: 12 }}
-            message="档位单价的换算方式会直接改变账单金额，切换前请先用测试站点验算。" />
-          <Form.List name="tiers">
-            {(fields, { add, remove }) => <>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0,1fr)) auto', gap: 8, fontWeight: 600, marginBottom: 4 }}>
-                <span>低档（瓦）</span><span>高档（瓦）</span><span>电费单价（元/小时）</span><span>服务费单价（元/小时）</span><span />
-              </div>
-              {fields.map(({ key, name, ...rest }) => <Space key={key} align="start" style={{ display: 'flex' }}>
-                <Form.Item {...rest} name={[name, 'low_w']} rules={[{ required: true }]}><InputNumber min={0} max={100000} style={{ width: 120 }} /></Form.Item>
-                <Form.Item {...rest} name={[name, 'high_w']} rules={[{ required: true }]}><InputNumber min={1} max={100000} style={{ width: 120 }} /></Form.Item>
-                <Form.Item {...rest} name={[name, 'electric_yuan']} rules={[{ required: true }]}><InputNumber min={0} max={10000} step={0.01} precision={2} addonBefore="¥" style={{ width: 160 }} /></Form.Item>
-                <Form.Item {...rest} name={[name, 'service_yuan']}><InputNumber min={0} max={10000} step={0.01} precision={2} addonBefore="¥" style={{ width: 160 }} /></Form.Item>
-                <Button onClick={() => remove(name)} disabled={fields.length === 1} style={{ marginTop: 8 }}>删除档位</Button>
-              </Space>)}
-              <Button onClick={() => add({ low_w: 0, high_w: 0, electric_yuan: 0, service_yuan: 0 })} disabled={fields.length >= 32}>添加档位</Button>
-            </>}
-          </Form.List>
-          <Divider />
-        </>}
-
-        {usesWindows && <Form.List name="windows">
-          {(fields, { add, remove }) => <>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0,1fr)) auto', gap: 8, fontWeight: 600, marginBottom: 4 }}>
-              <span>开始（HH:mm）</span><span>结束（HH:mm）</span>
-              <span>{usesTiers ? '超档电费单价（元/度）' : '电价（元/度）'}</span>
-              <span>{serviceMode === 'energy' ? '时段服务费（元/度）' : ''}</span><span />
-            </div>
-            {fields.map(({ key, name, ...rest }) => <Space key={key} align="start" style={{ display: 'flex' }}>
-              <Form.Item {...rest} name={[name, 'start']} rules={[{ required: true, pattern: /^\d{2}:\d{2}$/ }]}><Input style={{ width: 110 }} placeholder="00:00" /></Form.Item>
-              <Form.Item {...rest} name={[name, 'end']} rules={[{ required: true, pattern: /^\d{2}:\d{2}$/ }]}><Input style={{ width: 110 }} placeholder="24:00" /></Form.Item>
-              {usesTiers
-                ? <Form.Item {...rest} name={[name, 'electric_yuan']}><InputNumber min={0} max={10000} step={0.01} precision={2} style={{ display: 'none' }} /></Form.Item>
-                : <Form.Item {...rest} name={[name, 'electric_yuan']} rules={[{ required: true }]}><InputNumber min={0} max={10000} step={0.01} precision={2} addonBefore="¥" style={{ width: 150 }} /></Form.Item>}
-              <Form.Item {...rest} name={[name, 'service_yuan']}>
-                {serviceMode === 'energy'
-                  ? <InputNumber min={0} max={10000} step={0.01} precision={2} addonBefore="¥" style={{ width: 150 }} />
-                  : <InputNumber style={{ display: 'none' }} />}
+  const renderPeriods = () => {
+    const list = periods.length ? periods : [blankPeriod()];
+    return <>
+      <Alert type="info" showIcon style={{ marginBottom: 8 }}
+        message="时段是链式的：只填「本段结束时刻」，开始时刻由上一段结束时刻推导，必须严格递增且最后一段正好 24:00。" />
+      {list.map((period, pi) => {
+        const startMinute = pi > 0 ? Number(periods[pi - 1]?.end_minute ?? 0) : 0;
+        const isLast = pi === list.length - 1;
+        return <div key={pi} style={{ border: '1px solid #f0f0f0', borderRadius: 6, padding: 12, marginBottom: 8 }}>
+          <Space align="start" wrap>
+            <Form.Item
+              name={['periods', pi, 'end_minute']}
+              label={`第 ${pi + 1} 段结束时刻`}
+              extra={isLast ? '最后一段必须为 24:00' : undefined}
+              rules={[{ required: true }]}
+            >
+              <InputNumber min={1} max={1440} step={15} addonAfter={minuteToClock(Number(period.end_minute) || 1440)} style={{ width: 190 }} />
+            </Form.Item>
+            {energyBasis
+              ? <Form.Item name={['periods', pi, 'electric_yuan']} label="电价（元/度）" rules={[{ required: true }]}>
+                <InputNumber min={0} max={10000} step={0.01} precision={2} addonBefore="¥" style={{ width: 190 }} />
               </Form.Item>
-              <Button onClick={() => remove(name)} disabled={fields.length === 1} style={{ marginTop: 8 }}>移除时段</Button>
-            </Space>)}
-            <Button onClick={() => add({ start: '', end: '', electric_yuan: 0 })} disabled={fields.length >= 48}>添加时段</Button>
-            <Alert type="info" showIcon style={{ marginTop: 12 }}
-              message="时段必须完整覆盖 00:00–24:00 且互不重叠，否则模板保存时会被拒绝。" />
+              : null}
+            <Form.Item label="本段覆盖">
+              <Input readOnly value={`${minuteToClock(startMinute)} → ${minuteToClock(Number(period.end_minute) || 1440)}`} style={{ width: 190 }} />
+            </Form.Item>
+            <Button onClick={() => setPeriods(insertPeriod(periods, pi + 1))} disabled={list.length >= 48}>在此后插入时段</Button>
+            <Button danger disabled={list.length <= 1} onClick={() => setPeriods(removePeriod(periods, pi))}>删除本段</Button>
+          </Space>
+          {!energyBasis && <>
+            <Divider orientation="left" plain style={{ margin: '4px 0 12px' }}>功率档位（链式：只填上限瓦数，下限由上一档 +1 推导）</Divider>
+            {(period.tiers || []).map((tier, ti) => {
+              const lower = ti > 0 ? Number((period.tiers || [])[ti - 1]?.max_watts ?? 0) + 1 : 0;
+              return <Space key={ti} align="start" wrap style={{ marginBottom: 8 }}>
+                <Form.Item
+                  name={['periods', pi, 'tiers', ti, 'max_watts']}
+                  label={`第 ${ti + 1} 档上限（${lower}–${Number(tier.max_watts) || 0} 瓦）`}
+                  rules={[{ required: true }]}
+                >
+                  <InputNumber min={0} max={9990} step={100} addonAfter="瓦" style={{ width: 220 }} />
+                </Form.Item>
+                <Form.Item name={['periods', pi, 'tiers', ti, 'electric_yuan']} label={`电费单价（${tierUnit}）`} rules={[{ required: true }]}>
+                  <InputNumber min={0} max={10000} step={0.01} precision={2} addonBefore="¥" style={{ width: 190 }} />
+                </Form.Item>
+                {serviceBasis === 'minute_power' && (
+                  <Form.Item name={['periods', pi, 'tiers', ti, 'service_yuan']} label="服务费单价（元/小时）" rules={[{ required: true }]}>
+                    <InputNumber min={0} max={10000} step={0.01} precision={2} addonBefore="¥" style={{ width: 190 }} />
+                  </Form.Item>
+                )}
+                <Button onClick={() => setTiers(pi, insertTier(period.tiers || [], ti + 1))} disabled={(period.tiers || []).length >= 8}>插入档位</Button>
+                <Button danger disabled={(period.tiers || []).length <= 1} onClick={() => setTiers(pi, removeTier(period.tiers || [], ti))}>删除档位</Button>
+              </Space>;
+            })}
+            <Button onClick={() => setTiers(pi, insertTier(period.tiers || [], (period.tiers || []).length))} disabled={(period.tiers || []).length >= 8}>在本段末尾添加档位</Button>
           </>}
-        </Form.List>}
+        </div>;
+      })}
+    </>;
+  };
 
-        {usesTiers && <Form.Item name="fallback_yuan" label="超过最大档位的电费单价（元/度）" rules={[{ required: true }]}
-          extra="充电功率超过最高档时，超出部分按此单价乘电量计费。">
-          <InputNumber min={0} max={10000} step={0.01} precision={2} addonBefore="¥" style={{ width: 220 }} />
-        </Form.Item>}
-
-        {basis === 'max_power' && <Form.List name="windows">
-          {(fields) => <Form.Item {...fields[0]} name={[0, 'max_power_yuan']} label="最大功率单价（元/小时·kW）"
-            rules={[{ required: true }]} extra="整场按出现过的最高功率 × 充电小时 × 此单价计费。">
-            <InputNumber min={0} max={10000} step={0.01} precision={2} addonBefore="¥" style={{ width: 220 }} />
-          </Form.Item>}
-        </Form.List>}
-
-        {basis === 'per_minute' && <Form.Item name="per_minute_yuan" label="每分钟单价（元/分钟）" rules={[{ required: true }]}>
-          <InputNumber min={0} max={10000} step={0.01} precision={2} addonBefore="¥" style={{ width: 220 }} />
-        </Form.Item>}
-
-        {basis === 'per_session' && <Form.Item name="per_session_yuan" label="每场固定金额（元/次）" rules={[{ required: true }]}>
-          <InputNumber min={0} max={10000} step={0.5} precision={2} addonBefore="¥" style={{ width: 220 }} />
-        </Form.Item>}
-
+  const stepTwo = (
+    <Form form={form} name="pricing_spec" layout="vertical">
+      {server ? <>
+        {mode === 'server_realtime_power' && (
+          <>
+            <Form.Item name="tier_price_basis" label="档位单价口径" rules={[{ required: true }]}
+              extra="档位单价的换算方式会直接改变账单金额，切换前请先用测试站点验算。">
+              <Select style={{ width: 360 }} options={[
+                { value: 'per_hour_at_ceiling', label: '元/小时，按档位上限折算成每度电价' },
+                { value: 'per_kwh', label: '元/度，档位单价直接作为电价' },
+              ]} />
+            </Form.Item>
+            <Alert type="warning" showIcon style={{ marginBottom: 12 }} message="档位单价的换算方式会直接改变账单金额，切换前请先用测试站点验算。" />
+          </>
+        )}
+        <Divider orientation="left" plain>时段费率</Divider>
+        {renderPeriods()}
         <Divider orientation="left" plain>服务费</Divider>
         <Space align="start" wrap>
-          <Form.Item name="service_mode" label="服务费口径" rules={[{ required: true }]}>
-            <Select style={{ width: 220 }} options={SERVICE_OPTIONS.map(o => ({ value: o.value, label: o.label }))} />
+          <Form.Item name="service_basis" label="服务费口径" rules={[{ required: true }]}>
+            <Select style={{ width: 320 }} options={SERVICE_OPTIONS.filter(o => !(o.value === 'minute_power' && energyBasis)).map(o => ({ value: o.value, label: o.label }))} />
           </Form.Item>
-          {serviceMode === 'energy' && <Form.Item name="service_kwh_yuan" label="服务费（元/度）" rules={[{ required: true }]}><InputNumber min={0} max={10000} step={0.01} precision={2} addonBefore="¥" /></Form.Item>}
-          {serviceMode === 'minute' && <Form.Item name="service_min_yuan" label="服务费（元/分钟）" rules={[{ required: true }]}><InputNumber min={0} max={10000} step={0.01} precision={2} addonBefore="¥" /></Form.Item>}
-          {serviceMode === 'minute_power' && <Form.Item name="service_hour_yuan" label="服务费（元/小时）" rules={[{ required: true }]}
-            extra="实际取值来自上方各档位的服务费单价，此处仅作兜底。"><InputNumber min={0} max={10000} step={0.01} precision={2} addonBefore="¥" /></Form.Item>}
-          {serviceMode === 'session' && <Form.Item name="service_session_yuan" label="服务费（元/次）" rules={[{ required: true }]}><InputNumber min={0} max={10000} step={0.5} precision={2} addonBefore="¥" /></Form.Item>}
+          {serviceBasis === 'energy' && <Form.Item name="service_kwh_yuan" label="服务费（元/度）" rules={[{ required: true }]} extra="在时段费率的每个档位上单独收取。">
+            <InputNumber min={0} max={10000} step={0.01} precision={2} addonBefore="¥" style={{ width: 180 }} />
+          </Form.Item>}
+          {serviceBasis === 'minute' && <Form.Item name="service_minute_yuan" label="服务费（元/分钟）" rules={[{ required: true }]}>
+            <InputNumber min={0} max={10000} step={0.01} precision={2} addonBefore="¥" style={{ width: 180 }} />
+          </Form.Item>}
+          {serviceBasis === 'session' && <Form.Item name="service_session_yuan" label="服务费（元/次）" rules={[{ required: true }]}>
+            <InputNumber min={0} max={10000} step={0.5} precision={2} addonBefore="¥" style={{ width: 180 }} />
+          </Form.Item>}
+          {serviceBasis === 'minute_power' && <Alert type="info" showIcon style={{ marginTop: 28 }} message="按功率档位收取服务费时，单价取自各时段各档位的服务费单价，无需在此另填。" />}
         </Space>
 
-        <Collapse ghost style={{ marginTop: 8 }} items={[{ key: 'policy', label: '全局策略（点击展开）', children: <Space direction="vertical" style={{ width: '100%' }}>
+        <Collapse ghost style={{ marginTop: 8 }} items={[{ key: 'extra', label: '全局策略与封顶（点击展开）', children: <Space direction="vertical" style={{ width: '100%' }}>
+          <Form.Item name="loss_percent" label="电损率（%）" extra="按此比例放大可计费电量，弥补线路损耗。">
+            <InputNumber min={0} max={10} step={0.1} precision={2} addonAfter="%" style={{ width: 200 }} />
+          </Form.Item>
           <Form.Item name="free_minutes" label="规定时间内免费充电（分钟）" extra="在此分钟内结束充电，本次不计费。0 表示不启用。">
             <InputNumber min={0} max={1440} style={{ width: 200 }} />
           </Form.Item>
           <Form.Item name="min_electric_yuan" label="电费最低消费（元）" extra="电费低于该金额时按该金额收取，仅针对电费，不含服务费。">
             <InputNumber min={0} max={10000} step={0.5} precision={2} addonBefore="¥" style={{ width: 200 }} />
           </Form.Item>
-          <Form.Item name="loss_rate_percent" label="电损率（%）" extra="按此比例放大可计费电量，弥补线路损耗。">
-            <InputNumber min={0} max={10} step={0.1} precision={2} addonAfter="%" style={{ width: 200 }} />
+          <Form.Item name="spend_cap_yuan" label="单场费用封顶（元）" extra="服务端计费的订单达到该金额即停止，0 表示不封顶。">
+            <InputNumber min={0} max={10000} step={1} precision={2} addonBefore="¥" style={{ width: 200 }} />
           </Form.Item>
+          <Form.Item name="stop_grace_seconds" label="停机宽限（秒）" extra="通知设备停止后，等待多久仍视为订单未结束。">
+            <InputNumber min={0} max={3600} style={{ width: 200 }} />
+          </Form.Item>
+          <Form.Item name="multiplier_on" label="按渠道给出电费倍率" valuePropName="checked" extra="10000 基点 = 1.0 倍，仅作用于电费，不作用于服务费。">
+            <Switch />
+          </Form.Item>
+          {multiplierOn && <Space align="start" wrap>
+            <Form.Item name="temp_bp" label="临时费率（基点）" rules={[{ required: true }]}><InputNumber min={0} max={100000} step={100} style={{ width: 200 }} /></Form.Item>
+            <Form.Item name="card_bp" label="刷卡费率（基点）" rules={[{ required: true }]}><InputNumber min={0} max={100000} step={100} style={{ width: 200 }} /></Form.Item>
+          </Space>}
         </Space> }]} />
-      </Form>,
-    },
-    {
-      key: 'packages', label: '套餐与展示',
-      children: <Form form={form} name="pricing_packages" layout="vertical">
-        <Form.List name="packages">
-          {(fields, { add, remove }) => <>
-            {fields.map(({ key, name, ...rest }) => <Space key={key} align="start" wrap>
-              <Form.Item {...rest} name={[name, 'name']} label="套餐名称" rules={[{ required: true, max: 64 }]}><Input style={{ width: 160 }} maxLength={64} /></Form.Item>
-              <Form.Item {...rest} name={[name, 'kind']} label="类型" rules={[{ required: true }]}>
-                <Select style={{ width: 160 }} options={[{ value: 'amount', label: '按金额' }, { value: 'package', label: '按时长' }]} />
-              </Form.Item>
-              <Form.Item shouldUpdate noStyle>
-                {() => {
-                  const kind = form.getFieldValue(['packages', name, 'kind']);
-                  return kind === 'amount'
-                    ? <Form.Item {...rest} name={[name, 'price_yuan']} label="金额（元）" rules={[{ required: true }]}><InputNumber min={0.01} max={10000} step={1} precision={2} addonBefore="¥" style={{ width: 150 }} /></Form.Item>
-                    : <Form.Item {...rest} name={[name, 'duration_minutes']} label="时长（分钟）" rules={[{ required: true }]}><InputNumber min={1} max={600} style={{ width: 150 }} /></Form.Item>;
-                }}
-              </Form.Item>
-              <Form.Item {...rest} name={[name, 'stop_when_full']} label="充满自停" valuePropName="checked"><Switch /></Form.Item>
-              <Button onClick={() => remove(name)} danger style={{ marginTop: 30 }}>删除</Button>
-            </Space>)}
-            <Button onClick={() => add({ name: '', kind: 'amount', price_yuan: 1, stop_when_full: false, status: 'active' })} disabled={fields.length >= 32}>添加套餐</Button>
-            <Alert type="info" showIcon style={{ marginTop: 12 }}
-              message="套餐与计费口径同属一个模板，一起应用到站点，避免站点卖着按旧费率算的套餐。" />
-          </>}
-        </Form.List>
+      </> : <>
+        <Alert type="info" showIcon style={{ marginBottom: 12 }}
+          message="设备计费没有电价：费用在用户支付时已收取，设备按获准的时长/电量/功率自行执行。服务端不再计算金额，本模板不保存任何费率。" />
+        {mode === 'device_duration' && <>
+          <Divider orientation="left" plain>时长策略</Divider>
+          <Form.Item name={['time_charge', 'stop_when_full']} label="充满后自动结束" valuePropName="checked"
+            extra="关闭则一直充到时长用尽。"><Switch /></Form.Item>
+          <Space align="start" wrap>
+            <Form.Item name={['time_charge', 'max_minutes']} label="单场时长上限（分钟）" extra="0 表示不限制。">
+              <InputNumber min={0} max={999} style={{ width: 200 }} />
+            </Form.Item>
+            <Form.Item name={['time_charge', 'float_power_deci_watts']} label="涓流功率（0.1 瓦）" extra="满电后的收尾阶段功率上限。">
+              <InputNumber min={0} max={500} style={{ width: 200 }} />
+            </Form.Item>
+            <Form.Item name={['time_charge', 'float_seconds']} label="涓流阶段（秒）" extra="涓流阶段最长持续时间。">
+              <InputNumber min={0} max={10800} style={{ width: 200 }} />
+            </Form.Item>
+          </Space>
+        </>}
+        <Alert type="warning" showIcon style={{ marginTop: 8 }}
+          message="可售套餐不在这里配置：套餐按自己的价格结算，与费率无关，请到「套餐模板池」维护后单独上架。" />
+      </>}
 
-        <Divider orientation="left" plain>用户界面展示</Divider>
+      <Collapse ghost style={{ marginTop: 8 }} items={[{ key: 'common', label: '刷卡与下单（点击展开）', children: <Space align="start" wrap>
+        <Form.Item name="card_max_minutes" label="刷卡订单最长时长（分钟）" extra="0 表示不限制。固件上限 999 分钟。">
+          <InputNumber min={0} max={999} style={{ width: 200 }} />
+        </Form.Item>
+        <Form.Item name="default_charge_way" label="默认下单方式" extra="选填，小程序发起充电时的默认选项。">
+          <Input maxLength={32} placeholder="如：扫码 / 刷卡" style={{ width: 200 }} />
+        </Form.Item>
+      </Space> }]} />
+
+      <Divider orientation="left" plain>用户界面展示</Divider>
+      <Space direction="vertical">
         <Form.Item name={['display', 'show_energy']} label="显示充电电量" valuePropName="checked"><Switch /></Form.Item>
         <Form.Item name={['display', 'show_power']} label="展示充电功率" valuePropName="checked"><Switch /></Form.Item>
         <Form.Item name={['display', 'show_tariff']} label="显示时段计费详情" valuePropName="checked"><Switch /></Form.Item>
         <Form.Item name={['display', 'show_method']} label="显示计费方式" valuePropName="checked"><Switch /></Form.Item>
         <Form.Item name={['display', 'show_rule']} label="展示规则说明" valuePropName="checked"><Switch /></Form.Item>
         <Form.Item name={['display', 'show_fee_split']} label="订单详情显示电费与服务费" valuePropName="checked"><Switch /></Form.Item>
-        <Form.Item noStyle shouldUpdate={(a, b) => a.display?.show_fee_split !== b.display?.show_fee_split}>
-          {() => form.getFieldValue(['display', 'show_fee_split']) && <Form.Item name={['display', 'fee_split_inline']} label="费用直接显示在支付金额后" valuePropName="checked">
-            <Switch checkedChildren="直接显示" unCheckedChildren="隐藏展示" />
-          </Form.Item>}
-        </Form.Item>
+        {showFeeSplit && <Form.Item name={['display', 'fee_split_inline']} label="费用直接显示在支付金额后" valuePropName="checked">
+          <Switch checkedChildren="直接显示" unCheckedChildren="隐藏展示" />
+        </Form.Item>}
         <Form.Item name={['display', 'show_fee_on_end']} label="结束充电推送显示费用" valuePropName="checked"><Switch /></Form.Item>
         <Form.Item name={['display', 'hide_unit']} label="隐藏单位" valuePropName="checked"><Switch /></Form.Item>
-      </Form>,
-    },
-  ], [form, basis, serviceMode, usesWindows, usesTiers]);
-
-  const renderSpecSummary = (spec?: Spec) => {
-    if (!spec) return '—';
-    const parts: string[] = [];
-    if (spec.basis === 'per_session') parts.push(`每场 ${yuan(spec.per_session_cents)}`);
-    else if (spec.basis === 'per_minute') parts.push(`${yuan(spec.per_minute_cents)}/分钟`);
-    else if (spec.basis === 'max_power') parts.push(`${yuan(spec.windows?.[0]?.cents_per_hour_per_kw)}/小时·kW（按最大功率）`);
-    else if (spec.basis === 'power_tier') parts.push(`${spec.tiers?.length ?? 0} 个功率档位`);
-    else parts.push((spec.windows || []).map(w => `${w.start}–${w.end} ${yuan(w.cents_per_kwh)}`).join('；'));
-    if (spec.service?.mode && spec.service.mode !== 'none') parts.push(`服务费：${SERVICE_OPTIONS.find(o => o.value === spec.service!.mode)?.label}`);
-    return parts.join('，');
-  };
+      </Space>
+    </Form>
+  );
 
   return <>
     <Space style={{ marginBottom: 12 }}>
       <Button onClick={() => void load()} loading={loading}>刷新</Button>
-      {canCreate && <Button type="primary" onClick={() => void edit()}>新建计费模板</Button>}
+      {canCreate && <Button type="primary" onClick={() => void openEditor()}>新建计费模板</Button>}
     </Space>
-    <Tabs items={[
+    <Alert type="info" showIcon style={{ marginBottom: 12 }}
+      message="模板只描述计费口径与用户端展示；套餐在「套餐模板池」单独维护。模板需要「应用到站点/设备」后才生效，修改模板不会改变已应用站点的现行计费。" />
+    <Table rowKey="id" dataSource={templates} loading={loading} scroll={{ x: 1000 }} columns={[
+      { title: '名称', render: (_: unknown, r: Template) => <>{r.name}<div style={{ color: '#999' }}>v{r.version}{r.remark ? ` · ${r.remark}` : ''}</div></> },
+      { title: '计费方式', render: (_: unknown, r: Template) => <Tag color={r.spec && isServerBilled(r.spec.mode) ? 'blue' : 'purple'}>{modeLabel(r.spec?.mode)}</Tag> },
+      { title: '费率', render: (_: unknown, r: Template) => describeSpec(r.spec) },
+      { title: '状态', dataIndex: 'status', render: (s: string) => <Tag color={s === 'active' ? 'green' : 'default'}>{s === 'active' ? '可应用' : '已停用'}</Tag> },
+      { title: '已应用站点', dataIndex: 'applied_stations', render: (v?: string) => v || <span style={{ color: '#999' }}>未应用</span> },
       {
-        key: 'templates', label: '计费模板',
-        children: <>
-          <Alert type="info" showIcon style={{ marginBottom: 12 }}
-            message="模板包含计费口径、套餐和用户端展示开关，需要“应用到站点”后才生效。修改模板不会改变已应用站点的现行计费。" />
-          <Table rowKey="id" dataSource={templates} loading={loading} scroll={{ x: 1100 }} columns={[
-            { title: '名称', render: (_: unknown, r: Template) => <>{r.name}<div style={{ color: '#999' }}>v{r.version}{r.remark ? ` · ${r.remark}` : ''}</div></> },
-            { title: '计费方式', render: (_: unknown, r: Template) => <Tag color="blue">{r.spec ? BASIS_LABEL[r.spec.basis] : '—'}</Tag> },
-            { title: '费率', render: (_: unknown, r: Template) => renderSpecSummary(r.spec) },
-            { title: '状态', dataIndex: 'status', render: (s: string) => <Tag color={s === 'active' ? 'green' : 'default'}>{s === 'active' ? '可应用' : '已停用'}</Tag> },
-            { title: '已应用站点', dataIndex: 'applied_stations', render: (v?: string) => v || <span style={{ color: '#999' }}>未应用</span> },
-            {
-              title: '操作', render: (_: unknown, r: Template) => <Space>
-                <Button type="link" onClick={() => void view(r)}>查看</Button>
-                {canCreate && r.status === 'active' && <Button type="link" onClick={() => void openApply(r)}>应用到站点</Button>}
-                {canUpdate && <Button type="link" onClick={() => void edit(r)}>编辑</Button>}
-                {canCreate && <Button type="link" onClick={() => copyTemplate(r)}>复制</Button>}
-                {canUpdate && r.status === 'active' && <Button type="link" danger onClick={() => disableTemplate(r)}>停用</Button>}
-              </Space>,
-            },
-          ]} />
-        </>,
-      },
-      {
-        key: 'stations', label: '站点计费',
-        children: <>
-          <Alert type="warning" showIcon style={{ marginBottom: 12 }}
-            message="停用站点规则后，该站点在无其他有效规则时将无法发起新支付；已付款订单保留原有规则快照，不受影响。" />
-          <Table rowKey="id" dataSource={rules} loading={loading} scroll={{ x: 900 }} columns={[
-            { title: '站点', render: (_: unknown, r: SiteRule) => <>{r.station_name || '未绑定站点'}（{r.station_id || '—'}）</> },
-            { title: '规则名称', dataIndex: 'name' },
-            { title: '版本', dataIndex: 'version', render: (v: number) => `v${v}` },
-            { title: '计费方式', render: (_: unknown, r: SiteRule) => r.spec_json ? BASIS_LABEL[r.spec_json.basis] : '—' },
-            { title: '费率', render: (_: unknown, r: SiteRule) => renderSpecSummary(r.spec_json) },
-            { title: '状态', dataIndex: 'status', render: (s: string) => <Tag color={s === 'active' ? 'green' : 'default'}>{s === 'active' ? '生效中' : '已停用'}</Tag> },
-            { title: '操作', render: (_: unknown, r: SiteRule) => <Space>{r.status === 'active' && canUpdate && <Button type="link" danger onClick={() => disableRule(r)}>停用</Button>}</Space> },
-          ]} />
-        </>,
+        title: '操作', render: (_: unknown, r: Template) => <Space>
+          <Button type="link" onClick={() => void view(r)}>查看</Button>
+          {canCreate && r.status === 'active' && <Button type="link" onClick={() => void openApply(r)}>应用</Button>}
+          {canUpdate && <Button type="link" onClick={() => void openEditor(r)}>编辑</Button>}
+          {canCreate && <Button type="link" onClick={() => copyTemplate(r)}>复制</Button>}
+          {canUpdate && r.status === 'active' && <Button type="link" danger onClick={() => disableTemplate(r)}>停用</Button>}
+        </Space>,
       },
     ]} />
 
@@ -550,30 +435,29 @@ export default function PricingTemplates() {
       confirmLoading={saving}
       footer={[
         <Button key="cancel" onClick={() => setOpen(false)}>取消</Button>,
-        step > 0 && <Button key="back" onClick={() => setStep(step - 1)}>上一步</Button>,
+        step > 0 && <Button key="back" onClick={() => { setLocalErrors([]); setFormError(''); setStep(step - 1); }}>上一步</Button>,
         <Button key="next" type="primary" loading={saving} onClick={async () => {
-          if (step < 2) {
+          if (step === 0) {
             try {
-              await form.validateFields(step === 0 ? ['name'] : []);
-            } catch (e: any) {
-              if (e.errorFields) return;
-              setFormError(e.message);
+              await form.validateFields(['name', 'mode']);
+            } catch {
               return;
             }
-            setStep(step + 1);
+            setStep(1);
             return;
           }
           await save();
-        }}>{step === 2 ? '保存' : '下一步'}</Button>,
+        }}>{step === 1 ? '保存' : '下一步'}</Button>,
       ]}
       destroyOnClose
     >
-      {formError && <Alert type="error" showIcon message={formError} style={{ marginBottom: 12 }} />}
-      <Steps current={step} size="small" style={{ marginBottom: 16 }} items={[{ title: '基本信息' }, { title: '计费口径' }, { title: '套餐与展示' }]} />
-      {step < 2
-        ? <Collapse activeKey={[stepItems[step].key]} ghost items={[stepItems[step]]} />
-        : <Collapse activeKey={[stepItems[2].key]} ghost items={[stepItems[2]]} />}
-      {step === 1 && serviceField === 'cents_per_hour' && <Alert type="info" showIcon style={{ marginTop: 12 }} message="按功率档位收取服务费时，实际单价取自上方各档位的服务费单价。" />}
+      {formError && <Alert type="error" showIcon message={formError} style={{ marginBottom: 12 }}
+        description={localErrors.length ? <ul style={{ margin: 0, paddingLeft: 18 }}>{localErrors.map(e => <li key={e}>{e}</li>)}</ul> : undefined} />}
+      <Steps current={step} size="small" style={{ marginBottom: 16 }} items={[{ title: '基本信息与计费方式' }, { title: '费率与展示' }]} />
+      <Collapse activeKey={[step === 0 ? 'mode' : 'spec']} ghost items={[
+        { key: 'mode', label: '基本信息与计费方式', children: stepOne },
+        { key: 'spec', label: '费率与展示', children: stepTwo },
+      ]} />
     </Modal>
 
     <Modal title={viewing ? `计费模板详情 · ${viewing.name}` : '计费模板详情'} open={!!viewing} width={860}
@@ -584,43 +468,40 @@ export default function PricingTemplates() {
           { key: 'status', label: '状态', children: viewing.status === 'active' ? '可应用' : '已停用' },
           { key: 'remark', label: '备注', children: viewing.remark || '—', span: 2 },
           { key: 'version', label: '版本', children: `v${viewing.version}` },
-          { key: 'basis', label: '计费方式', children: viewing.spec ? BASIS_LABEL[viewing.spec.basis] : '—' },
+          { key: 'mode', label: '计费方式', children: modeLabel(viewing.spec?.mode) },
         ]} />
         <Divider orientation="left" plain>费率</Divider>
-        <div>{renderSpecSummary(viewing.spec)}</div>
-        {viewing.spec?.basis === 'power_tier' && viewing.spec.tiers && <Table size="small" pagination={false} style={{ marginTop: 8 }}
-          rowKey={(_, i) => String(i)} dataSource={viewing.spec.tiers} columns={[
-            { title: '低档（瓦）', dataIndex: 'low_w' },
-            { title: '高档（瓦）', dataIndex: 'high_w' },
-            { title: '电费单价（元/小时）', render: (_: unknown, r: Tier) => yuan(r.cents_per_hour) },
-            { title: '服务费单价（元/小时）', render: (_: unknown, r: Tier) => yuan(r.service_cents_per_hour) },
-          ]} />}
+        <div>{describeSpec(viewing.spec)}</div>
+        {viewing.spec?.electric?.periods?.map((p, i) => <div key={i} style={{ marginTop: 8 }}>
+          <strong>时段 {i + 1}：</strong>00:00 → {minuteToClock(p.end_minute)}
+          {p.tiers?.length
+            ? p.tiers.map((t, j) => <div key={j} style={{ paddingLeft: 16, color: '#666' }}>
+              第 {j + 1} 档：{j > 0 ? `${p.tiers![j - 1].max_watts + 1}–` : '0–'}{t.max_watts} 瓦 · 电费 ¥{(t.electric_cents / 100).toFixed(2)}{t.service_cents ? ` · 服务费 ¥${(t.service_cents / 100).toFixed(2)}` : ''}
+            </div>)
+            : <div style={{ paddingLeft: 16, color: '#666' }}>电价 ¥{((p.electric_cents || 0) / 100).toFixed(2)}/度</div>}
+        </div>)}
         {viewing.spec && <div style={{ marginTop: 8, color: '#666' }}>
-          规定时间内免费：{viewing.spec.free_minutes || 0} 分钟 · 电费最低消费：{yuan(viewing.spec.min_electric_cents)} · 电损率：{((viewing.spec.loss_rate_bp || 0) / 100).toFixed(2)}%
+          免费时长：{viewing.spec.free_minutes || 0} 分钟 · 电费最低消费：¥{((viewing.spec.min_electric_cents || 0) / 100).toFixed(2)} · 电损率：{((viewing.spec.loss_rate_bp || 0) / 100).toFixed(2)}%
         </div>}
-        <Divider orientation="left" plain>套餐（{(viewing.packages || []).length}）</Divider>
-        <Table size="small" pagination={false} rowKey="id" dataSource={viewing.packages || []} columns={[
-          { title: '名称', dataIndex: 'name' },
-          { title: '类型', dataIndex: 'kind', render: (k: string) => k === 'amount' ? '按金额' : '按时长' },
-          { title: '金额', render: (_: unknown, r: TemplatePackage) => r.price_cents ? yuan(r.price_cents) : '—' },
-          { title: '时长', render: (_: unknown, r: TemplatePackage) => r.duration_minutes ? `${r.duration_minutes} 分钟` : '—' },
-          { title: '充满自停', render: (_: unknown, r: TemplatePackage) => r.stop_when_full ? '是' : '否' },
-        ]} />
         <Divider orientation="left" plain>用户端展示</Divider>
         <div>{viewing.display ? Object.entries(viewing.display).filter(([, v]) => v).map(([k]) => k).join('、') || '全部关闭' : '—'}</div>
       </>}
     </Modal>
 
-    <Modal title={applying ? `将「${applying.name}」应用到站点` : '应用到站点'} open={!!applying}
+    <Modal title={applying ? `将「${applying.name}」应用为计费规则` : '应用'} open={!!applying}
       onCancel={() => setApplying(null)} onOk={() => void apply()} confirmLoading={saving} okText="应用"
       okButtonProps={{ disabled: !selectedStation }}>
       {applyError && <Alert type="error" showIcon message={applyError} style={{ marginBottom: 12 }} />}
       <Alert type="warning" showIcon style={{ marginBottom: 12 }}
-        message="应用后该站点立即按此模板计费，并生成新版本；模板内的套餐会同时在该站点上架。若该站点已应用同一模板，请先在“站点计费”中停用现行规则。" />
-      <Select showSearch allowClear aria-label="选择站点" placeholder="输入站点编码、名称或地址进行筛选"
-        value={selectedStation ?? undefined} loading={stationsLoading} filterOption={false}
-        onSearch={value => void searchStations(value)} onChange={value => setSelectedStation(value ?? null)}
-        options={stations.map(s => ({ value: s.id, label: `${s.name}（${s.code}）` }))} style={{ width: '100%' }} />
+        message="应用后该范围立即按此模板计费并生成新版本。本次只发布计费规则，不会产生任何套餐；套餐请到「套餐模板池」单独上架。" />
+      <Space direction="vertical" style={{ width: '100%' }}>
+        <Select showSearch allowClear aria-label="选择站点" placeholder="输入站点编码、名称或地址进行筛选"
+          value={selectedStation ?? undefined} loading={stationsLoading} filterOption={false}
+          onSearch={value => void searchStations(value)} onChange={value => setSelectedStation(value ?? null)}
+          options={stations.map(s => ({ value: s.id, label: `${s.name}（${s.code}）` }))} style={{ width: '100%' }} />
+        <Input aria-label="设备编号" placeholder="设备编号（留空表示发布为场地默认规则）" maxLength={64}
+          value={applyDevice} onChange={e => setApplyDevice(e.target.value)} />
+      </Space>
       {stations.length === 0 && !stationsLoading && <div style={{ marginTop: 8, color: '#999' }}>没有匹配的运营中站点</div>}
     </Modal>
   </>;
