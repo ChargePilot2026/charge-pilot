@@ -33,10 +33,22 @@ func (s Store) ActiveOffers(ctx context.Context, stationID uint64, deviceID stri
 		return nil, ErrOfferUnavailable
 	}
 	rows := []Offer{}
+	// Retired rows are filtered here because the column exists precisely so a
+	// package can be taken off sale without losing its history — and the admin
+	// list has always filtered it. A rider-facing read that ignored it would
+	// keep selling something an operator believes is gone.
 	query := s.DB.WithContext(ctx).Table("charge_offer").
-		Where("station_id=? AND status='active'", stationID)
+		Where("station_id=? AND status='active' AND deleted_at IS NULL", stationID)
 	if deviceID != "" {
 		query = query.Where("device_id = ? OR device_id IS NULL", deviceID)
+		// A yard-wide package that this device also sells on its own is
+		// overridden, and the device's own version is the one that applies.
+		// Listing both put the same package in the rider's list twice, which is
+		// what the sentence above has always said must not happen.
+		query = query.Where(`device_id = ? OR package_template_id NOT IN (
+			SELECT package_template_id FROM charge_offer
+			WHERE station_id = ? AND device_id = ? AND status = 'active' AND deleted_at IS NULL
+		)`, deviceID, stationID, deviceID)
 	}
 	if err := query.Order("device_id IS NULL ASC, mode, price_cents, id").Find(&rows).Error; err != nil {
 		return nil, err
@@ -55,7 +67,7 @@ func (s Store) ActiveOffer(ctx context.Context, stationID uint64, deviceID strin
 	}
 	var row Offer
 	result := s.DB.WithContext(ctx).Table("charge_offer").
-		Where("id=? AND station_id=? AND status='active'", id, stationID).Take(&row)
+		Where("id=? AND station_id=? AND status='active' AND deleted_at IS NULL", id, stationID).Take(&row)
 	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 		return Offer{}, ErrOfferUnavailable
 	}
