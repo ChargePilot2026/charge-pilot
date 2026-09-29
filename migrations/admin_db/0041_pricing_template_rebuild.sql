@@ -39,7 +39,7 @@ ALTER TABLE pricing_rule
   ADD COLUMN channel ENUM('default','temp','card') NOT NULL DEFAULT 'default' COMMENT '计费通道，选择费率倍数';
 
 -- A pricing template is the whole commercial offer: what is charged, on what,
--- which packages a rider can pick, and what the mini program is allowed to show.
+-- which packages a charging user can pick, and what the mini program is allowed to show.
 -- It is inert until applied to a station.
 CREATE TABLE pricing_template (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
