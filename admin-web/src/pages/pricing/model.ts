@@ -97,6 +97,27 @@ export const DEFAULT_DISPLAY: Display = {
   fee_split_inline: true, show_fee_on_end: true, show_method: true, show_rule: false, hide_unit: false,
 };
 
+// The detail screen has to say what the charging user will see, in the words an
+// operator uses. Printing the raw field names told them nothing they could act
+// on: nobody decides whether to reveal a tariff by reading "show_tariff".
+const DISPLAY_LABELS: Record<keyof Display, string> = {
+  show_energy: '显示充电电量',
+  show_power: '展示充电功率',
+  show_tariff: '显示时段计费详情',
+  show_fee_split: '订单详情拆分电费与服务费',
+  fee_split_inline: '费用直接跟在支付金额后',
+  show_fee_on_end: '结束充电推送显示费用',
+  show_method: '显示计费方式',
+  show_rule: '展示规则说明',
+  hide_unit: '隐藏单位',
+};
+
+export const describeDisplay = (display?: Display): string => {
+  if (!display) return '—';
+  const on = (Object.keys(DISPLAY_LABELS) as (keyof Display)[]).filter(k => display[k]);
+  return on.length ? on.map(k => DISPLAY_LABELS[k]).join('、') : '全部关闭';
+};
+
 export const yuan = (cents?: number | null) => `¥${((cents || 0) / 100).toFixed(2)}`;
 export const toCents = (value?: number | null) => Math.round(Number(value || 0) * 100);
 export const fromCents = (cents?: number | null) => (cents || 0) / 100;

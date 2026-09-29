@@ -63,6 +63,7 @@ func (a ResourceAPI) devicePricingMatrix(c *gin.Context) {
 			COALESCE(own.name, station_default.name) AS template_name,
 			COALESCE(own.template_id, station_default.template_id) AS template_id,
 			own.id AS own_rule_id, own.version AS own_version, station_default.version AS station_version,
+			own_latest.version AS own_latest_version,
 			COALESCE(own.spec_json, station_default.spec_json) AS spec_json,
 			COALESCE(own.device_id, station_default.device_id) AS effective_rule_device_id,
 			(SELECT COUNT(*) FROM charge_offer o
@@ -78,6 +79,13 @@ func (a ResourceAPI) devicePricingMatrix(c *gin.Context) {
 				SELECT id FROM pricing_rule WHERE station_id = d.station_id AND device_id IS NULL
 				  AND status='active' AND deleted_at IS NULL
 				ORDER BY version DESC, id DESC LIMIT 1)`).
+		// own_latest_version 故意不过滤 status：下发模板时的乐观锁读的是该范围
+		// 「最新一条」规则，不管它是不是还在生效（见 applyPricingTemplate）。
+		// 上面的 own_version 只看生效规则，两者口径不同，客户端要按前者回填版本号，
+		// 否则一台刚被「重置为站点默认」停用了独立规则的设备会永远对不上锁。
+		Joins(`LEFT JOIN pricing_rule own_latest ON own_latest.id = (
+				SELECT id FROM pricing_rule WHERE device_id = d.device_id AND deleted_at IS NULL
+				ORDER BY version DESC, id DESC LIMIT 1)`).
 		Where("d.station_id=? AND d.deleted_at IS NULL", station.ID).
 		Order("d.device_id").Find(&rows).Error
 	if err != nil {
@@ -85,7 +93,20 @@ func (a ResourceAPI) devicePricingMatrix(c *gin.Context) {
 		return
 	}
 	normalizeRows(rows)
-	httpapi.OK(c, gin.H{"station_id": station.ID, "items": rows, "permissions": c.MustGet("admin_profile").(Profile).Permissions})
+	// 整站范围（device_id 为空）的那条链也要一份：客户端把模板下发到整站时，
+	// 乐观锁比对的正是这一条链的最新版，同样不过滤 status。
+	var stationLatest struct{ Version uint32 }
+	if err := a.Store.AdminDB.WithContext(ctx).Table("pricing_rule").
+		Where("station_id=? AND device_id IS NULL AND deleted_at IS NULL", station.ID).
+		Order("version DESC").Limit(1).Take(&stationLatest).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		resourceFailure(c, err)
+		return
+	}
+	httpapi.OK(c, gin.H{
+		"station_id": station.ID, "items": rows,
+		"station_latest_version": stationLatest.Version,
+		"permissions":           c.MustGet("admin_profile").(Profile).Permissions,
+	})
 }
 
 // resetDeviceInput 是"把某台设备交还给站点默认"的入参，只认站点加设备这一个组合。

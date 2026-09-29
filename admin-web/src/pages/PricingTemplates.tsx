@@ -2,10 +2,14 @@ import { useEffect, useState } from 'react';
 import { Alert, Button, Collapse, Descriptions, Divider, Form, Input, InputNumber, Modal, Select, Space, Steps, Switch, Table, Tag, message } from 'antd';
 import { apiGet, apiPost, apiPut } from '../api/client';
 import {
-  DEFAULT_DISPLAY, MODE_META, MODE_OPTIONS, SERVICE_OPTIONS, blankPeriod, describeSpec, defaultSpecForm,
+  DEFAULT_DISPLAY, MODE_META, MODE_OPTIONS, SERVICE_OPTIONS, blankPeriod, describeDisplay, describeSpec, defaultSpecForm,
   formToSpec, insertPeriod, insertTier, isServerBilled, minuteToClock, modeLabel, removePeriod, removeTier,
   specToForm, validateSpecForm, type ChargeMode, type PeriodForm, type SpecForm, type Station, type Template, type TierForm,
 } from './pricing/model';
+
+// 下发模板时用来查乐观锁版本号的那一列设备。字段取自
+// GET /api/v1/admin/settings/device-pricing，口径与服务端读锁完全一致（不过滤 status）。
+type ScopeDevice = { device_id: string; own_latest_version?: number };
 
 // A pricing template is only the tariff: what is charged, on what basis, and
 // what the mini program may reveal. Packages are a separate pool (see
@@ -35,6 +39,9 @@ export default function PricingTemplates() {
   const [selectedStation, setSelectedStation] = useState<number | null>(null);
   const [applyDevice, setApplyDevice] = useState('');
   const [applyError, setApplyError] = useState('');
+  // 所选站点当前两条规则链的最新版号：整站链一份、每台设备各一份。
+  const [stationLatestVersion, setStationLatestVersion] = useState(0);
+  const [scopeDevices, setScopeDevices] = useState<ScopeDevice[]>([]);
 
   const [form] = Form.useForm();
   const mode = Form.useWatch<ChargeMode>('mode', form) || 'server_realtime_power';
@@ -42,7 +49,11 @@ export default function PricingTemplates() {
   const tierPriceBasis = Form.useWatch<string>('tier_price_basis', form) || 'per_hour_at_ceiling';
   const multiplierOn = !!Form.useWatch('multiplier_on', form);
   const showFeeSplit = !!Form.useWatch(['display', 'show_fee_split'], form);
-  const periods: PeriodForm[] = Form.useWatch('periods', form) || [];
+  // preserve 必须为 true：默认取值走 getFieldsValue()，那份对象只由「已挂载的
+  // Form.Item」拼出来。periods 的长度决定了要渲染几张时段卡片，于是形成死锁——
+  // 新增的第二段没有卡片就没有字段注册，没有注册 useWatch 就只还回第一段，
+  // 卡片永远画不出来，保存时更会把它悄悄丢掉。读原始 store 才拿得到完整数组。
+  const periods: PeriodForm[] = Form.useWatch('periods', { form, preserve: true }) || [];
   const energyBasis = mode === 'server_energy';
   const server = isServerBilled(mode);
   const tierUnit = mode === 'server_max_power' || (mode === 'server_realtime_power' && tierPriceBasis === 'per_kwh') ? '元/小时' : '元/度';
@@ -158,20 +169,42 @@ export default function PricingTemplates() {
     await searchStations('');
   };
 
+  // 选中站点后读一次该站点的计费现状：既是为了告诉运营这条链现在到第几版，
+  // 也是为了回填下发时的乐观锁版本号。
+  const loadScope = async (stationId: number) => {
+    try {
+      const matrix = await apiGet<{ station_latest_version?: number; items: ScopeDevice[] }>(
+        '/api/v1/admin/settings/device-pricing', { station_id: stationId });
+      setStationLatestVersion(matrix.station_latest_version || 0);
+      setScopeDevices(matrix.items || []);
+    } catch (e: any) {
+      setStationLatestVersion(0);
+      setScopeDevices([]);
+      setApplyError(e.message || '读取站点计费现状失败');
+    }
+  };
+
   const apply = async () => {
     if (!applying) return;
     if (!selectedStation) {
       setApplyError('请选择要应用到的站点');
       return;
     }
+    const device = applyDevice.trim();
+    // 锁比的是 (station_id, device_id) 这条链的最新版：留空设备编号就是整站链，
+    // 填了设备编号就是那台设备自己的链。写死 0 只能给「从未定价过的范围」用，
+    // 站点一旦有规则，界面就再也换不了费率。
+    const expected = device
+      ? (scopeDevices.find(d => d.device_id === device)?.own_latest_version || 0)
+      : stationLatestVersion;
     setSaving(true);
     setApplyError('');
     try {
       const result = await apiPost<{ version: number }>(`/api/v1/admin/settings/pricing-templates/${applying.id}/apply`, {
         station_id: selectedStation,
-        device_id: applyDevice.trim(),
+        device_id: device,
         request_id: crypto.randomUUID(),
-        expected_version: 0,
+        expected_version: expected,
       });
       message.success(`已应用，当前版本 v${result.version}`);
       setApplying(null);
@@ -190,6 +223,17 @@ export default function PricingTemplates() {
     onOk: async () => {
       await apiPost(`/api/v1/admin/settings/pricing-templates/${template.id}/disable`);
       message.success('已停用');
+      await load();
+    },
+  });
+
+  const enableTemplate = (template: Template) => Modal.confirm({
+    title: '启用计费模板',
+    content: `启用「${template.name}」后可以重新应用到站点或设备。已应用站点的现行规则不受影响，会继续按原样计费。`,
+    okText: '启用',
+    onOk: async () => {
+      await apiPost(`/api/v1/admin/settings/pricing-templates/${template.id}/enable`);
+      message.success('已启用');
       await load();
     },
   });
@@ -425,6 +469,7 @@ export default function PricingTemplates() {
           {canUpdate && <Button type="link" onClick={() => void openEditor(r)}>编辑</Button>}
           {canCreate && <Button type="link" onClick={() => copyTemplate(r)}>复制</Button>}
           {canUpdate && r.status === 'active' && <Button type="link" danger onClick={() => disableTemplate(r)}>停用</Button>}
+          {canUpdate && r.status !== 'active' && <Button type="link" onClick={() => enableTemplate(r)}>启用</Button>}
         </Space>,
       },
     ]} />
@@ -472,8 +517,9 @@ export default function PricingTemplates() {
         ]} />
         <Divider orientation="left" plain>费率</Divider>
         <div>{describeSpec(viewing.spec)}</div>
-        {viewing.spec?.electric?.periods?.map((p, i) => <div key={i} style={{ marginTop: 8 }}>
-          <strong>时段 {i + 1}：</strong>00:00 → {minuteToClock(p.end_minute)}
+        {viewing.spec?.electric?.periods?.map((p, i, all) => <div key={i} style={{ marginTop: 8 }}>
+          {/* 时段是链式的，开始时刻由上一段的结束时刻推导，不是都从 00:00 起 */}
+          <strong>时段 {i + 1}：</strong>{minuteToClock(i > 0 ? (all[i - 1]?.end_minute ?? 0) : 0)} → {minuteToClock(p.end_minute)}
           {p.tiers?.length
             ? p.tiers.map((t, j) => <div key={j} style={{ paddingLeft: 16, color: '#666' }}>
               第 {j + 1} 档：{j > 0 ? `${p.tiers![j - 1].max_watts + 1}–` : '0–'}{t.max_watts} 瓦 · 电费 ¥{(t.electric_cents / 100).toFixed(2)}{t.service_cents ? ` · 服务费 ¥${(t.service_cents / 100).toFixed(2)}` : ''}
@@ -484,7 +530,7 @@ export default function PricingTemplates() {
           免费时长：{viewing.spec.free_minutes || 0} 分钟 · 电费最低消费：¥{((viewing.spec.min_electric_cents || 0) / 100).toFixed(2)} · 电损率：{((viewing.spec.loss_rate_bp || 0) / 100).toFixed(2)}%
         </div>}
         <Divider orientation="left" plain>用户端展示</Divider>
-        <div>{viewing.display ? Object.entries(viewing.display).filter(([, v]) => v).map(([k]) => k).join('、') || '全部关闭' : '—'}</div>
+        <div>{describeDisplay(viewing.display)}</div>
       </>}
     </Modal>
 
@@ -497,11 +543,29 @@ export default function PricingTemplates() {
       <Space direction="vertical" style={{ width: '100%' }}>
         <Select showSearch allowClear aria-label="选择站点" placeholder="输入站点名称或地址进行筛选"
           value={selectedStation ?? undefined} loading={stationsLoading} filterOption={false}
-          onSearch={value => void searchStations(value)} onChange={value => setSelectedStation(value ?? null)}
+          onSearch={value => void searchStations(value)}
+          onChange={value => {
+            setSelectedStation(value ?? null);
+            setStationLatestVersion(0);
+            setScopeDevices([]);
+            if (value != null) void loadScope(value);
+          }}
           options={stations.map(s => ({ value: s.id, label: s.name }))} style={{ width: '100%' }} />
         <Input aria-label="设备编号" placeholder="设备编号（留空表示发布为站点默认规则）" maxLength={64}
           value={applyDevice} onChange={e => setApplyDevice(e.target.value)} />
       </Space>
+      {selectedStation != null && (
+        <div style={{ marginTop: 8, color: '#999' }}>
+          {(() => {
+            const device = applyDevice.trim();
+            const known = device ? scopeDevices.find(d => d.device_id === device) : undefined;
+            const current = device ? (known?.own_latest_version ?? 0) : stationLatestVersion;
+            return device && !known
+              ? `设备 ${device} 不在该站点设备列表中，将由服务端校验`
+              : `将覆盖 ${device ? `设备 ${device}` : '整站默认'} 当前规则链（现为 v${current}），下发后成为 v${current + 1}`;
+          })()}
+        </div>
+      )}
       {stations.length === 0 && !stationsLoading && <div style={{ marginTop: 8, color: '#999' }}>没有匹配的运营中站点</div>}
     </Modal>
   </>;

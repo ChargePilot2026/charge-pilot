@@ -2,6 +2,7 @@ package admin
 
 import (
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -74,6 +75,9 @@ func (a ResourceAPI) registerPricingTemplates(r *gin.Engine) {
 	r.POST("/api/v1/admin/settings/pricing-templates", a.Auth.Require("pricing.rule.create"), a.createPricingTemplate)
 	r.PUT("/api/v1/admin/settings/pricing-templates/:id", a.Auth.Require("pricing.rule.update"), a.updatePricingTemplate)
 	r.POST("/api/v1/admin/settings/pricing-templates/:id/disable", a.Auth.Require("pricing.rule.update"), a.disablePricingTemplate)
+	// 停用必须能撤回来：否则一次误停用就让这份模板永久报废，而 apply 还会拿
+	// 「计费模板已停用，请先启用后再应用」去要求操作员做一件界面做不到的事。
+	r.POST("/api/v1/admin/settings/pricing-templates/:id/enable", a.Auth.Require("pricing.rule.update"), a.enablePricingTemplate)
 	r.POST("/api/v1/admin/settings/pricing-templates/:id/copy", a.Auth.Require("pricing.rule.create"), a.copyPricingTemplate)
 	r.POST("/api/v1/admin/settings/pricing-templates/:id/apply", a.Auth.Require("pricing.rule.create"), a.applyPricingTemplate)
 }
@@ -90,24 +94,49 @@ type pricingTemplateRow struct {
 	Version     uint32 `gorm:"column:version"`      // 模板版本号，每次修改或停用都 +1，用作 expected_version 乐观锁
 }
 
+// pricingTemplateListRow 是列表一行的落库形态：模板本体走结构体扫描（和详情接口
+// 同一套读法，spec_json 才能稳定拿到 []byte），已应用站点是子查询拼出来的字符串。
+type pricingTemplateListRow struct {
+	ID              uint64         `gorm:"column:id"`
+	Name            string         `gorm:"column:name"`
+	Remark          string         `gorm:"column:remark"`
+	Status          string         `gorm:"column:status"`
+	Version         uint32         `gorm:"column:version"`
+	SpecJSON        []byte         `gorm:"column:spec_json"`
+	AppliedStations sql.NullString `gorm:"column:applied_stations"`
+}
+
 // pricingTemplates 分页返回计费模板列表，并带上每一行已应用到的站点名称，
 // 供运营在把模板下发到别处之前先看清它现在被谁用着（也就是重复应用会被拒的那个前提）。
 func (a ResourceAPI) pricingTemplates(c *gin.Context) {
-	rows := []map[string]any{}
-	// Applied stations ride along on the row so an operator can see where a
-	// template is in use before applying it elsewhere, which is what the
-	// duplicate-application refusal below is about.
+	scanned := []pricingTemplateListRow{}
+	// spec_json 一并带出：列表要显示「计费方式」和「费率」两列，缺了它前端只能显示占位符，
+	// 运营就得逐个点「查看」才能知道这份模板收多少钱。
 	err := a.Store.AdminDB.WithContext(c.Request.Context()).Table("pricing_template t").
-		Select("t.id,t.name,t.remark,t.status,t.version," +
+		Select("t.id,t.name,t.remark,t.status,t.version,t.spec_json," +
 			"(SELECT GROUP_CONCAT(CONCAT(s.name,'（',s.id,'）') ORDER BY s.id SEPARATOR '、')" +
 			" FROM pricing_rule r JOIN station s ON s.id=r.station_id AND s.deleted_at IS NULL" +
 			" WHERE r.template_id=t.id AND r.status='active' AND r.deleted_at IS NULL) AS applied_stations").
-		Where("t.deleted_at IS NULL").Order("t.id").Find(&rows).Error
+		Where("t.deleted_at IS NULL").Order("t.id").Find(&scanned).Error
 	if err != nil {
 		resourceFailure(c, err)
 		return
 	}
-	normalizeRows(rows)
+	rows := make([]map[string]any, 0, len(scanned))
+	for _, r := range scanned {
+		row := map[string]any{
+			"id": r.ID, "name": r.Name, "remark": r.Remark,
+			"status": r.Status, "version": r.Version,
+			"applied_stations": r.AppliedStations.String,
+		}
+		// 解析不出来的按空口径处理：这一行照样列出来，只是计费方式显示不了，
+		// 总比整页列表直接 500、把所有模板都藏起来要好。
+		var spec pricing.Spec
+		if json.Unmarshal(r.SpecJSON, &spec) == nil && spec.Mode != "" {
+			row["spec"] = spec
+		}
+		rows = append(rows, row)
+	}
 	httpapi.OK(c, gin.H{"items": rows, "permissions": c.MustGet("admin_profile").(Profile).Permissions})
 }
 
@@ -289,6 +318,41 @@ func (a ResourceAPI) copyPricingTemplate(c *gin.Context) {
 // disablePricingTemplate 停用模板，只改 status 并让版本 +1（不走 expected_version 乐观锁，
 // 因为停用不需要前端确认版本）。已经 apply 出去的计费规则原样保留——
 // 否则正在按它收费的站点会突然没有计费口径可用。
+// enablePricingTemplate 把一份被停用的模板放回可应用状态。它只动模板本身，
+// 不会去碰已发布到站点的规则——那些规则本来就不受模板停用影响（见 disablePricingTemplate）。
+// 已经处于可应用状态时原样返回，不空转一次版本号。
+func (a ResourceAPI) enablePricingTemplate(c *gin.Context) {
+	id, ok := pathID(c)
+	if !ok {
+		return
+	}
+	actor := c.MustGet("admin_profile").(Profile)
+	err := a.Store.AdminDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+		var before struct {
+			Version uint32
+			Status  string
+		}
+		if err := tx.Table("pricing_template").Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id=? AND deleted_at IS NULL", id).Take(&before).Error; err != nil {
+			return err
+		}
+		if before.Status == "active" {
+			return nil
+		}
+		if err := tx.Table("pricing_template").Where("id=?", id).
+			Updates(map[string]any{"status": "active", "version": before.Version + 1}).Error; err != nil {
+			return err
+		}
+		return resourceAudit(tx, actor, "pricing.template.enable", "pricing_template", id, before,
+			map[string]any{"status": "active"}, c.ClientIP(), httpapi.RequestID(c))
+	})
+	if err != nil {
+		resourceFailure(c, err)
+		return
+	}
+	httpapi.OK(c, gin.H{"id": id})
+}
+
 func (a ResourceAPI) disablePricingTemplate(c *gin.Context) {
 	id, ok := pathID(c)
 	if !ok {

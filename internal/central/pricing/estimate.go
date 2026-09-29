@@ -60,6 +60,10 @@ func (s Store) activeRuleQuery(ctx context.Context, stationID uint64, deviceID s
 		// A device rule overrides the station default; a device that has never been
 		// assigned one inherits whatever its station runs.
 		query = query.Where(`r.device_id = ? OR r.device_id IS NULL`, deviceID)
+	} else {
+		// 整站口径只认 device_id 为空的那条规则。不加这一句，站点一旦没有整站规则、
+		// 却有设备规则，这里就会把某台设备的费率当成整站费率报出去。
+		query = query.Where(`r.device_id IS NULL`)
 	}
 	return query.Order("r.device_id IS NULL ASC, r.version DESC, r.id DESC")
 }

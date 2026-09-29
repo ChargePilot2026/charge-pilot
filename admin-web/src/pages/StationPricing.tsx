@@ -27,6 +27,10 @@ type DeviceRow = {
   // null means the row it inherits from is the station default, not a rule of
   // this device's own.
   effective_rule_device_id?: string | null;
+  // 下发模板时乐观锁比对的版本号。这一对字段刻意不过滤 status，与服务端读法一致：
+  // own_rule_id/own_version/station_version 描述的是「现在正在生效什么」，
+  // latest 描述的是「这条链上最新到第几版」，后者才是回填 expected_version 该用的。
+  own_latest_version?: number;
   offer_count?: number; offer_names?: string;
   // What the board can report, as recorded against the device itself. Both are
   // false until someone declares them, and an undeclared board cannot be
@@ -221,7 +225,10 @@ export default function StationPricing() {
     setAssignError('');
     setAssignTemplate(null);
     assignForm.resetFields();
-    assignForm.setFieldsValue({ expected_version: row.own_rule_id ? (row.own_version || 0) : (row.station_version || 0) });
+    // 这次下发一定带 device_id，服务端比对的也是「这台设备自己那条链」的最新版。
+    // 设备还没有独立规则时那条链是空的，版本号就是 0；早先这里回填站点默认的版本号，
+    // 于是「第一次给设备单独定价」必然撞锁。
+    assignForm.setFieldsValue({ expected_version: row.own_latest_version || 0 });
   };
 
   const assign = async () => {
