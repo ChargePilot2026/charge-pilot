@@ -68,6 +68,7 @@ func run(ctx context.Context) error {
 	control.ScanAPI{Store: sink, ServiceToken: cfg.ServiceToken}.Register(router)
 	control.OtaAPI{DB: orm, ServiceToken: cfg.ServiceToken}.Register(router)
 	control.TelemetryAPI{DB: orm, ServiceToken: cfg.ServiceToken, MaxWindow: 24 * time.Hour, MaxPoints: 2000}.Register(router)
+	control.SessionAPI{DB: orm, ServiceToken: cfg.ServiceToken, IdleThreshold: 15 * time.Minute, MaxRows: 500}.Register(router)
 	router.GET("/health/live", func(c *gin.Context) { httpapi.OK(c, gin.H{"status": "live"}) })
 	router.GET("/health/ready", func(c *gin.Context) {
 		checkCtx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
