@@ -1,46 +1,53 @@
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { Layout, Menu, Avatar, Button, Dropdown, Typography } from 'antd';
+import { Layout, Menu, Avatar, Button, Dropdown, Typography, type MenuProps } from 'antd';
 import {
-  DashboardOutlined, ShoppingOutlined, DesktopOutlined, EnvironmentOutlined,
-  TeamOutlined, AlertOutlined, GiftOutlined, AccountBookOutlined,
-  SettingOutlined, ApiOutlined, CloudUploadOutlined, NotificationOutlined,
-  UserOutlined, LogoutOutlined, MessageOutlined, ToolOutlined, DownloadOutlined,
-  FileSearchOutlined,
+  DashboardOutlined, AlertOutlined, GiftOutlined, AccountBookOutlined,
+  SettingOutlined, UserOutlined, LogoutOutlined, ThunderboltOutlined,
+  CustomerServiceOutlined,
 } from '@ant-design/icons';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { apiPost, adminSession } from '../api/client';
 
 const { Header, Sider, Content } = Layout;
 const { Text } = Typography;
 
-const items = [
-  { key: '/', icon: <DashboardOutlined />, label: '仪表盘' },
-  { key: '/orders', icon: <ShoppingOutlined />, label: '订单' },
-  { key: '/devices', icon: <DesktopOutlined />, label: '设备' },
-  { key: '/stations', icon: <EnvironmentOutlined />, label: '站点' },
-  { key: '/users', icon: <TeamOutlined />, label: '管理员' },
-  { key: '/alerts', icon: <AlertOutlined />, label: '告警' },
-  { key: '/alert-rules', icon: <AlertOutlined />, label: '告警配置' },
-  { key: '/exports', icon: <DownloadOutlined />, label: '数据导出' },
-  { key: '/coupons', icon: <GiftOutlined />, label: '优惠券' },
-  { key: '/billing', icon: <AccountBookOutlined />, label: '财务' },
-  { key: '/webhooks', icon: <ApiOutlined />, label: 'Webhook' },
-  { key: '/ota', icon: <CloudUploadOutlined />, label: 'OTA' },
-  { key: '/announcements', icon: <NotificationOutlined />, label: '公告' },
-  { key: '/customer-service', icon: <MessageOutlined />, label: '客服坐席' },
-  { key: '/casework', icon: <ToolOutlined />, label: '反馈与报修' },
-  { key: '/audit-logs', icon: <FileSearchOutlined />, label: '审计日志' },
-  { key: '/settings', icon: <SettingOutlined />, label: '设置' },
-];
+type NavLink = { key: string; icon?: ReactNode; label: string; permission: string };
+type NavSection = { key: string; icon: ReactNode; label: string; children: NavLink[] };
 
-const menuPermission: Record<string,string> = {
- '/':'dashboard.read','/orders':'order.read','/devices':'device.read','/stations':'station.read',
- '/users':'admin_user.read','/alerts':'alert.read','/alert-rules':'alert.read',
-  '/exports':'finance.read','/coupons':'coupon.read','/billing':'finance.read',
- '/webhooks':'webhook.read','/ota':'ota.read','/announcements':'announcement.read',
- '/customer-service':'customer_service.read','/casework':'feedback.read','/audit-logs':'audit.read',
-  '/settings':'whitelabel.read',
-};
+const dashboard: NavLink = { key: '/', icon: <DashboardOutlined />, label: '仪表盘', permission: 'dashboard.read' };
+const sections: NavSection[] = [
+  { key: 'charge', icon: <ThunderboltOutlined />, label: '充电运营', children: [
+    { key: '/orders', label: '订单', permission: 'order.read' },
+    { key: '/stations', label: '站点', permission: 'station.read' },
+    { key: '/devices', label: '设备', permission: 'device.read' },
+    { key: '/pricing-rules', label: '计费规则', permission: 'pricing.read' },
+    { key: '/charge-packages', label: '充电套餐', permission: 'pricing.read' },
+  ] },
+  { key: 'users', icon: <GiftOutlined />, label: '用户运营', children: [
+    { key: '/coupons', label: '优惠券', permission: 'coupon.read' },
+    { key: '/announcements', label: '公告', permission: 'announcement.read' },
+  ] },
+  { key: 'service', icon: <CustomerServiceOutlined />, label: '客户服务', children: [
+    { key: '/customer-service', label: '客服坐席', permission: 'customer_service.read' },
+    { key: '/casework', label: '反馈与报修', permission: 'feedback.read' },
+  ] },
+  { key: 'finance', icon: <AccountBookOutlined />, label: '财务管理', children: [
+    { key: '/billing', label: '财务', permission: 'finance.read' },
+    { key: '/exports', label: '数据导出', permission: 'finance.read' },
+  ] },
+  { key: 'device-ops', icon: <AlertOutlined />, label: '设备运维', children: [
+    { key: '/alerts', label: '告警', permission: 'alert.read' },
+    { key: '/alert-rules', label: '告警配置', permission: 'alert.read' },
+    { key: '/ota', label: 'OTA', permission: 'ota.read' },
+  ] },
+  { key: 'system', icon: <SettingOutlined />, label: '系统管理', children: [
+    { key: '/settings', label: '平台设置', permission: 'whitelabel.read' },
+    { key: '/users', label: '管理员', permission: 'admin_user.read' },
+    { key: '/webhooks', label: 'Webhook', permission: 'webhook.read' },
+    { key: '/audit-logs', label: '审计日志', permission: 'audit.read' },
+  ] },
+];
+const links = [dashboard, ...sections.flatMap(section => section.children)];
 
 export default function MainLayout() {
   const [collapsed, setCollapsed] = useState(false);
@@ -58,10 +65,23 @@ export default function MainLayout() {
   const adminInfo = (() => {
     try { return JSON.parse(localStorage.getItem('cp_admin') || 'null'); } catch { return null; }
   })();
+  const permissions = new Set<string>(Array.isArray(adminInfo?.permissions) ? adminInfo.permissions : []);
+  const visibleSections = sections.map(section => ({ ...section, children: section.children.filter(link => permissions.has(link.permission)) }))
+    .filter(section => section.children.length > 0);
+  const selectedLink = links.find(link => pathname === link.key || link.key !== '/' && pathname.startsWith(link.key + '/'));
+  const activeSection = visibleSections.find(section => section.children.some(link => link.key === selectedLink?.key))?.key;
+  const [openKeys, setOpenKeys] = useState<string[]>(activeSection ? [activeSection] : []);
+  useEffect(() => { setOpenKeys(activeSection ? [activeSection] : []); }, [activeSection]);
+  const menuItems: MenuProps['items'] = [
+    ...(permissions.has(dashboard.permission) ? [dashboard] : []),
+    ...visibleSections,
+  ].map(item => 'children' in item
+    ? { key: item.key, icon: item.icon, label: item.label, children: item.children.map(link => ({ key: link.key, label: link.label })) }
+    : { key: item.key, icon: item.icon, label: item.label });
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
-      <Sider collapsible collapsed={collapsed} onCollapse={setCollapsed} theme="dark">
+      <Sider collapsible collapsed={collapsed} onCollapse={setCollapsed} theme="dark" width={232} style={{ position: 'sticky', top: 0, height: '100vh', overflowY: 'auto' }}>
         <div className="logo">
           <svg viewBox="0 0 64 64" width="28" height="28">
             <rect width="64" height="64" rx="12" fill="#1677ff" />
@@ -72,15 +92,12 @@ export default function MainLayout() {
         <Menu
           theme="dark"
           mode="inline"
-          selectedKeys={[items.find(item => item.key !== '/' && (pathname === item.key || pathname.startsWith(item.key + '/')))?.key || '/']}
-          items={items.filter(item => {
-            // A menu entry with no mapping hides itself for every role. That is a
-            // silent, runtime-only failure, so surface it loudly during development.
-            const perm = menuPermission[item.key];
-            if (!perm && import.meta.env.DEV) console.warn(`[menu] ${item.key} 缺少 menuPermission 映射，该菜单项对所有角色不可见`);
-            return !!perm && !!adminInfo?.permissions?.includes(perm);
-          })}
-          onClick={({ key }) => navigate(key)}
+          aria-label="后台导航"
+          selectedKeys={selectedLink && permissions.has(selectedLink.permission) ? [selectedLink.key] : []}
+          openKeys={collapsed ? undefined : openKeys}
+          onOpenChange={keys => setOpenKeys(keys.slice(-1))}
+          items={menuItems}
+          onClick={({ key }) => { if (links.some(link => link.key === key)) navigate(key); }}
         />
       </Sider>
       <Layout>

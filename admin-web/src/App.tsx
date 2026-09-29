@@ -1,4 +1,6 @@
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { Typography } from 'antd';
+import type { ReactNode } from 'react';
 import LoginPage from './pages/Login';
 import MainLayout from './layouts/MainLayout';
 import DashboardPage from './pages/Dashboard';
@@ -18,6 +20,12 @@ import CaseworkPage from './pages/Casework';
 import AlertRulesPage from './pages/AlertRules';
 import ExportsPage from './pages/Exports';
 import AuditLogsPage from './pages/AuditLogs';
+import PricingRules from './pages/PricingRules';
+import ChargeOffers from './pages/ChargeOffers';
+
+function ConfigPage({ title, children }: { title: string; children: ReactNode }) {
+  return <div className="page-container"><Typography.Title level={3}>{title}</Typography.Title>{children}</div>;
+}
 
 function RequireAuth({ children }: { children: JSX.Element }) {
   const token = localStorage.getItem('cp_token');
@@ -35,6 +43,8 @@ export default function App() {
         <Route path="orders" element={<OrdersPage />} />
         <Route path="devices" element={<DevicesPage />} />
         <Route path="stations" element={<StationsPage />} />
+        <Route path="pricing-rules" element={<ConfigPage title="计费规则"><PricingRules /></ConfigPage>} />
+        <Route path="charge-packages" element={<ConfigPage title="充电套餐与金额档位"><ChargeOffers /></ConfigPage>} />
         <Route path="users" element={<UsersPage />} />
         <Route path="alerts" element={<AlertsPage />} />
         <Route path="alert-rules" element={<AlertRulesPage />} />

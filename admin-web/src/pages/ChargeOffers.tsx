@@ -6,6 +6,7 @@ type Offer = { id:number; station_id:number; station_name:string; code:string; n
 
 export default function ChargeOffers(){
  const [items,setItems]=useState<Offer[]>([]);
+ const [permissions,setPermissions]=useState<string[]>([]);
  const [loading,setLoading]=useState(false);
  const [saving,setSaving]=useState(false);
  const [editing,setEditing]=useState<Offer|null>(null);
@@ -13,8 +14,10 @@ export default function ChargeOffers(){
  const [error,setError]=useState('');
  const [form]=Form.useForm();
  const mode=Form.useWatch('mode',form);
- const load=async()=>{setLoading(true);try{const result=await apiGet<{items:Offer[]}>('/api/v1/admin/settings/charge-offers');setItems(result.items);}catch(e:any){message.error(e.message);}finally{setLoading(false);}};
+ const load=async()=>{setLoading(true);try{const result=await apiGet<{items:Offer[];permissions:string[]}>('/api/v1/admin/settings/charge-offers');setItems(result.items);setPermissions(result.permissions||[]);}catch(e:any){message.error(e.message);}finally{setLoading(false);}};
  useEffect(()=>{void load();},[]);
+ const canCreate=permissions.includes('pricing.rule.create');
+ const canUpdate=permissions.includes('pricing.rule.update');
  const edit=(offer?:Offer)=>{setEditing(offer||null);setError('');form.resetFields();form.setFieldsValue(offer||{mode:'amount',status:'active',duration_minutes:0});setOpen(true);};
  const save=async()=>{
   try{
@@ -26,7 +29,7 @@ export default function ChargeOffers(){
   }catch(e:any){if(!e.errorFields)setError(e.message||'保存失败');}finally{setSaving(false);}
  };
  return <>
-  <Space style={{marginBottom:12}}><Button onClick={()=>void load()} loading={loading}>刷新方案</Button><Button type="primary" onClick={()=>edit()}>新增方案</Button></Space>
+  <Space style={{marginBottom:12}}><Button onClick={()=>void load()} loading={loading}>刷新方案</Button>{canCreate&&<Button type="primary" onClick={()=>edit()}>新增方案</Button>}</Space>
   <Alert type="info" showIcon message="金额充电按实际费用消耗固定金额；时长套餐按已使用秒数结算，提前结束的未使用时长原路退款。修改方案不改变已付款订单的快照。" style={{marginBottom:12}}/>
   <Table rowKey="id" dataSource={items} loading={loading} columns={[
    {title:'站点',render:(_:unknown,row:Offer)=>`${row.station_name||row.station_id}（${row.station_id}）`},
@@ -35,7 +38,7 @@ export default function ChargeOffers(){
    {title:'价格',dataIndex:'price_cents',render:(value:number)=>`¥${(value/100).toFixed(2)}`},
    {title:'时长',dataIndex:'duration_minutes',render:(value:number)=>value?`${value} 分钟`:'按金额上限'},
    {title:'状态',dataIndex:'status',render:(value:string)=><Tag color={value==='active'?'green':'default'}>{value==='active'?'可售':'已停用'}</Tag>},
-   {title:'操作',render:(_:unknown,row:Offer)=><Button type="link" onClick={()=>edit(row)}>编辑</Button>},
+   ...(canUpdate?[{title:'操作',render:(_:unknown,row:Offer)=><Button type="link" onClick={()=>edit(row)}>编辑</Button>}]:[]),
   ]}/>
   <Modal title={editing?'编辑充电方案':'新增充电方案'} open={open} onCancel={()=>setOpen(false)} onOk={()=>void save()} confirmLoading={saving} okText="保存">
    {error&&<Alert type="error" showIcon message={error} style={{marginBottom:12}}/>}

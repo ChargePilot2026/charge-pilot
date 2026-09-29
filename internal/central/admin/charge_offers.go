@@ -42,7 +42,7 @@ func (a ResourceAPI) chargeOffers(c *gin.Context) {
 		return
 	}
 	normalizeRows(rows)
-	httpapi.OK(c, gin.H{"items": rows})
+	httpapi.OK(c, gin.H{"items": rows, "permissions": c.MustGet("admin_profile").(Profile).Permissions})
 }
 
 func (a ResourceAPI) createChargeOffer(c *gin.Context) {
