@@ -99,6 +99,7 @@ func run(ctx context.Context) error {
 	startResults := charge.Synchronizer{GatewayDB: orms["gateway"], CentralURL: cfg.CentralInternalURL, GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken}
 	endResults := charge.EndSynchronizer{GatewayDB: orms["gateway"], CentralURL: cfg.CentralInternalURL, ServiceToken: cfg.ServiceToken}
 	paidStarts := charge.PaidStarter{UserDB: orms["user"], GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken}
+	autoStops := charge.AutoStopper{UserDB: orms["user"], GatewayDB: orms["gateway"], GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken}
 	billingJobs := billing.Dispatcher{CentralURL: cfg.CentralInternalURL, ServiceToken: cfg.ServiceToken}
 	refunds := refund.Dispatcher{CentralURL: cfg.CentralInternalURL, ServiceToken: cfg.ServiceToken}
 	webhooks := webhookdelivery.WebhookDeliverer{AdminDB: orms["admin"], Stream: stream}
@@ -158,6 +159,9 @@ func run(ctx context.Context) error {
 			case <-refundCtx.Done():
 				return
 			case <-ticker.C:
+				if _, err := autoStops.Run(refundCtx); err != nil && !errors.Is(err, context.Canceled) {
+					log.Printf("charge auto stop: %v", err)
+				}
 				if err := billingJobs.Run(refundCtx); err != nil && !errors.Is(err, context.Canceled) {
 					log.Printf("billing dispatch: %v", err)
 				}

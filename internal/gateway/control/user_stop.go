@@ -93,7 +93,7 @@ func (a UserStopAPI) handle(c *gin.Context) {
 	var request struct {
 		OrderNo string `json:"order_no" binding:"required,max=64"`
 		UserID  uint64 `json:"user_id" binding:"required"`
-		Source  string `json:"source" binding:"required,oneof=user_app admin"`
+		Source  string `json:"source" binding:"required,oneof=user_app admin auto"`
 	}
 	if c.ShouldBindJSON(&request) != nil {
 		httpapi.BadRequest(c, "invalid stop request")
