@@ -57,6 +57,8 @@ type chargeStopCommandRow struct {
 	PortID         sql.NullInt64  `gorm:"column:port_id"`
 	Status         string         `gorm:"column:status"`
 	SessionID      sql.NullString `gorm:"column:session_id"`
+	ResultCode     sql.NullInt16  `gorm:"column:result_code"`
+	RejectedAt     sql.NullTime   `gorm:"column:rejected_at"`
 }
 
 func (chargeStopCommandRow) TableName() string { return "charge_stop_command" }

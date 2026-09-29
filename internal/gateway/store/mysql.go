@@ -95,6 +95,14 @@ func (s MySQLSink) Record(ctx context.Context, event protocol.Event) error {
 	}, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 }
 
+// stopAckAccepted reports whether a stop reply means the charge is over.
+//
+// 0x10 is a clean stop and 0x01 means the port was already idle, which reaches
+// the same end state. 0x00 (no such port) and 0x04 (port faulted) do not: the
+// platform asked a charge to end and was told it did not, and that has to be
+// recorded rather than dropped on the floor.
+func stopAckAccepted(code uint8) bool { return code == 0x10 || code == 0x01 }
+
 func applyUserStopAck(ctx context.Context, tx *gorm.DB, event protocol.Event) error {
 	var command chargeStopCommandRow
 	err := tx.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).
@@ -105,11 +113,23 @@ func applyUserStopAck(ctx context.Context, tx *gorm.DB, event protocol.Event) er
 	if err != nil {
 		return err
 	}
-	if event.ResultCode != 0x10 && event.ResultCode != 0x01 {
+	if stopAckAccepted(event.ResultCode) {
+		if command.Status == "sent" {
+			return tx.Model(&chargeStopCommandRow{}).Where("command_id = ? AND status = 'sent'", command.CommandID).
+				Updates(map[string]any{"status": "acked", "result_code": int16(event.ResultCode)}).Error
+		}
 		return nil
 	}
+	// The device refused. Without this the row would sit in "sent" for ever and
+	// nothing would distinguish a charge that is still running from one that
+	// was never asked to stop.
 	if command.Status == "sent" {
-		return tx.Model(&chargeStopCommandRow{}).Where("command_id = ? AND status = 'sent'", command.CommandID).Update("status", "acked").Error
+		return tx.Model(&chargeStopCommandRow{}).Where("command_id = ? AND status = 'sent'", command.CommandID).
+			Updates(map[string]any{
+				"status":      "rejected",
+				"result_code": int16(event.ResultCode),
+				"rejected_at": event.ReceivedAt.UTC(),
+			}).Error
 	}
 	return nil
 }
@@ -161,8 +181,10 @@ func applyStopAck(ctx context.Context, tx *gorm.DB, event protocol.Event) error 
 	if err != nil {
 		return err
 	}
-	// 0x10 means output stopped; 0x01 means the port was already idle.
-	if event.ResultCode != 0x10 && event.ResultCode != 0x01 {
+	// 0x10 means output stopped; 0x01 means the port was already idle. A refusal
+	// leaves the command in "stopping", because the port really is still
+	// charging and pretending otherwise would free a port that is in use.
+	if !stopAckAccepted(event.ResultCode) {
 		return nil
 	}
 	if !command.PortID.Valid || command.PortID.Int64 <= 0 {
