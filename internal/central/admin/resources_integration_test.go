@@ -48,6 +48,117 @@ func TestAdminPagesIntegration(t *testing.T) {
 		return orm
 	}
 	adb, udb, bdb, gdb := open("TEST_ADMIN_DATABASE_URL"), open("TEST_USER_DATABASE_URL"), open("TEST_BILLING_DATABASE_URL"), open("TEST_GATEWAY_DATABASE_URL")
+
+	// This test builds a whole fixture set out of fixed identifiers, so without a
+	// cleanup it can only ever pass once against a given database: the second run
+	// collides on the first unique key it meets and reports a product failure that
+	// is really its own leftovers. Everything it creates is removed here, grouped
+	// by the database that owns it and matched on the markers it uses rather than
+	// on ids, because ids are what move from run to run.
+	//
+	// A statement that fails is reported rather than swallowed. A silently skipped
+	// delete looks exactly like a clean one until the next run trips over it.
+	// The outbox is append-only and keyed on an event id derived from what
+	// happened, so a row this run writes is exactly the row the next run trips
+	// over. Recording where the table was beforehand removes this run's rows and
+	// nothing that was already there, which is more robust than trying to guess
+	// the naming scheme.
+	floors := map[*gorm.DB]int64{}
+	for _, db := range []*gorm.DB{adb, udb, gdb} {
+		var floor int64
+		if e := db.Raw("SELECT COALESCE(MAX(id),0) FROM event_outbox").Row().Scan(&floor); e == nil {
+			floors[db] = floor
+		}
+	}
+	t.Cleanup(func() {
+		const (
+			pagesUsers     = "openid LIKE 'pages%'"
+			pagesDevices   = "device_id LIKE 'PAGES%'"
+			pagesStations  = "name = 'PAGES_STATION'"
+			pagesTemplates = "name IN ('集成计费模板','坏时段','空档位','设备计费带费率','模式与费率不符','改价后的模板','模板副本','并发模板','已绑定模板','名称可更新','分页站点','上下架套餐')"
+			pagesPayment   = "order_no LIKE 'PAGES_%' OR wechat_transaction_id LIKE 'SIMPAGES%'"
+		)
+		byDB := []struct {
+			db    *gorm.DB
+			stmts []string
+		}{
+			{adb, []string{
+				// Export tasks name their creator, so they go before the accounts:
+				// the other way round the subquery finds nobody and the tasks this
+				// run created survive to block the next one on the same request id.
+				"DELETE FROM export_task WHERE task_no LIKE 'PAGES_%' OR task_no LIKE 'EXPBB000000%' OR requested_by IN (SELECT id FROM admin_user_role WHERE username LIKE 'pages-%')",
+				"DELETE FROM admin_user_role WHERE username LIKE 'pages-%'",
+				"DELETE FROM finance_reconcile_log WHERE reconcile_type = 'wechat_pay' AND reconcile_date IN ('2026-09-15','2026-10-01')",
+				"DELETE FROM split_party WHERE split_template_id IN (SELECT id FROM split_template WHERE code LIKE 'PAGES_%')",
+				"DELETE FROM split_template WHERE code LIKE 'PAGES_%'",
+				"DELETE FROM station_policy WHERE station_id IN (SELECT id FROM station WHERE " + pagesStations + ")",
+				"DELETE FROM station WHERE " + pagesStations,
+				// A tariff that outlives its own cleanup keeps its version counter,
+				// and the next run's apply is then refused as a version conflict —
+				// which reads as a product bug and is not one.
+				"DELETE FROM pricing_publication WHERE rule_id IN (SELECT id FROM pricing_rule WHERE template_id IN (SELECT id FROM pricing_template WHERE " + pagesTemplates + "))",
+				"DELETE FROM pricing_switch_task WHERE template_id IN (SELECT id FROM pricing_template WHERE " + pagesTemplates + ")",
+				"DELETE FROM pricing_rule WHERE template_id IN (SELECT id FROM pricing_template WHERE " + pagesTemplates + ") OR station_id IN (SELECT id FROM station WHERE " + pagesStations + ")",
+				"DELETE FROM pricing_template WHERE " + pagesTemplates,
+				"DELETE FROM announcement WHERE title LIKE '%pages%'",
+				"DELETE FROM webhook_subscription WHERE name LIKE '%pages%' OR url LIKE '%pages%'",
+				// Matched on the board itself, not on the import it arrived in: a
+				// failed batch still records the identity it saw, and that row is
+				// what refuses the next attempt at the same board.
+				"DELETE FROM device_meta WHERE " + pagesDevices,
+				"DELETE FROM device_import_identity WHERE " + pagesDevices,
+				"DELETE FROM device_import WHERE import_id IN ('33333333-3333-4333-8333-333333333333','33333333-3333-4333-8333-333333333334')",
+			}},
+			{udb, []string{
+				// The refund chain is keyed on a fixed request id and leaves rows in
+				// five tables behind it; the reviews and receipts hang off the
+				// record, so they go first or they orphan it exactly the way the
+				// pricing rules did.
+				"DELETE FROM refund_success_receipt WHERE refund_record_id IN (SELECT id FROM refund_record WHERE user_id IN (SELECT id FROM user WHERE " + pagesUsers + "))",
+				"DELETE FROM wallet_refund_part WHERE refund_record_id IN (SELECT id FROM refund_record WHERE user_id IN (SELECT id FROM user WHERE " + pagesUsers + "))",
+				"DELETE FROM refund_review WHERE refund_record_id IN (SELECT id FROM refund_record WHERE user_id IN (SELECT id FROM user WHERE " + pagesUsers + "))",
+				"DELETE FROM manual_refund_request WHERE request_id = '44444444-4444-4444-8444-444444444444'",
+				"DELETE FROM refund_record WHERE user_id IN (SELECT id FROM user WHERE " + pagesUsers + ")",
+				"DELETE FROM charge_bill WHERE bill_no LIKE 'PAGES_%'",
+				"DELETE FROM charge_prepay WHERE payment_order_id IN (SELECT id FROM payment_order WHERE " + pagesPayment + ")",
+				"DELETE FROM charge_order WHERE order_no LIKE 'PAGES_%' OR " + pagesDevices,
+				"DELETE FROM payment_order WHERE " + pagesPayment,
+				"DELETE FROM invoice_request WHERE invoice_no = 'PAGES_INVOICE'",
+				"DELETE FROM feedback WHERE content LIKE '%pages_seat%' OR user_id IN (SELECT id FROM user WHERE " + pagesUsers + ")",
+				"DELETE FROM device_fault_report WHERE " + pagesDevices,
+				"DELETE FROM wallet_risk_freeze_link WHERE request_id IN ('55555555-5555-4555-8555-555555555555','44444444-4444-4444-8444-444444444444')",
+				"DELETE FROM risk_freeze_log WHERE user_id IN (SELECT id FROM user WHERE " + pagesUsers + ")",
+				"DELETE FROM wallet_refund_request WHERE request_id = '55555555-5555-4555-8555-555555555555' OR user_id IN (SELECT id FROM user WHERE " + pagesUsers + ")",
+				"DELETE FROM wallet_account WHERE user_id IN (SELECT id FROM user WHERE " + pagesUsers + ")",
+				"DELETE FROM coupon_grant_request WHERE coupon_id IN (SELECT id FROM coupon WHERE name IN ('测试优惠','已停用券'))",
+				"DELETE FROM coupon_grant WHERE coupon_id IN (SELECT id FROM coupon WHERE name IN ('测试优惠','已停用券'))",
+				"DELETE FROM coupon_activity_rule WHERE coupon_id IN (SELECT id FROM coupon WHERE name IN ('测试优惠','已停用券')) OR name LIKE 'pages%'",
+				"DELETE FROM coupon WHERE name IN ('测试优惠','已停用券')",
+				"DELETE FROM user WHERE " + pagesUsers,
+			}},
+			{gdb, []string{
+				"DELETE FROM device_port WHERE " + pagesDevices,
+				"DELETE FROM device WHERE " + pagesDevices,
+				// Provisioning is idempotent only on an exact repeat of the request,
+				// so a record left over from a run whose vendor row has since been
+				// deleted is not a harmless duplicate: it carries the old vendor id
+				// and the next attempt is refused as a parameter mismatch.
+				"DELETE FROM device_provision WHERE " + pagesDevices,
+				"DELETE FROM vendor WHERE vendor_code = 'PAGES_VENDOR'",
+			}},
+		}
+		for _, group := range byDB {
+			for _, stmt := range group.stmts {
+				if e := group.db.Exec(stmt).Error; e != nil {
+					t.Logf("cleanup failed: %v :: %s", e, stmt)
+				}
+			}
+			if e := group.db.Exec("DELETE FROM event_outbox WHERE id > ?", floors[group.db]).Error; e != nil {
+				t.Logf("cleanup failed: %v :: outbox rows this run wrote", e)
+			}
+		}
+	})
+
 	exec := func(db *gorm.DB, sql string, args ...any) {
 		t.Helper()
 		if e := db.Exec(sql, args...).Error; e != nil {
