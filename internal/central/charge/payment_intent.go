@@ -45,12 +45,45 @@ type IntentInput struct {
 	Energy          string
 	Minutes         uint16
 	Rule            pricing.Rule
+	Offer           *pricing.Offer
 	// CouponGrantID is optional. When set, the discount is computed and frozen
 	// into the snapshot so a later replay cannot charge a different amount.
 	CouponGrantID uint64
 }
 
 type PaymentIntentStore struct{ DB *gorm.DB }
+
+// Replay returns the original frozen checkout for a repeated client request.
+// A published offer or pricing rule may have changed since the first request.
+func (s PaymentIntentStore) Replay(ctx context.Context, userID uint64, requestID, portID string, offerID, couponID uint64) (*PaymentIntent, error) {
+	if s.DB == nil || userID == 0 || uuid.Validate(requestID) != nil {
+		return nil, ErrPaymentIntentConflict
+	}
+	var row PaymentIntentRecord
+	err := s.DB.WithContext(ctx).Where("user_id = ? AND client_request_id = ?", userID, requestID).Take(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if row.PortCode != portID || row.CouponGrantID != couponID || row.Status != "initiated" || !time.Now().Before(row.ExpiresAt) ||
+		(row.OfferID.Valid && row.OfferID.Int64 != int64(offerID)) || (!row.OfferID.Valid && offerID != 0) {
+		return nil, ErrPaymentIntentConflict
+	}
+	var snapshot struct {
+		Estimate pricing.Estimate `json:"estimate"`
+		Offer    *pricing.Offer   `json:"offer"`
+	}
+	if json.Unmarshal(row.PricingSnapshot, &snapshot) != nil || snapshot.Estimate.TotalCents != row.TotalCents ||
+		(row.OfferID.Valid && (snapshot.Offer == nil || snapshot.Offer.ID != offerID)) {
+		return nil, ErrPaymentIntentConflict
+	}
+	return &PaymentIntent{IntentID: row.IntentID, MerchantOrderNo: row.MerchantOrderNo, PaymentOrderID: row.PaymentOrderID,
+		UserID: row.UserID, OpenID: row.OpenID, DeviceID: row.DeviceID, PortNo: row.PortNo, PortCode: row.PortCode,
+		StationID: row.StationID, Estimate: snapshot.Estimate, ExpiresAt: row.ExpiresAt, Status: row.Status,
+		CouponGrantID: row.CouponGrantID, DiscountCents: row.DiscountCents, PayableCents: row.TotalCents - row.DiscountCents}, nil
+}
 
 // Reserve creates a payment record and a short-lived port hold. It deliberately
 // does not insert charge_order; only verified payment callbacks may do that.
@@ -61,6 +94,11 @@ func (s PaymentIntentStore) Reserve(ctx context.Context, input IntentInput) (Pay
 		input.Port.Port.PortID == "" || input.Port.Port.DeviceID != input.Port.DeviceID || input.Port.Port.PortNo == 0 {
 		return PaymentIntent{}, ErrPaymentIntentConflict
 	}
+	if input.Offer != nil && input.CouponGrantID != 0 {
+		// Offer refunds use the amount actually paid. Coupon allocation needs a
+		// separate contract before it can be combined with fixed-price offers.
+		return PaymentIntent{}, ErrPaymentIntentConflict
+	}
 	var previous PaymentIntentRecord
 	err := s.DB.WithContext(ctx).Where("user_id = ? AND client_request_id = ?", input.UserID, input.ClientRequestID).Take(&previous).Error
 	if err == nil {
@@ -68,9 +106,22 @@ func (s PaymentIntentStore) Reserve(ctx context.Context, input IntentInput) (Pay
 	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return PaymentIntent{}, err
 	}
-	estimate, err := pricing.EstimateCharge(input.Rule, input.Energy, input.Minutes, time.Now())
-	if err != nil {
-		return PaymentIntent{}, err
+	var estimate pricing.Estimate
+	if input.Offer != nil {
+		if !input.Offer.Valid() || input.Offer.StationID != input.Port.StationID {
+			return PaymentIntent{}, pricing.ErrInvalidPricing
+		}
+		minutes, mode := uint16(10080), uint8(12)
+		if input.Offer.Mode == "package" {
+			minutes, mode = input.Offer.DurationMinutes, 0
+		}
+		estimate = pricing.Estimate{EstimatedKWh: "0.000", EstimatedMinutes: minutes, ServiceCents: input.Offer.PriceCents, TotalCents: input.Offer.PriceCents, ChargeMode: mode, ChargeQuantity: minutes}
+	} else {
+		var err error
+		estimate, err = pricing.EstimateCharge(input.Rule, input.Energy, input.Minutes, time.Now())
+		if err != nil {
+			return PaymentIntent{}, err
+		}
 	}
 	// The discount is computed before anything is reserved so a rejected coupon
 	// leaves no payment order or port hold behind.
@@ -91,8 +142,9 @@ func (s PaymentIntentStore) Reserve(ctx context.Context, input IntentInput) (Pay
 	snapshot, err := json.Marshal(struct {
 		Rule       pricing.Rule     `json:"rule"`
 		Estimate   pricing.Estimate `json:"estimate"`
+		Offer      *pricing.Offer   `json:"offer,omitempty"`
 		ComputedAt time.Time        `json:"computed_at"`
-	}{Rule: input.Rule, Estimate: estimate, ComputedAt: time.Now().UTC()})
+	}{Rule: input.Rule, Estimate: estimate, Offer: input.Offer, ComputedAt: time.Now().UTC()})
 	if err != nil {
 		return PaymentIntent{}, err
 	}
@@ -122,6 +174,9 @@ func (s PaymentIntentStore) Reserve(ctx context.Context, input IntentInput) (Pay
 			ElectricCents: estimate.ElectricCents, ServiceCents: estimate.ServiceCents, TotalCents: estimate.TotalCents,
 			CouponGrantID: input.CouponGrantID, DiscountCents: discount,
 			ChargeMode: estimate.ChargeMode, ChargeQuantity: estimate.ChargeQuantity, Status: "initiated", ExpiresAt: expiresAt}
+		if input.Offer != nil {
+			intent.OfferID = sql.NullInt64{Int64: int64(input.Offer.ID), Valid: true}
+		}
 		if err := tx.Create(&intent).Error; err != nil {
 			if isMySQLDuplicate(err) {
 				return ErrPaymentIntentConflict
@@ -143,7 +198,14 @@ func (s PaymentIntentStore) Reserve(ctx context.Context, input IntentInput) (Pay
 }
 
 func existingIntent(row PaymentIntentRecord, input IntentInput) (PaymentIntent, error) {
-	if row.PortCode != input.Port.Port.PortID || row.DeviceID != input.Port.DeviceID || row.EstimatedMinutes != input.Minutes || row.PricingRuleID != input.Rule.ID || row.PricingRuleVersion != input.Rule.Version || row.Status != "initiated" || time.Now().After(row.ExpiresAt) {
+	if row.PortCode != input.Port.Port.PortID || row.DeviceID != input.Port.DeviceID || row.Status != "initiated" || time.Now().After(row.ExpiresAt) {
+		return PaymentIntent{}, ErrPaymentIntentConflict
+	}
+	if input.Offer != nil {
+		if !row.OfferID.Valid || row.OfferID.Int64 != int64(input.Offer.ID) {
+			return PaymentIntent{}, ErrPaymentIntentConflict
+		}
+	} else if row.OfferID.Valid || row.EstimatedMinutes != input.Minutes || row.PricingRuleID != input.Rule.ID || row.PricingRuleVersion != input.Rule.Version {
 		return PaymentIntent{}, ErrPaymentIntentConflict
 	}
 	// A replay must present the same coupon; otherwise the customer could switch
@@ -153,9 +215,22 @@ func existingIntent(row PaymentIntentRecord, input IntentInput) (PaymentIntent, 
 	}
 	var snapshot struct {
 		Estimate pricing.Estimate `json:"estimate"`
+		Offer    *pricing.Offer   `json:"offer"`
 	}
-	requestedEnergy, err := decimal.NewFromString(input.Energy)
-	if json.Unmarshal(row.PricingSnapshot, &snapshot) != nil || err != nil || snapshot.Estimate.EstimatedKWh != requestedEnergy.StringFixed(3) {
+	if json.Unmarshal(row.PricingSnapshot, &snapshot) != nil {
+		return PaymentIntent{}, ErrPaymentIntentConflict
+	}
+	if input.Offer != nil {
+		if snapshot.Offer == nil || snapshot.Offer.ID != input.Offer.ID {
+			return PaymentIntent{}, ErrPaymentIntentConflict
+		}
+	} else {
+		requestedEnergy, err := decimal.NewFromString(input.Energy)
+		if err != nil || snapshot.Estimate.EstimatedKWh != requestedEnergy.StringFixed(3) {
+			return PaymentIntent{}, ErrPaymentIntentConflict
+		}
+	}
+	if snapshot.Estimate.TotalCents != row.TotalCents {
 		return PaymentIntent{}, ErrPaymentIntentConflict
 	}
 	return PaymentIntent{IntentID: row.IntentID, MerchantOrderNo: row.MerchantOrderNo, PaymentOrderID: row.PaymentOrderID,

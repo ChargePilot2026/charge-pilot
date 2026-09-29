@@ -32,7 +32,29 @@ type PaymentStartAPI struct {
 }
 
 func (a PaymentStartAPI) Register(router *gin.Engine) {
+	router.POST("/api/v1/user/scan/offers", a.offers)
 	router.POST("/api/v1/user/scan/start", a.start)
+}
+
+func (a PaymentStartAPI) offers(c *gin.Context) {
+	var body struct {
+		PortID string `json:"port_id"`
+	}
+	if c.ShouldBindJSON(&body) != nil || !userScanCodePattern.MatchString(body.PortID) {
+		httpapi.BadRequest(c, "端口编码无效")
+		return
+	}
+	port, status := a.Scan.lookup(c.Request.Context(), body.PortID)
+	if status != http.StatusOK || port.Kind != "port" || port.Port == nil {
+		httpapi.Write(c, http.StatusNotFound, 1004, "端口不存在", nil)
+		return
+	}
+	rows, err := a.Pricing.ActiveOffers(c.Request.Context(), port.StationID)
+	if err != nil {
+		httpapi.Write(c, http.StatusServiceUnavailable, 5003, "充电方案暂时无法读取", nil)
+		return
+	}
+	httpapi.OK(c, gin.H{"station_id": port.StationID, "port_id": body.PortID, "items": rows})
 }
 
 func (a PaymentStartAPI) start(c *gin.Context) {
@@ -45,18 +67,34 @@ func (a PaymentStartAPI) start(c *gin.Context) {
 		return
 	}
 	var body struct {
-		ClientRequestID  string `json:"client_request_id"`
-		PortID           string `json:"port_id"`
-		EstimatedKWh     string `json:"estimated_kwh"`
-		EstimatedMinutes uint16 `json:"estimated_minutes"`
-		// CouponGrantID is optional; omitting it charges the full estimate.
-		CouponGrantID uint64 `json:"coupon_grant_id"`
+		ClientRequestID string `json:"client_request_id"`
+		PortID          string `json:"port_id"`
+		OfferID         uint64 `json:"offer_id"`
 	}
 	decoder := json.NewDecoder(io.LimitReader(c.Request.Body, 16<<10))
 	decoder.DisallowUnknownFields()
 	if decoder.Decode(&body) != nil || decoder.Decode(new(any)) != io.EOF || uuid.Validate(body.ClientRequestID) != nil || !userScanCodePattern.MatchString(body.PortID) {
 		httpapi.BadRequest(c, "invalid payment request")
 		return
+	}
+	if body.OfferID == 0 {
+		httpapi.BadRequest(c, "请选择后台发布的充电方案")
+		return
+	}
+	{
+		previous, replayErr := a.Intents.Replay(c.Request.Context(), userID, body.ClientRequestID, body.PortID, body.OfferID, 0)
+		if errors.Is(replayErr, ErrPaymentIntentConflict) {
+			httpapi.Write(c, http.StatusConflict, 2001, "payment intent unavailable", nil)
+			return
+		}
+		if replayErr != nil {
+			httpapi.Write(c, http.StatusServiceUnavailable, 5001, "payment storage unavailable", nil)
+			return
+		}
+		if previous != nil {
+			a.finishStart(c, *previous)
+			return
+		}
 	}
 	port, status := a.Scan.lookup(c.Request.Context(), body.PortID)
 	if status == http.StatusNotFound {
@@ -80,8 +118,17 @@ func (a PaymentStartAPI) start(c *gin.Context) {
 		httpapi.Write(c, http.StatusServiceUnavailable, 5003, "pricing storage unavailable", nil)
 		return
 	}
+	selected, lookupErr := a.Pricing.ActiveOffer(c.Request.Context(), port.StationID, body.OfferID)
+	if errors.Is(lookupErr, pricing.ErrOfferUnavailable) {
+		httpapi.Write(c, http.StatusConflict, 2004, "充电方案已下架", nil)
+		return
+	}
+	if lookupErr != nil {
+		httpapi.Write(c, http.StatusServiceUnavailable, 5003, "充电方案暂时无法读取", nil)
+		return
+	}
 	intent, err := a.Intents.Reserve(c.Request.Context(), IntentInput{UserID: userID, ClientRequestID: body.ClientRequestID,
-		Port: port, Energy: body.EstimatedKWh, Minutes: body.EstimatedMinutes, Rule: rule, CouponGrantID: body.CouponGrantID})
+		Port: port, Rule: rule, Offer: &selected})
 	if errors.Is(err, pricing.ErrInvalidPricing) {
 		httpapi.BadRequest(c, "invalid charging estimate")
 		return
@@ -106,6 +153,10 @@ func (a PaymentStartAPI) start(c *gin.Context) {
 		httpapi.Write(c, http.StatusServiceUnavailable, 5001, "payment storage unavailable", nil)
 		return
 	}
+	a.finishStart(c, intent)
+}
+
+func (a PaymentStartAPI) finishStart(c *gin.Context, intent PaymentIntent) {
 	params, err := a.Intents.PrepayParams(c.Request.Context(), intent.PaymentOrderID)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		params, err = a.Provider.Prepay(c.Request.Context(), payment.PrepayRequest{MerchantOrderNo: intent.MerchantOrderNo,

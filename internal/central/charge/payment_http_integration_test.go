@@ -53,6 +53,12 @@ func TestSimulationHTTPPaymentCreatesChargeOnlyAfterCallback(t *testing.T) {
 	}
 	ruleID, _ := rule.LastInsertId()
 	defer adminDB.ExecContext(ctx, "DELETE FROM pricing_rule WHERE id = ?", ruleID)
+	offer, err := adminDB.ExecContext(ctx, "INSERT INTO charge_offer (station_id,code,name,mode,price_cents,duration_minutes) VALUES (?,?,?,'package',600,60)", stationID, "P60", "60 minute package")
+	if err != nil {
+		t.Fatal(err)
+	}
+	offerID, _ := offer.LastInsertId()
+	defer adminDB.ExecContext(ctx, "DELETE FROM charge_offer WHERE id = ?", offerID)
 	user, err := userDB.ExecContext(ctx, "INSERT INTO user (openid) VALUES (?)", "http-pay-"+uuid.NewString())
 	if err != nil {
 		t.Fatal(err)
@@ -100,7 +106,22 @@ func TestSimulationHTTPPaymentCreatesChargeOnlyAfterCallback(t *testing.T) {
 		Scan: ScanAPI{GatewayURL: gateway.URL, ServiceToken: serviceToken}, Pricing: pricing.Store{DB: adminORM},
 		Intents: PaymentIntentStore{DB: testGORMDB(t, userDB)}, Provider: payment.Simulator{}}.Register(router)
 	SimulationCallbackAPI{DB: testGORMDB(t, userDB), Store: callbackStore, ServiceToken: serviceToken}.Register(router)
-	requestBody, _ := json.Marshal(map[string]any{"client_request_id": uuid.NewString(), "port_id": portCode, "estimated_kwh": "1.000", "estimated_minutes": 60})
+	offersBody, _ := json.Marshal(map[string]any{"port_id": portCode})
+	offersRequest := httptest.NewRequest(http.MethodPost, "/api/v1/user/scan/offers", bytes.NewReader(offersBody))
+	offersResponse := httptest.NewRecorder()
+	router.ServeHTTP(offersResponse, offersRequest)
+	if offersResponse.Code != http.StatusOK || !bytes.Contains(offersResponse.Body.Bytes(), []byte(`"price_cents":600`)) {
+		t.Fatalf("anonymous offers status=%d body=%s", offersResponse.Code, offersResponse.Body.String())
+	}
+	manualBody, _ := json.Marshal(map[string]any{"client_request_id": uuid.NewString(), "port_id": portCode, "offer_id": offerID, "estimated_kwh": "9"})
+	manualRequest := httptest.NewRequest(http.MethodPost, "/api/v1/user/scan/start", bytes.NewReader(manualBody))
+	manualRequest.Header.Set("Authorization", "Bearer "+access)
+	manualResponse := httptest.NewRecorder()
+	router.ServeHTTP(manualResponse, manualRequest)
+	if manualResponse.Code != http.StatusBadRequest {
+		t.Fatalf("client supplied charging amount was accepted: %d %s", manualResponse.Code, manualResponse.Body.String())
+	}
+	requestBody, _ := json.Marshal(map[string]any{"client_request_id": uuid.NewString(), "port_id": portCode, "offer_id": offerID})
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/user/scan/start", bytes.NewReader(requestBody))
 	request.Header.Set("Authorization", "Bearer "+access)
 	response := httptest.NewRecorder()
@@ -115,10 +136,20 @@ func TestSimulationHTTPPaymentCreatesChargeOnlyAfterCallback(t *testing.T) {
 			TotalCents      int64  `json:"total_cents"`
 		} `json:"data"`
 	}
-	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil || envelope.Data.TotalCents != 140 {
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil || envelope.Data.TotalCents != 600 {
 		t.Fatalf("start response=%s err=%v", response.Body.String(), err)
 	}
 	intentID, merchantNo = envelope.Data.IntentID, envelope.Data.MerchantOrderNo
+	if _, err := adminDB.ExecContext(ctx, "UPDATE charge_offer SET price_cents=800,status='disabled',version=version+1 WHERE id=?", offerID); err != nil {
+		t.Fatal(err)
+	}
+	retry := httptest.NewRequest(http.MethodPost, "/api/v1/user/scan/start", bytes.NewReader(requestBody))
+	retry.Header.Set("Authorization", "Bearer "+access)
+	retryResponse := httptest.NewRecorder()
+	router.ServeHTTP(retryResponse, retry)
+	if retryResponse.Code != http.StatusOK || !bytes.Contains(retryResponse.Body.Bytes(), []byte(merchantNo)) || !bytes.Contains(retryResponse.Body.Bytes(), []byte(`"total_cents":600`)) {
+		t.Fatalf("frozen checkout replay status=%d body=%s", retryResponse.Code, retryResponse.Body.String())
+	}
 	var chargeCount int
 	if err := userDB.QueryRowContext(ctx, "SELECT COUNT(*) FROM charge_order WHERE user_id = ?", userID).Scan(&chargeCount); err != nil || chargeCount != 0 {
 		t.Fatalf("before callback charges=%d err=%v", chargeCount, err)

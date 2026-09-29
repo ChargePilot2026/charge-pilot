@@ -76,13 +76,14 @@ func readOriginalBillingSource(db *gorm.DB, id uint64) (billing.Source, error) {
 		return billing.Source{}, err
 	}
 	var contract struct {
-		Rule pricing.Rule `json:"rule"`
+		Rule  pricing.Rule   `json:"rule"`
+		Offer *pricing.Offer `json:"offer"`
 	}
 	var meter EndMeter
 	if json.Unmarshal(snapshot.PricingSnapshot, &contract) != nil || json.Unmarshal(end.MeterJSON, &meter) != nil || !meter.EndedAt.Equal(order.EndedAt.Time) {
 		return billing.Source{}, billing.ErrConflict
 	}
-	return billing.Source{ChargeOrderID: id, OrderNo: order.OrderNo, UserID: order.UserID, Rule: contract.Rule, Meter: pricing.ActualMeter{StartedAt: order.StartedAt.Time, EndedAt: meter.EndedAt, ChargedWh: meter.ChargedWh, ChargedSeconds: meter.ChargedSeconds, Segments: meter.Segments}}, nil
+	return billing.Source{ChargeOrderID: id, OrderNo: order.OrderNo, UserID: order.UserID, Rule: contract.Rule, Offer: contract.Offer, Meter: pricing.ActualMeter{StartedAt: order.StartedAt.Time, EndedAt: meter.EndedAt, ChargedWh: meter.ChargedWh, ChargedSeconds: meter.ChargedSeconds, Segments: meter.Segments}}, nil
 }
 func (s BillingOrders) Apply(ctx context.Context, result billing.Result) error {
 	encoded, err := json.Marshal(result)
@@ -117,7 +118,7 @@ func (s BillingOrders) Apply(ctx context.Context, result billing.Result) error {
 		if string(original) != string(provided) {
 			return billing.ErrConflict
 		}
-		fee, err := pricing.PriceActual(source.Rule, source.Meter)
+		fee, err := pricing.PriceOfferActual(source.Rule, source.Offer, source.Meter)
 		if err != nil || fee != result.ActualFee || result.CalculationNo != fmt.Sprintf("FEE%020d", order.ID) {
 			return billing.ErrConflict
 		}

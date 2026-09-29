@@ -52,6 +52,7 @@ type PaymentOrderRecord struct {
 func (PaymentOrderRecord) TableName() string { return "payment_order" }
 
 type PaymentIntentRecord struct {
+	OfferID            sql.NullInt64 `gorm:"column:offer_id"`
 	IntentID           string        `gorm:"column:intent_id;primaryKey"`
 	ClientRequestID    string        `gorm:"column:client_request_id"`
 	MerchantOrderNo    string        `gorm:"column:merchant_order_no"`

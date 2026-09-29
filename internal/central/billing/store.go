@@ -19,6 +19,7 @@ type Source struct {
 	OrderNo       string              `json:"order_no"`
 	UserID        uint64              `json:"user_id"`
 	Rule          pricing.Rule        `json:"rule"`
+	Offer         *pricing.Offer      `json:"offer,omitempty"`
 	Meter         pricing.ActualMeter `json:"meter"`
 }
 type Result struct {
@@ -32,7 +33,7 @@ func (s Store) Calculate(ctx context.Context, source Source) (Result, error) {
 	if source.ChargeOrderID == 0 || source.OrderNo == "" || source.UserID == 0 || source.Rule.StationID == 0 {
 		return Result{}, ErrConflict
 	}
-	fee, err := pricing.PriceActual(source.Rule, source.Meter)
+	fee, err := pricing.PriceOfferActual(source.Rule, source.Offer, source.Meter)
 	if err != nil {
 		return Result{}, err
 	}

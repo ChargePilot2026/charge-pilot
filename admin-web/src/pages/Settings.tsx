@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Typography, Card, Form, Input, Button, Space, Tabs, message } from 'antd';
 import PricingRules from './PricingRules';
+import ChargeOffers from './ChargeOffers';
 import { SaveOutlined } from '@ant-design/icons';
 import { apiGet, apiPut } from '../api/client';
 
@@ -64,6 +65,7 @@ export default function SettingsPage() {
             label: '计费规则',
             children: <PricingRules />,
           },
+          { key:'charge-offers', label:'充电方案', children:<ChargeOffers/> },
         ]}
       />
     </div>
