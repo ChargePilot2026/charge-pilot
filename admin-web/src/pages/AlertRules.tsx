@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { Alert, App, Button, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Table, Tag, Typography } from 'antd';
 import { PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import { apiDelete, apiGet, apiPost, apiPut } from '../api/client';
+import { LoadError } from '../components/LoadError';
 
 const { Title, Text, Paragraph } = Typography;
 const endpoint = '/api/v1/admin/alert-rules';
@@ -148,8 +149,8 @@ export function AlertRules() {
       <Space style={{ marginBottom: 12 }} wrap>
         <Button type="primary" icon={<PlusOutlined />} onClick={() => openEditor(null)}>新建规则</Button>
         <Button icon={<ReloadOutlined />} onClick={() => void load()} loading={loading}>刷新</Button>
-        {error && <Text type="danger">{error}</Text>}
-      </Space>
+        </Space>
+      {error && <LoadError title="告警规则加载失败" detail={error} onRetry={() => void load()} />}
       {rows.length === 0 && !loading ? (
         <Alert type="info" showIcon message="尚未配置告警规则" description="新建规则后，超出阈值的遥测会自动生成告警并推送给订阅方。" />
       ) : (
@@ -184,7 +185,7 @@ export function AlertRules() {
       <Modal
         title={editing ? `编辑规则 ${editing.name}` : '新建告警规则'} open={creating || !!editing}
         onCancel={() => { setCreating(false); setEditing(null); }} onOk={() => void submit()}
-        confirmLoading={saving} okText="保存" cancelText="取消" width={560} destroyOnClose
+        confirmLoading={saving} okText="保存" cancelText="取消" width={560} destroyOnHidden
       >
         <Form form={form} layout="vertical">
           <Form.Item name="name" label="规则名称" rules={[{ required: true, message: '请填写规则名称' }, { max: 128 }]}>
@@ -301,8 +302,8 @@ export function AlertSubscriptions() {
       <Space style={{ marginBottom: 12 }} wrap>
         <Button type="primary" onClick={() => setOpen(true)}>新建订阅</Button>
         <Button icon={<ReloadOutlined />} onClick={() => void load()} loading={loading}>刷新</Button>
-        {error && <Text type="danger">{error}</Text>}
-      </Space>
+        </Space>
+      {error && <LoadError title="告警订阅加载失败" detail={error} onRetry={() => void load()} />}
       {rows.length === 0 && !loading ? (
         <Alert type="info" showIcon message="尚未配置告警订阅" description="订阅后，对应告警会推送到指定的 Webhook 或运营账号。" />
       ) : (
@@ -320,7 +321,7 @@ export function AlertSubscriptions() {
         />
       )}
       <Modal title="新建告警订阅" open={open} onCancel={() => setOpen(false)} onOk={() => void submit()}
-        confirmLoading={saving} okText="创建" cancelText="取消" destroyOnClose>
+        confirmLoading={saving} okText="创建" cancelText="取消" destroyOnHidden>
         <Paragraph type="secondary">规则和严重级别至少填一项；Webhook 与接收账号至少填一项。</Paragraph>
         <Form form={form} layout="vertical">
           <Form.Item name="rule_id" label="规则 ID（留空表示全部规则）"><InputNumber style={{ width: '100%' }} min={1} /></Form.Item>

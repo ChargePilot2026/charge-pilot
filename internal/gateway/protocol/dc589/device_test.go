@@ -327,3 +327,94 @@ func TestParseRegisterReplyAdoptsServerTime(t *testing.T) {
 		t.Fatalf("server time = %s, want %s", at, now)
 	}
 }
+
+// A9 is the only way a board learns what time the platform believes it is, and
+// the simulator's settlement is timed on the board's own stamps. Before
+// ParseTimeReply existed the frame was received and discarded, so the two halves
+// of the pair were not dual at all.
+func TestParseTimeReplyRoundTripsServerBuild(t *testing.T) {
+	// Deliberately not the host's local zone: the frame carries civil time with
+	// no offset, so a caller in another zone must still read back the same
+	// instant rather than a shifted one.
+	server := time.Date(2026, 9, 29, 16, 30, 45, 0, time.FixedZone("UTC+9", 9*3600))
+	frame := BuildTimeReply([6]byte{1, 2, 3, 4, 5, 6}, server)
+	at, err := ParseTimeReply(frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !at.Equal(server) {
+		t.Fatalf("server time = %s, want %s", at, server)
+	}
+	if _, err := ParseTimeReply(Frame{Command: TimeRequest, Data: make([]byte, 6)}); err == nil {
+		t.Fatal("an A8 was accepted as an A9")
+	}
+}
+
+// The gateway has parsed C2 since the codec was written, but nothing could ever
+// produce one, so the telemetry path was reachable from no code path at all. The
+// report is time, not money: banding discounts the hours left, which is why
+// MinutesAfter is the figure the server reads.
+func TestBuildChargingBandRoundTripsThroughTheServerParser(t *testing.T) {
+	frame, err := BuildChargingBand(ChargingBandReport{
+		Port: 2, BandBefore: 1, BandAfter: 3,
+		MinutesBefore: 100, MinutesAfter: 50, PowerDeciWatts: 1500,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	meter, err := ParseChargingBand(frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meter.Port != 2 {
+		t.Fatalf("port = %d, want 2", meter.Port)
+	}
+	if meter.RemainingSecs != 50*60 {
+		t.Fatalf("remaining = %d seconds, want the 50 minutes left after the 0.5 band", meter.RemainingSecs)
+	}
+	if meter.PowerDeciWatts != 1500 {
+		t.Fatalf("power = %d, want 1500", meter.PowerDeciWatts)
+	}
+}
+
+// The band is 1-based here, which is the opposite of the zero-based ladder the
+// port-status reply counts. Encoding a 0 or a 6 would put a rung on the wire that
+// the board's own firmware could not read back.
+func TestBuildChargingBandRefusesABandOutsideOneToFive(t *testing.T) {
+	for _, band := range []byte{0, 6} {
+		if _, err := BuildChargingBand(ChargingBandReport{Port: 1, BandBefore: band, BandAfter: band}); err == nil {
+			t.Fatalf("band %d was accepted", band)
+		}
+	}
+	if _, err := BuildChargingBand(ChargingBandReport{Port: 0, BandBefore: 1, BandAfter: 1}); err == nil {
+		t.Fatal("a report for port 0 was accepted")
+	}
+}
+
+// The register reply and the time reply carry the same instant in the same
+// encoding, and a board calibrates itself from the first and re-calibrates from
+// the second. Answering them from different timezones made the board see the
+// server correct itself by eight hours on every connection, and adopt that
+// correction — so a gateway running in a container on UTC shipped a pile a
+// clock skewed by exactly the offset it was meant to be removing.
+func TestRegisterReplyAndTimeReplyAgreeOnTheSameInstant(t *testing.T) {
+	// A host in a zone the protocol does not use, which is the normal case for a
+	// container and the only case where the two can disagree at all.
+	host := time.Date(2026, 9, 29, 18, 39, 2, 0, time.UTC)
+	_, registeredAt, err := ParseRegisterReply(BuildRegisterReply([6]byte{1, 2, 3, 4, 5, 6}, host))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repliedAt, err := ParseTimeReply(BuildTimeReply([6]byte{1, 2, 3, 4, 5, 6}, host))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !registeredAt.Equal(repliedAt) {
+		t.Fatalf("the register reply said %s but the time reply said %s for the same instant",
+			registeredAt.Format(time.RFC3339), repliedAt.Format(time.RFC3339))
+	}
+	if !registeredAt.Equal(host) {
+		t.Fatalf("the register reply read back as %s, want the instant it was given (%s)",
+			registeredAt.Format(time.RFC3339), host.Format(time.RFC3339))
+	}
+}

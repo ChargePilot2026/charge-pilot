@@ -103,7 +103,7 @@ const (
 	LongPlatformBilling ChargeMode = 12
 )
 
-// NormalChargeModes are the only charging types a rider-facing request may use.
+// NormalChargeModes are the only charging types a request from a charging user may use.
 var NormalChargeModes = map[ChargeMode]bool{
 	ByTime: true, ByEnergy: true, PlatformBilling: true,
 }
@@ -178,7 +178,13 @@ func ParseCommandResult(frame Frame) (CommandResult, error) {
 func BuildRegisterReply(session [6]byte, now time.Time) Frame {
 	data := make([]byte, 7)
 	data[0] = 0 // connected
-	encodeTime(data[1:], now)
+	// Converted for the same reason BuildTimeReply is. A board calibrates itself
+	// from this frame, and the server answers the board's own time request with
+	// the same instant in the same encoding, so a reply that skipped the
+	// conversion would tell the board the two disagreed by however far the
+	// gateway's host sits from the civil timezone the protocol carries — eight
+	// hours on a container running UTC, which is then adopted as a correction.
+	encodeTime(data[1:], now.In(chinaLocation))
 	return Frame{Command: RegisterReply, Session: session, Data: data}
 }
 

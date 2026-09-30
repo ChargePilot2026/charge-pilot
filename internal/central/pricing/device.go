@@ -8,7 +8,7 @@ import (
 var (
 	// ErrNoPaidAmount is returned when a device-billed session is settled
 	// without the amount that was actually collected. There is no defensible
-	// substitute: the rider paid a specific number and the bill has to be it.
+	// substitute: the charging user paid a specific number and the bill has to be it.
 	ErrNoPaidAmount = errors.New("设备计费缺少实付金额，无法结算")
 	// ErrStopRequired is returned when a server-billed session ends without a
 	// confirmed stop. Leaving it unflagged would let an unbounded charge run
@@ -51,7 +51,7 @@ type ControlInstruction struct {
 	// EnergyMilliWh is device_energy's control quantity.
 	EnergyMilliWh uint64 `json:"energy_milli_wh,omitempty"`
 	// BalanceCents is device_power's control quantity: the allowance the device
-	// spends down. It equals what the rider paid.
+	// spends down. It equals what the charging user paid.
 	BalanceCents int64 `json:"balance_cents,omitempty"`
 	// TierCentsPerHour travels with the balance so the device can convert the
 	// power it is drawing into a running spend.

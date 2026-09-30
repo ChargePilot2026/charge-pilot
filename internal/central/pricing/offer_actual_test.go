@@ -21,8 +21,8 @@ func TestConfiguredOfferSettlement(t *testing.T) {
 	}{
 		// A fixed-span package charges only for the part of the span used, so an
 		// abandoned session hands back the rest.
-		{"package half used", Offer{ID: 1, StationID: 2, Code: "P60", Name: "套餐", Mode: "package", PriceCents: 600, DurationMinutes: 60}, 100},
-		{"amount cap", Offer{ID: 2, StationID: 2, Code: "A1", Name: "金额", Mode: "amount", PriceCents: 100}, 100},
+		{"package half used", Offer{ID: 1, StationID: 2, Name: "套餐", Mode: "package", PriceCents: 600, DurationMinutes: 60}, 100},
+		{"amount cap", Offer{ID: 2, StationID: 2, Name: "金额", Mode: "amount", PriceCents: 100}, 100},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

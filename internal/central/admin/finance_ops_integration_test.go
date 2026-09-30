@@ -33,6 +33,34 @@ func settledParty(t *testing.T, ctx context.Context, code string, ratio int32, p
 	suffix := uuid.NewString()[:8]
 	template := "tpl-" + suffix
 	party := "party-" + suffix
+	// 这套夹具铺了分账模板、参与方、结算单、参与方金额、提现单五条链，一条都
+	// 不清就等于每次跑测都往开发库倒一套。后台「分账明细」「提现打款」两页读的
+	// 就是这些表，几轮之后运营看到的是几十条同名模板和一堆互不相干的提现单，
+	// 分不清哪条是真业务数据。
+	//
+	// 清理按本轮造出来的标识逐张表倒着删：提现单挂在参与方上，参与方金额挂在
+	// 结算单上，结算单挂在模板上。少删一张就留下孤儿行，下一轮的
+	// uk_fee_generation 之类的唯一键就会撞上。
+	t.Cleanup(func() {
+		statements := []struct {
+			db    *gorm.DB
+			query string
+			args  []any
+		}{
+			// 提现单只按参与方编号认——它建在 billing 库、参与者建在 admin 库，
+			// 跨库没法用子查询认人。调用方一律用同一个参与方编号建单。
+			{billingDB, "DELETE FROM withdraw_request WHERE party_code = ?", []any{code}},
+			{billingDB, "DELETE FROM settlement_party_amount WHERE settlement_id IN (SELECT id FROM settlement WHERE settlement_no = ?)", []any{"STL-" + suffix}},
+			{billingDB, "DELETE FROM settlement WHERE settlement_no = ?", []any{"STL-" + suffix}},
+			{adminDB, "DELETE FROM split_party WHERE split_template_id IN (SELECT id FROM split_template WHERE code = ?)", []any{template}},
+			{adminDB, "DELETE FROM split_template WHERE code = ?", []any{template}},
+		}
+		for _, statement := range statements {
+			if err := statement.db.Exec(statement.query, statement.args...).Error; err != nil {
+				t.Errorf("清理分账夹具失败 (%v): %s", err, statement.query)
+			}
+		}
+	})
 	if err := adminDB.Exec("INSERT INTO split_template(code,name,mode,status) VALUES(?,?,'mode_a','active')", template, template).Error; err != nil {
 		t.Fatal(err)
 	}

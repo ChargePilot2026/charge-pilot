@@ -24,8 +24,15 @@ import (
 )
 
 func TestAdminPagesIntegration(t *testing.T) {
-	if os.Getenv("TEST_ADMIN_DATABASE_URL") == "" {
-		t.Skip("disposable databases required")
+	// 四个库缺一不可：只设了 admin 一个就去连另外三个，报出来的是 "invalid MySQL URL"，
+	// 看起来像代码坏了，其实是没配齐环境。
+	for _, key := range []string{
+		"TEST_ADMIN_DATABASE_URL", "TEST_USER_DATABASE_URL",
+		"TEST_BILLING_DATABASE_URL", "TEST_GATEWAY_DATABASE_URL",
+	} {
+		if os.Getenv(key) == "" {
+			t.Skipf("disposable databases required: %s is not set", key)
+		}
 	}
 	ctx := context.Background()
 	open := func(key string) *gorm.DB {
@@ -41,6 +48,146 @@ func TestAdminPagesIntegration(t *testing.T) {
 		return orm
 	}
 	adb, udb, bdb, gdb := open("TEST_ADMIN_DATABASE_URL"), open("TEST_USER_DATABASE_URL"), open("TEST_BILLING_DATABASE_URL"), open("TEST_GATEWAY_DATABASE_URL")
+
+	// This test builds a whole fixture set out of fixed identifiers, so without a
+	// cleanup it can only ever pass once against a given database: the second run
+	// collides on the first unique key it meets and reports a product failure that
+	// is really its own leftovers. Everything it creates is removed here, grouped
+	// by the database that owns it and matched on the markers it uses rather than
+	// on ids, because ids are what move from run to run.
+	//
+	// A statement that fails is reported rather than swallowed. A silently skipped
+	// delete looks exactly like a clean one until the next run trips over it.
+	// The outbox is append-only and keyed on an event id derived from what
+	// happened, so a row this run writes is exactly the row the next run trips
+	// over. Recording where the table was beforehand removes this run's rows and
+	// nothing that was already there, which is more robust than trying to guess
+	// the naming scheme.
+	floors := map[*gorm.DB]int64{}
+	for _, db := range []*gorm.DB{adb, udb, gdb} {
+		var floor int64
+		if e := db.Raw("SELECT COALESCE(MAX(id),0) FROM event_outbox").Row().Scan(&floor); e == nil {
+			floors[db] = floor
+		}
+	}
+	// 站点在跑到一半时会被改名（分页站点 → 更新站点），所以创建时记下的名字
+	// 到清理时已经对不上了：按名字删等于什么都没删，每跑一次就往站点列表里
+	// 塞一条，几轮之后 demo 站点被挤出首页。这里按接口回给本轮的主键删——
+	// 改名动不了主键。
+	var pagesStationID uint64
+	t.Cleanup(func() {
+		const (
+			pagesUsers     = "openid LIKE 'pages%'"
+			pagesDevices   = "device_id LIKE 'PAGES%'"
+			pagesTemplates = "name IN ('集成计费模板','坏时段','空档位','设备计费带费率','模式与费率不符','改价后的模板','模板副本','并发模板','已绑定模板','名称可更新','分页站点','更新站点','上下架套餐')"
+			pagesPackages  = "name = '上下架套餐'"
+			pagesPayment   = "order_no LIKE 'PAGES_%' OR wechat_transaction_id LIKE 'SIMPAGES%'"
+		)
+		// 本轮没建出站点时（测试提前失败）退化成 id = 0，删不到任何东西，
+		// 不会误伤库里原有的站点。
+		pagesStations := "id = 0"
+		if pagesStationID != 0 {
+			pagesStations = "id = " + strconv.FormatUint(pagesStationID, 10)
+		}
+		byDB := []struct {
+			db    *gorm.DB
+			stmts []string
+		}{
+			{adb, []string{
+				// Export tasks name their creator, so they go before the accounts:
+				// the other way round the subquery finds nobody and the tasks this
+				// run created survive to block the next one on the same request id.
+				"DELETE FROM export_task WHERE task_no LIKE 'PAGES_%' OR task_no LIKE 'EXPBB000000%' OR requested_by IN (SELECT id FROM admin_user_role WHERE username LIKE 'pages-%')",
+				"DELETE FROM admin_user_role WHERE username LIKE 'pages-%'",
+				"DELETE FROM finance_reconcile_log WHERE reconcile_type = 'wechat_pay' AND reconcile_date IN ('2026-09-15','2026-10-01')",
+				"DELETE FROM split_party WHERE split_template_id IN (SELECT id FROM split_template WHERE code LIKE 'PAGES_%')",
+				"DELETE FROM split_template WHERE code LIKE 'PAGES_%'",
+				// 上架动作把套餐模板复制成一条按站点售卖的 charge_offer。两者都不
+				// 清就会一版版攒起来：套餐模板池里堆着几十条同名模板，售卖记录还
+				// 指向早就删掉的站点，变成后台再也查不出来的孤儿。
+				"DELETE FROM charge_offer WHERE station_id IN (SELECT id FROM station WHERE " + pagesStations + ") OR package_template_id IN (SELECT id FROM pricing_package_template WHERE " + pagesPackages + ")",
+				"DELETE FROM station_recharge_package WHERE package_template_id IN (SELECT id FROM pricing_package_template WHERE " + pagesPackages + ")",
+				"DELETE FROM pricing_package_template WHERE " + pagesPackages,
+				"DELETE FROM station_policy WHERE station_id IN (SELECT id FROM station WHERE " + pagesStations + ")",
+				"DELETE FROM station WHERE " + pagesStations,
+				// A tariff that outlives its own cleanup keeps its version counter,
+				// and the next run's apply is then refused as a version conflict —
+				// which reads as a product bug and is not one.
+				"DELETE FROM pricing_publication WHERE rule_id IN (SELECT id FROM pricing_rule WHERE template_id IN (SELECT id FROM pricing_template WHERE " + pagesTemplates + "))",
+				"DELETE FROM pricing_switch_task WHERE template_id IN (SELECT id FROM pricing_template WHERE " + pagesTemplates + ")",
+				// The unbound legacy rule belongs to neither a template nor a station,
+				// so it is named outright — it is the one fixture here that neither
+				// reference reaches.
+				"DELETE FROM pricing_rule WHERE name = 'legacy unbound' OR template_id IN (SELECT id FROM pricing_template WHERE " + pagesTemplates + ") OR station_id IN (SELECT id FROM station WHERE " + pagesStations + ")",
+				"DELETE FROM pricing_template WHERE " + pagesTemplates,
+				"DELETE FROM announcement WHERE title = '测试公告' OR title LIKE '%pages%'",
+				// 坐席的 DELETE 路由是"停用"不是物理删除（坐席记录要留痕），所以
+				// 每跑一次就多一条停用坐席，后台列表会一版版变长。测试得自己摘。
+				"DELETE FROM customer_service_config WHERE agent_wechat = 'pages_seat'",
+				"DELETE FROM webhook_subscription WHERE name = '测试订阅' OR name LIKE '%pages%' OR url LIKE '%pages%'",
+				// Matched on the board itself, not on the import it arrived in: a
+				// failed batch still records the identity it saw, and that row is
+				// what refuses the next attempt at the same board.
+				"DELETE FROM device_meta WHERE " + pagesDevices,
+				"DELETE FROM device_import_identity WHERE " + pagesDevices,
+				"DELETE FROM device_import WHERE import_id IN ('33333333-3333-4333-8333-333333333333','33333333-3333-4333-8333-333333333334')",
+			}},
+			{udb, []string{
+				// The refund chain is keyed on a fixed request id and leaves rows in
+				// five tables behind it; the reviews and receipts hang off the
+				// record, so they go first or they orphan it exactly the way the
+				// pricing rules did.
+				"DELETE FROM refund_success_receipt WHERE refund_record_id IN (SELECT id FROM refund_record WHERE user_id IN (SELECT id FROM user WHERE " + pagesUsers + "))",
+				"DELETE FROM wallet_refund_part WHERE refund_record_id IN (SELECT id FROM refund_record WHERE user_id IN (SELECT id FROM user WHERE " + pagesUsers + "))",
+				"DELETE FROM refund_review WHERE refund_record_id IN (SELECT id FROM refund_record WHERE user_id IN (SELECT id FROM user WHERE " + pagesUsers + "))",
+				"DELETE FROM manual_refund_request WHERE request_id = '44444444-4444-4444-8444-444444444444'",
+				"DELETE FROM refund_record WHERE user_id IN (SELECT id FROM user WHERE " + pagesUsers + ")",
+				"DELETE FROM charge_bill WHERE bill_no LIKE 'PAGES_%'",
+				"DELETE FROM charge_prepay WHERE payment_order_id IN (SELECT id FROM payment_order WHERE " + pagesPayment + ")",
+				"DELETE FROM charge_order WHERE order_no LIKE 'PAGES_%' OR " + pagesDevices,
+				"DELETE FROM payment_order WHERE " + pagesPayment,
+				"DELETE FROM invoice_request WHERE invoice_no = 'PAGES_INVOICE'",
+				"DELETE FROM feedback WHERE content LIKE '%pages_seat%' OR user_id IN (SELECT id FROM user WHERE " + pagesUsers + ")",
+				"DELETE FROM device_fault_report WHERE " + pagesDevices,
+				"DELETE FROM wallet_risk_freeze_link WHERE request_id IN ('55555555-5555-4555-8555-555555555555','88888888-8888-4888-8888-888888888888','44444444-4444-4444-8444-444444444444')",
+				// The review and release tables record who signed off. That makes them
+				// run-specific: every run mints a fresh reviewer account, so a review
+				// left behind by the previous run is read as a replay by a different
+				// person and is refused as a conflict.
+				"DELETE FROM wallet_risk_review WHERE request_id IN ('55555555-5555-4555-8555-555555555555','88888888-8888-4888-8888-888888888888')",
+				"DELETE FROM wallet_risk_release WHERE request_id IN ('55555555-5555-4555-8555-555555555555','88888888-8888-4888-8888-888888888888')",
+				"DELETE FROM risk_freeze_log WHERE user_id IN (SELECT id FROM user WHERE " + pagesUsers + ")",
+				"DELETE FROM wallet_refund_request WHERE request_id IN ('55555555-5555-4555-8555-555555555555','88888888-8888-4888-8888-888888888888') OR user_id IN (SELECT id FROM user WHERE " + pagesUsers + ")",
+				"DELETE FROM wallet_account WHERE user_id IN (SELECT id FROM user WHERE " + pagesUsers + ")",
+				"DELETE FROM coupon_grant_request WHERE coupon_id IN (SELECT id FROM coupon WHERE name IN ('测试优惠','已停用券'))",
+				"DELETE FROM coupon_grant WHERE coupon_id IN (SELECT id FROM coupon WHERE name IN ('测试优惠','已停用券'))",
+				"DELETE FROM coupon_activity_rule WHERE coupon_id IN (SELECT id FROM coupon WHERE name IN ('测试优惠','已停用券')) OR name LIKE 'pages%'",
+				"DELETE FROM coupon WHERE name IN ('测试优惠','已停用券')",
+				"DELETE FROM user WHERE " + pagesUsers,
+			}},
+			{gdb, []string{
+				"DELETE FROM device_port WHERE " + pagesDevices,
+				"DELETE FROM device WHERE " + pagesDevices,
+				// Provisioning is idempotent only on an exact repeat of the request,
+				// so a record left over from a run whose vendor row has since been
+				// deleted is not a harmless duplicate: it carries the old vendor id
+				// and the next attempt is refused as a parameter mismatch.
+				"DELETE FROM device_provision WHERE " + pagesDevices,
+				"DELETE FROM vendor WHERE vendor_code = 'PAGES_VENDOR'",
+			}},
+		}
+		for _, group := range byDB {
+			for _, stmt := range group.stmts {
+				if e := group.db.Exec(stmt).Error; e != nil {
+					t.Logf("cleanup failed: %v :: %s", e, stmt)
+				}
+			}
+			if e := group.db.Exec("DELETE FROM event_outbox WHERE id > ?", floors[group.db]).Error; e != nil {
+				t.Logf("cleanup failed: %v :: outbox rows this run wrote", e)
+			}
+		}
+	})
+
 	exec := func(db *gorm.DB, sql string, args ...any) {
 		t.Helper()
 		if e := db.Exec(sql, args...).Error; e != nil {
@@ -162,8 +309,10 @@ func TestAdminPagesIntegration(t *testing.T) {
 		call(fin1, "POST", "billing/meter-reviews/1/"+action, gin.H{}, 400)
 	}
 	call(adminToken, "GET", "billing/meter-reviews?status=invalid", nil, 400)
-	station := gin.H{"code": "PAGES_STATION", "name": "分页站点", "longitude": 116.3, "latitude": 39.9, "status": "active"}
+	station := gin.H{"name": "分页站点", "longitude": 116.3, "latitude": 39.9, "status": "active"}
 	sid := data(call(adminToken, "POST", "stations", station, 200))["id"]
+	// 记下主键，清理时按它删：这个站点稍后会被改名，按名字认不准。
+	pagesStationID = uint64(sid.(float64))
 	parties := []gin.H{{"party_code": "operator", "party_name": "运营方", "ratio_bp": 6000},
 		{"party_code": "property", "party_name": "物业", "ratio_bp": 4000, "bank_account": "6222000012345678"}}
 	call("", "POST", "settings/split-templates", gin.H{"code": "PAGES_SPLIT", "name": "页面验收分账", "mode": "mode_a", "parties": parties}, 401)
@@ -184,7 +333,6 @@ func TestAdminPagesIntegration(t *testing.T) {
 	call(adminToken, "POST", templatePath+"/parties", gin.H{"parties": []gin.H{{"party_code": "operator", "party_name": "运营方", "ratio_bp": 7000}, {"party_code": "property", "party_name": "物业", "ratio_bp": 2000}}}, 400)
 	call(adminToken, "POST", templatePath+"/parties", gin.H{"parties": []gin.H{{"party_code": "operator", "party_name": "运营方", "ratio_bp": 5000}, {"party_code": "property", "party_name": "物业", "ratio_bp": 5000}}}, 200)
 	station["status"] = "disabled"
-	delete(station, "code")
 	stationPath := fmt.Sprintf("stations/%.0f", sid)
 	call(adminToken, "PUT", stationPath, station, 200)
 	call(fin1, "PUT", stationPath+"/split-template", gin.H{"template_id": templateID, "expected_template_id": 0}, 403)
@@ -195,8 +343,10 @@ func TestAdminPagesIntegration(t *testing.T) {
 	call(adminToken, "POST", templatePath+"/parties", gin.H{"parties": parties}, 409)
 	call(adminToken, "PUT", templatePath, gin.H{"name": "已绑定模板", "mode": "mode_b", "status": "active"}, 409)
 	call(adminToken, "PUT", templatePath, gin.H{"name": "名称可更新", "mode": "mode_a", "status": "active"}, 200)
+	// A station code is gone as of admin_db/0044. A client still sending one
+	// gets told so rather than having it silently dropped.
 	station["code"] = "PAGES_STATION"
-	call(adminToken, "POST", "stations", station, 409)
+	call(adminToken, "POST", "stations", station, 400)
 	station["name"] = "更新站点"
 	delete(station, "code")
 	call(adminToken, "PUT", fmt.Sprintf("stations/%.0f", sid), station, 200)
@@ -358,7 +508,7 @@ func TestAdminPagesIntegration(t *testing.T) {
 	exec(udb, "INSERT INTO user(openid,nickname) VALUES ('pages-user','页面验收')")
 	var uid uint64
 	udb.Table("user").Where("openid='pages-user'").Pluck("id", &uid)
-	coupon := gin.H{"code": "PAGES_COUPON", "name": "测试优惠", "discount_type": "amount", "discount_value_cents": 100, "min_charge_cents": 0, "valid_hours": 24, "total_quota": 1, "per_user_quota": 1}
+	coupon := gin.H{"name": "测试优惠", "discount_type": "amount", "discount_value_cents": 100, "min_charge_cents": 0, "valid_hours": 24, "total_quota": 1, "per_user_quota": 1}
 	cid := data(call(adminToken, "POST", "coupons", coupon, 200))["id"]
 	cp := fmt.Sprintf("coupons/%.0f", cid)
 	grant := gin.H{"request_id": "11111111-1111-4111-8111-111111111111", "user_id": uid}
@@ -405,7 +555,7 @@ func TestAdminPagesIntegration(t *testing.T) {
 	batch := gin.H{"import_id": "33333333-3333-4333-8333-333333333333", "devices": []gin.H{{"device_id": "PAGESDEV01", "vendor_id": vid, "station_id": sid, "port_count": 2, "model": "测试型号", "charge_mode": "server_energy", "reports_energy": true, "reports_segmented_power": true}}}
 	call(adminToken, "POST", "device-imports", batch, 200)
 	call(adminToken, "POST", "device-imports", batch, 200)
-	// A board that declares nothing cannot join a metered yard. The whole batch
+	// A board that declares nothing cannot join a metered station. The whole batch
 	// is refused rather than half of it, and the message names the board.
 	call(adminToken, "POST", "device-imports", gin.H{"import_id": "33333333-3333-4333-8333-333333333334", "devices": []gin.H{{"device_id": "PAGESDEV02", "vendor_id": vid, "station_id": sid, "port_count": 2}}}, 409)
 	call(adminToken, "GET", "devices?keyword=PAGESDEV01", nil, 200)
@@ -467,7 +617,7 @@ func TestAdminPagesIntegration(t *testing.T) {
 		t.Fatalf("putting a withdrawn package back on sale was not treated as a re-list: %v", relisted)
 	}
 	// One row, not two: a second row would differ from the first only in which
-	// one a rider can see.
+	// one a charging user can see.
 	var onSale int64
 	if err := adb.Table("charge_offer").
 		Where("station_id=? AND package_template_id=? AND status='active' AND deleted_at IS NULL", sid, packageID).
@@ -496,7 +646,7 @@ func TestAdminPagesIntegration(t *testing.T) {
 	}
 	call(adminToken, "GET", "settings/switch-tasks", nil, 200)
 	call(adminToken, "GET", "settings/pricing-template-candidates?station_id="+fmt.Sprintf("%v", sid), nil, 200)
-	// A device that is not in the yard is refused by name rather than silently
+	// A device that is not in the station is refused by name rather than silently
 	// resetting whatever happens to be at that id.
 	call(adminToken, "POST", "settings/device-pricing/reset",
 		gin.H{"station_id": sid, "device_id": "NOSUCHDEVICE01"}, 404)

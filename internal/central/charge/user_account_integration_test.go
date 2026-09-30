@@ -14,6 +14,7 @@ import (
 	"github.com/ChargePilot2026/charge-pilot/internal/central/identity"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/auth"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/dbconn"
+	"github.com/ChargePilot2026/charge-pilot/internal/platform/phonecrypto"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/serviceclient"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -121,7 +122,7 @@ func TestPhoneBindRejectsNumberAlreadyOwned(t *testing.T) {
 	router := accountRouter(t, userDB, adminDB, second)
 
 	// The second account claims a number the first already holds.
-	if err := userDB.Exec("UPDATE user SET phone_hash = ? WHERE id = ?", phoneHash("13900000001"), first).Error; err != nil {
+	if err := userDB.Exec("UPDATE user SET phone_hash = ? WHERE id = ?", phonecrypto.Hash("13900000001"), first).Error; err != nil {
 		t.Fatal(err)
 	}
 	code, body := callJSON(t, router, "POST", "/api/v1/user/phone/bind", map[string]any{"phone": "13900000001"})
@@ -144,7 +145,7 @@ func TestPhoneBindRejectsNumberAlreadyOwned(t *testing.T) {
 	if err := userDB.Table("user").Select("phone_enc, phone_hash").Where("id = ?", second).Take(&stored).Error; err != nil {
 		t.Fatal(err)
 	}
-	if len(stored.Encrypted) == 0 || stored.Hash != phoneHash("13900000002") {
+	if len(stored.Encrypted) == 0 || stored.Hash != phonecrypto.Hash("13900000002") {
 		t.Fatal("phone was not stored encrypted with its hash")
 	}
 	// The plaintext must not appear anywhere in the stored blob.

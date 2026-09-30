@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Button, Form, Input, InputNumber, Modal, Space, Switch, Table, Tag, Typography, message } from 'antd';
 import { MessageOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import { apiDelete, apiGet, apiPost, apiPut } from '../api/client';
+import { LoadError } from '../components/LoadError';
 
 const { Title, Text } = Typography;
 const endpoint = '/api/v1/admin/customer-service';
@@ -22,6 +23,7 @@ export default function CustomerServicePage() {
   const [saving, setSaving] = useState(false);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<number | null>(null);
+  const [listError, setListError] = useState<string | null>(null);
   const [form] = Form.useForm();
 
   const load = async () => {
@@ -29,8 +31,9 @@ export default function CustomerServicePage() {
     try {
       const data = await apiGet<{ items: Seat[] }>(endpoint);
       setItems(Array.isArray(data?.items) ? data.items : []);
+      setListError(null);
     } catch (error: any) {
-      message.error(error?.message || '客服配置读取失败');
+      setItems([]); setListError(error?.message || '客服配置读取失败');
     } finally {
       setLoading(false);
     }
@@ -90,6 +93,7 @@ export default function CustomerServicePage() {
       <Text type="secondary" style={{ display: 'block', marginBottom: 16 }}>
         小程序客服入口使用优先级最高的启用坐席。微信原生客服还需要配置 WECHAT_CUSTOMER_SERVICE_CORP_ID 和 HTTPS 客服链接。
       </Text>
+      {listError && <LoadError title="客服坐席加载失败" detail={listError} onRetry={load} />}
       <Table rowKey="id" loading={loading} dataSource={items} columns={[
         { title: '坐席名称', dataIndex: 'agent_name', render: (name: string | null, seat: Seat) => name || seat.agent_wechat },
         { title: '微信号', dataIndex: 'agent_wechat' },
@@ -98,7 +102,7 @@ export default function CustomerServicePage() {
         { title: '状态', dataIndex: 'enabled', width: 100, render: (enabled: boolean) => <Tag color={enabled ? 'green' : 'default'}>{enabled ? '启用' : '停用'}</Tag> },
         { title: '操作', key: 'actions', width: 180, render: (_: unknown, seat: Seat) => <Space><Button type="link" icon={<MessageOutlined />} onClick={() => edit(seat)}>编辑</Button>{seat.enabled && <Button type="link" danger onClick={() => disable(seat)}>停用</Button>}</Space> },
       ]} />
-      <Modal title={editing === null ? '添加客服坐席' : '编辑客服坐席'} open={open} onCancel={() => setOpen(false)} onOk={() => void save()} confirmLoading={saving} destroyOnClose>
+      <Modal title={editing === null ? '添加客服坐席' : '编辑客服坐席'} open={open} onCancel={() => setOpen(false)} onOk={() => void save()} confirmLoading={saving} destroyOnHidden>
         <Form form={form} layout="vertical" initialValues={{ priority: 0, enabled: true }}>
           <Form.Item name="agent_name" label="坐席名称"><Input maxLength={64} /></Form.Item>
           <Form.Item name="agent_wechat" label="客服微信号" rules={[{ required: true, whitespace: true, max: 64 }]}><Input maxLength={64} /></Form.Item>

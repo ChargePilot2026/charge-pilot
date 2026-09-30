@@ -2,8 +2,9 @@ import { useEffect, useState } from 'react';
 import { Alert, Button, Form, Input, InputNumber, Modal, Select, Space, Switch, Table, Tag, message } from 'antd';
 import { apiGet, apiPost, apiPut } from '../api/client';
 import { fromCents, toCents, type Station } from './pricing/model';
+import { LoadError } from '../components/LoadError';
 
-// A package template is a prepaid cap a rider can pick. It is deliberately not
+// A package template is a prepaid cap a charging user can pick. It is deliberately not
 // part of a pricing template: the cap settles on its own price, so it stays
 // valid whichever tariff is running, and one tariff can be paired with several
 // different package sets. Applying one copies it into a charge_offer, which is
@@ -11,7 +12,7 @@ import { fromCents, toCents, type Station } from './pricing/model';
 //
 // The two kinds are mutually exclusive and the form says so rather than
 // leaving a price field that a duration package must leave empty: an amount is
-// a cap the rider pays for, a duration package is settled by the tariff.
+// a cap the charging user pays for, a duration package is settled by the tariff.
 
 type PackageTemplate = {
   id: number; name: string; kind: 'amount' | 'package';
@@ -43,6 +44,8 @@ export default function PackageTemplates() {
   const [targetStation, setTargetStation] = useState<number | null>(null);
   const [targetDevice, setTargetDevice] = useState('');
   const [applyError, setApplyError] = useState('');
+  const [listError, setListError] = useState<string | null>(null);
+  const [stationsError, setStationsError] = useState<string | null>(null);
 
   const [form] = Form.useForm();
   const kind = Form.useWatch<string>('kind', form) || 'amount';
@@ -53,8 +56,9 @@ export default function PackageTemplates() {
       const result = await apiGet<{ items: PackageTemplate[]; permissions: string[] }>('/api/v1/admin/settings/package-templates');
       setItems(result.items || []);
       setPermissions(result.permissions || []);
+      setListError(null);
     } catch (e: any) {
-      message.error(e.message);
+      setItems([]); setPermissions([]); setListError(e?.message || '套餐模板列表读取失败');
     } finally {
       setLoading(false);
     }
@@ -69,8 +73,11 @@ export default function PackageTemplates() {
     try {
       const result = await apiGet<{ items: Station[] }>('/api/v1/admin/stations', { status: 'active', keyword: keyword || undefined, page: 1, page_size: 50 });
       setStations(result.items || []);
+      setStationsError(null);
     } catch (e: any) {
-      message.error(e.message);
+      // 读不到站点时不能落到「没有匹配的运营中站点」那句空态上：那会把接口故障
+      // 说成确实没有站点，运营于是以为套餐上不了架。
+      setStations([]); setStationsError(e?.message || '运营中站点列表读取失败');
     } finally {
       setStationsLoading(false);
     }
@@ -139,7 +146,7 @@ export default function PackageTemplates() {
 
   const disable = (row: PackageTemplate) => Modal.confirm({
     title: '停用套餐模板',
-    content: `停用「${row.name}」后不能再上架到新的场地或设备。已上架的套餐仍在售，需另行下架。`,
+    content: `停用「${row.name}」后不能再上架到新的站点或设备。已上架的套餐仍在售，需另行下架。`,
     okText: '停用',
     onOk: async () => {
       await apiPost(`/api/v1/admin/settings/package-templates/${row.id}/disable`);
@@ -187,6 +194,7 @@ export default function PackageTemplates() {
     </Space>
     <Alert type="info" showIcon style={{ marginBottom: 12 }}
       message="套餐按自己的价格结算，与费率无关：按金额是预付封顶，按时长按现行费率结算。应用会复制成一条在售记录，之后修改模板不会影响已上架的套餐。" />
+    {listError && <LoadError title="套餐模板列表加载失败" detail={listError} onRetry={() => void load()} />}
     <Table rowKey="id" dataSource={items} loading={loading} scroll={{ x: 1000 }} pagination={false} columns={[
       { title: '名称', render: (_: unknown, r: PackageTemplate) => <>{r.name}<div style={{ color: '#999' }}>v{r.version}</div></> },
       { title: '排序', dataIndex: 'sort_order', width: 90, render: (v?: number) => (typeof v === 'number' ? v : <span style={{ color: '#999' }}>—</span>) },
@@ -210,7 +218,7 @@ export default function PackageTemplates() {
     ]} />
 
     <Modal title={editing ? `编辑套餐模板 · ${editing.name}` : '新建套餐模板'} open={open} width={720}
-      onCancel={() => setOpen(false)} onOk={() => void save()} confirmLoading={saving} okText="保存" destroyOnClose>
+      onCancel={() => setOpen(false)} onOk={() => void save()} confirmLoading={saving} okText="保存" destroyOnHidden>
       {formError && <Alert type="error" showIcon message={formError} style={{ marginBottom: 12 }} />}
       <Form form={form} name="package_template" layout="vertical">
         <Form.Item name="name" label="套餐名称" rules={[{ required: true, whitespace: true, max: 64 }]}>
@@ -227,7 +235,7 @@ export default function PackageTemplates() {
           ? <Form.Item name="price_yuan" label="封顶金额（元）" rules={[{ required: true }]} extra="须大于 0，最多 10000 元。">
             <InputNumber min={0.01} max={10000} step={1} precision={2} addonBefore="¥" style={{ width: 200 }} />
           </Form.Item>
-          : <Form.Item name="duration_minutes" label="时长（分钟）" rules={[{ required: true }]} extra="须为 1–600 分钟；套餐不设封顶金额，费用按场地现行费率结算。">
+          : <Form.Item name="duration_minutes" label="时长（分钟）" rules={[{ required: true }]} extra="须为 1–600 分钟；套餐不设封顶金额，费用按站点现行费率结算。">
             <InputNumber min={1} max={600} step={30} addonAfter="分钟" style={{ width: 200 }} />
           </Form.Item>}
         <Space align="start" wrap>
@@ -252,17 +260,18 @@ export default function PackageTemplates() {
       onCancel={() => setApplying(null)} onOk={() => void apply()} confirmLoading={saving} okText="上架"
       okButtonProps={{ disabled: !targetStation }}>
       {applyError && <Alert type="error" showIcon message={applyError} style={{ marginBottom: 12 }} />}
+      {stationsError && <LoadError title="运营中站点列表加载失败" detail={stationsError} onRetry={() => void searchStations('')} />}
       <Alert type="warning" showIcon style={{ marginBottom: 12 }}
-        message="上架会把当前模板复制成一条在售记录。同一个套餐不能在同一个范围重复上架；场地与具体设备可以各上架一份。" />
+        message="上架会把当前模板复制成一条在售记录。同一个套餐不能在同一个范围重复上架；站点与具体设备可以各上架一份。" />
       <Space direction="vertical" style={{ width: '100%' }}>
-        <Select showSearch allowClear aria-label="选择站点" placeholder="输入站点编码、名称或地址进行筛选"
+        <Select showSearch allowClear aria-label="选择站点" placeholder="输入站点名称或地址进行筛选"
           value={targetStation ?? undefined} loading={stationsLoading} filterOption={false}
           onSearch={value => void searchStations(value)} onChange={value => setTargetStation(value ?? null)}
-          options={stations.map(s => ({ value: s.id, label: `${s.name}（${s.code}）` }))} style={{ width: '100%' }} />
-        <Input aria-label="设备编号" placeholder="设备编号（留空表示上架为场地默认套餐）" maxLength={64}
+          options={stations.map(s => ({ value: s.id, label: s.name }))} style={{ width: '100%' }} />
+        <Input aria-label="设备编号" placeholder="设备编号（留空表示上架为站点默认套餐）" maxLength={64}
           value={targetDevice} onChange={e => setTargetDevice(e.target.value)} />
       </Space>
-      {stations.length === 0 && !stationsLoading && <div style={{ marginTop: 8, color: '#999' }}>没有匹配的运营中站点</div>}
+      {stations.length === 0 && !stationsLoading && !stationsError && <div style={{ marginTop: 8, color: '#999' }}>没有匹配的运营中站点</div>}
     </Modal>
   </>;
 }

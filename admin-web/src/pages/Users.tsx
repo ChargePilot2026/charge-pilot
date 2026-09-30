@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from 'react';
 import { Alert, App, Button, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag, Typography } from 'antd';
 import { KeyOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import { apiDelete, apiGet, apiPost, apiPut } from '../api/client';
+import { formatTime } from '../utils/time';
+import { LoadError } from '../components/LoadError';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -31,6 +33,7 @@ const statusMeta: Record<string, { color: string; label: string }> = {
 export default function UsersPage() {
   const { message } = App.useApp();
   const [roles, setRoles] = useState<Role[]>([]);
+  const [rolesError, setRolesError] = useState<string | null>(null);
   const [rows, setRows] = useState<AdminUser[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -60,10 +63,19 @@ export default function UsersPage() {
     }
   }, [page]);
 
-  useEffect(() => { void load(); }, [load]);
-  useEffect(() => {
-    apiGet<{ items: Role[] }>('/api/v1/admin/roles').then((d) => setRoles(d.items || [])).catch(() => setRoles([]));
+  // 角色列表读不到时不能把下拉留空：空下拉会被理解成「系统里没有角色」，
+  // 于是管理员根本建不出来，也看不出是接口问题。
+  const loadRoles = useCallback(async () => {
+    try {
+      setRoles((await apiGet<{ items: Role[] }>('/api/v1/admin/roles')).items || []);
+      setRolesError(null);
+    } catch (e: any) {
+      setRoles([]); setRolesError(e?.message || '角色列表读取失败');
+    }
   }, []);
+
+  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { void loadRoles(); }, [loadRoles]);
 
   const create = async () => {
     const values = await createForm.validateFields();
@@ -189,7 +201,7 @@ export default function UsersPage() {
         <Title level={3} style={{ margin: 0 }}>管理员</Title>
         <Button icon={<ReloadOutlined />} onClick={() => void load()} loading={loading}>刷新</Button>
         <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreating(true)}>新建账号</Button>
-        {error && <Text type="danger">{error}</Text>}
+        {error && <LoadError title="管理员列表加载失败" detail={error} onRetry={() => void load()} />}
       </Space>
       <Table<AdminUser>
         rowKey="id" loading={loading} dataSource={rows} scroll={{ x: 1100 }}
@@ -200,7 +212,7 @@ export default function UsersPage() {
           { title: '角色', dataIndex: 'role_code', width: 130, render: (v: string | null, row) => v ? <Tag color="blue">{v}</Tag> : `ID ${row.role_id ?? '—'}` },
           { title: '状态', dataIndex: 'status', width: 100, render: (v: string) => <Tag color={statusMeta[v]?.color}>{statusMeta[v]?.label || v}</Tag> },
           { title: '双因素', dataIndex: 'mfa_enabled', width: 100, render: (v: boolean) => v ? <Tag color="green">已启用</Tag> : <Tag>未启用</Tag> },
-          { title: '最近登录', dataIndex: 'last_login_at', width: 170, render: (v: string | null) => v || '从未登录' },
+          { title: '最近登录', dataIndex: 'last_login_at', width: 170, render: (v: string | null) => v ? formatTime(v) : '从未登录' },
           { title: '失败次数', dataIndex: 'failed_login_count', width: 100, render: (v: number) => (v > 0 ? <Text type="danger">{v}</Text> : 0) },
           {
             title: '操作', fixed: 'right', width: 280, render: (_, row) => (<Space size={0}>
@@ -218,7 +230,7 @@ export default function UsersPage() {
         ]}
       />
       <Modal title="新建管理员" open={creating} onCancel={() => setCreating(false)} onOk={() => void create()}
-        confirmLoading={saving} okText="创建" cancelText="取消" destroyOnClose>
+        confirmLoading={saving} okText="创建" cancelText="取消" destroyOnHidden>
         <Paragraph type="secondary">只能分配不超出自己权限的角色。</Paragraph>
         <Form form={createForm} layout="vertical">
           <Form.Item name="username" label="用户名" rules={[{ required: true }, { pattern: /^[A-Za-z0-9_.-]{3,64}$/, message: '3–64 位英文、数字、_ . -' }]}>
@@ -228,6 +240,7 @@ export default function UsersPage() {
           <Form.Item name="password" label="初始密码" rules={[{ required: true, min: 12, message: '至少 12 位' }]}>
             <Input.Password autoComplete="new-password" />
           </Form.Item>
+          {rolesError && <LoadError title="角色列表加载失败" detail={rolesError} onRetry={() => void loadRoles()} />}
           <Form.Item name="role_id" label="角色" rules={[{ required: true, message: '请选择角色' }]}>
             <Select options={roles.map((r) => ({ value: r.id, label: `${r.name}（${r.code}）` }))} />
           </Form.Item>
@@ -235,10 +248,11 @@ export default function UsersPage() {
         </Form>
       </Modal>
       <Modal title={`编辑账号 ${editing?.username || ''}`} open={!!editing} onCancel={() => setEditing(null)}
-        onOk={() => void update()} confirmLoading={saving} okText="保存" cancelText="取消" destroyOnClose>
+        onOk={() => void update()} confirmLoading={saving} okText="保存" cancelText="取消" destroyOnHidden>
         <Paragraph type="secondary">修改角色会立即使该账号已签发的会话失效。</Paragraph>
         <Form form={editForm} layout="vertical">
           <Form.Item name="display_name" label="显示名" rules={[{ max: 128 }]}><Input maxLength={128} /></Form.Item>
+          {rolesError && <LoadError title="角色列表加载失败" detail={rolesError} onRetry={() => void loadRoles()} />}
           <Form.Item name="role_id" label="角色">
             <Select options={roles.map((r) => ({ value: r.id, label: `${r.name}（${r.code}）` }))} />
           </Form.Item>
@@ -250,7 +264,7 @@ export default function UsersPage() {
         </Form>
       </Modal>
       <Modal title={`重置 ${resetting?.username || ''} 的密码`} open={!!resetting} onCancel={() => setResetting(null)}
-        onOk={() => void resetPassword()} confirmLoading={saving} okText="重置" cancelText="取消" destroyOnClose>
+        onOk={() => void resetPassword()} confirmLoading={saving} okText="重置" cancelText="取消" destroyOnHidden>
         <Alert type="warning" showIcon message="重置后该账号的所有登录会话会立即失效。" style={{ marginBottom: 12 }} />
         <Form form={resetForm} layout="vertical">
           <Form.Item name="new_password" label="新密码" rules={[{ required: true, min: 12, message: '至少 12 位' }]}>
@@ -259,7 +273,7 @@ export default function UsersPage() {
         </Form>
       </Modal>
       <Modal title={`为 ${mfa?.user.username || ''} 启用双因素认证`} open={!!mfa} onCancel={() => setMfa(null)}
-        onOk={() => void confirmMFA()} confirmLoading={saving} okText="确认启用" cancelText="取消" width={620} destroyOnClose>
+        onOk={() => void confirmMFA()} confirmLoading={saving} okText="确认启用" cancelText="取消" width={620} destroyOnHidden>
         <Paragraph>把密钥加入验证器 App，然后用其生成的 6 位验证码完成确认。未确认前该密钥不会生效。</Paragraph>
         <Form form={mfaForm} layout="vertical">
           <Form.Item label="密钥（base32）">

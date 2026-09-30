@@ -10,6 +10,16 @@ import (
 
 var chinaLocation = time.FixedZone("CST", 8*3600)
 
+// Civil renders an instant in the timezone the 5.8.9 frames carry.
+//
+// encodeTime writes the calendar fields of whatever location it is handed, so a
+// board that kept its own clock in UTC would report eight hours of drift the
+// moment it stamped a charge start — and the settlement would place the session
+// in the wrong hour. Exposing the conversion here keeps the single timezone
+// assumption in one place instead of letting each device-side caller pick a
+// location of its own.
+func Civil(at time.Time) time.Time { return at.In(chinaLocation) }
+
 // HeartbeatData contains the common fields and, when enabled by A6, a
 // possibly partial set of charging ports. Boards with more than 12 ports may
 // send two A4 frames, each containing only ten charging port measurements.
@@ -77,7 +87,7 @@ func ParseHeartbeat(frame Frame) (HeartbeatData, error) {
 // ChargeEndData is one settlement frame.
 //
 // The charge type and the amount are read as well as the energy. Neither is
-// used to decide what the rider owes — a device-billed session's money was
+// used to decide what the charging user owes — a device-billed session's money was
 // collected before the board ever reported anything — but both are the only
 // record of how a session actually ended, and a long-run session is
 // indistinguishable from an ordinary one without the type.
@@ -170,7 +180,7 @@ func ParseChargeEnd(frame Frame) (ChargeEndData, error) {
 }
 
 func ParseChargingBand(frame Frame) (protocol.PortTelemetry, error) {
-	if frame.Command != 0xC2 || len(frame.Data) != 9 || frame.Data[0] == 0 {
+	if frame.Command != ChargingBand || len(frame.Data) != 9 || frame.Data[0] == 0 {
 		return protocol.PortTelemetry{}, ErrPayload
 	}
 	return protocol.PortTelemetry{

@@ -214,6 +214,24 @@ admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故�
 | GET | `/api/v1/admin/coupons/{coupon_id}/stats` | `coupon.read` | 按用户服务的真实发放记录统计 |
 | POST | `/api/v1/admin/coupons/{coupon_id}/grants` | `coupon.grant` | 向指定有效用户发放一张券，UUID 幂等 |
 
+### G2. 充电用户(只读,2 个)— 跨库读 `user_db.user` / `wallet_account` / `charge_order`
+
+| 方法 | 路径 | 鉴权 | 说明 |
+| --- | --- | --- | --- |
+| GET | `/api/v1/admin/charge-users` | `charge_user.read` | 充电用户列表(关键词 / 状态筛选，默认按最后登录倒序) |
+| GET | `/api/v1/admin/charge-users/{user_id}` | `charge_user.read` | 充电用户档案(钱包、累计消费、最近订单、券与报障计数) |
+
+权限码是 `charge_user.read` 而不是 `user.read`：真实表名确实是 `user`，但 `user.read` 与既有的 `admin_user.read` 只差一个词，而这个控制台里两者会并排出现在 `Require()` 调用中，多写一个限定词是永久消除歧义最省事的办法。
+
+这个资源补的是后台一直缺的一段断层：订单、反馈、报障都带着充电用户，但每处都只有一个裸 `user_id`。客服接到投诉时无法把人找出来，运营核对一个用户的消费只能挨个翻订单。
+
+两个必须写下来的边界：
+
+- **手机号按完整号码精确查询。** `user.phone_enc` 是 AES-GCM 密文，`phone_hash` 是不可逆摘要，库里没有任何可 `LIKE` 的明文列，所以关键词为完整 11 位号码时走哈希等值匹配，否则走昵称 / openid / unionid 模糊匹配。输入"后四位"这类片段查不出来，这是加密存储的必然代价，不是搜索失灵。
+- **`charge_user.read` 就是全部充电用户手机号的访问控制边界。** 列表解密 `phone_enc` 并按完整号码展示，因为按手机号找人正是客服的主要手段。持有该权限等同于持有一份手机号名册，因此只授予 `customer_admin` 与 `customer_cs`，且授权动作本身应纳入审计。加密防的是数据库裸读，不防后台本身。
+
+资源是纯只读的：没有建号、改状态、解冻入口。冻结是风控动作，不在这里开第二个入口——两个入口能各自改同一列，迟早出现"一边解冻一边还在拦截"。
+
 ### H. 公告 / 白标 / 客服配置(13 个)— `announcement` + `whitelabel_config` + `customer_service_config`
 
 | 方法 | 路径 | 鉴权 | 说明 |
@@ -866,6 +884,73 @@ admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故�
 
 **业务逻辑**:HTTP 调 user 的 `GET /api/v1/internal/orders/{order_id}/timeline`，确认订单存在且未软删除，然后读取 user_db 的 `charge_event_log`。按事件发生时间、记录 ID 稳定升序返回；每条另含唯一 `event_id`。当前写入点为创建、取消、支付确认、设备启动结果，并与订单状态变更同事务提交。旧订单没有事件时返回空数组，不根据当前状态伪造历史。充电结束、分账及退款事件接入仍待完成。
 
+### `GET /api/v1/admin/charge-users`
+
+**鉴权**:[角色] `charge_user.read`
+**限流**:每 user 50 req/min(数据量大)
+
+**请求 query**:
+| 参数 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `page` | int | 1 | — |
+| `page_size` | int | 20 | 最大 100 |
+| `keyword` | string | — | 完整 11 位手机号走哈希等值匹配；其余按昵称 / openid / unionid 模糊匹配 |
+| `status` | enum | — | `active` / `frozen` |
+
+**响应(200)**:
+```json
+{
+  "code": 0,
+  "data": {
+    "items": [
+      {
+        "id": 2,
+        "openid": "demo_openid_a1b2c3",
+        "union_id": null,
+        "nickname": "张伟",
+        "avatar_url": null,
+        "gender": "male",
+        "status": "active",
+        "first_seen_at": "2026-06-26T01:02:00Z",
+        "last_login_at": "2026-09-30T01:02:00Z",
+        "inviter_id": null,
+        "created_at": "2026-06-26T01:02:00Z",
+        "phone": "13800138001",
+        "phone_bound": true,
+        "balance_cents": 4260,
+        "frozen_cents": 0,
+        "order_count": 4,
+        "total_cents": 7623,
+        "last_order_at": "2026-09-24T01:02:00Z"
+      }
+    ],
+    "total": 8,
+    "page": 1,
+    "page_size": 20,
+    "permissions": ["charge_user.read", "..."]
+  }
+}
+```
+
+**业务逻辑**:主查询只取 `user` 表本身(排除软删除)，按 `last_login_at DESC, id DESC` 排序——客服找人的第一诉求是"这个人最近来过吗"，不是"最早注册的是谁"；从未登录过的用户 `last_login_at` 为 NULL，排在最后。手机号、钱包、订单聚合不在主查询里联表，由 `decorateChargeUsers` 按当页 ID 批量回填：手机号只能逐条解密，成本与当页条数成正比，这也是 `page_size` 上限 100 的原因之一。
+
+派生数据取自三条独立的聚合查询：手机号密文来自 `user.phone_enc`；余额与冻结金额来自 `wallet_account`(用 LEFT JOIN 而非假定唯一)；订单数、累计消费与最近下单时间来自 `charge_order` 按 `user_id` 分组，累计消费只认有金额的订单，`total_cents` 为 NULL 的未计费订单经 COALESCE 成 0，与"还没产生费用"的口径一致。未配置 `PHONE_ENCRYPTION_KEY` 时不解密手机号，但整页照常返回——看不到号码总比看不到用户强。
+
+### `GET /api/v1/admin/charge-users/{user_id}`
+
+**鉴权**:[角色] `charge_user.read`
+
+**响应(200)**:在列表行的基础上增加：
+
+| 字段 | 说明 |
+| --- | --- |
+| `wallet_status` | 钱包状态 `active` / `frozen` |
+| `recent_orders` | 最近 20 笔订单摘要，按订单 ID 倒序 |
+| `coupon_granted` / `coupon_unused` | 累计发放 / 当前未使用的优惠券张数 |
+| `fault_reports` | 该用户提交的报障单数 |
+
+**业务逻辑**:最近订单里的 `station_id` 不在 `charge_order` 上——那张表根本不存站点，要经 `charge_payment_intent` 关联。该表对 `charge_order_id` 建了唯一键，一单至多一条支付意图，LEFT JOIN 不会放大行数；没走过支付流程的早期订单没有对应意图，`station_id` 为 null。券与报障只取计数不取明细：客服要判断的是"这人是不是薅券薅得多"，具体是哪几张券在订单页按 `user_id` 查更合适。
+
 ---
 
 ## E. 告警与风控
@@ -1517,7 +1602,7 @@ user 服务在单库事务中锁定模板，校验用户有效、模板处于发
 
 ### 设备查询当前实现补充
 
-`GET /api/v1/admin/devices` 要求 `device.read`。参数：`page`（默认 1）、`page_size`（默认 20，1–100）、`keyword`（最多 128 字符，按设备编号、型号、有效站点名称/编码做字面子串匹配）、`status`（enabled/disabled/retired/fault）、正整数 `station_id` / `vendor_id`。返回 `items,total,page,page_size,permissions`；每行包含 `station_name,station_code`。状态为管理状态，不表示在线遥测。
+`GET /api/v1/admin/devices` 要求 `device.read`。参数：`page`（默认 1）、`page_size`（默认 20，1–100）、`keyword`（最多 128 字符，按设备编号、型号、有效站点名称做字面子串匹配）、`status`（enabled/disabled/retired/fault）、正整数 `station_id` / `vendor_id`。返回 `items,total,page,page_size,permissions`；每行包含 `station_name`。状态为管理状态，不表示在线遥测。
 
 详情同样实时校验 `device.read`。设备订单入口要求 `device.read` 和 `order.read`，沿用订单分页/日期筛选，路径设备编号覆盖查询参数中的设备编号；已删除/不存在设备返回 404，上游故障按真实错误返回。
 

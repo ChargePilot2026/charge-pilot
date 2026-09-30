@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"time"
 
@@ -92,9 +93,15 @@ func (d WebhookDeliverer) PublishBatch(ctx context.Context) (int, error) {
 		for _, entry := range entries {
 			event, err := parseStreamEntry(entry.Values)
 			if err != nil {
-				// A malformed entry cannot be delivered; drop it explicitly so it
-				// does not block the stream forever.
-				d.Stream.XDel(ctx, stream, entry.ID)
+				// An entry this consumer cannot read is not this consumer's to
+				// destroy. The streams are shared, and the entry may be perfectly
+				// valid to the service that owns it — deleting it here dropped
+				// every device event outright, because a device event names its
+				// type "Type" while this parser looks for the envelope's
+				// "event_type". Skipping it leaves it for its owner, and saying so
+				// out loud is what turns a silent hole in the data into something
+				// an operator can see.
+				log.Printf("webhook delivery skipped an unreadable %s entry %s: %v", stream, entry.ID, err)
 				continue
 			}
 			n, err := d.deliver(ctx, event)

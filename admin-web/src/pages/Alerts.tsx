@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { Table, Tag, Typography, Space, Button, App } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
 import { apiGet, apiPost } from '../api/client';
+import { formatTime } from '../utils/time';
+import { LoadError } from '../components/LoadError';
 
 const { Title } = Typography;
 
@@ -14,12 +16,20 @@ const sevColor: Record<string, string> = {
 export default function AlertsPage() {
   const [data, setData] = useState<Alert[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const { message } = App.useApp();
 
+  // 这个页面原来把读失败直接吞掉（catch { setData([]) }），于是一屏空白：运维
+  // 看到空表格只会得出「设备都没告警」的结论，实际上是接口挂了。这里必须把
+  // 故障摆在屏幕上。
   const load = async () => {
     setLoading(true);
-    try { setData((await apiGet<{ items: Alert[] }>('/api/v1/admin/alerts')).items || []); }
-    catch { setData([]); } finally { setLoading(false); }
+    try {
+      setData((await apiGet<{ items: Alert[] }>('/api/v1/admin/alerts')).items || []);
+      setLoadError(null);
+    } catch (e: any) {
+      setData([]); setLoadError(e?.message || '告警列表读取失败');
+    } finally { setLoading(false); }
   };
 
   useEffect(() => { load(); }, []);
@@ -40,6 +50,7 @@ export default function AlertsPage() {
         <Title level={3} style={{ margin: 0 }}>告警</Title>
         <Button icon={<ReloadOutlined />} onClick={load}>刷新</Button>
       </Space>
+      {loadError && <LoadError title="告警列表加载失败" detail={loadError} onRetry={load} />}
       <Table
         rowKey="id"
         loading={loading}
@@ -50,7 +61,7 @@ export default function AlertsPage() {
             render: (s: string) => <Tag color={sevColor[s] || 'default'}>{s}</Tag> },
           { title: '指标', dataIndex: 'metric', width: 140 },
           { title: '状态', dataIndex: 'status', width: 120 },
-          { title: '时间', dataIndex: 'created_at', render: (v?: string) => v || '-' },
+          { title: '时间', dataIndex: 'created_at', width: 180, render: formatTime },
           { title: '操作', width: 120,
             render: (_: unknown, r: Alert) => r.status === 'active' ? (
               <Button size="small" onClick={() => onAck(r.id)}>确认</Button>

@@ -2,10 +2,11 @@ import { useEffect, useState } from 'react';
 import { Alert, Button, Descriptions, Divider, Form, Input, InputNumber, Modal, Select, Space, Switch, Table, Tabs, Tag, Tooltip, message } from 'antd';
 import { apiGet, apiPost, apiPut } from '../api/client';
 import { fromCents, modeLabel, toCents, type Spec, type Station, type Template } from './pricing/model';
+import { LoadError } from '../components/LoadError';
 
-// Everything about one yard: what it charges, what each pile runs, and whether
+// Everything about one station: what it charges, what each pile runs, and whether
 // the last switch actually landed. The three tabs answer three different
-// questions an operator has before opening a yard: can a rider start, what is
+// questions an operator has before opening a station: can a charging user start, what is
 // each pile really charging, and did the change I made last week arrive.
 //
 // A station policy is about moving money, not about pricing a session, so it
@@ -20,13 +21,17 @@ type StationPolicy = {
 };
 type DeviceRow = {
   device_id: string; model?: string; device_status: string;
-  template_name?: string; template_id?: number; own_rule_id?: number; own_version?: number; yard_version?: number;
+  template_name?: string; template_id?: number; own_rule_id?: number; own_version?: number; station_version?: number;
   // The effective spec is parsed server-side, so the matrix can answer "what
   // is this device really charging" without a second round trip.
   spec_json?: Spec;
-  // null means the row it inherits from is the yard default, not a rule of
+  // null means the row it inherits from is the station default, not a rule of
   // this device's own.
   effective_rule_device_id?: string | null;
+  // 下发模板时乐观锁比对的版本号。这一对字段刻意不过滤 status，与服务端读法一致：
+  // own_rule_id/own_version/station_version 描述的是「现在正在生效什么」，
+  // latest 描述的是「这条链上最新到第几版」，后者才是回填 expected_version 该用的。
+  own_latest_version?: number;
   offer_count?: number; offer_names?: string;
   // What the board can report, as recorded against the device itself. Both are
   // false until someone declares them, and an undeclared board cannot be
@@ -109,6 +114,9 @@ export default function StationPricing() {
   const [assignTemplate, setAssignTemplate] = useState<number | null>(null);
   const [assignError, setAssignError] = useState('');
   const [detail, setDetail] = useState<{ task: SwitchTask; items: SwitchItem[] } | null>(null);
+  const [taskTarget, setTaskTarget] = useState<SwitchTask | null>(null);
+  const [taskError, setTaskError] = useState<string | null>(null);
+  const [stationsError, setStationsError] = useState<string | null>(null);
 
   const [policyForm] = Form.useForm();
   const [assignForm] = Form.useForm();
@@ -117,8 +125,8 @@ export default function StationPricing() {
 
   const canUpdate = permissions.includes('pricing.rule.update');
   const canCreate = permissions.includes('pricing.rule.create');
-  // The list comes back yard-wide, so pick this yard's row out of it rather
-  // than trusting the response to have been scoped.
+  // The list comes back for every station, so pick this station's row out of it
+  // rather than trusting the response to have been scoped.
   const policy = policies.find(p => p.station_id === stationId);
 
   const searchStations = async (keyword: string) => {
@@ -126,8 +134,9 @@ export default function StationPricing() {
     try {
       const result = await apiGet<{ items: Station[] }>('/api/v1/admin/stations', { status: 'active', keyword: keyword || undefined, page: 1, page_size: 100 });
       setStations(result.items || []);
+      setStationsError(null);
     } catch (e: any) {
-      message.error(e.message);
+      setStations([]); setStationsError(e?.message || '运营中站点列表读取失败');
     } finally {
       setStationsLoading(false);
     }
@@ -206,7 +215,7 @@ export default function StationPricing() {
         verify_phone_before_charge: !!values.verify_phone_before_charge,
         expected_version: policy?.version || 0,
       });
-      message.success('场地策略已保存');
+      message.success('站点策略已保存');
       setPolicyOpen(false);
       await load();
     } catch (e: any) {
@@ -221,7 +230,10 @@ export default function StationPricing() {
     setAssignError('');
     setAssignTemplate(null);
     assignForm.resetFields();
-    assignForm.setFieldsValue({ expected_version: row.own_rule_id ? (row.own_version || 0) : (row.yard_version || 0) });
+    // 这次下发一定带 device_id，服务端比对的也是「这台设备自己那条链」的最新版。
+    // 设备还没有独立规则时那条链是空的，版本号就是 0；早先这里回填站点默认的版本号，
+    // 于是「第一次给设备单独定价」必然撞锁。
+    assignForm.setFieldsValue({ expected_version: row.own_latest_version || 0 });
   };
 
   const assign = async () => {
@@ -256,41 +268,45 @@ export default function StationPricing() {
   };
 
   const resetDevice = (row: DeviceRow) => Modal.confirm({
-    title: '重置为场地默认',
-    content: `将设备 ${row.device_id} 自己的计费规则停用、其设备级套餐下架，该设备回落到场地默认计费与套餐。已在充电的订单不受影响。`,
+    title: '重置为站点默认',
+    content: `将设备 ${row.device_id} 自己的计费规则停用、其设备级套餐下架，该设备回落到站点默认计费与套餐。已在充电的订单不受影响。`,
     okText: '重置',
     onOk: async () => {
       await apiPost('/api/v1/admin/settings/device-pricing/reset', { station_id: stationId, device_id: row.device_id });
-      message.success('已重置为场地默认');
+      message.success('已重置为站点默认');
       await load();
     },
   });
 
+  // 明细取不到时把弹窗留在屏上并显示 LoadError，运营可以原地重试；这里只读，
+  // 不用担心误操作。
   const openTask = async (task: SwitchTask) => {
+    setTaskTarget(task); setDetail(null); setTaskError(null);
     try {
       setDetail(await apiGet<{ task: SwitchTask; items: SwitchItem[] }>(`/api/v1/admin/settings/switch-tasks/${task.id}`));
     } catch (e: any) {
-      message.error(e.message);
+      setTaskError(e?.message || '切换任务明细读取失败');
     }
   };
 
   return <div>
     <Space style={{ marginBottom: 12 }} wrap>
-      <Select showSearch allowClear aria-label="选择场地" placeholder="选择场地" style={{ width: 320 }}
+      <Select showSearch allowClear aria-label="选择站点" placeholder="选择站点" style={{ width: 320 }}
         value={stationId ?? undefined} loading={stationsLoading} filterOption={false}
         onSearch={value => void searchStations(value)} onChange={value => setStationId(value ?? null)}
-        options={stations.map(s => ({ value: s.id, label: `${s.name}（${s.code}）` }))} />
+        options={stations.map(s => ({ value: s.id, label: s.name }))} />
       <Button onClick={() => void load()} loading={loading}>刷新</Button>
     </Space>
-    {error && <div role="alert" style={{ color: '#cf1322', marginBottom: 12 }}>{error}</div>}
+    {error && <LoadError title="站点计费配置加载失败" detail={error} onRetry={() => void load()} />}
+    {stationsError && <LoadError title="运营中站点列表加载失败" detail={stationsError} onRetry={() => void searchStations('')} />}
     <Tabs items={[
       {
-        key: 'policy', label: '场地策略',
+        key: 'policy', label: '站点策略',
         children: <>
           <Alert type="info" showIcon style={{ marginBottom: 12 }}
-            message="场地策略决定的是钱怎么动：用户能不能直接开始、启动失败退不退、退到哪里。它不参与任何一次计费计算。" />
+            message="站点策略决定的是钱怎么动：用户能不能直接开始、启动失败退不退、退到哪里。它不参与任何一次计费计算。" />
           {!stationId
-            ? <div style={{ color: '#999' }}>请先选择场地</div>
+            ? <div style={{ color: '#999' }}>请先选择站点</div>
             : <Space direction="vertical" style={{ width: '100%' }}>
               <Descriptions size="small" column={2} bordered items={[
                 { key: 'version', label: '策略版本', children: policy ? `v${policy.version}` : '尚未配置（保存后创建）' },
@@ -307,7 +323,7 @@ export default function StationPricing() {
                 },
                 { key: 'timeout', label: '启动超时处理', span: 2, children: policy?.timeout_start_refund ? '自动退款' : '不自动退款' },
               ]} />
-              {canUpdate && <Button type="primary" onClick={openPolicy}>编辑场地策略</Button>}
+              {canUpdate && <Button type="primary" onClick={openPolicy}>编辑站点策略</Button>}
             </Space>}
         </>,
       },
@@ -315,9 +331,9 @@ export default function StationPricing() {
         key: 'devices', label: '设备分配矩阵',
         children: <>
           <Alert type="info" showIcon style={{ marginBottom: 12 }}
-            message="矩阵显示每台设备当前真正生效的计费方式与套餐：没有独立规则的设备显示的是场地默认。分配只影响计费规则，套餐需要到「套餐模板池」单独上架。" />
+            message="矩阵显示每台设备当前真正生效的计费方式与套餐：没有独立规则的设备显示的是站点默认。分配只影响计费规则，套餐需要到「套餐模板池」单独上架。" />
           {!stationId
-            ? <div style={{ color: '#999' }}>请先选择场地</div>
+            ? <div style={{ color: '#999' }}>请先选择站点</div>
             : <Table<DeviceRow> rowKey="device_id" dataSource={devices} loading={loading} scroll={{ x: 1100 }}
               pagination={{ pageSize: 20, showSizeChanger: true, pageSizeOptions: [10, 20, 50, 100], showTotal: n => `共 ${n} 台设备` }}
               columns={[
@@ -331,12 +347,12 @@ export default function StationPricing() {
                       return <span style={{ color: '#999' }}>未配置</span>;
                     }
                     // A null effective device id means the row behind this
-                    // device is the yard default rather than its own rule.
+                    // device is the station default rather than its own rule.
                     const inherited = r.effective_rule_device_id == null;
                     return <>
                       {modeLabel(r.spec_json.mode)}
                       {r.template_name && <span style={{ color: '#999' }}>（{r.template_name}）</span>}
-                      <Tag color={inherited ? 'default' : 'blue'} style={{ marginLeft: 6 }}>{inherited ? '场地默认' : '设备独立'}</Tag>
+                      <Tag color={inherited ? 'default' : 'blue'} style={{ marginLeft: 6 }}>{inherited ? '站点默认' : '设备独立'}</Tag>
                     </>;
                   },
                 },
@@ -361,7 +377,7 @@ export default function StationPricing() {
                   title: '操作', key: 'ops',
                   render: (_: unknown, r: DeviceRow) => <Space>
                     {canCreate && <Button type="link" onClick={() => openAssign(r)}>分配计费方式</Button>}
-                    {canUpdate && r.own_rule_id && <Button type="link" danger onClick={() => resetDevice(r)}>重置为场地默认</Button>}
+                    {canUpdate && r.own_rule_id && <Button type="link" danger onClick={() => resetDevice(r)}>重置为站点默认</Button>}
                   </Space>,
                 },
               ]} />}
@@ -378,7 +394,7 @@ export default function StationPricing() {
           <Table<SwitchTask> rowKey="id" dataSource={tasks} loading={loading} scroll={{ x: 900 }}
             columns={[
               { title: '任务号', dataIndex: 'task_no' },
-              { title: '场地', render: (_: unknown, r: SwitchTask) => r.station_name || `站点 #${r.station_id}` },
+              { title: '站点', render: (_: unknown, r: SwitchTask) => r.station_name || `站点 #${r.station_id}` },
               { title: '计费方式', render: (_: unknown, r: SwitchTask) => `${r.mode_before || '未配置'} → ${r.mode_after}` },
               { title: '设备数', dataIndex: 'device_count' },
               { title: '状态', dataIndex: 'status', render: (s: string) => <Tag color={TASK_STATUS[s]?.color || 'default'}>{TASK_STATUS[s]?.label || s}</Tag> },
@@ -389,8 +405,8 @@ export default function StationPricing() {
       },
     ]} />
 
-    <Modal title="编辑场地策略" open={policyOpen} width={720} onCancel={() => setPolicyOpen(false)}
-      onOk={() => void savePolicy()} confirmLoading={saving} okText="保存" destroyOnClose>
+    <Modal title="编辑站点策略" open={policyOpen} width={720} onCancel={() => setPolicyOpen(false)}
+      onOk={() => void savePolicy()} confirmLoading={saving} okText="保存" destroyOnHidden>
       {policyError && <Alert type="error" showIcon message={policyError} style={{ marginBottom: 12 }} />}
       <Form form={policyForm} name="station_policy" layout="vertical">
         <Form.Item name="force_recharge" label="强制先充值" valuePropName="checked" extra="开启后余额不足时用户必须先充值才能开单。">
@@ -434,7 +450,7 @@ export default function StationPricing() {
       okButtonProps={{ disabled: !assignTemplate }}>
       {assignError && <Alert type="error" showIcon message={assignError} style={{ marginBottom: 12 }} />}
       <Alert type="warning" showIcon style={{ marginBottom: 12 }}
-        message="应用会发布为该设备的独立计费规则，脱离场地默认；需要恢复时用列表里的「重置为场地默认」。只发布计费规则，不会上架任何套餐。" />
+        message="应用会发布为该设备的独立计费规则，脱离站点默认；需要恢复时用列表里的「重置为站点默认」。只发布计费规则，不会上架任何套餐。" />
       <Space direction="vertical" style={{ width: '100%' }}>
         <Select aria-label="选择计费模板" placeholder="选择计费模板" style={{ width: '100%' }}
           value={assignTemplate ?? undefined} onChange={value => setAssignTemplate(value ?? null)}
@@ -447,9 +463,13 @@ export default function StationPricing() {
       </Space>
     </Modal>
 
-    <Modal title={detail ? `切换任务 ${detail.task.task_no}` : '切换任务'} open={!!detail} width={1000}
-      onCancel={() => setDetail(null)} footer={<Button onClick={() => setDetail(null)}>关闭</Button>}>
-      {detail && <>
+    <Modal title={detail ? `切换任务 ${detail.task.task_no}` : taskTarget ? `切换任务 ${taskTarget.task_no}` : '切换任务'} open={!!taskTarget} width={1000}
+      onCancel={() => { setTaskTarget(null); setDetail(null); }}
+      footer={<Button onClick={() => { setTaskTarget(null); setDetail(null); }}>关闭</Button>}>
+      {taskError ? (
+        <LoadError title="切换任务明细加载失败" detail={taskError}
+          onRetry={() => { if (taskTarget) void openTask(taskTarget); }} />
+      ) : detail && <>
         <Descriptions size="small" column={2} bordered items={[
           { key: 'no', label: '任务号', children: detail.task.task_no },
           { key: 'status', label: '状态', children: <Tag color={TASK_STATUS[detail.task.status]?.color || 'default'}>{TASK_STATUS[detail.task.status]?.label || detail.task.status}</Tag> },

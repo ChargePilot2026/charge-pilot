@@ -6,6 +6,7 @@ import { apiGet, apiPost } from '../api/client';
 import Refunds from './Refunds';
 import MeterReviews from './MeterReviews';
 import WalletRisks from './WalletRisks';
+import { LoadError } from '../components/LoadError';
 
 const { Title, Text } = Typography;
 const invoiceEndpoint = '/api/v1/admin/billing/invoices';
@@ -108,7 +109,7 @@ export default function BillingPage() {
             <>
               <Space style={{ marginBottom: 12 }}>
                 <Button icon={<ReloadOutlined />} onClick={() => void loadInvoices()} loading={loadingInvoices}>刷新</Button>
-                {invoiceError && <Text type="danger">{invoiceError}</Text>}
+                {invoiceError && <LoadError title="发票队列加载失败" detail={invoiceError} onRetry={() => void loadInvoices()} />}
               </Space>
               <Table rowKey="invoice_request_id" loading={loadingInvoices} dataSource={invoices} scroll={{ x: 1120 }} columns={[
                 { title: '申请单', dataIndex: 'invoice_no', width: 190 },
@@ -139,7 +140,7 @@ export default function BillingPage() {
         onCancel={() => { setSelected(null); setDecision(null); }}
         onOk={() => void submitDecision()}
         confirmLoading={saving}
-        destroyOnClose
+        destroyOnHidden
       >
         {selected && <div style={{ marginBottom: 16 }}>
           <div>{selected.invoice_no} · {selected.title}</div>

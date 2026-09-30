@@ -17,7 +17,7 @@ import (
 type Rule struct {
 	ID        uint64 `json:"rule_id"`
 	StationID uint64 `json:"station_id"`
-	// DeviceID is empty for the yard-wide default rule.
+	// DeviceID is empty for the station-wide default rule.
 	DeviceID string `json:"device_id,omitempty"`
 	Version  uint32 `json:"version"`
 	Spec     Spec   `json:"spec"`
@@ -57,20 +57,24 @@ func (s Store) activeRuleQuery(ctx context.Context, stationID uint64, deviceID s
 			AND (r.effective_from IS NULL OR r.effective_from <= NOW(3))
 			AND (r.effective_to IS NULL OR r.effective_to > NOW(3))`, stationID)
 	if deviceID != "" {
-		// A device rule overrides the yard default; a device that has never been
+		// A device rule overrides the station default; a device that has never been
 		// assigned one inherits whatever its station runs.
 		query = query.Where(`r.device_id = ? OR r.device_id IS NULL`, deviceID)
+	} else {
+		// 整站口径只认 device_id 为空的那条规则。不加这一句，站点一旦没有整站规则、
+		// 却有设备规则，这里就会把某台设备的费率当成整站费率报出去。
+		query = query.Where(`r.device_id IS NULL`)
 	}
 	return query.Order("r.device_id IS NULL ASC, r.version DESC, r.id DESC")
 }
 
-// ActiveStationRule prices a session under the yard-wide tariff.
+// ActiveStationRule prices a session under the station-wide tariff.
 func (s Store) ActiveStationRule(ctx context.Context, stationID uint64) (Rule, error) {
 	return s.ActiveDeviceRule(ctx, stationID, "")
 }
 
 // ActiveDeviceRule prices a session under that device's own tariff, falling
-// back to the yard default. The fallback is what keeps a station-wide rollout a
+// back to the station default. The fallback is what keeps a station-wide rollout a
 // single click while still allowing one pile to run something different.
 func (s Store) ActiveDeviceRule(ctx context.Context, stationID uint64, deviceID string) (Rule, error) {
 	if s.DB == nil || stationID == 0 || stationID > math.MaxInt64 {
@@ -108,7 +112,7 @@ type pricingRuleRow struct {
 //
 // On a device-billed mode there is no rate to spread against, so the estimate
 // is the prepaid amount and nothing else. Handing back a computed figure there
-// would show the rider one number and charge another.
+// would show the charging user one number and charge another.
 func EstimateCharge(rule Rule, energy string, minutes uint16, start time.Time, prepaidCents int64) (Estimate, error) {
 	if rule.ID == 0 || !rule.Spec.Mode.Valid() || minutes == 0 || minutes > 600 {
 		return Estimate{}, ErrInvalidPricing

@@ -4,6 +4,7 @@ import axios from 'axios';
 import { apiGet, apiPost } from '../api/client';
 
 import { parseDeviceCsv as parseCsv, type ImportedDevice as Device } from '../utils/deviceCsv';
+import { LoadError } from '../components/LoadError';
 interface Job { import_id: string; status: string; last_error: string | null }
 function message(error: unknown): string { return axios.isAxiosError(error) ? error.response?.data?.message || '请求失败，请刷新导入记录后重试' : error instanceof Error ? error.message : '导入失败'; }
 
@@ -32,7 +33,7 @@ export default function DeviceImport({ onComplete }: { onComplete: () => void })
           try { if (file.size > 256 * 1024) throw new Error('文件不能超过 256 KB'); setDevices(parseCsv(await file.text())); setId(crypto.randomUUID()); }
           catch (e) { setError(message(e)); }
         }} />
-        {error && <Alert type="error" showIcon message={error} />}
+        {error && <LoadError title="导入批次加载失败" detail={error} />}
         <Table rowKey="device_id" size="small" dataSource={devices} pagination={{ pageSize: 5 }} columns={[
           { title: '设备 ID', dataIndex: 'device_id' }, { title: '厂商 ID', dataIndex: 'vendor_id' },
           { title: '站点 ID', dataIndex: 'station_id' }, { title: '端口数', dataIndex: 'port_count' }, { title: '型号', dataIndex: 'model' },

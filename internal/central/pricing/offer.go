@@ -10,9 +10,8 @@ import (
 type Offer struct {
 	ID        uint64 `json:"id" gorm:"column:id"`
 	StationID uint64 `json:"station_id" gorm:"column:station_id"`
-	// DeviceID is empty for an offer sold across the whole yard.
+	// DeviceID is empty for an offer sold across the whole station.
 	DeviceID        string `json:"device_id,omitempty" gorm:"column:device_id"`
-	Code            string `json:"code" gorm:"column:code"`
 	Name            string `json:"name" gorm:"column:name"`
 	Mode            string `json:"mode" gorm:"column:mode"`
 	PriceCents      int64  `json:"price_cents" gorm:"column:price_cents"`
@@ -22,12 +21,12 @@ type Offer struct {
 var ErrOfferUnavailable = errors.New("charging offer unavailable")
 
 func (o Offer) Valid() bool {
-	return o.ID != 0 && o.StationID != 0 && o.Code != "" && o.Name != "" && o.PriceCents >= 0 && o.PriceCents <= 1000000 &&
+	return o.ID != 0 && o.StationID != 0 && o.Name != "" && o.PriceCents >= 0 && o.PriceCents <= 1000000 &&
 		(o.Mode == "amount" && o.DurationMinutes == 0 || o.Mode == "package" && o.DurationMinutes > 0 && o.DurationMinutes <= 600)
 }
 
-// ActiveOffers lists what a rider can pick on this device: the ones assigned to
-// it, plus the yard-wide ones it has not overridden.
+// ActiveOffers lists what a charging user can pick on this device: the ones assigned to
+// it, plus the station-wide ones it has not overridden.
 func (s Store) ActiveOffers(ctx context.Context, stationID uint64, deviceID string) ([]Offer, error) {
 	if s.DB == nil || stationID == 0 {
 		return nil, ErrOfferUnavailable
@@ -35,15 +34,15 @@ func (s Store) ActiveOffers(ctx context.Context, stationID uint64, deviceID stri
 	rows := []Offer{}
 	// Retired rows are filtered here because the column exists precisely so a
 	// package can be taken off sale without losing its history — and the admin
-	// list has always filtered it. A rider-facing read that ignored it would
-	// keep selling something an operator believes is gone.
+	// list has always filtered it. The charging-user read, if it ignored the
+	// column, would keep selling something an operator believes is gone.
 	query := s.DB.WithContext(ctx).Table("charge_offer").
 		Where("station_id=? AND status='active' AND deleted_at IS NULL", stationID)
 	if deviceID != "" {
 		query = query.Where("device_id = ? OR device_id IS NULL", deviceID)
-		// A yard-wide package that this device also sells on its own is
+		// A station-wide package that this device also sells on its own is
 		// overridden, and the device's own version is the one that applies.
-		// Listing both put the same package in the rider's list twice, which is
+		// Listing both put the same package in the charging user's list twice, which is
 		// what the sentence above has always said must not happen.
 		query = query.Where(`device_id = ? OR package_template_id NOT IN (
 			SELECT package_template_id FROM charge_offer

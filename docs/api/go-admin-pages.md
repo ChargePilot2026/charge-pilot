@@ -20,6 +20,7 @@
 | 设备 | GET `/devices`、`/devices/{id}` | keyword/status/station_id/vendor_id 筛选；显示管理状态，不代表在线遥测 |
 | 导入 | GET/POST `/device-imports`；POST `/device-imports/{import_id}/retry` | CSV 预览后提交 JSON，每批 1–100；gateway 幂等建档，再落 admin 元数据；失败保留批次供显式重试 |
 | 订单 | GET `/orders`、`/orders/{id}`、`/orders/{id}/timeline` | 分页及订单号、设备、站点、状态、时间筛选；从已有订单、计费和事件记录读取，不生成虚构计费 |
+| 充电用户 | GET `/charge-users`、`/charge-users/{id}` | 后台第一个以"人"而非以"单"为入口的视图：列表给昵称、完整手机号、状态、订单数、累计消费、钱包余额与最后登录，档案再给最近 20 笔订单及券/报障计数。只读，不含建号与解冻。手机号按完整号码精确搜索，输入后四位查不出来（库中只有密文与不可逆哈希） |
 | 管理员 | GET/POST `/users`；GET `/roles` | 新建账号，密码 12–72 字节 bcrypt；只可分配不超出操作者权限的有效角色；未实现账号编辑/删除/MFA |
 | 告警 | GET `/alerts`；POST `/alerts/{id}/ack` | 列表与确认，尚无新规则、自动恢复和通知执行器 |
 | 优惠券 | GET/POST `/coupons`；PUT `/coupons/{id}`；GET `/coupons/{id}/stats`；POST `/coupons/{id}/grants` | 模板编辑、计数、按用户发放；限总量/个人额度与有效期，UUID 幂等；时长券使用 free_minutes；支付核销未接入 |
@@ -148,7 +149,7 @@ GET `/settings/charge-rules` 返回规则完整时段、站点、状态、版本
 ### 站点
 
 - `GET /user/station/nearest?longitude=&latitude=`：附近站点，距离用球面公式在 SQL 内计算后再分页，50 公里外过滤。只返回 `active` 且未删除的站点。
-- `GET /user/station/{code}`：站点详情；停用站点按不存在处理。
+- `GET /user/station/{id}`：站点详情；停用站点按不存在处理。
 
 ### 手机号
 

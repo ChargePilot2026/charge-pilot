@@ -17,6 +17,9 @@ import (
 	"gorm.io/gorm/clause"
 )
 
+// registerRefunds 挂载退款模块的全部后台路由：人工发起退款、退款单列表、双人复核（通过/驳回）、自动退款重试。
+// 四类动作各用一套权限：发起（order.refund.create）、只读（finance.refund.read）、
+// 复核（order.refund.review）、重投（finance.refund.retry）——重投等于把资金动作放出去，权限高于复核。
 func (a ResourceAPI) registerRefunds(r *gin.Engine) {
 	r.POST("/api/v1/admin/orders/:id/refunds", a.Auth.Require("order.refund.create"), a.manualRefund)
 	r.GET("/api/v1/admin/billing/refunds", a.Auth.Require("finance.refund.read"), a.refunds)
@@ -24,15 +27,20 @@ func (a ResourceAPI) registerRefunds(r *gin.Engine) {
 	r.POST("/api/v1/admin/billing/refunds/:refund_no/reject", a.Auth.Require("order.refund.review"), a.reviewRefund)
 	r.POST("/api/v1/admin/billing/refunds/:refund_no/retry", a.Auth.Require("finance.refund.retry"), a.retryRefund)
 }
+
+// manualRefund 由客服/运营对指定充电订单发起人工退款：校验请求体后在同一事务里锁住支付单，
+// 确认订单与支付单可退、累计退款不超额，再插入一条待复核的退款记录。
+// 幂等靠 request_id：同号同内容重放返回原退款单号，不同内容则判冲突，避免重复出款。
+// 生成的单据走 manual_review 策略，必须等双人复核通过后才会真正执行退款。
 func (a ResourceAPI) manualRefund(c *gin.Context) {
 	id, ok := pathID(c)
 	if !ok {
 		return
 	}
 	var in struct {
-		RequestID   string `json:"request_id"`
-		AmountCents int64  `json:"amount_cents"`
-		Reason      string `json:"reason"`
+		RequestID   string `json:"request_id"`   // 客户端生成的幂等请求号，格式为 UUID；重放同一请求号不会重复建单
+		AmountCents int64  `json:"amount_cents"` // 本次退款金额，单位分，必须为正整数
+		Reason      string `json:"reason"`       // 退款原因，必填，最多 255 字，用于工单与审计追溯
 	}
 	if !decodeResource(c, &in) {
 		return
@@ -57,8 +65,8 @@ func (a ResourceAPI) manualRefund(c *gin.Context) {
 			return err
 		}
 		var receipt struct {
-			PayloadJSON string
-			RefundNo    string
+			PayloadJSON string // 同一 request_id 首次提交时的请求体快照，重放时用于逐字段比对内容是否一致
+			RefundNo    string // 首次生成的退款单号，重放时直接返回它，保证同号始终对应同一笔退款
 		}
 		e := tx.Table("manual_refund_request").Where("request_id=?", in.RequestID).Take(&receipt).Error
 		if e == nil {
@@ -109,15 +117,21 @@ func (a ResourceAPI) manualRefund(c *gin.Context) {
 	httpapi.OK(c, gin.H{"created": created, "refund_no": refundNo, "request_id": in.RequestID})
 }
 
+// refundReview 是人工退款的双人复核记录（user_db.refund_review 表），一条退款单至多一条。
+// 复核采用"两人两签"：第一审核人只能把单子推进到 awaiting_second，第二位不同的审核人签字后才转 approved 并放行执行；
+// snapshot_json 冻结第一签时的退款要素，第二签必须对得上，避免两次签之间金额或对象被改动。
 type refundReview struct {
-	RefundRecordID uint64
-	SnapshotJSON   string
-	FirstSigner    uint64
-	FirstComment   string
-	SecondSigner   *uint64
-	SecondComment  *string
+	RefundRecordID uint64  // 关联的退款记录主键 refund_record.id，一对一
+	SnapshotJSON   string  // 第一签时冻结的退款要素 JSON，第二签据此比对，内容不一致即冲突
+	FirstSigner    uint64  // 第一审核人 ID
+	FirstComment   string  // 第一审核人的审核意见
+	SecondSigner   *uint64 // 第二审核人 ID，nil 表示第二签还没做
+	SecondComment  *string // 第二审核人的审核意见，nil 表示第二签还没做
 }
 
+// refunds 分页返回退款单列表，附带每单当前登录人能否审批/驳回/重试的布尔位（can_approve、can_reject、can_retry）。
+// 只有人工复核（execution_policy=manual_review）且处于 pending 的单子才进入复核流程，
+// 并且第一审核人不能审自己签过的单子（can_approve 会因其已签字而为 false）；自动策略的单子则把执行进度放进 task 字段。
 func (a ResourceAPI) refunds(c *gin.Context) {
 	q, ok := parsePage(c, "pending processing success failed rejected")
 	if !ok {
@@ -177,18 +191,27 @@ func (a ResourceAPI) refunds(c *gin.Context) {
 	}
 	httpapi.OK(c, out)
 }
+
+// refundSnapshot 把退款记录的六个关键要素序列化成规范化 JSON，作为双人复核的冻结快照。
+// 刻意不包含状态、重试次数和时间戳：这些字段在复核过程中本来就会变，纳入比对会让第二签永远对不上。
 func refundSnapshot(r charge.RefundRecord) string {
 	b, _ := json.Marshal(gin.H{"refund_no": r.RefundNo, "payment_order_id": r.PaymentOrderID, "user_id": r.UserID, "biz_type": r.BizType, "biz_id": r.BizID, "refund_cents": r.RefundCents})
 	return string(b)
 }
+
+// reviewRefund 人工退款的复核入口，approve 与 reject 两条路由共用此处理函数，靠路由后缀区分动作。
+// 通过：第一次调用写入 refund_review 进入 awaiting_second；第二次由不同的人调用才转 approved，
+// 同时把 execution_policy 改为 automatic 并把 next_attempt_at 置为当前，从而被退款执行器接走。
+// 驳回：单人即可，直接写 refund_rejection 并把退款单置为 rejected，终结本次退款。
+// 两种动作都只在 pending + manual_review 的单子上有效，其余状态一律冲突。
 func (a ResourceAPI) reviewRefund(c *gin.Context) {
 	p, ok := a.financeActor(c, "order.refund.review")
 	if !ok {
 		return
 	}
 	var in struct {
-		ApproveComment string `json:"approve_comment"`
-		Reason         string `json:"reason"`
+		ApproveComment string `json:"approve_comment"` // 通过时必填的审核意见，1–255 字
+		Reason         string `json:"reason"`          // 驳回时必填的驳回理由，1–255 字
 	}
 	if !decodeResource(c, &in) {
 		return
@@ -267,9 +290,13 @@ func (a ResourceAPI) reviewRefund(c *gin.Context) {
 	a.flushAudit(c, auditPending)
 	httpapi.OK(c, gin.H{"review_status": status})
 }
+
+// retryRefund 手动重投一笔自动执行失败的退款：只把 next_attempt_at 拨到当前时间让执行器再跑一次，
+// 不改任何金额或状态。仅限 execution_policy 为 automatic 且仍处于 pending/processing 的单子，
+// 人工复核中的单子不能走这条路，否则等于绕过双人复核直接出款。
 func (a ResourceAPI) retryRefund(c *gin.Context) {
 	var in struct {
-		Reason string `json:"reason"`
+		Reason string `json:"reason"` // 重投原因，必填，1–255 字，落审计用
 	}
 	if !decodeResource(c, &in) {
 		return

@@ -2,20 +2,24 @@ import { useEffect, useState } from 'react';
 import { Typography, Card, Form, Input, Button, Space, message } from 'antd';
 import { SaveOutlined } from '@ant-design/icons';
 import { apiGet, apiPut } from '../api/client';
+import { LoadError } from '../components/LoadError';
 
 const { Title } = Typography;
 
 export default function SettingsPage() {
   const [whitelabel, setWhitelabel] = useState<Record<string, unknown>>({});
   const [form] = Form.useForm();
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [reload, setReload] = useState(0);
 
   useEffect(() => {
+    setLoadError(null);
     apiGet<Record<string, unknown>>('/api/v1/admin/whitelabel').then((value) => {
       const config = value || {};
       setWhitelabel(config);
       form.setFieldsValue(config);
-    }).catch((error: any) => message.error(error?.message || '白标配置读取失败'));
-  }, [form]);
+    }).catch((error: any) => setLoadError(error?.message || '白标配置读取失败'));
+  }, [form, reload]);
 
   const onSave = async (vals: any) => {
     try {
@@ -31,6 +35,7 @@ export default function SettingsPage() {
   return (
     <div className="page-container">
       <Title level={3}>平台设置</Title>
+      {loadError && <LoadError title="平台设置加载失败" detail={loadError} onRetry={() => setReload(v => v + 1)} />}
       <Card>
         <Form form={form} layout="vertical" initialValues={whitelabel} onFinish={onSave}>
           <Form.Item name="miniprogram_name" label="小程序名称" rules={[{ required: true, whitespace: true, max: 64 }]}><Input maxLength={64} /></Form.Item>

@@ -25,9 +25,16 @@ func (s MySQLSink) Register(ctx context.Context, registration protocol.Registrat
 		return errors.New("gateway database is unavailable")
 	}
 	var device deviceRow
+	// The vendor is matched on its adapter class, not on its business code.
+	// vendor_code is an operator-facing identifier ("V-DC589") and says nothing
+	// about what a device speaks; adapter_class is the field that names the
+	// dialect, and it is the same field the provisioning endpoint checks before
+	// it will create a device. Matching vendor_code against the protocol name
+	// instead meant no provisioned device could ever register, which stayed
+	// invisible because the listener discarded the resulting error.
 	err := s.DB.WithContext(ctx).Table("device AS d").Select("d.id").
 		Joins("JOIN vendor AS v ON v.id = d.vendor_id").
-		Where("d.device_id = ? AND d.status = 'enabled' AND d.deleted_at IS NULL AND v.vendor_code = ? AND v.status = 'enabled' AND v.deleted_at IS NULL", registration.DeviceID, registration.Protocol).
+		Where("d.device_id = ? AND d.status = 'enabled' AND d.deleted_at IS NULL AND v.adapter_class = ? AND v.status = 'enabled' AND v.deleted_at IS NULL", registration.DeviceID, registration.Protocol).
 		Take(&device).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return ErrDeviceNotProvisioned
@@ -56,6 +63,26 @@ func (s MySQLSink) Record(ctx context.Context, event protocol.Event) error {
 		return fmt.Errorf("marshal device event: %w", err)
 	}
 	key := eventKey(event)
+	// The outbox carries the system-wide envelope — event_id, event_type,
+	// source, occurred_at and a data payload — because that is the shape every
+	// consumer parses and the shape the rest of the platform publishes in.
+	// Shipping the bare event instead meant nothing downstream could read it: the
+	// event's own field is "Type", not "event_type", so a consumer looking for
+	// the type found nothing and the entry was discarded.
+	//
+	// device_event.event_json keeps the event exactly as it arrived, because
+	// that column is the replay record and re-encoding it would mean the thing
+	// you replay is no longer the thing the board sent.
+	envelope, err := json.Marshal(map[string]any{
+		"event_id":    key,
+		"event_type":  string(event.Type),
+		"source":      "gateway",
+		"occurred_at": event.ReceivedAt.UTC(),
+		"data":        json.RawMessage(data),
+	})
+	if err != nil {
+		return fmt.Errorf("marshal device event envelope: %w", err)
+	}
 	return s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		inserted := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&deviceEventRow{
 			EventKey: key, Protocol: event.Protocol, DeviceID: event.DeviceID,
@@ -64,7 +91,7 @@ func (s MySQLSink) Record(ctx context.Context, event protocol.Event) error {
 		if inserted.Error != nil {
 			return fmt.Errorf("persist device event: %w", inserted.Error)
 		}
-		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&deviceOutboxRow{EventID: key, Stream: "device_event_stream", EnvelopeJSON: data}).Error; err != nil {
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&deviceOutboxRow{EventID: key, Stream: "device_event_stream", EnvelopeJSON: envelope}).Error; err != nil {
 			return fmt.Errorf("queue device event: %w", err)
 		}
 		if inserted.RowsAffected == 1 && event.Type == protocol.StartResult {

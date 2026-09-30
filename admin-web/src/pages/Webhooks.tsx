@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from 'react';
 import { Table, Typography, Tag, Space, Button, Modal, Form, Input, Select, Alert, message } from 'antd';
 import { PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import { apiGet, apiPost } from '../api/client';
+import { formatTime } from '../utils/time';
+import { LoadError } from '../components/LoadError';
 
 const { Title } = Typography;
 
@@ -28,6 +30,8 @@ export default function WebhooksPage() {
   const [log, setLog] = useState<Delivery[]>([]);
   const [logFor, setLogFor] = useState<Webhook | null>(null);
   const [logLoading, setLogLoading] = useState(false);
+  const [listError, setListError] = useState<string | null>(null);
+  const [logError, setLogError] = useState<string | null>(null);
   const [resending, setResending] = useState<number | null>(null);
   const [form] = Form.useForm();
 
@@ -36,8 +40,11 @@ export default function WebhooksPage() {
     try {
       const data = await apiGet<{ items: Delivery[] }>(`/api/v1/admin/webhooks/${sub.id}/deliveries?page=1&page_size=50`);
       setLog(data.items || []);
+      setLogError(null);
     } catch (e: any) {
-      message.error(e?.message || '投递日志读取失败');
+      // 投递日志读不出来时不能显示「暂无投递记录」——那会让运营以为这个订阅从没
+      // 触发过，从而漏掉已经在堆积的失败投递。
+      setLog([]); setLogError(e?.message || '投递日志读取失败');
     } finally {
       setLogLoading(false);
     }
@@ -60,8 +67,12 @@ export default function WebhooksPage() {
 
   const load = async () => {
     setLoading(true);
-    try { setData((await apiGet<{ items: Webhook[] }>('/api/v1/admin/webhooks')).items || []); }
-    catch (error: any) { message.error(error?.message || 'Webhook 列表读取失败'); } finally { setLoading(false); }
+    try {
+      setData((await apiGet<{ items: Webhook[] }>('/api/v1/admin/webhooks')).items || []);
+      setListError(null);
+    }
+    catch (error: any) { setData([]); setListError(error?.message || 'Webhook 列表读取失败'); }
+    finally { setLoading(false); }
   };
 
   useEffect(() => { load(); }, []);
@@ -81,6 +92,7 @@ export default function WebhooksPage() {
         <Button icon={<ReloadOutlined />} onClick={load}>刷新</Button>
         <Button type="primary" icon={<PlusOutlined />} onClick={() => setOpen(true)}>新建</Button>
       </Space>
+      {listError && <LoadError title="Webhook 列表加载失败" detail={listError} onRetry={load} />}
       <Table rowKey="id" loading={loading} dataSource={data}
         columns={[
           { title: '名称', dataIndex: 'name' },
@@ -117,9 +129,13 @@ export default function WebhooksPage() {
       </Modal>
       <Modal title={`${logFor?.name || ''} 投递日志`} open={!!logFor} onCancel={() => setLogFor(null)}
         footer={null} width={1000}>
+        {logError ? (
+          <LoadError title="投递日志加载失败" detail={logError}
+            onRetry={() => { if (logFor) void loadLog(logFor); }} />
+        ) : null}
         <Alert type="info" showIcon style={{ marginBottom: 12 }}
           message="每次投递都带 X-ChargePilot-Signature（HMAC-SHA256，签名覆盖「时间戳.请求体」），请据此校验来源。" />
-        {log.length === 0 && !logLoading ? (
+        {log.length === 0 && !logLoading && !logError ? (
           <Alert type="info" showIcon message="暂无投递记录"
             description="订阅创建后，匹配事件由 worker 异步投递；每次投递（含失败）都会在此留痕。" />
         ) : null}
@@ -133,7 +149,7 @@ export default function WebhooksPage() {
             { title: '次数', dataIndex: 'attempt_count', width: 70 },
             { title: '耗时', dataIndex: 'duration_ms', width: 90, render: (v: number | null) => v == null ? '—' : `${v} ms` },
             { title: '错误', dataIndex: 'error_msg', ellipsis: true },
-            { title: '时间', dataIndex: 'delivered_at', width: 180 },
+            { title: '时间', dataIndex: 'delivered_at', width: 180, render: formatTime },
             { title: '操作', width: 90, render: (_, row) =>
               <Button type="link" onClick={() => void resend(row)} loading={resending === row.id}>重发</Button> },
           ]} />

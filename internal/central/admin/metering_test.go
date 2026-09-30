@@ -9,7 +9,6 @@ import (
 
 	"github.com/ChargePilot2026/charge-pilot/internal/central/pricing"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/dbconn"
-	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
@@ -111,11 +110,11 @@ func TestCommonModeCollapsesOnlyWhenTheBoardsAgree(t *testing.T) {
 	}
 }
 
-// A yard priced before its hardware arrived is normal, and the board that turns
+// A station priced before its hardware arrived is normal, and the board that turns
 // up later never went through the capability check that ran at publish time.
 // This is the check that catches it.
-func TestCheckImportAgainstYardRefusesABoardThatCannotBeMetered(t *testing.T) {
-	db := dbWithYardMode(t, pricing.ModeServerEnergy)
+func TestCheckImportAgainstStationRefusesABoardThatCannotBeMetered(t *testing.T) {
+	db := dbWithStationMode(t, pricing.ModeServerEnergy)
 	station := stationOf(t, db)
 	devices := []ImportDevice{
 		{DeviceID: "DC589OK001", StationID: station, ReportsEnergy: true},
@@ -123,7 +122,7 @@ func TestCheckImportAgainstYardRefusesABoardThatCannotBeMetered(t *testing.T) {
 	}
 	// The whole batch is refused, not half of it: a fleet that is partly
 	// priceable is one an operator has to reconcile by hand.
-	if err := checkImportAgainstYard(db, devices); err == nil {
+	if err := checkImportAgainstStation(db, devices); err == nil {
 		t.Fatal("a batch containing an unmeasurable board was accepted")
 	} else {
 		var blocked *errMeteringBlocked
@@ -134,7 +133,7 @@ func TestCheckImportAgainstYardRefusesABoardThatCannotBeMetered(t *testing.T) {
 			t.Fatalf("refusal names %+v, want DC589BAD01 at station %d", blocked, station)
 		}
 	}
-	if err := checkImportAgainstYard(db,
+	if err := checkImportAgainstStation(db,
 		[]ImportDevice{{DeviceID: "DC589OK001", StationID: station, ReportsEnergy: true}}); err != nil {
 		t.Fatalf("a fully measurable batch was refused: %v", err)
 	}
@@ -142,32 +141,32 @@ func TestCheckImportAgainstYardRefusesABoardThatCannotBeMetered(t *testing.T) {
 
 // A station with no tariff yet accepts any board, and so does a duration
 // tariff, which needs no meter at all.
-func TestCheckImportAgainstYardAllowsWhenNothingNeedsAMeter(t *testing.T) {
-	unpriced := dbWithYardMode(t, "")
+func TestCheckImportAgainstStationAllowsWhenNothingNeedsAMeter(t *testing.T) {
+	unpriced := dbWithStationMode(t, "")
 	station := stationOf(t, unpriced)
-	if err := checkImportAgainstYard(unpriced,
+	if err := checkImportAgainstStation(unpriced,
 		[]ImportDevice{{DeviceID: "DC589NEW001", StationID: station}}); err != nil {
-		t.Fatalf("a board was refused from a yard with no tariff: %v", err)
+		t.Fatalf("a board was refused from a station with no tariff: %v", err)
 	}
-	timed := dbWithYardMode(t, pricing.ModeDeviceDuration)
+	timed := dbWithStationMode(t, pricing.ModeDeviceDuration)
 	station = stationOf(t, timed)
-	if err := checkImportAgainstYard(timed,
+	if err := checkImportAgainstStation(timed,
 		[]ImportDevice{{DeviceID: "DC589NEW002", StationID: station}}); err != nil {
-		t.Fatalf("a board was refused from a duration yard: %v", err)
+		t.Fatalf("a board was refused from a duration-priced station: %v", err)
 	}
 }
 
-// dbWithYardMode stands up a disposable database carrying one station whose yard
+// dbWithStationMode stands up a disposable database carrying one station whose
 // default is charging on the given mode. An empty mode means the station has no
 // active default at all.
 //
 // It reads the same URL the rest of the integration suite uses, and skips when
 // there is none, so the unit tests above stay runnable without a database.
-func dbWithYardMode(t *testing.T, mode pricing.ChargeMode) *gorm.DB {
+func dbWithStationMode(t *testing.T, mode pricing.ChargeMode) *gorm.DB {
 	t.Helper()
 	raw := os.Getenv("TEST_ADMIN_DATABASE_URL")
 	if raw == "" {
-		t.Skip("set disposable MySQL to run the yard capability check")
+		t.Skip("set disposable MySQL to run the station capability check")
 	}
 	db, err := dbconn.Open(t.Context(), raw)
 	if err != nil {
@@ -184,9 +183,8 @@ func dbWithYardMode(t *testing.T, mode pricing.ChargeMode) *gorm.DB {
 	if err := orm.Raw("SELECT COALESCE(MAX(id),0)+9000 FROM station").Scan(&next).Error; err != nil {
 		t.Fatal(err)
 	}
-	code := "cap-" + uuid.NewString()[:8]
-	if err := orm.Exec("INSERT INTO station(id,code,name,status,longitude,latitude) VALUES(?,?,?,'active',116.4,39.9)", next,
-		code, "计量能力场地").Error; err != nil {
+	if err := orm.Exec("INSERT INTO station(id,name,status,longitude,latitude) VALUES(?,?,'active',116.4,39.9)", next,
+		"计量能力站点").Error; err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {

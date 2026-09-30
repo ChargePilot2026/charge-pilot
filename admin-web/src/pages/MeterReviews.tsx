@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Alert, Button, Descriptions, Drawer, Form, Input, InputNumber, Modal, Select, Space, Table, Tag, Typography, message } from 'antd';
 import dayjs from 'dayjs';
 import { adminSession, apiGet, apiPost } from '../api/client';
+import { LoadError } from '../components/LoadError';
 
 type Segment = { started_at:string; ended_at:string; energy_wh:number };
 type Source = { meter:{ started_at:string; ended_at:string; charged_wh:number; charged_seconds:number; segments?:Segment[] }; rule:{ time_of_use:{start:string;end:string;electric_price_cents:number}[]; service_cents_per_kwh:number } };
@@ -25,7 +26,7 @@ export default function MeterReviews(){
  async function decide(approve:boolean){if(!selected||!latest||saving)return;try{if(epoch!==adminSession.epoch())throw new Error('登录账号已变化，请重新打开记录');setSaving(true);await apiPost(`/api/v1/admin/billing/meter-reviews/${selected.charge_order_id}/decide`,{review_id:latest.id,approve,reason});message.success(approve?'复核通过，订单已恢复计费':'已拒绝，可补充依据后重新提交');setSelected(null);setRejecting(false);await load();}catch(e:any){message.error(e.message||'审核失败');}finally{setSaving(false);}}
  return <>
   <Space wrap style={{marginBottom:12}}><Input aria-label="核实订单号" placeholder="订单号" value={keyword} onChange={e=>setKeyword(e.target.value)}/><Select aria-label="核实状态" value={status} onChange={v=>{setStatus(v);setPage(1);}} options={[{value:'pending',label:'待核实'},{value:'resolved',label:'已完成计费'},{value:'',label:'全部'}]}/><Button onClick={()=>void load()} loading={loading}>查询核实队列</Button></Space>
-  {error&&<Alert type="error" message={error} showIcon/>}
+  {error&&<LoadError title="计量核实队列加载失败" detail={error} onRetry={() => void load()}/>}
   <Table rowKey="charge_order_id" loading={loading} dataSource={rows} pagination={{current:page,pageSize:20,total,onChange:setPage}} columns={[{title:'订单号',dataIndex:'order_no'},{title:'原因',dataIndex:'reason'},{title:'实际电量',render:(_,r)=>`${r.source?.meter?.charged_wh??'—'} Wh`},{title:'状态',render:(_,r)=><Tag>{labels[r.status==='resolved'?'resolved':r.reviews[0]?.status||r.status]}</Tag>},{title:'操作',render:(_,r)=><Button disabled={!r.source?.meter || !r.source?.rule} onClick={()=>open(r)}>查看核实</Button>}]}/>
   <Drawer title="实际计量核实" width={800} open={!!selected} onClose={()=>{if(!saving){setSelected(null);setEditing(false);}}}>
    {selected&&<>

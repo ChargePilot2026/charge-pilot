@@ -97,7 +97,7 @@ func TestEveryGuardedPermissionExists(t *testing.T) {
 // A permission nobody holds is a route nobody can use, and one nobody can be
 // granted is a route that can never be fixed through the role editor. The
 // metering declaration goes to exactly the roles that onboard hardware, so that
-// whoever can price a yard is not automatically the one who certifies what its
+// whoever can price a station is not automatically the one who certifies what its
 // boards can measure — otherwise the capability check is only advisory.
 func TestMeteringPermissionGoesToTheRolesThatOnboardBoards(t *testing.T) {
 	if os.Getenv("TEST_ADMIN_DATABASE_URL") == "" {

@@ -28,7 +28,7 @@ const (
 	ModeServerRealtimePower ChargeMode = "server_realtime_power" // 按实时功率
 	ModeServerMaxPower      ChargeMode = "server_max_power"      // 按最大功率
 	ModeServerEnergy        ChargeMode = "server_energy"         // 按电量
-	// Device modes: the fee is what the rider already paid.
+	// Device modes: the fee is what the charging user already paid.
 	ModeDeviceDuration ChargeMode = "device_duration" // 时长
 	ModeDeviceEnergy   ChargeMode = "device_energy"   // 电量
 	ModeDevicePower    ChargeMode = "device_power"    // 功率档位

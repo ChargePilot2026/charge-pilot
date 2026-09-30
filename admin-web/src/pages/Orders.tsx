@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import dayjs, { Dayjs } from 'dayjs';
 import axios from 'axios';
 import { ApiEnvelope, http } from '../api/client';
+import { LoadError } from '../components/LoadError';
 import ManualRefund from './ManualRefund';
 
 interface Order {
@@ -131,8 +132,7 @@ export default function OrdersPage() {
       </Space></Form.Item>
     </Form>
     <Typography.Paragraph type="secondary">默认查询近 7 天，时间按本地时区显示。尚未启动的订单按创建时间筛选。</Typography.Paragraph>
-    {error && <Alert type="error" showIcon message="订单加载失败" description={error} style={{ marginBottom: 16 }}
-      action={<Button onClick={() => setReload(value => value + 1)}>重试</Button>} />}
+    {error && <LoadError title="订单加载失败" detail={error} onRetry={() => setReload(value => value + 1)} />}
     <Table<Order> rowKey="order_id" loading={loading} dataSource={page?.items || []} scroll={{ x: 1500 }}
       locale={{ emptyText: error ? '暂时无法获取订单' : '当前条件下没有订单' }}
       pagination={{ current: pagination.page, pageSize: pagination.page_size, total: page?.total || 0,
@@ -152,8 +152,7 @@ export default function OrdersPage() {
       ]} />
     <Drawer title="订单详情" open={selected != null} onClose={() => setSelected(null)} width="min(760px, 100vw)">
       {detailLoading && <Spin />}
-      {detailError && <Alert type="error" showIcon message="详情加载失败" description={detailError}
-        action={<Button onClick={() => setDetailReload(value => value + 1)}>重试</Button>} />}
+      {detailError && <LoadError title="详情加载失败" detail={detailError} onRetry={() => setDetailReload(value => value + 1)} />}
       {detail && <Space direction="vertical" size="large" style={{ width: '100%' }}>
         {detail.refund_applicant_id && <ManualRefund key={detail.order_id} orderId={detail.order_id} orderNo={detail.order_no} actorId={detail.refund_applicant_id} onCreated={() => setReload(value => value + 1)} />}
         <Descriptions title={detail.order_no} bordered column={2} items={[

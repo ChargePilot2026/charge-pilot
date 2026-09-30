@@ -96,7 +96,7 @@ func (s AutoStopper) Run(ctx context.Context) (int, error) {
 						}
 					}
 				}
-				// A spend cap is a promise the rider was shown, and under server
+				// A spend cap is a promise the charging user was shown, and under server
 				// billing nothing on the board is watching it: the device is running
 				// under a time or energy allowance the platform handed it at start,
 				// and it has no idea money is being spent. So the cap is enforced

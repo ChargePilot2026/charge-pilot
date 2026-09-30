@@ -3,7 +3,6 @@ package admin
 import (
 	"errors"
 	"net/http"
-	"regexp"
 	"time"
 
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/httpapi"
@@ -15,33 +14,34 @@ import (
 // The engine itself lives in the charge service; this only lets an operator see
 // which campaigns are running, open and close them, and check what they cost.
 //
-// Money is stored in cents and windows are absolute, so a campaign that is
-// running is a plain comparison rather than a fuzzy "is it active" flag that can
-// disagree with the clock.
-var activityRuleCodePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{3,64}$`)
-
+// Money is stored in cents and windows are absolute, so whether a campaign is
+// running is a plain comparison against the clock rather than a stored flag
+// that can disagree with it.
 var activityTriggers = map[string]bool{
 	"first_recharge": true, "invite_reward": true, "threshold_redeem": true, "holiday": true,
 }
 
+// activityRuleRow 是券活动规则在列表接口里的行投影：一行 = 一个活动，附带券名和已发放数量，
+// 供运营在列表页直接看出活动挂了哪张券、门槛多少、发了多少份，不用再逐条点进去。
 type activityRuleRow struct {
-	ID              uint64    `json:"id"`
-	RuleCode        string    `json:"rule_code"`
-	Name            string    `json:"name"`
-	TriggerType     string    `json:"trigger_type"`
-	CouponID        uint64    `json:"coupon_id"`
-	CouponName      string    `json:"coupon_name"`
-	InviterCouponID *uint64   `json:"inviter_coupon_id"`
-	ThresholdCents  int64     `json:"threshold_cents"`
-	MaxGrants       int       `json:"max_grants"`
-	GrantedCount    int64     `json:"granted_count"`
-	PerUserLimit    int       `json:"per_user_limit"`
-	Status          string    `json:"status"`
-	StartAt         time.Time `json:"start_at"`
-	EndAt           time.Time `json:"end_at"`
-	CreatedAt       time.Time `json:"created_at"`
+	ID              uint64    `json:"id"`                // 活动规则主键
+	Name            string    `json:"name"`              // 活动名称，运营可读，不参与业务判定
+	TriggerType     string    `json:"trigger_type"`      // 触发类型：first_recharge 首充、invite_reward 邀请有奖、threshold_redeem 满减、holiday 节日
+	CouponID        uint64    `json:"coupon_id"`         // 活动发放的券 ID
+	CouponName      string    `json:"coupon_name"`       // 关联券的名称，从 user_db.coupon 联查出来只用于展示
+	InviterCouponID *uint64   `json:"inviter_coupon_id"` // 邀请人奖励券 ID，指针为 nil 表示该活动不是邀请有奖类型
+	ThresholdCents  int64     `json:"threshold_cents"`   // 触发门槛，单位分；满减类必填，其余类型必须为 0
+	MaxGrants       int       `json:"max_grants"`        // 活动总发放上限，0 表示不限；用于控制活动成本
+	GrantedCount    int64     `json:"granted_count"`     // 该券由活动/邀请奖励实际发出的份数，聚合 coupon_grant 得出，不落库
+	PerUserLimit    int       `json:"per_user_limit"`    // 单用户可领份数，0 表示不限
+	Status          string    `json:"status"`            // 活动状态：active 进行中 / disabled 已停用
+	StartAt         time.Time `json:"start_at"`          // 活动开始时间，UTC 绝对时间，是否在进行中由引擎按时间比较得出
+	EndAt           time.Time `json:"end_at"`            // 活动结束时间，UTC 绝对时间，须晚于开始时间
+	CreatedAt       time.Time `json:"created_at"`        // 创建时间
 }
 
+// registerActivityRules 挂载券活动的后台路由：列表（只读）、新建、修改，均为管理后台侧，
+// 活动引擎本身在 charge 服务里，这里只负责运营的查看与开关。
 func (a ResourceAPI) registerActivityRules(r *gin.Engine) {
 	r.GET("/api/v1/admin/coupon-activities", a.Auth.Require("coupon.activity.read"), a.listActivityRules)
 	r.POST("/api/v1/admin/coupon-activities", a.Auth.Require("coupon.activity.manage"), a.createActivityRule)
@@ -50,14 +50,16 @@ func (a ResourceAPI) registerActivityRules(r *gin.Engine) {
 
 // grantedCounts counts what each rule actually handed out, so an operator can
 // see a campaign's real cost without leaving the page.
+// grantedCounts 统计这批活动券各自实际发出了多少份，让运营不用离开列表页就能看出活动花了多少钱。
+// 只认 coupon_grant 中来源为 activity 或 invite_reward 的发放记录；券 ID 相同的活动会合并计数。
 func (a ResourceAPI) grantedCounts(tx *gorm.DB, ruleIDs []uint64) (map[uint64]int64, error) {
 	counts := map[uint64]int64{}
 	if len(ruleIDs) == 0 {
 		return counts, nil
 	}
 	type row struct {
-		CouponID uint64
-		Total    int64
+		CouponID uint64 // 被统计的券 ID，作为 map 的键
+		Total    int64  // 该券的活动类发放总份数
 	}
 	var rows []row
 	if err := tx.Table("coupon_grant").
@@ -72,6 +74,8 @@ func (a ResourceAPI) grantedCounts(tx *gorm.DB, ruleIDs []uint64) (map[uint64]in
 	return counts, nil
 }
 
+// listActivityRules 分页返回券活动列表，支持按状态（active/disabled）和活动名关键词过滤，
+// 并把每条活动券的实际发放份数补进 GrantedCount，让运营直接看到活动成本。
 func (a ResourceAPI) listActivityRules(c *gin.Context) {
 	page, ok := parsePage(c, "active disabled")
 	if !ok {
@@ -85,7 +89,7 @@ func (a ResourceAPI) listActivityRules(c *gin.Context) {
 		query = query.Where("r.status = ?", page.Status)
 	}
 	if page.Keyword != "" {
-		query = query.Where("r.name LIKE ? OR r.rule_code LIKE ?", likePattern(page.Keyword), likePattern(page.Keyword))
+		query = query.Where("r.name LIKE ?", likePattern(page.Keyword))
 	}
 	if err := query.Session(&gorm.Session{}).Count(&out.Total).Error; err != nil {
 		resourceFailure(c, err)
@@ -93,7 +97,7 @@ func (a ResourceAPI) listActivityRules(c *gin.Context) {
 	}
 	var rows []activityRuleRow
 	if err := query.Session(&gorm.Session{}).
-		Select("r.id, r.rule_code, r.name, r.trigger_type, r.coupon_id, c.name AS coupon_name, r.inviter_coupon_id, r.threshold_cents, r.max_grants, r.per_user_limit, r.status, r.start_at, r.end_at, r.created_at").
+		Select("r.id, r.name, r.trigger_type, r.coupon_id, c.name AS coupon_name, r.inviter_coupon_id, r.threshold_cents, r.max_grants, r.per_user_limit, r.status, r.start_at, r.end_at, r.created_at").
 		Order("r.id DESC").Offset((page.Page - 1) * page.PageSize).Limit(page.PageSize).Scan(&rows).Error; err != nil {
 		resourceFailure(c, err)
 		return
@@ -114,25 +118,27 @@ func (a ResourceAPI) listActivityRules(c *gin.Context) {
 	httpapi.OK(c, out)
 }
 
+// activityRuleInput 是券活动的新建/修改共用的请求体，字段与 coupon_activity_rule 表一一对应。
+// StartAt/EndAt 用字符串接收而不是 time.Time，是为了由 validate 统一按 RFC3339 解析并给出可读报错。
 type activityRuleInput struct {
-	RuleCode        string  `json:"rule_code"`
-	Name            string  `json:"name"`
-	TriggerType     string  `json:"trigger_type"`
-	CouponID        uint64  `json:"coupon_id"`
-	InviterCouponID *uint64 `json:"inviter_coupon_id"`
-	ThresholdCents  int64   `json:"threshold_cents"`
-	MaxGrants       int     `json:"max_grants"`
-	PerUserLimit    int     `json:"per_user_limit"`
-	Status          string  `json:"status"`
-	StartAt         string  `json:"start_at"`
-	EndAt           string  `json:"end_at"`
+	Name            string  `json:"name"`              // 活动名称，必填，最多 128 字
+	TriggerType     string  `json:"trigger_type"`      // 触发类型，取值见 activityTriggers
+	CouponID        uint64  `json:"coupon_id"`         // 活动发放的券 ID，必填且必须存在且为 active
+	InviterCouponID *uint64 `json:"inviter_coupon_id"` // 邀请人奖励券 ID；邀请有奖类型必填且不得为 0，其余类型可为 nil
+	ThresholdCents  int64   `json:"threshold_cents"`   // 触发门槛（分）；满减类型须 > 0，其余类型须为 0
+	MaxGrants       int     `json:"max_grants"`        // 活动总发放上限，0 表示不限
+	PerUserLimit    int     `json:"per_user_limit"`    // 单用户可领份数，0 表示不限
+	Status          string  `json:"status"`            // active 或 disabled；留空时默认置为 active
+	StartAt         string  `json:"start_at"`          // 活动开始时间，RFC3339 字符串
+	EndAt           string  `json:"end_at"`            // 活动结束时间，RFC3339 字符串，须晚于开始时间且不超过一年后
 }
 
-// validate checks a campaign before it is written. The per-trigger rules exist
-// because a threshold campaign with no threshold would fire on every order, and
-// an invite campaign without a reward for the inviter is just a giveaway.
+// validate 校验一个活动是否可以落库，并把按类型互斥的规则一并卡住：
+// 满减必须设门槛（否则每一单都触发），邀请有奖必须给邀请人配券（否则就是白送），
+// 首充和节日类不允许设门槛（触发条件本身就是写死的）。
+// 通过时顺带把留空的 Status 补成 active，并返回解析好的 UTC 起止时间。
 func (in *activityRuleInput) validate() (time.Time, time.Time, error) {
-	if !activityRuleCodePattern.MatchString(in.RuleCode) || in.Name == "" || len([]rune(in.Name)) > 128 {
+	if in.Name == "" || len([]rune(in.Name)) > 128 {
 		return time.Time{}, time.Time{}, errActivityInput
 	}
 	if !activityTriggers[in.TriggerType] || in.CouponID == 0 {
@@ -175,8 +181,11 @@ func (in *activityRuleInput) validate() (time.Time, time.Time, error) {
 	return start.UTC(), end.UTC(), nil
 }
 
+// errActivityInput 是券活动各类校验失败的统一哨兵错误，只在事务内传播，由外层翻译成给运营看的中文提示。
 var errActivityInput = errors.New("invalid activity rule")
 
+// createActivityRule 新建一个券活动。校验通过且所引用的券都可用后写入 coupon_activity_rule。
+// 规则落在 user_db 而审计日志落在 admin_db，跨库不能同事务，因此提交后再通过 AdminDB 单独补写审计。
 func (a ResourceAPI) createActivityRule(c *gin.Context) {
 	var in activityRuleInput
 	if !decodeResource(c, &in) {
@@ -184,7 +193,7 @@ func (a ResourceAPI) createActivityRule(c *gin.Context) {
 	}
 	start, end, err := in.validate()
 	if err != nil {
-		httpapi.BadRequest(c, "活动规则无效：规则码 3–64 位，门槛为非负分，窗口须为 RFC3339 且结束晚于开始，满减须设门槛，邀请有奖须设邀请人券")
+		httpapi.BadRequest(c, "活动规则无效：名称不能为空，门槛为非负分，窗口须为 RFC3339 且结束晚于开始，满减须设门槛，邀请有奖须设邀请人券")
 		return
 	}
 	// A rule pointing at a missing or disabled coupon would silently never
@@ -203,7 +212,7 @@ func (a ResourceAPI) createActivityRule(c *gin.Context) {
 	tx := a.Store.UserDB.WithContext(c.Request.Context())
 	err = tx.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Table("coupon_activity_rule").Create(map[string]any{
-			"rule_code": in.RuleCode, "name": in.Name, "trigger_type": in.TriggerType,
+			"name": in.Name, "trigger_type": in.TriggerType,
 			"coupon_id": in.CouponID, "inviter_coupon_id": in.InviterCouponID,
 			"threshold_cents": in.ThresholdCents, "max_grants": in.MaxGrants,
 			"per_user_limit": in.PerUserLimit, "status": in.Status, "start_at": start, "end_at": end,
@@ -223,6 +232,9 @@ func (a ResourceAPI) createActivityRule(c *gin.Context) {
 	httpapi.OK(c, gin.H{"id": id})
 }
 
+// updateActivityRule 修改一个已存在的券活动。触发类型不参与更新（trigger_type 未进 Updates），
+// 活动一旦按某种触发方式投放过就不允许换触发口径，否则历史发放记录将无法解释。
+// 更新前先读一份旧值供审计留痕，读不到即 404。
 func (a ResourceAPI) updateActivityRule(c *gin.Context) {
 	id, ok := pathID(c)
 	if !ok {
@@ -276,9 +288,9 @@ func (a ResourceAPI) updateActivityRule(c *gin.Context) {
 	httpapi.OK(c, gin.H{"id": id})
 }
 
-// couponUsable refuses a campaign that points at a coupon which cannot be
-// granted, because a rule that silently never fires is indistinguishable from a
-// working one until the campaign is over.
+// couponUsable 判断一张券能不能挂到活动上：必须存在、状态为 active、未被软删除。
+// 指向不可用券的活动会被拒掉，而不是留着让它永远触发不了却看不出来。
+// 调用方需用自己的错误文案包装返回的 errActivityInput。
 func (a ResourceAPI) couponUsable(c *gin.Context, couponID uint64) error {
 	var count int64
 	if err := a.Store.UserDB.WithContext(c.Request.Context()).Table("coupon").

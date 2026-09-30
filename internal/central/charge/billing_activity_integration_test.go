@@ -18,7 +18,7 @@ func TestApplyOrderCampaignsGrantsThresholdOnce(t *testing.T) {
 	fx := newActivityFixture(t, orm, "threshold_redeem", 5, 0)
 	defer fx.cleanup()
 	now := time.Now().UTC()
-	if err := orm.Exec("UPDATE coupon_activity_rule SET threshold_cents = 3000 WHERE rule_code = ?", fx.ruleCode).Error; err != nil {
+	if err := orm.Exec("UPDATE coupon_activity_rule SET threshold_cents = 3000 WHERE id = ?", fx.ruleID).Error; err != nil {
 		t.Fatal(err)
 	}
 	order := ChargeOrderRecord{OrderNo: "AC" + uuid.NewString()[:10], UserID: fx.userID}
@@ -71,7 +71,7 @@ func TestApplyOrderCampaignsSurvivesBrokenRule(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	t.Cleanup(func() { db.Close() })
 	orm, err := dbconn.WrapGORM(db)
 	if err != nil {
 		t.Fatal(err)
@@ -83,17 +83,24 @@ func TestApplyOrderCampaignsSurvivesBrokenRule(t *testing.T) {
 	if err := orm.Raw("SELECT LAST_INSERT_ID()").Scan(&userID).Error; err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = orm.Exec("DELETE FROM user WHERE id = ?", userID) }()
 
 	now := time.Now().UTC()
-	ruleCode := "R" + uuid.NewString()[:8]
 	if err := orm.Exec(`INSERT INTO coupon_activity_rule
-		(rule_code, name, trigger_type, coupon_id, threshold_cents, max_grants, per_user_limit, status, start_at, end_at)
-		VALUES (?, '坏规则', 'threshold_redeem', 99999999, 100, 0, 1, 'active', ?, ?)`,
-		ruleCode, now.Add(-time.Hour), now.Add(time.Hour)).Error; err != nil {
+		(name, trigger_type, coupon_id, threshold_cents, max_grants, per_user_limit, status, start_at, end_at)
+		VALUES ('坏规则', 'threshold_redeem', 99999999, 100, 0, 1, 'active', ?, ?)`,
+		now.Add(-time.Hour), now.Add(time.Hour)).Error; err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = orm.Exec("DELETE FROM coupon_activity_rule WHERE rule_code = ?", ruleCode) }()
+	badRuleID := lastID(t, orm)
+	// 发放记录挂在 user_id 上、又没有外键级联：只删用户的话发放记录会留下来，
+	// 而它的 source_event_id 是按规则主键算出来的固定值，于是第二轮就撞上
+	// uk_coupon_grant_source_event，失败原因指向一个完全无关的唯一键。
+	t.Cleanup(func() {
+		_ = orm.Exec("DELETE FROM coupon_grant_request WHERE user_id = ?", userID)
+		_ = orm.Exec("DELETE FROM coupon_grant WHERE user_id = ?", userID)
+		_ = orm.Exec("DELETE FROM coupon_activity_rule WHERE id = ?", badRuleID)
+		_ = orm.Exec("DELETE FROM user WHERE id = ?", userID)
+	})
 
 	order := ChargeOrderRecord{OrderNo: "AC" + uuid.NewString()[:10], UserID: userID}
 	// Must not panic and must not surface an error to the caller.

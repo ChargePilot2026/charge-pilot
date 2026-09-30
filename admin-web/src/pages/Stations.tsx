@@ -2,11 +2,12 @@ import { useEffect, useRef, useState } from 'react';
 import { Table, Typography, Space, Button, Modal, Form, Input, InputNumber, Select, message } from 'antd';
 import { PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import { apiGet, apiPost, http } from '../api/client';
+import { LoadError } from '../components/LoadError';
 
 const { Title } = Typography;
 
 interface Station {
-  id: number; code: string; name: string;
+  id: number; name: string;
   address?: string; longitude: number; latitude: number;
   status: string; open_hours?: string; contact_phone?: string;
 }
@@ -59,19 +60,18 @@ export default function StationsPage() {
         <Button type="primary" icon={<PlusOutlined />} disabled={!permissions.includes('station.create')} onClick={() => edit(null)}>新建</Button>
       </Space>
       <Space wrap style={{marginBottom:12}}>
-        <Input aria-label="站点关键词" placeholder="搜索编码、名称或地址" maxLength={128} value={keyword} onChange={e=>setKeyword(e.target.value)} onPressEnter={()=>setQuery({...query,page:1,keyword,status})} allowClear />
+        <Input aria-label="站点关键词" placeholder="搜索名称或地址" maxLength={128} value={keyword} onChange={e=>setKeyword(e.target.value)} onPressEnter={()=>setQuery({...query,page:1,keyword,status})} allowClear />
         <Select aria-label="站点状态" value={status} onChange={setStatus} style={{width:140}} options={[{value:'',label:'全部状态'},{value:'active',label:'运营中'},{value:'disabled',label:'已停用'},{value:'construction',label:'建设中'}]} />
         <Button onClick={()=>setQuery({...query,page:1,keyword,status})}>查询</Button>
         <Button onClick={()=>{setKeyword('');setStatus('');setQuery({...query,page:1,keyword:'',status:''});}}>重置</Button>
       </Space>
-      {error && <div role="alert" style={{color:"#cf1322",marginBottom:12}}>{error}</div>}
+      {error && <LoadError title="站点列表加载失败" detail={error} onRetry={() => void load()} />}
       <Table
         rowKey="id"
         loading={loading}
         dataSource={data}
         pagination={{current:query.page,pageSize:query.page_size,total,showSizeChanger:true,pageSizeOptions:[10,20,50,100],showTotal:n=>`共 ${n} 个站点`,onChange:(page,page_size)=>setQuery({...query,page:page_size===query.page_size?page:1,page_size})}}
         columns={[
-          { title: '编码', dataIndex: 'code', width: 120 },
           { title: '名称', dataIndex: 'name' },
           { title: '地址', dataIndex: 'address' },
           { title: '经度', dataIndex: 'longitude', width: 120 },
@@ -82,7 +82,6 @@ export default function StationsPage() {
       />
       <Modal title={editing ? "编辑站点" : "新建站点"} open={open} confirmLoading={saving} closable={!saving} maskClosable={!saving} onCancel={() => {if(!saving)setOpen(false);}} onOk={onSave} okText="保存" cancelText="取消">
         <Form form={form} layout="vertical">
-          <Form.Item name="code" label="编码" rules={[{ required: true }]}><Input maxLength={64} disabled={!!editing} /></Form.Item>
           <Form.Item name="name" label="名称" rules={[{ required: true, whitespace:true }]}><Input maxLength={128} /></Form.Item>
           <Form.Item name="address" label="地址"><Input maxLength={255} /></Form.Item>
           <Form.Item name="longitude" label="经度" rules={[{ required: true }]}><InputNumber min={-180} max={180} precision={8} style={{width:"100%"}} /></Form.Item>
