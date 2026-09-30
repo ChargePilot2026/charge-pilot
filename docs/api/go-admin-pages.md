@@ -38,6 +38,8 @@
 | 报修 | GET `/device-fault-reports`、`/{id}/history`；POST `/{id}/dispatch`、`/{id}/resolve` | 派单/改派需有效 fault.resolve 账号；仅当前指派人可修复/关闭，修复备注必填，历史持久化 |
 | 设置 | GET/PUT `/whitelabel`；GET `/settings/charge-rules` | 白标配置保存；规则页支持版本发布与停用；正式结束订单计费及模拟差额退款已接线，见 go-charge-lifecycle.md |
 
+计费配置统一从“站点 → 工作区”进入：默认计费、套餐及设备独立配置位于“计费与套餐”，启动/退款策略及本站计费下发记录位于“站点策略与下发记录”。独立“站点计费”菜单与 `/station-pricing` 前端路由已移除，不再提供跨站点配置页面或全站点下发记录入口。进入站点需 `station.read`，工作区中的计费及策略页签另需 `pricing.read`，写操作仍按实时操作权限及数据范围校验。
+
 ## 厂商管理（2026-09-30）
 
 厂商页面位于“设备运维 → 厂商”，前端路径为 `/vendors`；列表可复制厂商 ID，供 CSV 导入填写 `vendor_id`。厂商数据由 gateway 的 `vendor` 表保存；central 通过内部服务接口读取和修改，后台不复制厂商表，也不直连 gateway 数据库。

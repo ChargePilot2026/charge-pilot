@@ -24,7 +24,6 @@ import ExportsPage from './pages/Exports';
 import AuditLogsPage from './pages/AuditLogs';
 import PricingTemplates from './pages/PricingTemplates';
 import PackageTemplates from './pages/PackageTemplates';
-import StationPricing from './pages/StationPricing';
 
 function ConfigPage({ title, children }: { title: string; children: ReactNode }) {
   return <div className="page-container"><Typography.Title level={3} style={{ marginTop: 0, marginBottom: 12 }}>{title}</Typography.Title>{children}</div>;
@@ -50,7 +49,6 @@ export default function App() {
         <Route path="stations" element={<StationsPage />} />
         <Route path="pricing-templates" element={<ConfigPage title="计费模板"><PricingTemplates /></ConfigPage>} />
         <Route path="package-templates" element={<ConfigPage title="套餐模板"><PackageTemplates /></ConfigPage>} />
-        <Route path="station-pricing" element={<ConfigPage title="站点计费"><StationPricing /></ConfigPage>} />
 
         <Route path="users" element={<UsersPage />} />
         <Route path="alerts" element={<AlertsPage />} />

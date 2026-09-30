@@ -23,7 +23,6 @@ const sections: NavSection[] = [
     { key: '/devices', label: '设备', permission: 'device.read' },
     { key: '/pricing-templates', label: '计费模板', permission: 'pricing.read' },
     { key: '/package-templates', label: '套餐模板', permission: 'pricing.read' },
-    { key: '/station-pricing', label: '站点计费', permission: 'pricing.read' },
   ] },
   { key: 'users', icon: <GiftOutlined />, label: '用户运营', children: [
     { key: '/charge-users', label: '充电用户', permission: 'charge_user.read' },

@@ -4,7 +4,7 @@ import { ReloadOutlined } from '@ant-design/icons';
 import { apiGet } from '../../api/client';
 import { LoadError } from '../../components/LoadError';
 import DevicesPage from '../Devices';
-import StationPricing from '../StationPricing';
+import StationOperations from './StationOperations';
 import StationConfiguration from './StationConfiguration';
 
 export interface StationRecord {
@@ -63,7 +63,7 @@ export default function StationWorkspace({ station, permissions, revision = 0, i
     }] : []),
     ...(permissions.includes('pricing.read') ? [{
       key: 'policy', label: '站点策略与下发记录',
-      children: <StationPricing station={detail} embedded hideDevices />,
+      children: <StationOperations station={detail} />,
     }] : []),
   ];
 
