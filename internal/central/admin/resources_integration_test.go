@@ -49,20 +49,19 @@ func TestAdminPagesIntegration(t *testing.T) {
 	}
 	adb, udb, bdb, gdb := open("TEST_ADMIN_DATABASE_URL"), open("TEST_USER_DATABASE_URL"), open("TEST_BILLING_DATABASE_URL"), open("TEST_GATEWAY_DATABASE_URL")
 
-	// This test builds a whole fixture set out of fixed identifiers, so without a
-	// cleanup it can only ever pass once against a given database: the second run
-	// collides on the first unique key it meets and reports a product failure that
-	// is really its own leftovers. Everything it creates is removed here, grouped
-	// by the database that owns it and matched on the markers it uses rather than
-	// on ids, because ids are what move from run to run.
+	// 本测试用一组固定的标识符搭出整套夹具，所以在没有做清理的情况下，对
+	// 某一个库而言它只能跑过一次：第二次跑会在它遇到的第一个唯一键上撞车，
+	// 并报出的是一个产品缺陷，而真正的原因其实是它自己上一轮跑完留下的那些
+	// 残迹。它所创建的一切都在这里被删掉，按各自所属的那个库分组，匹配的时候
+	// 用的是它自己用到的那些标记，而不是按 id 去认——因为 id 正是每次跑都会
+	// 变的东西。
 	//
-	// A statement that fails is reported rather than swallowed. A silently skipped
-	// delete looks exactly like a clean one until the next run trips over it.
-	// The outbox is append-only and keyed on an event id derived from what
-	// happened, so a row this run writes is exactly the row the next run trips
-	// over. Recording where the table was beforehand removes this run's rows and
-	// nothing that was already there, which is more robust than trying to guess
-	// the naming scheme.
+	// 失败的语句会被报出来，而不是被吞掉。一条被悄悄跳过的 delete，和一条真
+	// 正删干净的 delete 看起来完全一样，直到下一轮跑在上面绊了一跤才暴露出来。
+	// event_outbox 是只追加的，它以由所发生的事情推导出来的 event id 为键，
+	// 所以本轮写下去的那一行，正是下一轮会绊到的那一行。事先记下这张表原本
+	// 到了哪里，就能只删掉本轮写下去的那些行，而且不碰本来就存在的行，这比
+	// 去猜它的命名规则要稳健得多。
 	floors := map[*gorm.DB]int64{}
 	for _, db := range []*gorm.DB{adb, udb, gdb} {
 		var floor int64
@@ -94,9 +93,9 @@ func TestAdminPagesIntegration(t *testing.T) {
 			stmts []string
 		}{
 			{adb, []string{
-				// Export tasks name their creator, so they go before the accounts:
-				// the other way round the subquery finds nobody and the tasks this
-				// run created survive to block the next one on the same request id.
+				// 导出任务记着自己的创建人，所以必须排在账号之前删：反过来子查询就在
+				// 这些账号里找不到人，本轮创建的导出任务就会因此活下来，下一轮用同样
+				// request id 的那个请求就被它卡住。
 				"DELETE FROM export_task WHERE task_no LIKE 'PAGES_%' OR task_no LIKE 'EXPBB000000%' OR requested_by IN (SELECT id FROM admin_user_role WHERE username LIKE 'pages-%')",
 				"DELETE FROM admin_user_role WHERE username LIKE 'pages-%'",
 				"DELETE FROM finance_reconcile_log WHERE reconcile_type = 'wechat_pay' AND reconcile_date IN ('2026-09-15','2026-10-01')",
@@ -110,14 +109,13 @@ func TestAdminPagesIntegration(t *testing.T) {
 				"DELETE FROM pricing_package_template WHERE " + pagesPackages,
 				"DELETE FROM station_policy WHERE station_id IN (SELECT id FROM station WHERE " + pagesStations + ")",
 				"DELETE FROM station WHERE " + pagesStations,
-				// A tariff that outlives its own cleanup keeps its version counter,
-				// and the next run's apply is then refused as a version conflict —
-				// which reads as a product bug and is not one.
+				// 一条没被这次清理掉、活过了清理时机的计费规则会保留着它的版本计数，
+				// 于是下一轮的 apply 就会被当成版本冲突拒掉——这种报错读起来像是一个
+				// 产品缺陷，其实并不是。
 				"DELETE FROM pricing_publication WHERE rule_id IN (SELECT id FROM pricing_rule WHERE template_id IN (SELECT id FROM pricing_template WHERE " + pagesTemplates + "))",
 				"DELETE FROM pricing_switch_task WHERE template_id IN (SELECT id FROM pricing_template WHERE " + pagesTemplates + ")",
-				// The unbound legacy rule belongs to neither a template nor a station,
-				// so it is named outright — it is the one fixture here that neither
-				// reference reaches.
+				// 这条没绑定的历史遗留规则既不属于任何一个模板，也不属于任何一个站点，
+				// 所以只能直接按名字点名删——它是这里唯一一个两处引用都够不着的夹具。
 				"DELETE FROM pricing_rule WHERE name = 'legacy unbound' OR template_id IN (SELECT id FROM pricing_template WHERE " + pagesTemplates + ") OR station_id IN (SELECT id FROM station WHERE " + pagesStations + ")",
 				"DELETE FROM pricing_template WHERE " + pagesTemplates,
 				"DELETE FROM announcement WHERE title = '测试公告' OR title LIKE '%pages%'",
@@ -125,18 +123,17 @@ func TestAdminPagesIntegration(t *testing.T) {
 				// 每跑一次就多一条停用坐席，后台列表会一版版变长。测试得自己摘。
 				"DELETE FROM customer_service_config WHERE agent_wechat = 'pages_seat'",
 				"DELETE FROM webhook_subscription WHERE name = '测试订阅' OR name LIKE '%pages%' OR url LIKE '%pages%'",
-				// Matched on the board itself, not on the import it arrived in: a
-				// failed batch still records the identity it saw, and that row is
-				// what refuses the next attempt at the same board.
+				// 匹配的是板子本身，而不是它随哪一批导入进来的：一批失败的导入照样
+				// 会记下它当时见到的那个板子身份，而挡下下一次针对同一块板子的那次
+				// 尝试的，正是留下来的这一行。
 				"DELETE FROM device_meta WHERE " + pagesDevices,
 				"DELETE FROM device_import_identity WHERE " + pagesDevices,
 				"DELETE FROM device_import WHERE import_id IN ('33333333-3333-4333-8333-333333333333','33333333-3333-4333-8333-333333333334')",
 			}},
 			{udb, []string{
-				// The refund chain is keyed on a fixed request id and leaves rows in
-				// five tables behind it; the reviews and receipts hang off the
-				// record, so they go first or they orphan it exactly the way the
-				// pricing rules did.
+				// 退款链路挂在固定的 request id 上，会在它后面的五张表里留下数据行；
+				// 审核记录和回执都是从这张单据派生出来的，所以必须先删，否则它们就
+				// 会像定价规则当初那样，把这张单据变成一个查不到主人的孤儿。
 				"DELETE FROM refund_success_receipt WHERE refund_record_id IN (SELECT id FROM refund_record WHERE user_id IN (SELECT id FROM user WHERE " + pagesUsers + "))",
 				"DELETE FROM wallet_refund_part WHERE refund_record_id IN (SELECT id FROM refund_record WHERE user_id IN (SELECT id FROM user WHERE " + pagesUsers + "))",
 				"DELETE FROM refund_review WHERE refund_record_id IN (SELECT id FROM refund_record WHERE user_id IN (SELECT id FROM user WHERE " + pagesUsers + "))",
@@ -150,10 +147,10 @@ func TestAdminPagesIntegration(t *testing.T) {
 				"DELETE FROM feedback WHERE content LIKE '%pages_seat%' OR user_id IN (SELECT id FROM user WHERE " + pagesUsers + ")",
 				"DELETE FROM device_fault_report WHERE " + pagesDevices,
 				"DELETE FROM wallet_risk_freeze_link WHERE request_id IN ('55555555-5555-4555-8555-555555555555','88888888-8888-4888-8888-888888888888','44444444-4444-4444-8444-444444444444')",
-				// The review and release tables record who signed off. That makes them
-				// run-specific: every run mints a fresh reviewer account, so a review
-				// left behind by the previous run is read as a replay by a different
-				// person and is refused as a conflict.
+				// 审核表和解冻表记的都是谁签的字。正因为记了人，它们就成了每一轮各
+				// 自的一份：每一轮跑起来都会新造一个审核人账号，所以上一轮遗留下来
+				// 的那条审核记录，读起来就像是另一个人发起的重放，于是被当作冲突而
+				// 拒掉下去，而不是被当成一次正常的新审核。
 				"DELETE FROM wallet_risk_review WHERE request_id IN ('55555555-5555-4555-8555-555555555555','88888888-8888-4888-8888-888888888888')",
 				"DELETE FROM wallet_risk_release WHERE request_id IN ('55555555-5555-4555-8555-555555555555','88888888-8888-4888-8888-888888888888')",
 				"DELETE FROM risk_freeze_log WHERE user_id IN (SELECT id FROM user WHERE " + pagesUsers + ")",
@@ -168,10 +165,10 @@ func TestAdminPagesIntegration(t *testing.T) {
 			{gdb, []string{
 				"DELETE FROM device_port WHERE " + pagesDevices,
 				"DELETE FROM device WHERE " + pagesDevices,
-				// Provisioning is idempotent only on an exact repeat of the request,
-				// so a record left over from a run whose vendor row has since been
-				// deleted is not a harmless duplicate: it carries the old vendor id
-				// and the next attempt is refused as a parameter mismatch.
+				// 开通只有在请求逐字重复的情况下才是幂等的，所以一条「上一轮留下、而
+				// 那一轮的 vendor 行后来已经被删掉」的记录，并不是什么无害的重复：
+				// 它身上带着的是那个旧的 vendor id，于是下一次尝试就会以参数不匹配被
+				// 拒掉下去，而不是被当成一条全新的记录接受掉。
 				"DELETE FROM device_provision WHERE " + pagesDevices,
 				"DELETE FROM vendor WHERE vendor_code = 'PAGES_VENDOR'",
 			}},
@@ -343,8 +340,8 @@ func TestAdminPagesIntegration(t *testing.T) {
 	call(adminToken, "POST", templatePath+"/parties", gin.H{"parties": parties}, 409)
 	call(adminToken, "PUT", templatePath, gin.H{"name": "已绑定模板", "mode": "mode_b", "status": "active"}, 409)
 	call(adminToken, "PUT", templatePath, gin.H{"name": "名称可更新", "mode": "mode_a", "status": "active"}, 200)
-	// A station code is gone as of admin_db/0044. A client still sending one
-	// gets told so rather than having it silently dropped.
+	// 站点 code 从 admin_db/0044 起就已经没有了。还在传 code 的客户端会被明确
+	// 告知这件事，而不是让它被悄悄丢掉。
 	station["code"] = "PAGES_STATION"
 	call(adminToken, "POST", "stations", station, 400)
 	station["name"] = "更新站点"
@@ -353,8 +350,8 @@ func TestAdminPagesIntegration(t *testing.T) {
 	call(adminToken, "GET", "stations?keyword=更新&page_size=1", nil, 200)
 	call(adminToken, "GET", "stations?page_size=101", nil, 400)
 
-	// A pricing template carries the tariff, its packages and the display
-	// switches as one object, and is applied to a station as one copy.
+	// 一个定价模板把费率、它的那些套餐以及展示开关一并装在同一个对象里
+	// 整体保存，应用到站点时同样是整体复制一份过去用。
 	spec := gin.H{
 		"mode":               "server_energy",
 		"electric":           gin.H{"basis": "energy", "periods": []gin.H{{"end_minute": 1440, "electric_cents": 50}}},
@@ -368,21 +365,21 @@ func TestAdminPagesIntegration(t *testing.T) {
 	}
 	pricingTemplateID := fmt.Sprintf("%.0f", data(call(adminToken, "POST", "settings/pricing-templates", tmpl, 200))["id"].(float64))
 	call(fin1, "POST", "settings/pricing-templates", tmpl, 403)
-	// A chain of periods that stops short of midnight leaves the night
-	// unpriced, and is refused at the door rather than stored as a hole.
+	// 一串没能延伸到午夜之前的时段，会让夜里的电价落空；这种模板在入口
+	// 处就被拒掉，而不是先存进去、留一个窟窿在那里面。
 	call(adminToken, "POST", "settings/pricing-templates", gin.H{"name": "坏时段", "spec": gin.H{
 		"mode":     "server_energy",
 		"electric": gin.H{"basis": "energy", "periods": []gin.H{{"end_minute": 720, "electric_cents": 50}}}}}, 400)
-	// A power ladder with no rungs is equally unpriceable.
+	// 一条一档都没有的功率阶梯，同样是没有办法定价的。
 	call(adminToken, "POST", "settings/pricing-templates", gin.H{"name": "空档位", "spec": gin.H{
 		"mode":     "server_realtime_power",
 		"electric": gin.H{"basis": "realtime_power", "periods": []gin.H{{"end_minute": 1440}}}}}, 400)
-	// A device-billed tariff that still carries a rate would look priced when
-	// nothing on that path ever reads one.
+	// 设备计费的模板身上若还带着电价，看起来就像配好了价，可这条路上根
+	// 本来就没有任何地方会去读它。
 	call(adminToken, "POST", "settings/pricing-templates", gin.H{"name": "设备计费带费率", "spec": gin.H{
 		"mode":     "device_duration",
 		"electric": gin.H{"basis": "energy", "periods": []gin.H{{"end_minute": 1440, "electric_cents": 50}}}}}, 400)
-	// The mode and its own basis disagreeing is a tariff nobody agreed to.
+	// 模式与它自己的计费基准对不上，这样的费率表是没有谁会认的。
 	call(adminToken, "POST", "settings/pricing-templates", gin.H{"name": "模式与费率不符", "spec": gin.H{
 		"mode":     "server_max_power",
 		"electric": gin.H{"basis": "energy", "periods": []gin.H{{"end_minute": 1440, "electric_cents": 50}}}}}, 400)
@@ -396,25 +393,25 @@ func TestAdminPagesIntegration(t *testing.T) {
 	if firstRule["id"] != replayRule["id"] || replayRule["replayed"] != true {
 		t.Fatal("apply replay must preserve rule")
 	}
-	// Packages are a pool of their own, so applying a tariff publishes no
-	// offers at all. Publishing them is a separate, explicit act, and conflating
-	// the two is what let an operator sell a package priced for a tariff that
-	// was no longer running.
+	// 套餐自成一个独立的池子，所以应用一份费率根本不会上架任何一条售卖记录。
+	// 上架本身是另一件独立而且明确的动作；把这两件事混为一谈的结果，才让
+	// 一个运
+	// 个运营卖出了一个按早已不再运行的那份费率来定价的套餐出去。
 	var offers int64
 	adb.Table("charge_offer").Where("station_id=? AND status='active' AND deleted_at IS NULL", sid).Count(&offers)
 	if offers != 0 {
 		t.Fatalf("applying a tariff must not publish any package, got %d offers", offers)
 	}
-	// Two packages at one station is the case a leftover UNIQUE(station_id)
-	// would break, so the count above is the regression guard for it.
-	// The same template cannot be applied while one of its rules is active at
-	// the station; the station has to disable it first.
+	// 一个站点挂两个套餐，正是残留的 UNIQUE(station_id) 会打破的那种场景，
+	// 所以上面那次计数就是针对它的那个回归护栏。
+	// 只要该模板的某条规则在站点上还处于生效，同一个模板就不能再被应用，站
+	// 点必须先把它停用掉才行。
 	apply["request_id"] = "aa000000-0000-4000-8000-000000000002"
 	call(adminToken, "POST", applyPath, apply, 409)
 	call(fin1, "POST", applyPath, apply, 403)
 	call(adminToken, "POST", applyPath, gin.H{"request_id": "aa000000-0000-4000-8000-000000000003", "station_id": sid, "expected_version": 9}, 409)
 
-	// Editing the template must not reach the rule the station is charging under.
+	// 编辑这个模板，不能波及到站点当前正在据以计费的那一条规则本身去。
 	edited := gin.H{"name": "改价后的模板", "spec": gin.H{
 		"mode":     "server_energy",
 		"electric": gin.H{"basis": "energy", "periods": []gin.H{{"end_minute": 1440, "electric_cents": 99}}},
@@ -434,7 +431,8 @@ func TestAdminPagesIntegration(t *testing.T) {
 		t.Fatalf("applied rule changed to %s when the template was edited; it is a snapshot", appliedSpec)
 	}
 
-	// Copying leaves the original running and creates an independent template.
+	// 复制会让原件继续运行下去，同时新建出一个彼此独立的模板出来，两者互不
+	// 影响。
 	copied := fmt.Sprintf("%.0f", data(call(adminToken, "POST", "settings/pricing-templates/"+pricingTemplateID+"/copy", gin.H{"name": "模板副本"}, 200))["id"].(float64))
 	if copied == pricingTemplateID {
 		t.Fatal("copy must create a new template")
@@ -444,8 +442,8 @@ func TestAdminPagesIntegration(t *testing.T) {
 		t.Fatal("copy must be readable under its new name")
 	}
 
-	// After the station disables the rule, the template can be applied again and
-	// the station moves to the next version.
+	// 在站点把那条规则停用之后，这个模板就可以再次被应用，站点也随之进
+	// 入下一个版本里面去。
 	call(adminToken, "POST", fmt.Sprintf("settings/charge-rules/%.0f/disable", firstRule["id"]), nil, 200)
 	call(adminToken, "POST", fmt.Sprintf("settings/charge-rules/%.0f/disable", firstRule["id"]), nil, 200)
 	apply["request_id"] = "aa000000-0000-4000-8000-000000000004"
@@ -460,8 +458,8 @@ func TestAdminPagesIntegration(t *testing.T) {
 		t.Fatal("prior rule still active")
 	}
 
-	// Two operators applying different templates against the same station
-	// version cannot both win.
+	// 两个运营各自拿着各自不同的模板，对着同一个站点版本去应用，不可能
+	// 两个都赢的。
 	otherID := fmt.Sprintf("%.0f", data(call(adminToken, "POST", "settings/pricing-templates", gin.H{
 		"name": "并发模板", "spec": gin.H{"mode": "server_energy",
 			"electric": gin.H{"basis": "energy", "periods": []gin.H{{"end_minute": 1440, "electric_cents": 30}}}}}, 200))["id"].(float64))
@@ -549,21 +547,20 @@ func TestAdminPagesIntegration(t *testing.T) {
 	exec(gdb, "INSERT INTO vendor(vendor_code,vendor_name,adapter_class,protocol,status) VALUES ('PAGES_VENDOR','页面测试','dc589','tcp','enabled')")
 	var vid uint64
 	gdb.Table("vendor").Where("vendor_code='PAGES_VENDOR'").Pluck("id", &vid)
-	// This station already runs a metered tariff, so a board arriving here has to
-	// declare what it can report. The capability travels on the import because
-	// classifying a fleet one device at a time is not something anyone does.
+	// 这个站点已经跑在一份按计量计费的费率上，所以进到这里的每一块板子都
+	// 必须申报自己能上报些什么。能力是随这一次导入一起传进来的，因为按一
+	// 一台一台的方式去给整批设备做分类，并不是谁会去做的事。
 	batch := gin.H{"import_id": "33333333-3333-4333-8333-333333333333", "devices": []gin.H{{"device_id": "PAGESDEV01", "vendor_id": vid, "station_id": sid, "port_count": 2, "model": "测试型号", "charge_mode": "server_energy", "reports_energy": true, "reports_segmented_power": true}}}
 	call(adminToken, "POST", "device-imports", batch, 200)
 	call(adminToken, "POST", "device-imports", batch, 200)
-	// A board that declares nothing cannot join a metered station. The whole batch
-	// is refused rather than half of it, and the message names the board.
+	// 什么都不申报的板子进不了按计量计费的站点。整批会被拒掉，而不是放进
+	// 来一半，并且报错信息里还会点名指出是哪一块板子。
 	call(adminToken, "POST", "device-imports", gin.H{"import_id": "33333333-3333-4333-8333-333333333334", "devices": []gin.H{{"device_id": "PAGESDEV02", "vendor_id": vid, "station_id": sid, "port_count": 2}}}, 409)
 	call(adminToken, "GET", "devices?keyword=PAGESDEV01", nil, 200)
-	// The refund policy is two independent fields per payment method, and this
-	// write refused every single request until now: the route was registered as
-	// "/station-policies/:station_id" while pathID reads c.Param("id"), so the
-	// parameter arrived empty and the handler answered "ID 必须为正整数" to
-	// everything. Nothing had ever called it, so nothing had ever failed.
+	// 退款策略是每种支付方式各两个独立字段，而这次写入在此之前拒绝了每
+	// 一个请求：路由注册成 "/station-policies/:station_id"，可 pathID 读的是
+	// c.Param("id")，于是参数到手里是空的，处理器对任何请求都回了 "ID 必
+	// 须为正整数"。从来就没有人调用过它，所以它也从来没有失败过。
 	policy := gin.H{"force_recharge": true, "min_balance_cents": 1000,
 		"scan_refund_path": "balance", "scan_refund_rule": "time_limited",
 		"card_refund_path": "original", "card_refund_rule": "time_limited_prorated",
@@ -577,9 +574,8 @@ func TestAdminPagesIntegration(t *testing.T) {
 			continue
 		}
 		found = true
-		// The two dimensions come back as two fields, not one merged string. A
-		// single enum cannot answer "when" and "where" at once, which is why the
-		// migration split them.
+		// 这两个维度是作为两个字段回来的，不是合成一个字符串。单个枚举没法同
+		// 时回答「什么时候」和「退到哪里」，这正是那次迁移要把它们拆开的原因。
 		if item["scan_refund_path"] != "balance" || item["scan_refund_rule"] != "time_limited" {
 			t.Fatalf("refund path and rule were not kept apart on read: %v", item)
 		}
@@ -588,12 +584,12 @@ func TestAdminPagesIntegration(t *testing.T) {
 		t.Fatal("the policy was accepted but is not in the list it is read from")
 	}
 
-	// A package that was taken off sale must be able to go back on sale.
+	// 一个被下了架的套餐，必须还能够重新上架。
 	//
-	// The check guarding a duplicate application counted a disabled offer as
-	// still selling, so an operator who took a package down could never put it
-	// back: the same request was refused with "该套餐已在此处上架" for good. Going
-	// down was one click and coming back was impossible.
+	// 拦重复应用的那道检查把已停用的售卖记录也算成「还在卖」，于是一个把
+	// 套餐下了架的运营，就再也把它放不回去：同一个请求永远会被 "该套餐已
+	// 在此处上架" 拒掉，而且会一直这样被拒下去，不留任何例外。下架只要点
+	// 一下，上来却没有路。
 	pkg := gin.H{"name": "上下架套餐", "kind": "amount", "price_cents": 500,
 		"duration_minutes": 0, "sort_order": 1, "status": "active"}
 	packageID := data(call(adminToken, "POST", "settings/package-templates", pkg, 200))["id"]
@@ -601,8 +597,8 @@ func TestAdminPagesIntegration(t *testing.T) {
 		"settings/package-templates/"+fmt.Sprintf("%v", packageID)+"/apply",
 		gin.H{"station_id": sid}, 200))
 	offerID := fmt.Sprintf("%v", applied["offer_id"])
-	// A retry of the same request is a retry, not a conflict: the caller cannot
-	// tell a duplicate from a failure unless the duplicate says so itself.
+	// 同一个请求的重发就是重试，不是冲突：除非重复的那一次自己说明出来，
+	// 否则调用方分不清拿回来的是一条重复单，还是一次失败。
 	retry := data(call(adminToken, "POST",
 		"settings/package-templates/"+fmt.Sprintf("%v", packageID)+"/apply",
 		gin.H{"station_id": sid}, 200))
@@ -616,8 +612,8 @@ func TestAdminPagesIntegration(t *testing.T) {
 	if relisted["relisted"] != true {
 		t.Fatalf("putting a withdrawn package back on sale was not treated as a re-list: %v", relisted)
 	}
-	// One row, not two: a second row would differ from the first only in which
-	// one a charging user can see.
+	// 是一行，不是两行：多出来的那一行与原来那一行的区别，只在于充电用
+	// 户最终能看到哪一条。
 	var onSale int64
 	if err := adb.Table("charge_offer").
 		Where("station_id=? AND package_template_id=? AND status='active' AND deleted_at IS NULL", sid, packageID).
@@ -628,12 +624,11 @@ func TestAdminPagesIntegration(t *testing.T) {
 		t.Fatalf("expected exactly one active offer at the target, found %d", onSale)
 	}
 
-	// The device matrix, the switch log and the metering declaration are all
-	// reachable from the pricing screens, and until now none of them had a test.
-	// Five defects in a row turned out to be routes no test executed, so the
-	// rule this file follows now is that every route the pricing screens can
-	// reach is called here — and what it wrote is read back, not merely
-	// answered 200.
+	// 设备矩阵、切换日志和计量申报都能从定价页面点进去，而在此之前它们一
+	// 个测试都没有。接连五个缺陷查下来，根子都在「没有任何测试执行过的路
+	// 由」上，所以本文件现在守的规矩是：定价页面能走得到的每一条路由都在
+	// 这里调一遍——并且把它写下去的东西读回来核对一遍，而不是只看有没有
+	// 回 200 这个状态码就算通过了。
 	matrix := data(call(adminToken, "GET",
 		"settings/device-pricing?station_id="+fmt.Sprintf("%v", sid), nil, 200))
 	rows, _ := matrix["items"].([]any)
@@ -646,19 +641,18 @@ func TestAdminPagesIntegration(t *testing.T) {
 	}
 	call(adminToken, "GET", "settings/switch-tasks", nil, 200)
 	call(adminToken, "GET", "settings/pricing-template-candidates?station_id="+fmt.Sprintf("%v", sid), nil, 200)
-	// A device that is not in the station is refused by name rather than silently
-	// resetting whatever happens to be at that id.
+	// 不属于该站点的设备，会按名字被拒掉，而不是悄悄把那个 id 上碰巧放着
+	// 的东西给重置掉它自己。
 	call(adminToken, "POST", "settings/device-pricing/reset",
 		gin.H{"station_id": sid, "device_id": "NOSUCHDEVICE01"}, 404)
 
-	// Every read endpoint is walked, not just the ones believed to be affected.
+	// 每一个读接口都要走一遍，而不是只走那些自以为会受影响的那些接口。
 	//
-	// A column or an expression the Go code names but the database does not
-	// accept is not a compile error and not a unit-test failure — it is a 500
-	// that only a real query against a real schema can find. One such query
-	// survived a full round of review here because the endpoint was simply
-	// never called: IF() takes three arguments, the list query passed it four,
-	// and the package-template page returned 503 for the whole time.
+	// Go 代码里写了、数据库却不接受的列或表达式，既不是编译错误，也不是
+	// 单元测试失败——它是一个 500，只有拿真实的查询去打真实的 schema 才
+	// 查得出来。这里就有一个这样的查询躲过了整整一轮评审，因为那个接口压
+	// 根就没被调用过：IF() 只接三个参数，而列表查询却传了四个进去，于是套
+	// 餐模板页在这段时间里全程都在返回 503，一直都是这样。
 	for _, path := range []string{
 		"settings/pricing-templates",
 		"settings/package-templates",
@@ -675,8 +669,8 @@ func TestAdminPagesIntegration(t *testing.T) {
 	} {
 		call(adminToken, "GET", path, nil, 200)
 	}
-	// Real rows exercise charge detail joins, manual reservations, double signing,
-	// channel reconciliation, and duplicate provider receipt accounting.
+	// 真实的数据行用来跑通计费明细的联表、人工预占、双人签核、渠道对账，
+	// 以及渠道回执重复到达时的那一笔记账方式。
 	exec(udb, "INSERT INTO payment_order(order_no,biz_type,biz_id,user_id,pay_method,total_cents,paid_cents,wechat_transaction_id,status,created_month) VALUES ('PAGES_PAY','charge',0,?,'wechat',1000,1000,'SIMPAGES_PAY','paid',DATE_FORMAT(UTC_TIMESTAMP(),'%Y-%m-01'))", uid)
 	var payID, orderID uint64
 	udb.Table("payment_order").Where("order_no='PAGES_PAY'").Pluck("id", &payID)
@@ -716,8 +710,8 @@ func TestAdminPagesIntegration(t *testing.T) {
 	if refunded != 400 {
 		t.Fatal("duplicate or absent refund", refunded)
 	}
-	// Wallet approval reserves only available balance; completion releases reservation
-	// while deducting the provider-confirmed amount, exactly once.
+	// 钱包退款的审核通过时只预占可用余额；完成时释放掉这笔预占，同时扣
+	// 掉渠道所确认的那笔金额，而且只会扣一次，不会重复扣。
 	exec(udb, "INSERT INTO wallet_account(user_id,balance_cents,status) VALUES (?,500,'frozen')", uid)
 	exec(udb, "INSERT INTO payment_order(order_no,biz_type,biz_id,user_id,pay_method,total_cents,paid_cents,wechat_transaction_id,status,created_month) VALUES ('PAGES_RECHARGE','wallet_recharge',99,?,'wechat',500,500,'SIMPAGES_RECHARGE','paid',DATE_FORMAT(UTC_TIMESTAMP(),'%Y-%m-01'))", uid)
 	exec(udb, "INSERT INTO risk_freeze_log(user_id,trigger_rule,frozen_action) VALUES (?,'wallet_refund_frequency','wallet')", uid)
@@ -747,7 +741,7 @@ func TestAdminPagesIntegration(t *testing.T) {
 		t.Fatalf("wallet %+v", wallet)
 	}
 
-	// Confirmed terminal failures release the wallet reservation without debiting it.
+	// 确认已经走到终态失败的那笔退款，会释放钱包上的那笔预占，但不会扣款。
 	exec(udb, "INSERT INTO risk_freeze_log(user_id,trigger_rule,frozen_action) VALUES (?,'wallet_refund_frequency','wallet')", uid)
 	udb.Table("risk_freeze_log").Where("user_id=?", uid).Order("id DESC").Limit(1).Pluck("id", &freezeID)
 	failedReq := "88888888-8888-4888-8888-888888888888"

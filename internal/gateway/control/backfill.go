@@ -18,10 +18,9 @@ import (
 	"gorm.io/gorm"
 )
 
-// backfillMetrics is the closed set the telemetry table documents. A device
-// that reports a field outside this set is rejected rather than stored: silently
-// dropping it would hide a firmware mismatch behind a curve that just looks
-// sparse, and these values later feed billing reconciliation.
+// backfillMetrics 是 telemetry 表文档约定的封闭指标集合。设备上报此集合之外的
+// 字段会被当场拒绝而不是先存下来：静默丢弃只会把固件不匹配的真相藏到一条看起来
+// 稀疏的曲线背后，而这些数值之后还要进入计费对账。
 var backfillMetrics = map[string]struct{}{
 	"voltage_v": {}, "current_a": {}, "temperature_c": {},
 	"battery_soc": {}, "power_w": {}, "meter_kwh": {},
@@ -31,13 +30,13 @@ const (
 	backfillMaxFrames  = 1000
 	backfillMaxBody    = 1 << 20
 	backfillMaxClockSk = 5 * time.Minute
-	// Devices buffer locally while offline, but a year of buffering is not a
-	// plausible outage and would let garbage timestamps land in the catch-all
-	// partition. Anything older is rejected instead of being stored forever.
+	// 设备离线期间会在本地缓存，但缓存一年的断线并不现实，放进来只会让
+	// 垃圾时间戳落进兜底分区里。比这更老的数据直接拒绝写入，而不是
+	// 无限期地存下去。
 	backfillMaxAge = 365 * 24 * time.Hour
 )
 
-// sample is one metric reading destined for the telemetry table.
+// sample 是一条准备写入 telemetry 表的指标读数。
 type sample struct {
 	deviceID string
 	portNo   sql.NullInt16
@@ -54,14 +53,13 @@ type backfillFrame struct {
 	Payload  map[string]json.RawMessage `json:"payload"`
 }
 
-// backfill ingests telemetry a device buffered while it was offline. It reuses
-// the same table the TCP path writes to, so the curve picks the data up with no
-// separate aggregation step.
+// backfill 接收设备离线期间缓存下来的遥测。它复用 TCP 链路写入的那张表，
+// 所以曲线能直接取到这些数据，不需要单独的聚合步骤。
 //
-// The endpoint is idempotent: a device that never sees a clean response will
-// retry the same batch, and re-reading those samples would both inflate the
-// table and shift the window limits. A sample already stored for the same
-// (device, port, metric, ts) is therefore skipped, not duplicated.
+// 这个接口是幂等的：设备没收到明确响应时会重发同一批数据，
+// 这些读数如果再写一遍，
+// 不仅会把表撑大，还会把窗口的点数预算顶满。所以同一个
+// (device， port， metric， ts) 上已经存过的读数会被跳过，而不是再插一条。
 func (a TelemetryAPI) backfill(c *gin.Context) {
 	if !a.authorized(c) {
 		return
@@ -96,9 +94,9 @@ func (a TelemetryAPI) backfill(c *gin.Context) {
 	httpapi.OK(c, gin.H{"inserted": inserted, "skipped": skipped})
 }
 
-// parseBackfill validates the whole batch before anything is written, so a
-// malformed frame rejects the batch instead of leaving a partial gap in the
-// curve that nobody can tell apart from a real outage.
+// parseBackfill 在写入任何一条之前先校验整批数据，这样一帧格式不对就会让
+// 整批被拒，而不是在曲线上留下一段缺口——那种缺口和真实断线根本分辨
+// 不出来。
 func parseBackfill(deviceID string, frames []backfillFrame, now time.Time) ([]sample, error) {
 	if !validDeviceID(deviceID) {
 		return nil, fmt.Errorf("invalid device id")
@@ -149,9 +147,9 @@ func parseBackfill(deviceID string, frames []backfillFrame, now time.Time) ([]sa
 	return out, nil
 }
 
-// decodeBackfillValue accepts both the string form the protocol uses on the
-// wire and a bare JSON number, and keeps the value in decimal the whole way so
-// a reading is never rounded through float64.
+// decodeBackfillValue 同时接受协议在线上使用的字符串形式和裸 JSON 数字，
+// 并全程用 decimal 承载数值，这样一个读数永远不会经过 float64 被四舍
+// 五入一次。
 func decodeBackfillValue(raw json.RawMessage) (string, error) {
 	text := strings.TrimSpace(string(raw))
 	if unquoted, err := strconv.Unquote(text); err == nil {
@@ -164,9 +162,9 @@ func decodeBackfillValue(raw json.RawMessage) (string, error) {
 	return value.StringFixed(6), nil
 }
 
-// validDeviceID mirrors the device id rule the provisioning endpoint enforces
-// (8-32 chars of A-Z a-z 0-9 _ -). Accepting a wider range here would let a
-// backfill target an id that provisioning would have refused to create.
+// validDeviceID 与开通接口强制的 device id 规则保持一致
+// （8-32 个 A-Z a-z 0-9 _ - 字符）。这里放宽范围，就等于允许一次补传
+// 指向一个开通接口当初会拒绝创建的 id。
 func validDeviceID(id string) bool {
 	if len(id) < 8 || len(id) > 32 {
 		return false
@@ -190,9 +188,8 @@ func (a TelemetryAPI) persistBackfill(ctx context.Context, deviceID string, samp
 	if len(samples) == 0 {
 		return 0, 0, nil
 	}
-	// A backfill must not be able to invent history for a device that was never
-	// provisioned, or for a port the hardware does not have: both would surface
-	// as readings the platform can never explain.
+	// 补传不能替一个从未开通的设备、或一个硬件上并不存在的端口凭空造出
+	// 历史：这两类读数一旦落进表里，平台就永远解释不了它们的来源。
 	var device struct {
 		Status string
 	}
@@ -203,8 +200,8 @@ func (a TelemetryAPI) persistBackfill(ctx context.Context, deviceID string, samp
 		}
 		return 0, 0, err
 	}
-	// A disabled device may still be replaying what it buffered before it was
-	// switched off; a retired one is decommissioned and must not gain history.
+	// 已停用的设备可能还在补传停用前缓存的内容；已退役的设备已经下线，
+	// 不能再凭空多出历史。
 	if device.Status == "retired" {
 		return 0, 0, errUnknownDevice
 	}
@@ -244,8 +241,8 @@ func (a TelemetryAPI) persistBackfill(ctx context.Context, deviceID string, samp
 			to = s.ts
 		}
 	}
-	// One covering query beats a per-sample existence check: a full batch is up
-	// to 6000 rows, and asking the partition once keeps the retry path cheap.
+	// 一次覆盖查询胜过逐条判断是否已存在：一整批最多 6000 行，把整个分区
+	// 问一次，重试路径才够便宜。
 	type existing struct {
 		PortNo sql.NullInt16 `gorm:"column:port_no"`
 		Metric string        `gorm:"column:metric"`
@@ -285,9 +282,9 @@ func (a TelemetryAPI) persistBackfill(ctx context.Context, deviceID string, samp
 	if err := a.DB.WithContext(ctx).Table("telemetry").CreateInBatches(rows, 500).Error; err != nil {
 		return 0, 0, err
 	}
-	// Backfilled readings must reach the rollups too. A device that was offline
-	// for a chunk of the window would otherwise show a gap in any curve served
-	// from the aggregates, even though the raw rows are present.
+	// 补传进来的读数同样要进入汇总表。否则设备在窗口内离线的那段时间，
+	// 在任何走 aggregates 的曲线上都会留一段缺口，
+	// 尽管原始行其实都在。
 	if err := gatewaystore.RefreshAggregates(ctx, a.DB, newSamples); err != nil {
 		return 0, 0, err
 	}

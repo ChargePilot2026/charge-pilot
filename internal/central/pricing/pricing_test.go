@@ -52,10 +52,9 @@ func TestChargeModeExecutorSplit(t *testing.T) {
 }
 
 func TestCostRefusesDeviceBilledModes(t *testing.T) {
-	// A device-billed tariff has no rates, so there is nothing to compute. The
-	// engine must say so rather than return a plausible number: a second
-	// figure for an already-paid bill is a reconciliation incident, not a
-	// rounding detail.
+	// 设备计费的电价表不带任何费率，因此根本无从计算。引擎必须明说这一点，
+	// 而不是给出一个看起来合理的数字：给一张已经付过钱的账单再造一个数字是
+	// 一次对账事故，不是可以四舍五入带过的细节。
 	for _, mode := range []ChargeMode{ModeDeviceDuration, ModeDeviceEnergy, ModeDevicePower} {
 		spec := Spec{Mode: mode}
 		if err := ValidateSpec(spec); err != nil {
@@ -81,12 +80,12 @@ func TestPeriodChainInvariants(t *testing.T) {
 	if err := ValidateSpec(base([]Period{{EndMinute: 1440, ElectricCents: 100}})); err != nil {
 		t.Fatalf("a single all-day period must be valid: %v", err)
 	}
-	// A chain that stops short of midnight leaves the night unpriced.
+	// 不到午夜就结束的链，会让夜间那一段没有任何电价。
 	if err := ValidateSpec(base([]Period{{EndMinute: 720, ElectricCents: 100}})); err == nil {
 		t.Fatal("a chain that does not reach 1440 must be rejected")
 	}
-	// Two periods with the same end minute overlap silently if stored as pairs;
-	// as a chain the non-increasing value is caught.
+	// 两个时段用相同的结束分钟：存成起止时间对时会无声地重叠，
+	// 存成链时这个不递增的值会被当场抓住。
 	if err := ValidateSpec(base([]Period{{EndMinute: 720, ElectricCents: 100}, {EndMinute: 720, ElectricCents: 200}})); err == nil {
 		t.Fatal("a non-increasing chain must be rejected")
 	}
@@ -101,13 +100,13 @@ func TestTierChainInvariants(t *testing.T) {
 	if err := ValidateSpec(spec([]Tier{{MaxWatts: 1000, ElectricCents: 100}})); err != nil {
 		t.Fatalf("a single rung must be valid: %v", err)
 	}
-	// A ladder with a hole in it cannot price a reading that lands in the gap,
-	// so a ladder that does not start at zero is rejected outright.
+	// 中间有洞的阶梯没法给落在洞里的读数定价，所以不从 0 开始的阶梯
+	// 会被直接拒掉。
 	if err := ValidateSpec(spec([]Tier{{MaxWatts: 1000, ElectricCents: 100}, {MaxWatts: 2000, ElectricCents: 200}, {MaxWatts: 1500, ElectricCents: 300}})); err == nil {
 		t.Fatal("a ladder whose ceilings do not strictly increase must be rejected")
 	}
-	// An energy tariff has no ladder at all; carrying one is a field nothing
-	// reads, and someone will eventually believe it.
+	// 电量电价表根本没有阶梯；带一个就等于带一个没人读的字段，
+	// 而总有人会相信它是生效的。
 	energy := Spec{Mode: ModeServerEnergy, Electric: &ElectricLine{Basis: BasisEnergy,
 		Periods: []Period{{EndMinute: 1440, ElectricCents: 100, Tiers: []Tier{{MaxWatts: 1000, ElectricCents: 200}}}}}}
 	if err := ValidateSpec(energy); err == nil {
@@ -116,8 +115,8 @@ func TestTierChainInvariants(t *testing.T) {
 }
 
 func TestModeAndBasisMustAgree(t *testing.T) {
-	// A device configured for peak power but holding an energy tariff would
-	// bill by something nobody agreed to.
+	// 一台按峰值功率配置的设备却挂着一份按电量计价的电价表，
+	// 就会按一个谁也没同意过的口径收钱。
 	spec := Spec{Mode: ModeServerMaxPower, Electric: &ElectricLine{Basis: BasisEnergy, Periods: []Period{{EndMinute: 1440, ElectricCents: 100}}}}
 	if err := ValidateSpec(spec); err == nil {
 		t.Fatal("a mode that disagrees with its own basis must be rejected")
@@ -130,8 +129,8 @@ func TestCostEnergyAcrossTwoPeriods(t *testing.T) {
 		{EndMinute: 1440, ElectricCents: 80},
 	}}}
 	start := time.Date(2026, 1, 2, 11, 0, 0, 0, beijing)
-	// One hour, half before noon at 50c/kWh and half after at 80c/kWh, 1kWh
-	// total: 0.5 * 50 + 0.5 * 80 = 65 cents.
+	// 一小时，一半在中午前按 50 分/kWh、一半在中午后按 80 分/kWh，合计 1kWh：
+	// 0.5 * 50 + 0.5 * 80 = 65 分。
 	usage := Usage{Start: start, End: start.Add(2 * time.Hour), EnergyWh: 1000,
 		Samples: []Sample{
 			{Start: start, End: start.Add(time.Hour), EnergyWh: 500, PowerW: 500},
@@ -152,12 +151,12 @@ func TestCostRealtimePowerUsesTheRungTheReadingFallsIn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Cost: %v", err)
 	}
-	// 1kWh at 200c/kWh for a reading inside the 1001-2000W rung.
+	// 1kWh 按 200 分/kWh，读数落在 1001-2000W 那一档。
 	if fee.TotalCents != 200 {
 		t.Fatalf("total = %d cents, want 200", fee.TotalCents)
 	}
-	// Above the top rung the top rate still applies; the rung is a ceiling, not
-	// a limit beyond which the session becomes unpriceable.
+	// 超过最高档时仍按最高档的费率；最高档是上界，而不是一个一旦越过
+	// 这次充电就没法计价的限额。
 	fee, err = Cost(spec, hourUsage(1000, 5000))
 	if err != nil {
 		t.Fatalf("Cost above the top rung: %v", err)
@@ -169,7 +168,7 @@ func TestCostRealtimePowerUsesTheRungTheReadingFallsIn(t *testing.T) {
 
 func TestCostRealtimePowerRungBoundaryIsInclusiveBelow(t *testing.T) {
 	spec := realtimeSpec()
-	// Exactly on a ceiling the reading stays in the cheaper rung below it.
+	// 正好等于某个上界时，读数仍留在下面那个更便宜的档里。
 	fee, err := Cost(spec, hourUsage(1000, 2000))
 	if err != nil {
 		t.Fatalf("Cost: %v", err)
@@ -187,8 +186,8 @@ func TestCostRealtimePowerRungBoundaryIsInclusiveBelow(t *testing.T) {
 }
 
 func TestTwoLinesPriceIndependently(t *testing.T) {
-	// Electricity by energy, service by the hour: a real and common pairing that
-	// a single-basis model cannot express.
+	// 电费按电量、服务费按小时：一种真实且常见的搭配，
+	// 单一口径的模型根本表达不出来。
 	spec := Spec{
 		Mode:     ModeServerEnergy,
 		Electric: &ElectricLine{Basis: BasisEnergy, Periods: []Period{{EndMinute: 1440, ElectricCents: 100}}},
@@ -204,9 +203,8 @@ func TestTwoLinesPriceIndependently(t *testing.T) {
 }
 
 func TestChannelMultiplierAppliesToElectricityOnly(t *testing.T) {
-	// The published rate card exposes a card multiplier against electricity and
-	// nothing else. Applying it to the service line would put a discount on an
-	// invoice that never quoted one.
+	// 已发布的费率卡只对电费暴露一个卡倍率，此外什么都没有。把它也作用到
+	// 服务费那一行，等于给一张从未这么报价过的发票打上一个折扣。
 	spec := Spec{
 		Mode:       ModeServerEnergy,
 		Electric:   &ElectricLine{Basis: BasisEnergy, Periods: []Period{{EndMinute: 1440, ElectricCents: 100}}},
@@ -228,11 +226,9 @@ func TestChannelMultiplierAppliesToElectricityOnly(t *testing.T) {
 }
 
 func TestUnsegmentedMeterAcrossAnEnergyTariffChangeGoesToReview(t *testing.T) {
-	// A regression guard: the uniformity check once compared only the power
-	// ladder, so an energy tariff looked flat at every hour of the day. A
-	// session that spanned a rate change would then have been settled on a
-	// guess about how much energy fell in each period — under-billing, with no
-	// review to catch it.
+	// 一条回归防线：均匀性判断曾经只比功率阶梯，于是每份电量电价表在一天里的
+	// 每个小时看起来都是平的。跨过电价变更点的充电就会靠「各时段大概分到多少
+	// 电量」这句猜测结算——这是少收，而且没有任何复核环节会发现它。
 	spec := Spec{Mode: ModeServerEnergy, Electric: &ElectricLine{Basis: BasisEnergy, Periods: []Period{
 		{EndMinute: 720, ElectricCents: 50},
 		{EndMinute: 1440, ElectricCents: 80},
@@ -242,7 +238,7 @@ func TestUnsegmentedMeterAcrossAnEnergyTariffChangeGoesToReview(t *testing.T) {
 	if _, err := PriceActual(Rule{ID: 1, Version: 1, Spec: spec}, meter); !errors.Is(err, ErrMeterReview) {
 		t.Fatalf("an unsegmented meter across an energy tariff change must go to review, got %v", err)
 	}
-	// The same session with the rates measured settles normally.
+	// 同一次充电，只要把各时段电量实测出来就正常结算。
 	meter.Segments = []MeterSegment{{StartedAt: start, EndedAt: start.Add(time.Hour), EnergyWh: 1000, PeakW: 500}}
 	if _, err := PriceActual(Rule{ID: 1, Version: 1, Spec: spec}, meter); err != nil {
 		t.Fatalf("a measured session must settle: %v", err)
@@ -284,7 +280,7 @@ func TestSettleServerBilledCapOnlyEverLowers(t *testing.T) {
 	if settlement.TotalCents != 50 {
 		t.Fatalf("total = %d, want the cap of 50", settlement.TotalCents)
 	}
-	// A cap above the computed fee must not become a surcharge.
+	// 高于算出金额的封顶绝不能变成附加费。
 	cap.PriceCents = 5000
 	settlement, err = SettleSession(spec, meter, &cap, ActualFromMeter(meter))
 	if err != nil {
@@ -296,8 +292,8 @@ func TestSettleServerBilledCapOnlyEverLowers(t *testing.T) {
 }
 
 func TestSettleDeviceBilledTakesItsMoneyFromWhatWasPaid(t *testing.T) {
-	// The charging user paid 100 cents. The bill is 100 cents. Nothing in the pricing
-	// engine gets a vote.
+	// 充电用户付了 100 分，账单就是 100 分。计价引擎里没有任何东西有发言权，
+	// 哪怕算出来的数正好不一样。
 	spec := Spec{Mode: ModeDeviceDuration}
 	offer := Offer{ID: 1, StationID: 1, Name: "1元60分钟", Mode: "package", PriceCents: 100, DurationMinutes: 60}
 	meter := ActualMeter{StartedAt: time.Now(), EndedAt: time.Now().Add(time.Hour), ChargedWh: 5000, ChargedSeconds: 3600}
@@ -324,9 +320,8 @@ func TestSettleDeviceBilledWithoutPaymentIsRefused(t *testing.T) {
 func TestDevicePowerResidualIsReportedNotWrittenOff(t *testing.T) {
 	spec := Spec{Mode: ModeDevicePower}
 	offer := Offer{ID: 1, StationID: 1, Name: "1元", Mode: "amount", PriceCents: 100}
-	// The device stopped on its sampling grid and spent 96 of the 100 it was
-	// given. The 4-cent difference has to stay visible; rounding it away is how
-	// a board with too coarse a grid becomes invisible.
+	// 设备在自己的采样栅格上停下，100 分里花掉了 96 分。这 4 分的差额必须
+	// 保持可见；把它抹平，就等于让一块采样栅格太粗的充电板从此不可见。
 	settlement, err := SettleSession(spec, ActualMeter{}, &offer, &SessionActual{SpentCents: 96, Reported: true})
 	if err != nil {
 		t.Fatalf("SettleSession: %v", err)
@@ -340,8 +335,8 @@ func TestControlInstructionValidPerMode(t *testing.T) {
 	if !(ControlInstruction{Mode: ModeDeviceDuration, Minutes: 60}).Valid() {
 		t.Fatal("a duration instruction with a span must be valid")
 	}
-	// A duration session that also carries a balance would let something later
-	// price it a second way.
+	// 按时长计费的充电若还带着余额，就等于给后面某个环节留了一次
+	// 再定价的机会。
 	if (ControlInstruction{Mode: ModeDeviceDuration, Minutes: 60, BalanceCents: 100}).Valid() {
 		t.Fatal("a duration instruction carrying a balance must be invalid")
 	}
@@ -354,8 +349,8 @@ func TestControlInstructionValidPerMode(t *testing.T) {
 	if (ControlInstruction{Mode: ModeDevicePower, BalanceCents: 100}).Valid() {
 		t.Fatal("a power instruction with no ladder must be invalid")
 	}
-	// A server-billed session is never handed a control instruction: the
-	// platform prices it, the board only reports.
+	// 服务端计费的充电从来不会拿到控制指令：它由平台计价，
+	// 充电板只负责上报。
 	if (ControlInstruction{Mode: ModeServerEnergy, Minutes: 60}).Valid() {
 		t.Fatal("a server-billed instruction must be invalid")
 	}
@@ -379,8 +374,8 @@ func TestDecideStopOnlyFiresUnderACap(t *testing.T) {
 	if !plan.ShouldStop || plan.AccruedCents != 100 {
 		t.Fatalf("plan = %+v, want a stop at 100 cents", plan)
 	}
-	// A device-billed session is never cut short by the platform; the board
-	// owns that decision and fighting it would stop a charge nothing is owed for.
+	// 设备计费的充电绝不会被平台提前切掉；这个决定属于充电板，
+	// 和它对着干会停掉一笔平台并不欠费的充电。
 	devicePlan, err := DecideStop(Spec{Mode: ModeDeviceDuration}, usage, time.Hour)
 	if err != nil {
 		t.Fatalf("DecideStop: %v", err)
@@ -391,8 +386,8 @@ func TestDecideStopOnlyFiresUnderACap(t *testing.T) {
 }
 
 func TestFirmwareLimitsAreEnforced(t *testing.T) {
-	// The board stores a card session in one unsigned 16-bit field counted in
-	// minutes, and rejects a value above this rather than truncating it.
+	// 充电板把刷卡充电存在一个以分钟计的无符号 16 位字段里，
+	// 超过这个值它会直接拒绝，而不是截断。
 	spec := energySpec()
 	spec.CardMaxMinutes = 1000
 	if err := ValidateSpec(spec); err == nil {
@@ -404,17 +399,16 @@ func TestFirmwareLimitsAreEnforced(t *testing.T) {
 	}
 }
 
-// The spend cap is only worth having if the ceiling is tested against the same
-// meter the settlement would use. If the two paths disagree, the session stops
-// either earlier or later than the money says it should, and neither number
-// looks wrong on its own.
+// 消费封顶只有在「上限是拿结算将会用的同一份计量试算出来的」时才值得拥有。
+// 两条路径一旦不一致，充电就会比金额该有的时刻更早或更晚停止，
+// 而这两个数字单看哪一个都不像错的。
 func TestStopAtMeterUsesTheSameMeterValidationAsSettlement(t *testing.T) {
 	spec := energySpec()
 	spec.SpendCapCents = 150
 	rule := Rule{ID: 7, Version: 2, Spec: spec}
 	start := time.Date(2026, 1, 2, 10, 0, 0, 0, beijing)
 
-	// 1.00 元/kWh. Two hours at 1kWh is 200 分, over the 150 分 cap.
+	// 1.00 元/kWh。两小时 2kWh 是 200 分，越过了 150 分的封顶。
 	meter := ActualMeter{StartedAt: start, EndedAt: start.Add(2 * time.Hour), ChargedWh: 2000, ChargedSeconds: 7200}
 	plan, err := StopAtMeter(rule, meter)
 	if err != nil {
@@ -435,8 +429,8 @@ func TestStopAtMeterUsesTheSameMeterValidationAsSettlement(t *testing.T) {
 	}
 }
 
-// A cap of zero is not a cap of zero cents. It means the operator did not set
-// one, and the session then ends on the allowance the board was given at start.
+// 封顶为 0 不是「上限是 0 分」。它的意思是运营方没有设，
+// 于是充电在开始时下发给充电板的那份额度用完时结束。
 func TestStopAtMeterWithoutACapNeverStops(t *testing.T) {
 	rule := Rule{ID: 7, Version: 2, Spec: energySpec()}
 	start := time.Date(2026, 1, 2, 10, 0, 0, 0, beijing)
@@ -453,9 +447,8 @@ func TestStopAtMeterWithoutACapNeverStops(t *testing.T) {
 	}
 }
 
-// A device-billed session is ended by the board when its own allowance runs
-// out. Intervening would fight the board for control of a session the platform
-// is not paying for, even if the tariff happens to carry a cap.
+// 设备计费的充电在自己的额度用完时由充电板结束。插手进去就是去和充电板抢
+// 一次平台并不付费的充电的控制权，哪怕那份电价表恰好带着一个封顶也一样。
 func TestStopAtMeterLeavesDeviceBilledSessionsToTheDevice(t *testing.T) {
 	spec := Spec{
 		Mode:          ModeDeviceDuration,
@@ -476,14 +469,14 @@ func TestStopAtMeterLeavesDeviceBilledSessionsToTheDevice(t *testing.T) {
 	}
 }
 
-// A cap measured on a meter that could not have been settled is a question for
-// the billing review, not a reason to cut somebody's charge off mid-session.
+// 用一份本来就没法结算的计量去量封顶，那是留给计费复核的问题，
+// 不是在充电进行到一半时切断别人充电的理由。
 func TestStopAtMeterSendsAnUnsoundMeterToReviewRatherThanStopping(t *testing.T) {
 	spec := energySpec()
 	spec.SpendCapCents = 1
 	rule := Rule{ID: 7, Version: 2, Spec: spec}
 	start := time.Date(2026, 1, 2, 10, 0, 0, 0, beijing)
-	// The charged time is longer than the session, which no real session can be.
+	// 充电时长比整次充电还长，真实充电不可能出现这种情况。
 	meter := ActualMeter{StartedAt: start, EndedAt: start.Add(time.Hour), ChargedWh: 5000, ChargedSeconds: 9999}
 	if _, err := StopAtMeter(rule, meter); !errors.Is(err, ErrMeterReview) {
 		t.Fatalf("err = %v, want ErrMeterReview", err)

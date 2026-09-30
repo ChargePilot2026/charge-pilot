@@ -8,20 +8,18 @@ import (
 )
 
 const (
-	// One slice per minute keeps a week-long session bounded while staying
-	// fine enough that a tariff boundary is never approximated.
+	// 每分钟一片，让连续一周的充电也有上界，同时又足够细，不会把费率时段边界
+	// 近似掉。
 	maxSlices     = 7 * 24 * 60
 	maxLossRateBP = 100000
 )
 
-// Cost is the one and only server-side pricing implementation. Estimation and
-// settlement both feed a Usage into this function, so a quote can never be
-// priced by different arithmetic than the eventual bill.
+// Cost 是服务端唯一的一套计价实现。预估与结算都把同一个 Usage 喂进这个函数，
+// 所以报价永远不会用到与最终账单不同的算术。
 //
-// It refuses device-billed modes outright. On those the money was collected at
-// payment time and the device spends it down; recomputing a number here would
-// produce a second, different figure for a bill that has already been paid,
-// and a second figure is a reconciliation incident.
+// 它直接拒绝设备计费模式。那种模式下钱在支付时已经收走、由设备花下去；
+// 在这里重算一遍，等于给一张已经付过钱的账单造出第二个、还不一样的数字，
+// 而出现第二个数字就是一次对账事故。
 func Cost(spec Spec, usage Usage) (Fee, error) {
 	if ValidateSpec(spec) != nil {
 		return Fee{}, ErrInvalidPricing
@@ -33,21 +31,19 @@ func Cost(spec Spec, usage Usage) (Fee, error) {
 		return Fee{}, ErrInvalidPricing
 	}
 	fee := Fee{Basis: spec.Electric.Basis}
-	// A session that never drew power bills nothing. Unused prepaid packages
-	// land here and must refund in full.
+	// 全程没有取过电的充电不收钱。没被用掉的预付套餐就落在这里，
+	// 必须原路全额退回。
 	if usage.EnergyWh == 0 {
 		return fee, nil
 	}
-	// The free window is a waiver of the whole session, not a discount, so it
-	// short-circuits before any rate is looked up.
+	// 免单时段是整单免掉而不是打折，所以它在查任何费率之前就短路返回。
 	if spec.FreeMinutes > 0 && usage.minutes() <= int64(spec.FreeMinutes) {
 		return fee, nil
 	}
 	channel := usage.channel(spec)
 	billable := applyLossRate(usage.EnergyWh, spec.LossRateBP)
-	// Loss is applied as an exact decimal factor on every slice. Scaling each
-	// slice with integer rounding first would over-charge a long session by a
-	// cent per slice, because the meter splits into one slice per minute.
+	// 线损以精确的小数系数作用在每一片上。如果先用整数取整去缩放每一片，
+	// 一次长充电会因为计量按每分钟切成一片而在每一片上多收一分。
 	lossFactor := decimal.NewFromInt(int64(10000 + clampLossRate(spec.LossRateBP))).Div(decimal.NewFromInt(10000))
 	serviceBasis := serviceBasisOf(spec)
 
@@ -56,8 +52,7 @@ func Cost(spec Spec, usage Usage) (Fee, error) {
 
 	switch spec.Electric.Basis {
 	case BasisEnergy:
-		// An energy tariff has no ladder: every slice inside a period pays that
-		// period's single rate.
+		// 电量电价表没有阶梯：同一时段内的每一片都按该时段的单一电价计费。
 		slices, err := splitByPeriod(usage, spec)
 		if err != nil {
 			return Fee{}, ErrInvalidPricing
@@ -88,11 +83,10 @@ func Cost(spec Spec, usage Usage) (Fee, error) {
 			}
 		}
 	case BasisMaxPower:
-		// Peak-power billing prices the whole session against the rung its peak
-		// reached, so the rung's stored number is a cents-per-hour rate and is
-		// multiplied by hours directly. Converting it to a per-kWh equivalent
-		// here would be the wrong operation: that conversion only makes sense
-		// when the rate is applied to a quantity of energy.
+		// 峰值功率计费把整次充电按其峰值达到的那一档来计价，所以这一档存的数字
+		// 是「每小时的分数」，直接乘以小时数即可。
+		// 在这里把它换算成每 kWh 的等价单价是错误的操作：那种换算只有在费率
+		// 作用于一整份电量时才讲得通。
 		peak := uint32(0)
 		for _, sample := range usage.Samples {
 			if power := effectivePower(sample); power > peak {
@@ -110,9 +104,8 @@ func Cost(spec Spec, usage Usage) (Fee, error) {
 		case ServiceMinutePower:
 			service = decimal.NewFromInt(tier.ServiceCents).Mul(hours)
 		case ServiceEnergy:
-			// An energy-based service fee under a peak-power electricity tariff
-			// still needs a quantity of energy, so it is priced off the metered
-			// total rather than the peak.
+			// 峰值功率电价表下的按电量服务费仍然需要一份电量，所以它按计量到的
+			// 电量总量计价，而不是按峰值。
 			kwh := decimal.New(int64(usage.EnergyWh), -3).Mul(lossFactor)
 			service = kwh.Mul(decimal.NewFromInt(spec.Service.CentsPerKWh))
 		}
@@ -124,13 +117,11 @@ func Cost(spec Spec, usage Usage) (Fee, error) {
 	case ServiceSession:
 		service = decimal.NewFromInt(spec.Service.CentsPerSession)
 	case ServiceNone, ServiceEnergy, ServiceMinutePower:
-		// Already accumulated above, or intentionally nothing.
+		// 上面已经累加过了，或者这里本来就什么都不要收。
 	}
 
-	// The card and temporary rate card is published against electricity only —
-	// the real back office exposes it under the electricity-rate section and
-	// nothing applies it to the service line. So the service total is used
-	// exactly as priced.
+	// 卡与临时费率卡只针对电费发布——真实后台把它放在电价那一节下，
+	// 也从来不把它作用到服务费那一行。所以服务费总额就按算出来的值用。
 	electric = electric.Mul(decimal.NewFromInt(int64(spec.Multiplier.electricBP(channel)))).Div(decimal.NewFromInt(10000))
 
 	electricCents, ok := toCents(electric)
@@ -141,9 +132,8 @@ func Cost(spec Spec, usage Usage) (Fee, error) {
 	if !ok {
 		return Fee{}, ErrInvalidPricing
 	}
-	// The floor tops up the electric line only. Padding the service line, as the
-	// old total-based minimum did, produced invoices whose service fee had
-	// nothing to do with the published tariff.
+	// 兜底只补电费一项。像过去那样按总额兜底，会开出服务费与已发布电价表
+	// 毫无关系的发票。
 	if electricCents < spec.MinElectricCents {
 		electricCents = spec.MinElectricCents
 	}
@@ -164,9 +154,8 @@ func serviceBasisOf(spec Spec) ServiceBasis {
 	return spec.Service.Basis
 }
 
-// tierFor returns the rung a reading falls in. A reading above the top rung
-// still pays the top rate: the top rung is a ceiling and the industry treats
-// exceeding it as the last band, so this is a fallback rather than an error.
+// tierFor 返回某个读数落在哪一档。读数超过最高档时仍按最高档付费：最高档是上界，
+// 行业惯例也是把超出部分算进最后一档，所以这里是兜底而不是报错。
 func tierFor(period Period, watts uint32) Tier {
 	lower := uint32(0)
 	for _, tier := range period.Tiers {
@@ -178,10 +167,10 @@ func tierFor(period Period, watts uint32) Tier {
 	return period.Tiers[len(period.Tiers)-1]
 }
 
-// splitByPeriod cuts samples at every minute boundary so each returned slice
-// prices entirely under one tariff period. Power is a per-sample average, so it
-// is carried across unchanged; energy is split with the remainder landing on
-// the final slice so the parts always sum back to the whole.
+// splitByPeriod 在每个整分钟边界处切开采样，使返回的每一片都完全落在同一个
+// 费率时段内。
+// 功率是每个采样的平均值，因此原样带过去；电量则被切开，余数落在
+// 最后一片上，保证各部分之和永远等于总量。
 func splitByPeriod(usage Usage, spec Spec) ([]Sample, error) {
 	if _, err := compilePeriods(spec.Electric.Periods); err != nil {
 		return nil, err
@@ -218,8 +207,7 @@ func splitByPeriod(usage Usage, spec Spec) ([]Sample, error) {
 			if uint64(i) < remainder {
 				energy++
 			}
-			// Sub-minute tails are folded into the last slice so no energy is
-			// silently dropped from the bill.
+			// 不足一分钟的尾巴被折进最后一片，这样不会有电量被悄悄从账单里丢掉。
 			if next.After(sample.End) {
 				next = sample.End
 			}
@@ -253,8 +241,8 @@ func effectivePower(sample Sample) uint32 {
 	if seconds <= 0 {
 		return 0
 	}
-	// Round to the nearest watt so a derived power never sits just under a
-	// tier ceiling it actually reached.
+	// 四舍五入到最接近的整数瓦，免得反推出的功率刚好卡在某档上界之下，
+	// 而它其实已经达到那个上界。
 	return uint32(math.Round(float64(sample.EnergyWh) * 3600 / seconds))
 }
 
@@ -283,9 +271,8 @@ func applyLossRate(wh uint64, bp int32) uint64 {
 	return uint64(scaled.IntPart())
 }
 
-// findTier returns the rung containing watts. Rungs are closed intervals that
-// meet end to end — the next rung starts one watt above this one's ceiling —
-// so a reading exactly on a ceiling stays in the cheaper band below it.
+// findTier 返回包含 watts 的那一档。各档是首尾相接的闭区间——下一档从比这一档
+// 上界高一瓦处开始——所以刚好等于某个上界的读数仍然留在下面那个更便宜的档里。
 func findTier(tiers []Tier, watts uint32) (Tier, bool) {
 	lower := uint32(0)
 	for _, tier := range tiers {
@@ -297,10 +284,9 @@ func findTier(tiers []Tier, watts uint32) (Tier, bool) {
 	return Tier{}, false
 }
 
-// tierCentsPerKWh converts a tier's stored rate into the equivalent cents per
-// kWh. Which conversion applies is a commercial decision stored in the spec,
-// not an assumption hidden in the math. It only applies to per-slice energy
-// pricing; peak-power pricing uses the stored number as-is.
+// tierCentsPerKWh 把某一档存下来的费率换算成等价的每 kWh 分数。适用哪种换算
+// 是存在 spec 里的商业决策，不是藏在算式里的假设。它只用于按片计电量；
+// 峰值功率计费直接用存下来的那个数字。
 func tierCentsPerKWh(tier Tier, basis TierPriceBasis) int64 {
 	if basis == TierPerKWh {
 		return tier.ElectricCents

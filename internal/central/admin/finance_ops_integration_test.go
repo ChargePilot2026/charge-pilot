@@ -24,8 +24,8 @@ func openFinanceDB(t *testing.T, key string) *gorm.DB {
 	return orm
 }
 
-// settledParty creates an active split template with a paid settlement so the
-// party has a real, withdrawable balance.
+// settledParty 建一个 active 的分账模板加一张 paid 的结算单，
+// 让这个参与方有一笔真实、可提现的余额。
 func settledParty(t *testing.T, ctx context.Context, code string, ratio int32, pool int64) (partyID uint64) {
 	t.Helper()
 	adminDB := openFinanceDB(t, "TEST_ADMIN_DATABASE_URL")
@@ -72,7 +72,7 @@ func settledParty(t *testing.T, ctx context.Context, code string, ratio int32, p
 	}
 	adminDB.Table("split_party").Where("party_code = ?", party).Pluck("id", &partyID)
 	settlementNo := "STL-" + suffix
-	// uk_fee_generation is unique per calculation, so the fixture needs its own id.
+	// uk_fee_generation 每次计费唯一，所以夹具得自己占一个 id。
 	var highest struct {
 		Value *int64 `gorm:"column:value"`
 	}
@@ -96,8 +96,8 @@ func settledParty(t *testing.T, ctx context.Context, code string, ratio int32, p
 	return partyID
 }
 
-// A withdrawal the operator created must be approvable: the pending row already
-// reserves the balance, so approval cannot count it as a competing claim.
+// 运营自己建出来的提现单必须能被审批通过：这条 pending 记录已经占住了余额，
+// 所以审批时不能再把它算成另一笔竞争性的占用。
 func TestWithdrawalCanBeApprovedAndPaid(t *testing.T) {
 	if os.Getenv("TEST_BILLING_DATABASE_URL") == "" || os.Getenv("TEST_ADMIN_DATABASE_URL") == "" {
 		t.Skip("disposable MySQL required")
@@ -116,11 +116,11 @@ func TestWithdrawalCanBeApprovedAndPaid(t *testing.T) {
 	}).Error; err != nil {
 		t.Fatal(err)
 	}
-	// The reservation view already nets this pending row out.
+	// 可用余额视图已经把这条 pending 记录抵扣掉了。
 	if available, err := store.AvailableCents(ctx, nil, partyID); err != nil || available != 10000 {
 		t.Fatalf("available after reservation = %d (%v), want 10000", available, err)
 	}
-	// Approving must exclude this same request, otherwise it can never pass.
+	// 审批必须把同一张提现单排除掉，否则它永远批不过。
 	var row struct {
 		ID uint64 `gorm:"column:id"`
 	}
@@ -133,7 +133,7 @@ func TestWithdrawalCanBeApprovedAndPaid(t *testing.T) {
 		Updates(map[string]any{"status": "approved", "reviewed_by": 1, "reviewed_at": "2026-09-29 00:00:00"}).Error; err != nil {
 		t.Fatal(err)
 	}
-	// Paying excludes itself as well, and stays idempotent on replay.
+	// 打款同样要排除自己，而且重放时保持幂等。
 	if err := billingDB.Table("withdraw_request").Where("withdraw_no = ? AND status = 'approved'", no).
 		Update("status", "paid").Error; err != nil {
 		t.Fatal(err)
@@ -144,7 +144,7 @@ func TestWithdrawalCanBeApprovedAndPaid(t *testing.T) {
 	if firstCount != 1 {
 		t.Fatalf("withdrawal rows = %d, want 1", firstCount)
 	}
-	// Replaying the payout must not create a second row.
+	// 重放一次打款不能再多出一行记录。
 	if err := billingDB.Table("withdraw_request").Where("withdraw_no = ? AND status = 'paid'", no).
 		Updates(map[string]any{"status": "paid"}).Error; err != nil {
 		t.Fatal(err)
@@ -156,8 +156,8 @@ func TestWithdrawalCanBeApprovedAndPaid(t *testing.T) {
 	}
 }
 
-// split_party has no deleted_at column; retirement lives on the parent template.
-// A stale query against it would surface as a 503 on every withdrawal request.
+// split_party 没有 deleted_at 列，"退休"这件事记在父模板上。
+// 一条过时的查询会表现为每次提现请求都返回 503。
 func TestSplitPartyLookupUsesExistingColumnsOnly(t *testing.T) {
 	if os.Getenv("TEST_BILLING_DATABASE_URL") == "" || os.Getenv("TEST_ADMIN_DATABASE_URL") == "" {
 		t.Skip("disposable MySQL required")
@@ -177,8 +177,8 @@ func TestSplitPartyLookupUsesExistingColumnsOnly(t *testing.T) {
 	if party.Code == "" || party.TemplateID == 0 || party.BankAcc == nil {
 		t.Fatalf("party not fully resolved: %+v", party)
 	}
-	// The balance query joins settlement without a partition predicate, because
-	// settlement_party_amount carries no created_month column.
+	// 余额查询 join settlement 时不带分区条件，
+	// 因为 settlement_party_amount 上没有 created_month 这一列。
 	billingDB := openFinanceDB(t, "TEST_BILLING_DATABASE_URL")
 	store := ResourceStore{BillingDB: billingDB, AdminDB: adminDB}
 	available, err := store.AvailableCents(ctx, nil, partyID)

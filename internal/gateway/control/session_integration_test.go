@@ -14,8 +14,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// sessionTestDB is the handle the last-built session router uses, so the tests
-// can seed and verify rows through the same connection the handlers run on.
+// sessionTestDB 是最后构建出的 session router 所用的连接句柄，
+// 这样测试就能通过和 handler 同一条连接来准备数据并校验结果。
 var sessionTestDB *gorm.DB
 
 func sessionRouter(t *testing.T, api SessionAPI) *gin.Engine {
@@ -41,9 +41,9 @@ func sessionRouter(t *testing.T, api SessionAPI) *gin.Engine {
 	return router
 }
 
-// decodeCleanup reads the payload out of the response envelope. Every handler
-// answer is wrapped as {code, message, data}, so the counter has to be read from
-// inside data rather than from the top level.
+// decodeCleanup 从响应信封里读出 data 部分。每个 handler 的响应
+// 都包在 {code， message， data} 里，所以这个计数必须从 data 内部读，
+// 而不是从顶层读。
 func decodeCleanup(t *testing.T, raw []byte) struct {
 	Closed int64 `json:"closed"`
 } {
@@ -59,7 +59,7 @@ func decodeCleanup(t *testing.T, raw []byte) struct {
 	return envelope.Data
 }
 
-// shortID keeps a seeded session id inside the VARCHAR(64) column.
+// shortID 让准备进去的 session id 落在 VARCHAR(64) 这一列的范围内。
 func shortID(t *testing.T) string {
 	t.Helper()
 	seed := t.Name() + time.Now().Format("150405.000000")
@@ -82,8 +82,8 @@ func callSession(t *testing.T, router *gin.Engine, method, path, token string) *
 
 const sessionToken = "session-audit-test-token"
 
-// seedOpenSession inserts a session that looks like one whose process died:
-// still open, and silent for longer than the threshold.
+// seedOpenSession 插入一条看起来像是"进程中途死掉"的会话：
+// 仍然是开着的，而且静默时间已经超过阈值。
 func seedOpenSession(t *testing.T, orm *gorm.DB, sessionID, deviceID string, idleFor time.Duration) time.Time {
 	t.Helper()
 	started := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
@@ -123,8 +123,8 @@ func TestCleanupIdleClosesAbandonedSessionsOnly(t *testing.T) {
 	seedOpenSession(t, db, abandoned, "QA-SESSION-CLEAN", time.Hour)
 	seedOpenSession(t, db, active, "QA-SESSION-ACTIVE", time.Minute)
 
-	// A session that already closed gracefully must never be touched, however
-	// old it is: its counters are final and re-stamping them rewrites history.
+	// 一条已经正常关闭的会话，无论多老都绝不能被碰到：
+	// 它的计数器是最终值，重新盖一遍就等于改写历史。
 	started := time.Now().UTC().Add(-5 * time.Hour).Truncate(time.Millisecond)
 	if err := db.Table("device_session").Create(map[string]any{
 		"session_id": closed, "device_id": "QA-SESSION-CLOSED", "protocol": "tcp",
@@ -181,8 +181,8 @@ func TestCleanupIdleClosesAbandonedSessionsOnly(t *testing.T) {
 	}
 }
 
-// Repeating a cleanup must be a no-op rather than double counting, because this
-// is meant to be run on a schedule.
+// 重复跑一次清理必须是空操作而不是重复计数，因为这个接口
+// 本来就是设计成按计划反复跑的。
 func TestCleanupIdleIsRepeatable(t *testing.T) {
 	router := sessionRouter(t, SessionAPI{ServiceToken: sessionToken, IdleThreshold: 10 * time.Minute})
 	db := sessionTestDB

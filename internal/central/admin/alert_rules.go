@@ -85,9 +85,9 @@ func (a ResourceAPI) alertRules(c *gin.Context) {
 		resourceFailure(c, err)
 		return
 	}
-	// Threshold is a JSON column holding either a number or a [low, high]
-	// pair, so it is fetched separately: GORM cannot scan it into an any-typed
-	// row field. Casting to CHAR keeps the driver from handing back a blob.
+	// Threshold 是 JSON 列，里面要么是一个数字，要么是一对 [low, high]，
+	// 所以单独查一次：GORM 没法把它扫进 any 类型的行字段里。
+	// 转成 CHAR 读，是为了不让驱动交回一个 blob。
 	thresholds := map[uint64][]byte{}
 	ids := make([]uint64, 0, len(out.Items))
 	for _, row := range out.Items {
@@ -134,7 +134,7 @@ func (a ResourceAPI) alertRules(c *gin.Context) {
 // normalizeBool 归一化 MySQL 驱动返回的布尔列（TINYINT），保证接口吐出来的是 true/false 而不是 0/1。
 func normalizeBool(value bool) bool { return value }
 
-// alertRuleInput is shared by create and update so both validate identically.
+// alertRuleInput 由创建与修改共用，保证两边的校验口径完全一致。
 
 // alertRuleInput 是告警规则的创建与修改入参，两者共用一份结构以保证校验口径一致。
 type alertRuleInput struct {
@@ -173,8 +173,8 @@ func (in alertRuleInput) validate() (string, bool) {
 	return encoded, true
 }
 
-// encodeThreshold validates the value the evaluator will later parse, so an
-// unparseable rule can never be saved and silently never fire.
+// encodeThreshold 提前校验 evaluator 之后要解析的那个值，
+// 这样解析不了的规则永远存不进来，也就不会静默地永远不触发。
 
 // encodeThreshold 按比较符把阈值定型成 evaluator 能解析的 JSON 文本：
 // between 必须是低 ≤ 高的一对数字，其余比较符必须是单个数字。
@@ -198,8 +198,8 @@ func encodeThreshold(value any, op string) (string, error) {
 	return string(mustJSON(single)), nil
 }
 
-// mustJSON encodes a validated number or pair; marshalling those types cannot
-// fail, so an error here would be a programming mistake rather than input.
+// mustJSON 序列化一个已经校验过的数字或数字对；这两种类型序列化不会失败，
+// 所以这里出错属于程序写错，而不是入参的问题。
 
 // mustJSON 序列化已经校验过的数字或数字对；这两种类型序列化不可能失败，
 // 万一失败属于程序错误而不是入参问题，兜底成 null。
@@ -344,7 +344,7 @@ func (a ResourceAPI) createAlertSubscription(c *gin.Context) {
 	if !decodeResource(c, &in) {
 		return
 	}
-	// A subscription must reach somebody: a webhook or a named operator.
+	// 订阅总得能送到某个人手上：要么是一个 Webhook，要么是一个指名的运营。
 	if in.WebhookSubscriptionID == nil && in.AdminUserID == nil {
 		httpapi.BadRequest(c, "请至少指定一个 Webhook 订阅或接收账号")
 		return
@@ -432,8 +432,8 @@ func (a ResourceAPI) deleteAlertSubscription(c *gin.Context) {
 	httpapi.OK(c, gin.H{"id": id, "deleted": true})
 }
 
-// resolveAlertRuleAlerts closes every open alert raised by one rule, which is
-// what an operator does after fixing a site or adjusting a threshold.
+// resolveAlertRuleAlerts 关闭某条规则产生的全部未闭环告警，
+// 这正是运营在现场修好之后、或调完阈值之后要做的事。
 
 // resolveAlertRuleAlerts 把某条规则下所有未闭环的告警（active / acknowledged）一次性标记为 resolved，
 // 用于现场修好之后或调完阈值之后的整体消解。备注留空时默认写"运维人工关闭"，写入与审计同事务。
@@ -478,8 +478,8 @@ func (a ResourceAPI) resolveAlertRuleAlerts(c *gin.Context) {
 	httpapi.OK(c, gin.H{"id": id, "resolved": true})
 }
 
-// saveRiskConfig upserts one tunable by key so operators can adjust thresholds
-// that the code does not hardcode.
+// saveRiskConfig 按键新增或覆盖一项可调参数，
+// 让运营能调整代码里没有写死的那些阈值。
 
 // saveRiskConfig 按键新增或覆盖一条风控配置（频次、金额阈值等代码里没有写死的可调项），
 // 值以 JSON 原文存储。存在则整体覆盖，不存在则插入，并记审计。

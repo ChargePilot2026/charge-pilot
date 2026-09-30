@@ -10,9 +10,9 @@ import (
 	"github.com/google/uuid"
 )
 
-// The order hook runs inside the settlement transaction. It must grant exactly
-// one coupon per qualifying order, and a broken rule must not stop the charge
-// from being billed.
+// TestApplyOrderCampaignsGrantsThresholdOnce —— 订单钩子跑在结算事务内部。
+// 它必须为每个够条件的订单恰好发一张券，
+// 而且坏掉的规则不能妨碍这笔充电开出账单。
 func TestApplyOrderCampaignsGrantsThresholdOnce(t *testing.T) {
 	orm := activityDB(t)
 	fx := newActivityFixture(t, orm, "threshold_redeem", 5, 0)
@@ -23,17 +23,17 @@ func TestApplyOrderCampaignsGrantsThresholdOnce(t *testing.T) {
 	}
 	order := ChargeOrderRecord{OrderNo: "AC" + uuid.NewString()[:10], UserID: fx.userID}
 
-	// Below the threshold nothing is granted.
+	// 没到门槛不发放。
 	applyOrderCampaigns(orm, order, 2999)
 	if n := fx.grantRows(t); n != 0 {
 		t.Fatalf("a 2999-cent order granted %d coupons", n)
 	}
-	// Qualifying order grants once.
+	// 够条件的订单发一次。
 	applyOrderCampaigns(orm, order, 3500)
 	if n := fx.grantRows(t); n != 1 {
 		t.Fatalf("a 3500-cent order granted %d coupons, want 1", n)
 	}
-	// Re-evaluating the same order must not grant a second coupon.
+	// 对同一笔订单重新求值不能发出第二张券。
 	applyOrderCampaigns(orm, order, 3500)
 	if n := fx.grantRows(t); n != 1 {
 		t.Fatalf("re-evaluation granted %d coupons, want 1", n)
@@ -41,8 +41,8 @@ func TestApplyOrderCampaignsGrantsThresholdOnce(t *testing.T) {
 	_ = now
 }
 
-// A holiday campaign has no amount condition: it fires for every settled order
-// inside its window, but the per-user limit still applies.
+// TestApplyOrderCampaignsHolidayRespectsPerUserLimit —— 节日活动没有金额条件：
+// 窗口期内的每一笔已结算订单都会触发，但单人限领依然生效。
 func TestApplyOrderCampaignsHolidayRespectsPerUserLimit(t *testing.T) {
 	orm := activityDB(t)
 	fx := newActivityFixture(t, orm, "holiday", 1, 0)
@@ -60,8 +60,8 @@ func TestApplyOrderCampaignsHolidayRespectsPerUserLimit(t *testing.T) {
 	}
 }
 
-// A rule pointing at a deleted coupon must not abort the settlement. The charge
-// has to be billed either way.
+// TestApplyOrderCampaignsSurvivesBrokenRule —— 指向已删券的规则不能中止结算。
+// 这笔充电无论如何都得开出账单。
 func TestApplyOrderCampaignsSurvivesBrokenRule(t *testing.T) {
 	url := os.Getenv("TEST_USER_DATABASE_URL")
 	if url == "" {
@@ -103,6 +103,6 @@ func TestApplyOrderCampaignsSurvivesBrokenRule(t *testing.T) {
 	})
 
 	order := ChargeOrderRecord{OrderNo: "AC" + uuid.NewString()[:10], UserID: userID}
-	// Must not panic and must not surface an error to the caller.
+	// 不能 panic，也不能把错误抛给调用方。
 	applyOrderCampaigns(orm, order, 5000)
 }

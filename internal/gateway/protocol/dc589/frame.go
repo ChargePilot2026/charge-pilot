@@ -1,5 +1,5 @@
-// Package dc589 implements the vendor's 5.8.9 binary TCP framing protocol.
-// The wire format is EE, LEN, CMD, six session bytes, payload, XOR checksum.
+// Package dc589 实现厂商 5.8.9 的二进制 TCP 分帧协议。
+// 线上格式依次为 EE、LEN、CMD、六个 session 字节、payload、XOR 校验和。
 package dc589
 
 import (
@@ -11,7 +11,7 @@ import (
 )
 
 const StartByte byte = 0xEE
-const HeaderSize = 8 // CMD + six-byte session + checksum, counted by LEN
+const HeaderSize = 8 // CMD + 六字节 session + 校验和，都计入 LEN
 
 var (
 	ErrFrame  = errors.New("invalid 5.8.9 frame")
@@ -53,9 +53,8 @@ func Decode(raw []byte) (Frame, error) {
 	return Frame{Command: raw[2], Session: session, Data: bytes.Clone(raw[9 : len(raw)-1])}, nil
 }
 
-// ReadFrame reads one complete frame from a TCP stream, where packet boundaries
-// may not align with TCP reads. It intentionally rejects bad framing instead of
-// silently scanning past bytes from an unauthenticated device.
+// ReadFrame 从 TCP 流里读出一个完整帧，因为 TCP 的包边界未必与帧边界对齐。
+// 它故意对坏分帧直接报错，而不是替一台未认证的设备默默往后扫字节。
 func ReadFrame(reader *bufio.Reader) (Frame, error) {
 	var head [2]byte
 	if _, err := io.ReadFull(reader, head[:]); err != nil {

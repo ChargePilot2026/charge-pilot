@@ -7,7 +7,8 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// EnergyUnit is 0.0001 kWh, matching the DECIMAL(12,4) meter fields.
+// EnergyUnit 是 0.0001 kWh，
+// 与计量表的 DECIMAL(12，4) 字段对齐。
 type EnergyUnit int64
 
 type EnergySlice struct {
@@ -24,8 +25,9 @@ type ChargeFee struct {
 
 var ErrInvalidTariff = errors.New("invalid tariff or energy")
 
-// PriceEnergy keeps both fee lines separate through calculation and rounds each
-// line once, half up to a cent, after summing all time-of-use slices.
+// PriceEnergy 全程把两条费用明细分开计算，
+// 在把所有分时电量片累加完之后，
+// 再各自四舍五入到分一次。
 func PriceEnergy(slices []EnergySlice) (ChargeFee, error) {
 	if len(slices) == 0 {
 		return ChargeFee{}, ErrInvalidTariff

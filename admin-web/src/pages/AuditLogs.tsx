@@ -21,8 +21,8 @@ interface AuditRow {
   created_at: string;
 }
 
-// The audit trail is the only record of who changed money, coupons, devices or
-// access rights. Reading it is a separate permission from acting on it.
+// 审计日志是「谁改过钱、优惠券、设备或权限」唯一的记录。读它和动手改它是两个独立
+// 权限。
 export default function AuditLogsPage() {
   const [rows, setRows] = useState<AuditRow[]>([]);
   const [total, setTotal] = useState(0);

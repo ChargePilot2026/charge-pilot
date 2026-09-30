@@ -3,9 +3,9 @@ package charge
 import "testing"
 
 func TestHTTPSImageRejectsNonTLS(t *testing.T) {
-	// Feedback images are rendered back to staff in the casework queue, so a
-	// non-TLS or script-bearing link is an injection vector, not a formatting
-	// preference.
+	// 反馈图片会回显给客服看，
+	// 所以一个非 TLS 或带脚本的链接是注入载体，
+	// 而不只是格式偏好问题。
 	accepted := []string{
 		"https://cdn.example.com/a.jpg",
 		"https://cdn.example.com/a.jpg?x=1&y=2",

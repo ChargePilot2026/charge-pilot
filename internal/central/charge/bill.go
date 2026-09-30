@@ -14,9 +14,9 @@ import (
 	"gorm.io/gorm"
 )
 
-// BillStore issues the bill a customer sees once a charge has been priced.
-// The amount comes from the billing receipt, so a bill can never disagree with
-// the fee that was actually charged.
+// BillStore 负责在一笔充电计价完成后开给客户看的账单。
+// 金额取自计费回执，
+// 所以账单永远不会与实际收取的费用对不上。
 type BillStore struct{ DB *gorm.DB }
 
 type Bill struct {
@@ -41,9 +41,9 @@ type Bill struct {
 	Read           bool       `json:"read" gorm:"-"`
 }
 
-// Issue writes the bill for a settled charge. It is safe to call repeatedly:
-// the unique key on charge_order_id makes a replay a no-op rather than a second
-// bill.
+// Issue 为已结算的充电写账单。
+// 可以重复调用：
+// charge_order_id 上的唯一键让重放成为空操作，而不是第二张账单。
 func (s BillStore) Issue(ctx context.Context, chargeOrderID uint64) (Bill, bool, error) {
 	if s.DB == nil || chargeOrderID == 0 {
 		return Bill{}, false, errors.New("bill store is not configured")
@@ -68,7 +68,7 @@ func (s BillStore) Issue(ctx context.Context, chargeOrderID uint64) (Bill, bool,
 	}
 	var receipt ChargeFeeRecord
 	if err := s.DB.WithContext(ctx).Where("charge_order_id = ?", order.ID).Take(&receipt).Error; err != nil {
-		// No fee yet means billing has not finished; the bill comes later.
+		// 还没有费用说明计费没跑完，账单稍后才会有。
 		return Bill{}, false, nil
 	}
 	electric, service, total, ok := receipt.Fees()
@@ -95,7 +95,7 @@ func (s BillStore) Issue(ctx context.Context, chargeOrderID uint64) (Bill, bool,
 	billNo := "BILL" + fmt.Sprintf("%020d", order.ID)
 	issuedAt := time.Now().UTC()
 	if order.StartedAt != nil {
-		// The bill belongs to when the charge happened, not when it was priced.
+		// 账单属于充电发生的那个时间点，而不是它被定价的时间点。
 		issuedAt = order.StartedAt.Add(0)
 	}
 	month := time.Date(issuedAt.Year(), issuedAt.Month(), 1, 0, 0, 0, 0, time.UTC)
@@ -109,8 +109,8 @@ func (s BillStore) Issue(ctx context.Context, chargeOrderID uint64) (Bill, bool,
 	}
 	var billID uint64
 	err = s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// The unique key makes this insert idempotent; a replay finds the
-		// existing bill instead of creating a second one.
+		// 唯一键让这次插入天然幂等；
+		// 重放只会找到已有账单，而不是再建一张。
 		existing := int64(0)
 		if err := tx.Table("charge_bill").
 			Where("charge_order_id = ? AND created_month = ?", order.ID, month).Count(&existing).Error; err != nil {
@@ -130,8 +130,8 @@ func (s BillStore) Issue(ctx context.Context, chargeOrderID uint64) (Bill, bool,
 		if err := tx.Raw("SELECT LAST_INSERT_ID()").Scan(&billID).Error; err != nil {
 			return err
 		}
-		// The bill is part of the order's story, so the customer can see it in
-		// the same timeline they already follow.
+		// 账单是订单故事的一部分，
+		// 所以客户能在他们本来就在看的那条时间线里看到它。
 		eventID := uuid.NewSHA1(uuid.NameSpaceURL, []byte("bill-issued:"+billNo)).String()
 		return tx.Create(&ChargeEventLogRecord{
 			ChargeOrderID: order.ID, EventID: eventID, Event: "bill_issued", Actor: "billing",
@@ -146,8 +146,8 @@ func (s BillStore) Issue(ctx context.Context, chargeOrderID uint64) (Bill, bool,
 	return bill, true, err
 }
 
-// Load returns the bill for one charge, addressed by the charge order id the
-// billing job knows about.
+// Load 按计费任务知道的那个充电
+// 订单 id 返回这一笔充电的账单。
 func (s BillStore) Load(ctx context.Context, chargeOrderID uint64) (Bill, error) {
 	bill := Bill{}
 	err := s.DB.WithContext(ctx).Table("charge_bill").
@@ -156,8 +156,8 @@ func (s BillStore) Load(ctx context.Context, chargeOrderID uint64) (Bill, error)
 	return bill, err
 }
 
-// LoadByID returns the bill with the given bill id, which is what the customer
-// facing endpoints are addressed by.
+// LoadByID 按账单 id 返回账单，
+// 客户侧接口就是按它寻址的。
 func (s BillStore) LoadByID(ctx context.Context, userID, billID uint64) (Bill, error) {
 	bill := Bill{}
 	err := s.DB.WithContext(ctx).Table("charge_bill").
@@ -166,16 +166,16 @@ func (s BillStore) LoadByID(ctx context.Context, userID, billID uint64) (Bill, e
 	return bill, err
 }
 
-// Settle marks a bill paid off once nothing is outstanding on it.
+// Settle 在账单上不再有任何未结金额后把它标记为已结清。
 func (s BillStore) Settle(ctx context.Context, chargeOrderID uint64) error {
 	return s.DB.WithContext(ctx).Table("charge_bill").
 		Where("charge_order_id = ? AND status = 'issued'", chargeOrderID).
 		Updates(map[string]any{"status": "settled", "settled_at": gorm.Expr("UTC_TIMESTAMP(3)")}).Error
 }
 
-// SettleWhenClear closes the bill once the charge is fully covered by what was
-// prepaid plus anything refunded, so a bill never sits unpaid after the money
-// has actually been returned.
+// SettleWhenClear 在预付金额加上已
+// 退金额已经覆盖这笔充电后关闭账单，
+// 这样钱确实退回去之后账单不会一直挂在那里未付。
 func (s BillStore) SettleWhenClear(ctx context.Context, chargeOrderID uint64) error {
 	bill, err := s.Load(ctx, chargeOrderID)
 	if err != nil || bill.Status != "issued" {
@@ -190,8 +190,8 @@ func (s BillStore) SettleWhenClear(ctx context.Context, chargeOrderID uint64) er
 	return s.Settle(ctx, chargeOrderID)
 }
 
-// ListBills pages a customer's bills newest first. Only that customer is
-// readable, so ownership is part of the query rather than a later check.
+// ListBills 按最新优先分页返回某个客户的账单。
+// 只有该客户本人可读，所以归属条件是写在查询里的，而不是事后补一道校验。
 func (s BillStore) ListBills(ctx context.Context, userID uint64, page, pageSize int) ([]Bill, int64, error) {
 	base := s.DB.WithContext(ctx).Table("charge_bill").Where("user_id = ?", userID)
 	var total int64
@@ -214,8 +214,8 @@ func (s BillStore) ListBills(ctx context.Context, userID uint64, page, pageSize 
 		var reads []struct {
 			BillID uint64 `gorm:"column:bill_id"`
 		}
-		// charge_bill_read shares the bill's partition month, so both parts of
-		// the key are matched.
+		// charge_bill_read 与账单共享同一个分区月份，
+		// 所以键的两部分都要匹配。
 		if err := s.DB.WithContext(ctx).Table("charge_bill_read").
 			Select("bill_id").Where("user_id = ? AND bill_id IN ?", userID, ids).Find(&reads).Error; err == nil {
 			seen := map[uint64]bool{}
@@ -231,7 +231,7 @@ func (s BillStore) ListBills(ctx context.Context, userID uint64, page, pageSize 
 	return rows, total, nil
 }
 
-// MarkRead records that the customer has seen a bill. Re-reading is a no-op.
+// MarkRead 记录客户已经看过这张账单。重复查看是空操作。
 func (s BillStore) MarkRead(ctx context.Context, userID, billID uint64) error {
 	var bill struct {
 		CreatedMonth time.Time `gorm:"column:created_month"`
@@ -253,7 +253,7 @@ func (s BillStore) MarkRead(ctx context.Context, userID, billID uint64) error {
 	}).Error
 }
 
-// BillHTTP exposes the bill views to the customer.
+// BillHTTP 把账单视图暴露给客户。
 type BillHTTP struct {
 	Auth  identity.SessionAuthenticator
 	Bills BillStore
@@ -294,8 +294,8 @@ func (a BillHTTP) detail(c *gin.Context) {
 		httpapi.BadRequest(c, "账单编号无效")
 		return
 	}
-	// The bill id is scoped to the customer in the query itself, so another
-	// account's bill is indistinguishable from a missing one.
+	// 账单 id 本身就在查询里带着客户条件，
+	// 所以别的账号的账单与不存在的账单无从分辨。
 	bill, err := a.Bills.LoadByID(c.Request.Context(), userID, id)
 	if err != nil {
 		httpapi.Write(c, 404, 1004, "账单不存在", nil)
@@ -326,11 +326,11 @@ func (a BillHTTP) markRead(c *gin.Context) {
 	httpapi.OK(c, gin.H{"id": id, "read": true})
 }
 
-// BillIssuer adapts BillStore to the billing package's interface without
-// making billing depend on this module.
+// BillIssuer 把 BillStore 适配成计费包的接口，
+// 同时不让计费反过来依赖本模块。
 type BillIssuer struct{ Store BillStore }
 
-// Issue publishes a bill for a settled charge.
+// Issue 为已结算的充电发布账单。
 func (a BillIssuer) Issue(ctx context.Context, chargeOrderID uint64) (uint64, error) {
 	bill, created, err := a.Store.Issue(ctx, chargeOrderID)
 	if err != nil || !created {

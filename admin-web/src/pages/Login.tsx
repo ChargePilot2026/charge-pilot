@@ -28,7 +28,7 @@ export default function LoginPage() {
       const data = challenge
         ? await apiPost<LoginResp>('/api/v1/admin/auth/mfa', { mfa_challenge: challenge, code: vals.code })
         : await apiPost<LoginResp>('/api/v1/admin/auth/login', { username: vals.username, password: vals.password });
-      // A correct password with MFA enabled returns a challenge, not a session.
+      // 密码正确但开了 MFA 时返回的是一个 challenge，而不是会话。
       if (data.mfa_required) {
         setChallenge(data.mfa_challenge || '');
         message.info('请输入验证器中的 6 位动态验证码');

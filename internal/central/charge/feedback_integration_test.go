@@ -15,9 +15,9 @@ func feedbackEnv(t *testing.T) bool {
 	return true
 }
 
-// The casework queue is fed by exactly this endpoint. It must accept a rating
-// for a finished order, refuse a second one, and never leak another customer's
-// order.
+// TestSubmitFeedbackRules —— 工单队列正是靠这个接口喂数据的。
+// 它必须能给已完成的订单打分、
+// 拒绝第二次提交，并且绝不泄露别的客户的订单。
 func TestSubmitFeedbackRules(t *testing.T) {
 	if !feedbackEnv(t) {
 		return
@@ -29,10 +29,10 @@ func TestSubmitFeedbackRules(t *testing.T) {
 	userID := uint64(900001)
 	otherID := uint64(900002)
 	orderID := uint64(910000 + len(uuid.NewString())%1000)
-	// The ids here are fixed while the order number is not, so nothing left
-	// behind can be matched by name on the next run and the primary keys collide
-	// immediately. Without this the test passes once per database and reports a
-	// duplicate-key failure that looks like a product problem.
+	// 这里的 id 是固定的而订单号不是，
+	// 所以上次留下的东西没法按名字对上，
+	// 主键会立刻冲突。没有这段处理，
+	// 这个测试每个数据库只能过一遍，然后报一个看起来像产品缺陷的重复键失败。
 	t.Cleanup(func() {
 		userDB.Exec("DELETE FROM feedback WHERE order_id IN (?,?)", orderID, orderID+1)
 		userDB.Exec("DELETE FROM charge_order WHERE id IN (?,?)", orderID, orderID+1)
@@ -52,7 +52,7 @@ func TestSubmitFeedbackRules(t *testing.T) {
 	router := accountRouter(t, userDB, adminDB, userID)
 	path := "/api/v1/user/charge/" + strconv.FormatUint(orderID, 10) + "/feedback"
 
-	// An in-progress order cannot be rated yet.
+	// 进行中的订单还不能评价。
 	pendingID := orderID + 1
 	if err := userDB.Exec(`INSERT INTO charge_order
 		(id, order_no, user_id, device_id, port_no, status, created_month, created_at)
@@ -65,7 +65,7 @@ func TestSubmitFeedbackRules(t *testing.T) {
 		t.Fatalf("rating an in-progress order returned %d, want 404", code)
 	}
 
-	// Out-of-range and unknown values are rejected before the lookup.
+	// 越界的值和无法识别的值在查询之前就被拒绝。
 	if code, _ := callJSON(t, router, "POST", path, map[string]any{"rating": 9, "category": "rating"}); code != 400 {
 		t.Fatalf("rating 9 returned %d, want 400", code)
 	}
@@ -78,7 +78,7 @@ func TestSubmitFeedbackRules(t *testing.T) {
 		t.Fatalf("plain-HTTP image returned %d, want 400", code)
 	}
 
-	// A valid submission lands with the order's device recorded.
+	// 一次合法提交会带着该订单的设备信息落库。
 	if code, body := callJSON(t, router, "POST", path, map[string]any{
 		"rating": 4, "category": "complaint", "content": "充电枪有点松",
 		"images": []string{"https://cdn.example.com/a.jpg"},
@@ -99,7 +99,7 @@ func TestSubmitFeedbackRules(t *testing.T) {
 		t.Fatalf("stored row = %+v", stored)
 	}
 
-	// A second submission for the same order is refused.
+	// 同一笔订单的第二次提交被拒绝。
 	if code, _ := callJSON(t, router, "POST", path, map[string]any{"rating": 5, "category": "rating"}); code != 409 {
 		t.Fatalf("duplicate submit returned %d, want 409", code)
 	}

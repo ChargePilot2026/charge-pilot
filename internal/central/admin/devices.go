@@ -20,9 +20,9 @@ type Device struct {
 	Model       *string    `json:"model"`        // 设备型号，可空；关键词搜索会匹配它。
 	Status      string     `json:"status"`       // 设备状态：enabled 启用、disabled 停用、retired 退役、fault 故障。
 	InstallAt   *time.Time `json:"install_at"`   // 安装时间，可空表示尚未记录。
-	// What this board can report, and what it is currently charged on. Carried
-	// on the device row itself so an operator does not have to open the pricing
-	// screen to find out why a tariff will not apply here.
+	// 这块板能上报什么，以及它当前按什么口径计费。
+	// 这些信息就挂在设备行上，运营不必再打开定价页面
+	// 去弄清某个计费规则为什么在这儿用不了。
 	ChargeMode            string `json:"charge_mode"`             // 该设备当前实际生效的计费方式，取自 pricing 引擎的 ChargeMode（server_realtime_power / server_max_power / server_energy / device_duration / device_energy / device_power）。
 	ReportsEnergy         bool   `json:"reports_energy"`          // 协议帧里是否带电量：false 表示这块板报不了电量，只有时长口径能落到它身上。
 	ReportsSegmentedPower bool   `json:"reports_segmented_power"` // 协议帧里是否带分段功率：功率档位口径需要它，为 false 时该设备无法应用。

@@ -10,19 +10,18 @@ import (
 
 var chinaLocation = time.FixedZone("CST", 8*3600)
 
-// Civil renders an instant in the timezone the 5.8.9 frames carry.
+// Civil 按 5.8.9 帧里携带的时区来呈现一个时刻。
 //
-// encodeTime writes the calendar fields of whatever location it is handed, so a
-// board that kept its own clock in UTC would report eight hours of drift the
-// moment it stamped a charge start — and the settlement would place the session
-// in the wrong hour. Exposing the conversion here keeps the single timezone
-// assumption in one place instead of letting each device-side caller pick a
-// location of its own.
+// encodeTime 写的是交给它的那个 location 的日历字段，所以一块把时钟留在 UTC
+// 的主板一旦给充电开始打时间戳，就会报出 8 小时的偏差——结算随之把这次会话
+// 记到错误的小时里。
+//
+// 把换算收敛在这里，是为了让唯一那处时区假设待在一个地方，而不是让设备侧的
+// 每个调用方各自挑一个 location。
 func Civil(at time.Time) time.Time { return at.In(chinaLocation) }
 
-// HeartbeatData contains the common fields and, when enabled by A6, a
-// possibly partial set of charging ports. Boards with more than 12 ports may
-// send two A4 frames, each containing only ten charging port measurements.
+// HeartbeatData 是心跳里的公共字段，外加在 A6 打开时可能不完整的充电端口集合。
+// 端口超过 12 个的主板可能发两个 A4 帧，每个只带 10 条充电端口测量。
 type HeartbeatData struct {
 	BoardID       string
 	ModuleID      string
@@ -84,13 +83,11 @@ func ParseHeartbeat(frame Frame) (HeartbeatData, error) {
 	return result, nil
 }
 
-// ChargeEndData is one settlement frame.
+// ChargeEndData 是一帧结算。
 //
-// The charge type and the amount are read as well as the energy. Neither is
-// used to decide what the charging user owes — a device-billed session's money was
-// collected before the board ever reported anything — but both are the only
-// record of how a session actually ended, and a long-run session is
-// indistinguishable from an ordinary one without the type.
+// 充电类型和金额也一并读出。两者都不用来判定充电用户该付多少钱——设备侧计费
+// 的会话，钱在主板还没上报任何东西之前就已经收走了——但它们是这次会话究竟
+// 怎么结束的唯一记录：没有类型，一次长时模式会话和一次普通会话就再也分不开。
 type ChargeEndData struct {
 	Port           uint8
 	OrderNumber    string
@@ -98,23 +95,23 @@ type ChargeEndData struct {
 	EndedAt        time.Time
 	ChargeType     uint8
 	ChargedSeconds uint32
-	// RemainingSeconds is what the board had left. When power banding discounted
-	// it, the board converts it back before reporting, so it is comparable with
-	// the granted span rather than with the discounted one.
+	// RemainingSeconds 是主板当时还剩多少时间。功率分档打过折时，
+	// 主板会在上报前把它换算回去，所以它可以与授权时长相比，
+	// 而不是与打过折的时长相比。
 	RemainingSeconds uint32
 	ChargedMWh       uint32
-	// AmountCents is the device's own view of the charge, in cents. The board
-	// reports it at 0.01 yuan per unit here while other commands use 0.1 yuan,
-	// so the conversion differs by command and is not shared.
+	// AmountCents 是主板对这次充电自己的算法，单位是分。主板在
+	// 这条命令里按每单位 0.01 元上报，而别的命令用 0.1 元，所以
+	// 换算随命令而异，不做共用。
 	AmountCents    int64
 	StopReason     uint8
 	ConsumerType   uint8
 	PowerDeciWatts uint32
-	// Band is the power band at the end of the session, 1..5.
+	// Band 是会话结束时的功率档位，1..5。
 	Band uint8
 }
 
-// Byte offsets in the 0xBB settlement payload.
+// 0xBB 结算 payload 里的字节偏移。
 const (
 	endOffsetUpload   = 0
 	endOffsetPort     = 1
@@ -157,9 +154,9 @@ func ParseChargeEnd(frame Frame) (ChargeEndData, error) {
 	}
 	data := frame.Data
 	amount := int64(binary.LittleEndian.Uint16(data[endOffsetAmount : endOffsetAmount+2]))
-	// The band is 1-based here. The port-status reply counts the same ladder
-	// from zero, so the two are not interchangeable and each parse pins its own
-	// base rather than sharing a helper that would be wrong for one of them.
+	// 这里的档位是从 1 开始的。端口状态应答对同一套档位是从 0
+	// 数起的，两者不可互换，所以各自固定自己的起点，而不是共用一个
+	// 对其中一方必然是错的辅助函数。
 	band := data[endOffsetBand]
 	if band > 5 {
 		return ChargeEndData{}, ErrPayload
@@ -201,8 +198,8 @@ func decodeTime(data []byte) (time.Time, error) {
 		}
 		values[i] = int(value>>4)*10 + int(value&15)
 	}
-	// The vendor frame contains local civil time without an offset. This
-	// protocol is deployed in mainland China; do not depend on container TZ.
+	// 厂商帧里是不带偏移量的本地民用时间。本协议部署在中国大陆，
+	// 所以不能依赖容器的 TZ。
 	date := time.Date(2000+values[0], time.Month(values[1]), values[2], values[3], values[4], values[5], 0, chinaLocation)
 	if date.Month() != time.Month(values[1]) || date.Day() != values[2] || date.Hour() != values[3] || date.Minute() != values[4] || date.Second() != values[5] {
 		return time.Time{}, fmt.Errorf("%w: invalid device time", ErrPayload)

@@ -94,8 +94,9 @@ func settlementFixture(t *testing.T, ctx context.Context, mode string, ratios []
 	}
 
 	billingDB := openSettlementDB(t, "TEST_BILLING_DATABASE_URL")
-	// charge_order_id is the global receipt key. Scanning MAX through GORM keeps
-	// the driver conversion in one place instead of hand-writing a CAST.
+	// charge_order_id 是回执的全局键。
+	// 通过 GORM 扫 MAX 可以把驱动层的类型转换
+	// 集中在一处，而不用手写 CAST。
 	var highest struct {
 		Value *uint64 `gorm:"column:value"`
 	}
@@ -138,8 +139,8 @@ func TestSettlementSplitsEveryCentExactlyOnce(t *testing.T) {
 		t.Skip("disposable MySQL required")
 	}
 	ctx := context.Background()
-	// 3001/6999 with a 60/40 split leaves a remainder on both components; the
-	// allocation must still conserve the pool exactly.
+	// 3001/6999 配上 60/40 的比例，两项都会剩下零头；
+	// 但分账结果仍必须分毫不差地守住整个池子。
 	electric, service := int64(3001), int64(6999)
 	calculationID, stationID, _ := settlementFixture(t, ctx, "mode_a", []int32{6000, 4000}, electric, service)
 	store := Store{DB: openSettlementDB(t, "TEST_BILLING_DATABASE_URL")}
@@ -192,7 +193,7 @@ func TestSettlementSplitsEveryCentExactlyOnce(t *testing.T) {
 	if header.SplitPool != electric+service || header.ExcludedElectric != 0 || header.Total != electric+service {
 		t.Fatalf("settlement header %+v", header)
 	}
-	// Replaying the same billing dispatch must not pay the parties twice.
+	// 重放同一次计费派发，绝不能让各方被付两次。
 	againID, created, err := store.Settle(ctx, calculationID, template, fee, month)
 	if err != nil || created || againID != settlementID {
 		t.Fatalf("replay created a second settlement: %d %v %v", againID, created, err)
@@ -246,15 +247,16 @@ func TestSettlementRejectsInvalidTemplateRatios(t *testing.T) {
 		t.Skip("disposable MySQL required")
 	}
 	ctx := context.Background()
-	// 9000 basis points can never be settled; the resolver must refuse the
-	// template instead of silently paying out an unbalanced split.
+	// 9000 个基点永远无法结算；
+	// 解析器必须拒绝这个模板，
+	// 而不是悄悄按一个失衡的比例把钱付出去。
 	_, stationID, _ := settlementFixture(t, ctx, "mode_a", []int32{5000, 4000}, 100, 100)
 	resolver := SplitResolver{AdminDB: openSettlementDB(t, "TEST_ADMIN_DATABASE_URL")}
 	if _, err := resolver.Resolve(ctx, stationID); err == nil {
 		t.Fatal("unbalanced ratios accepted")
 	}
-	// A station bound to no template at all must fail loudly rather than
-	// producing a zero-value settlement.
+	// 完全没绑模板的站点必须明确报错，
+	// 而不是产出一份零值的结算单。
 	var bare uint64
 	name := "bare-" + uuid.NewString()
 	adminDB := openSettlementDB(t, "TEST_ADMIN_DATABASE_URL")
@@ -294,7 +296,7 @@ func TestSettlementBacklogFillsCalculatedFees(t *testing.T) {
 	if !found {
 		t.Fatal("calculated fee missing from the settlement backlog")
 	}
-	// Running the dispatcher with no due orders must still settle the backlog.
+	// 即使没有任何到期订单，跑一次派发器也必须把积压结算掉。
 	dispatcher := Service{Store: store, Orders: emptyOrders{}, Splits: SplitResolver{AdminDB: openSettlementDB(t, "TEST_ADMIN_DATABASE_URL")}}
 	count, err := dispatcher.Run(ctx)
 	if err != nil {
@@ -333,6 +335,7 @@ func actualFee(electric, service int64) (fee actualFeeType) {
 	return actualFeeType{ElectricCents: electric, ServiceCents: service, TotalCents: electric + service}
 }
 
-// The settlement writer takes the pricing result type directly; the alias keeps
-// the test helpers readable without importing the pricing package twice.
+// 结算写入方直接接收定价结果类型；
+// 这个别名让测试辅助函数保持易读，
+// 又不用把 pricing 包导入两次。
 type actualFeeType = pricing.ActualFee

@@ -132,6 +132,6 @@ func TestPaidStartIsDurableAndRequiresMatchedDeviceACK(t *testing.T) {
 	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM device_port WHERE device_id = ? AND port_no = 1 AND status = 'idle' AND current_order_id IS NULL", deviceID).Scan(&remaining); err != nil || remaining != 1 {
 		t.Fatalf("port not released: count=%d err=%v", remaining, err)
 	}
-	// The ACK is not a payment result and does not complete user-side order
-	// settlement; the worker must report it back to central separately.
+	// 这个 ACK 不是支付结果，也不会完成用户侧的订单结算；
+	// worker 必须另行把它回报给 central。
 }

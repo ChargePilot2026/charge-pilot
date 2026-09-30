@@ -17,8 +17,8 @@ const (
 	CommandOTA    CommandKind = "ota"
 )
 
-// Command is intentionally vendor-neutral. The domain layer must persist and
-// authorize an instruction before asking the active connection to send it.
+// Command 刻意与厂商无关。领域层必须先把一条指令落库并鉴权，
+// 然后才能让当前那条连接去发送它。
 type Command struct {
 	Kind         CommandKind
 	SessionID    [6]byte
@@ -36,9 +36,9 @@ type Session interface {
 	Close() error
 }
 
-// Registry routes commands to the current authenticated device connection.
-// A new login replaces the prior session, and stale disconnects cannot remove
-// the replacement.
+// Registry 把命令路由到设备当前那条已认证的连接。
+// 一次新的登录会顶替掉上一个会话，而迟到的断开回调
+// 不会把这条被顶替的会话也一起摘掉。
 type Registry struct {
 	mu       sync.RWMutex
 	sessions map[string]*registryEntry
@@ -46,13 +46,13 @@ type Registry struct {
 
 type registryEntry struct{ session Session }
 
-// Attach installs session as the current connection for deviceID and returns a
-// detach function. If a session is already registered it is closed and
-// onReplaced is called with it, which lets the caller record that the old
-// connection ended because a newer login took over rather than because the
-// device hung up.
+// Attach 把 session 装成 deviceID 当前的连接，并返回一个 detach 函数。
+// 如果该设备已经登记过一个会话，它会被关闭，
+// 并连同 onReplaced 一起交给调用方，好让调用方记录下
+// 旧连接结束是因为来了更新的登录，
+// 而不是因为设备自己挂断。
 //
-// onReplaced may be nil.
+// onReplaced 可以为 nil。
 func (r *Registry) Attach(deviceID string, session Session, onReplaced func(Session)) func() {
 	r.mu.Lock()
 	if r.sessions == nil {

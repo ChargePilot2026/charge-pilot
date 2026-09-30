@@ -14,8 +14,8 @@ type Endpoint struct {
 	Adapter Adapter
 }
 
-// Serve binds all protocol ports before accepting any devices. A bind failure
-// leaves no partially running listener behind.
+// Serve 在接收任何设备之前先把所有协议端口都绑定好。任何一个绑定失败
+// 都不会留下半启动状态的监听器。
 func Serve(ctx context.Context, endpoints []Endpoint, sink Sink, maxConnections int) error {
 	if len(endpoints) == 0 || sink == nil || maxConnections < 1 {
 		return errors.New("invalid protocol listener configuration")
@@ -70,13 +70,12 @@ func Serve(ctx context.Context, endpoints []Endpoint, sink Sink, maxConnections 
 							connMu.Unlock()
 							<-limit
 						}()
-						// A session that ends in an error used to end in silence:
-						// an unknown device, a malformed registration or a payload
-						// the board could not read all closed the socket with
-						// nothing written anywhere, so the only symptom an operator
-						// had was a pile that never came online. The normal end of a
-						// session is not an error and is left unlogged; this is the
-						// same distinction the board's own silent branch needed.
+						// 以前以错误结束的会话是无声的：未知设备、格式不对的
+						// 注册消息，或者板子读不懂的载荷，都是什么地方都没写
+						// 就关掉了 socket，运维唯一能看到的症状就只是
+						// "这台桩始终没上线"。会话的正常结束不算错误，
+						// 不记日志；这与板子自己那个静默分支
+						// 需要的区分是同一回事。
 						if err := adapter.ServeConn(ctx, conn, sink); err != nil && ctx.Err() == nil {
 							log.Printf("device session ended on %s: %v", adapter.Name(), err)
 						}

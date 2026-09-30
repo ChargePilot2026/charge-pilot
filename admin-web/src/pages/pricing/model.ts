@@ -1,11 +1,10 @@
-// The pricing model in one place: the wire shapes, and the arithmetic that
-// turns a stored Spec into something an editor can hold in its head.
+// 计价模型集中放在这一处：线上的数据结构，以及把存下来的 Spec 换算成运营脑子里
+// 装得下的东西的那套算术。
 //
-// The editor works in yuan and in human minutes (what an operator reads) and
-// this file is the only place that converts to the cents and end-minutes the
-// engine stores. The chain invariants the backend enforces are checked here
-// too, with a message that names the offending segment, because "参数无效"
-// from the server tells an operator nothing they can act on.
+// 编辑器一律以「元」和「人看的分钟」为单位（运营读的就是这个），而这个文件是唯一
+// 把它换算成引擎实际存的「分」和「结束分钟」的地方。后端强制的链条不变量在这里也
+// 一起校验，并且报错要点名是哪一段出问题——服务端只回一句"参数无效"，等于没告诉
+// 运营任何能照着改的东西。
 
 export type ChargeMode =
   | 'server_realtime_power' | 'server_max_power' | 'server_energy'
@@ -82,8 +81,8 @@ export const basisOf = (mode: ChargeMode): ServerBasis =>
 export const usesLadder = (mode: ChargeMode) => mode === 'server_realtime_power' || mode === 'server_max_power';
 export const modeLabel = (mode?: string) => (mode && MODE_META[mode as ChargeMode] ? MODE_META[mode as ChargeMode].label : (mode || '—'));
 
-// A service fee priced through the power ladder reads the per-tier number, so
-// it does not exist on an energy tariff that has no ladder to read it from.
+// 走功率阶梯计价的服务费读的是各档位单价，所以在没有阶梯可读的电价模板上这个选项
+// 根本不存在。
 export const SERVICE_OPTIONS: { value: ServiceBasis; label: string; unit: string }[] = [
   { value: 'none', label: '不收服务费', unit: '' },
   { value: 'energy', label: '按电量（元/度）', unit: '元/度' },
@@ -97,9 +96,8 @@ export const DEFAULT_DISPLAY: Display = {
   fee_split_inline: true, show_fee_on_end: true, show_method: true, show_rule: false, hide_unit: false,
 };
 
-// The detail screen has to say what the charging user will see, in the words an
-// operator uses. Printing the raw field names told them nothing they could act
-// on: nobody decides whether to reveal a tariff by reading "show_tariff".
+// 详情页必须用运营的说法讲清楚充电用户会看到什么。直接把字段名印出来等于什么都没说：
+// 没人会靠读 "show_tariff" 来决定要不要显示电价。
 const DISPLAY_LABELS: Record<keyof Display, string> = {
   show_energy: '显示充电电量',
   show_power: '展示充电功率',
@@ -268,8 +266,7 @@ export function formToSpec(form: SpecForm): Spec {
     if (Number(form.spend_cap_yuan) > 0) spec.spend_cap_cents = toCents(form.spend_cap_yuan);
     if (Number(form.stop_grace_seconds) > 0) spec.stop_grace_seconds = Number(form.stop_grace_seconds);
   } else {
-    // A device-billed tariff carries no rate at all: the backend refuses one,
-    // and a rate nothing reads is worse than no rate.
+    // 设备侧计价的模板根本不带费率：后端会拒绝，而一个没人读的费率比没有费率更糟。
     if (form.mode === 'device_duration') {
       spec.time_charge = {
         stop_when_full: !!form.time_charge.stop_when_full,
@@ -284,10 +281,9 @@ export function formToSpec(form: SpecForm): Spec {
   return spec;
 }
 
-// insertPeriod splices a segment into the chain at `at`. The chain has no
-// gaps, so a new segment has to take a slice out of its neighbour rather than
-// sit beside it: appending pushes the old tail to the new boundary and hands
-// 1440 to the new segment, and a middle insert splits the slice it lands in.
+// insertPeriod 把一段时段接到 `at` 位置的链条里。链条不允许有缺口，所以新时段必须从
+// 相邻那一段里切一块下来，而不能并排放在旁边：追加时把原来的尾巴推到新的边界上、
+// 把 1440 交给新时段，插在中间时则把它落进去的那一段劈成两半。
 export function insertPeriod(periods: PeriodForm[], at: number): PeriodForm[] {
   const list = (periods || []).map(p => ({ ...p, tiers: [...(p.tiers || [])] }));
   const prevEnd = at > 0 ? Number(list[at - 1].end_minute) : 0;
@@ -337,9 +333,9 @@ export function removeTier(tiers: TierForm[], at: number): TierForm[] {
 
 const isMoney = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 10000;
 
-// validateSpecForm mirrors ValidateSpec and names the offending row. Every
-// message says what to change, because the server's only answer is a blanket
-// "参数无效" and an operator cannot guess which of fourteen fields it meant.
+// validateSpecForm 与后端 ValidateSpec 对齐，并且点名是第几行出的问题。每条提示都
+// 说清要改什么，因为服务端唯一的回答是一句笼统的"参数无效"，运营没法从十四个字段里
+// 猜它说的是哪一个。
 export function validateSpecForm(form: SpecForm): string[] {
   const errors: string[] = [];
   if (!form.mode || !MODE_META[form.mode]) {

@@ -5,12 +5,12 @@ import (
 	"time"
 )
 
-// RFC 6238 test vectors are the standard reference for a TOTP implementation;
-// using them here means an authenticator app and this service cannot drift.
+// RFC 6238 的测试向量是实现 TOTP 的标准参照；
+// 在这里用它们，意味着验证器 App 与本服务不会各自漂移。
 func TestVerifyTOTPAcceptsRFC6238Vectors(t *testing.T) {
-	// The published seed is the ASCII string "12345678901234567890". RFC 6238
-	// lists 8-digit codes; this service issues 6-digit ones, which are the same
-	// truncated values and match what authenticator apps display by default.
+	// 公开的种子就是 ASCII 串 "12345678901234567890"。RFC 6238
+	// 列的是 8 位口令；本服务发的是 6 位，取的是同一批截断值，
+	// 正好是验证器 App 默认显示的那一串。
 	const seed = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
 	cases := []struct {
 		seconds int64
@@ -51,8 +51,8 @@ func TestVerifyTOTPRejectsInvalidSecret(t *testing.T) {
 func TestVerifyTOTPAllowsClockSkew(t *testing.T) {
 	const seed = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
 	base := time.Unix(1111111111, 0)
-	// A code one step behind and one step ahead must still work, because device
-	// clocks drift by a fraction of the 30s window.
+	// 落后一步和领先一步的口令都还必须能通过，
+	// 因为设备时钟会在 30 秒窗口里漂移一小会儿。
 	if err := VerifyTOTP(seed, "050471", base); err != nil {
 		t.Fatalf("baseline code rejected: %v", err)
 	}

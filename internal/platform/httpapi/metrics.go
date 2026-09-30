@@ -11,8 +11,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-// Metrics owns one registry per service and uses matched Gin route templates to
-// keep time-series cardinality bounded even when URLs contain device IDs.
+// Metrics 每个服务各持有一个 registry，并使用匹配到的 Gin 路由模板，
+// 这样即使 URL 里含有设备 ID，时间序列的基数也是有界的。
 type Metrics struct {
 	requests *prometheus.CounterVec
 	duration *prometheus.HistogramVec

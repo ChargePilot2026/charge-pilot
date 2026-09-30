@@ -13,8 +13,8 @@ import (
 )
 
 // 站点曾经有一份对外业务编码 code：它与客户资产台账上的编码保持一致，C 端详情
-// 接口也按它寻址（GET /api/v1/user/station/:code）。这套编码还有一条更强的约束——
-// 全局唯一且删除后永不复用，仅靠 (code, deleted_at) 唯一索引做不到，因为 MySQL 把
+// 接口也按它寻址（GET /api/v1/user/station/：code）。这套编码还有一条更强的约束——
+// 全局唯一且删除后永不复用，仅靠 (code， deleted_at) 唯一索引做不到，因为 MySQL 把
 // 唯一索引里的每个 NULL 都视为互不相同，两个存活站点可以同时 code = NULL 而谁也
 // 拦不住；真正兜底的是 station_code_identity 注册表。
 //
@@ -44,9 +44,9 @@ func (Station) TableName() string { return "station" }
 // "传了 0"——这两个字段是必填项，缺失按无效处理。分账模板同样用指针表示"不绑定"，
 // 但它只在新建时生效，编辑路径一旦带上就会被拒绝。
 type StationInput struct {
-	// Code is not a field of the station any more. It is kept here only so a
-	// client still sending it gets told why, instead of having the value
-	// silently dropped on decode.
+	// Code 早已不再是站点的字段。之所以还留在这儿，
+	// 只是为了让仍在传它的客户端能收到一句明确的说明，
+	// 而不是让这个值在解析时被静默丢掉。
 	Code            *string  `json:"code"`              // 已废弃的站点编码，故意保留的兼容字段：非 nil 即触发"编码已移除"的报错，不要当成待删的死代码。
 	Name            string   `json:"name"`              // 站点名称，必填，去空白后最长 128 字符。
 	Address         *string  `json:"address"`           // 站点地址，可空，最长 255 字符。

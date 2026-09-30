@@ -10,7 +10,7 @@ import (
 type Offer struct {
 	ID        uint64 `json:"id" gorm:"column:id"`
 	StationID uint64 `json:"station_id" gorm:"column:station_id"`
-	// DeviceID is empty for an offer sold across the whole station.
+	// DeviceID 为空表示这个套餐是整站发售的。
 	DeviceID        string `json:"device_id,omitempty" gorm:"column:device_id"`
 	Name            string `json:"name" gorm:"column:name"`
 	Mode            string `json:"mode" gorm:"column:mode"`
@@ -25,25 +25,23 @@ func (o Offer) Valid() bool {
 		(o.Mode == "amount" && o.DurationMinutes == 0 || o.Mode == "package" && o.DurationMinutes > 0 && o.DurationMinutes <= 600)
 }
 
-// ActiveOffers lists what a charging user can pick on this device: the ones assigned to
-// it, plus the station-wide ones it has not overridden.
+// ActiveOffers 列出充电用户能在这台设备上选的套餐：挂在它上面的那些，
+// 加上它自己没有覆盖掉的整站套餐。
 func (s Store) ActiveOffers(ctx context.Context, stationID uint64, deviceID string) ([]Offer, error) {
 	if s.DB == nil || stationID == 0 {
 		return nil, ErrOfferUnavailable
 	}
 	rows := []Offer{}
-	// Retired rows are filtered here because the column exists precisely so a
-	// package can be taken off sale without losing its history — and the admin
-	// list has always filtered it. The charging-user read, if it ignored the
-	// column, would keep selling something an operator believes is gone.
+	// 下架行在这里被过滤掉，因为这一列存在的意义正是让一个套餐可以下架而不
+	// 丢掉它的历史——而后台列表一直都有这个过滤。充电用户这一侧的读取如果
+	// 忽略这一列，就会继续在卖一个运营方以为已经没了的东西。
 	query := s.DB.WithContext(ctx).Table("charge_offer").
 		Where("station_id=? AND status='active' AND deleted_at IS NULL", stationID)
 	if deviceID != "" {
 		query = query.Where("device_id = ? OR device_id IS NULL", deviceID)
-		// A station-wide package that this device also sells on its own is
-		// overridden, and the device's own version is the one that applies.
-		// Listing both put the same package in the charging user's list twice, which is
-		// what the sentence above has always said must not happen.
+		// 整站套餐如果这台设备自己也在单卖，就以设备自己那份为准。两条都列出来
+		// 会让同一个套餐在充电用户的列表里出现两次，这正是上面那句话一向说的
+		// 不能发生的情况。
 		query = query.Where(`device_id = ? OR package_template_id NOT IN (
 			SELECT package_template_id FROM charge_offer
 			WHERE station_id = ? AND device_id = ? AND status = 'active' AND deleted_at IS NULL
@@ -73,8 +71,7 @@ func (s Store) ActiveOffer(ctx context.Context, stationID uint64, deviceID strin
 	if result.Error != nil {
 		return Offer{}, result.Error
 	}
-	// An offer assigned to a different device is not for sale here, even
-	// though the row itself is active.
+	// 挂在别的设备上的套餐在这里不算在售，哪怕这行本身是 active 的。
 	if deviceID != "" && row.DeviceID != "" && row.DeviceID != deviceID {
 		return Offer{}, ErrOfferUnavailable
 	}

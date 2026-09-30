@@ -60,8 +60,9 @@ func retryableMySQL(err error) bool {
 }
 
 func (s UserStore) loginOnce(ctx context.Context, openID, unionID string) (User, error) {
-	// Create the identity row in autocommit mode. Concurrent INSERT IGNORE
-	// inside transactions can deadlock on the missing-key gap before FOR UPDATE.
+	// 以自动提交模式创建 identity 行。
+	// 事务里并发的 INSERT IGNORE
+	// 可能在 FOR UPDATE 之前就因缺失键间隙而死锁。
 	if err := s.DB.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&LoginIdentity{OpenID: []byte(openID)}).Error; err != nil {
 		return User{}, err
 	}

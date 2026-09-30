@@ -10,9 +10,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// historicalCurve accepts a time window that central has already derived from
-// an owned charge order. Gateway has no access to user_db, so order ownership
-// must be proven at the central boundary before calling this internal route.
+// historicalCurve 接受一个由 central 从它自己拥有的充电订单推导出来的时间窗。
+// gateway 拿不到 user_db，所以订单归属必须在 central 那一侧先证明，
+// 才能调到这个内部接口。
 func (a TelemetryAPI) historicalCurve(c *gin.Context) {
 	if !a.authorized(c) {
 		return

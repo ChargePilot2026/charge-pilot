@@ -16,9 +16,9 @@ import (
 	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol"
 )
 
-// remoteAddrOf captures the peer address for the session audit. The host part
-// is kept, and an IPv6 zone or a long port suffix is trimmed to what fits the
-// column, because a row must never be rejected over a cosmetic overflow.
+// remoteAddrOf 取对端地址用于会话审计。保留 host 部分，IPv6 的 zone
+// 或过长的端口后缀会裁到塞进列宽为止，因为一行记录不该因为纯外观上的
+// 超长就被拒。
 func remoteAddrOf(conn net.Conn) string {
 	if conn == nil || conn.RemoteAddr() == nil {
 		return ""
@@ -30,9 +30,8 @@ func remoteAddrOf(conn net.Conn) string {
 	return addr
 }
 
-// finish writes the terminal session row. A sink that does not implement
-// SessionRecorder is left alone rather than failed: session auditing is
-// valuable, but refusing to serve devices over it would be the wrong trade.
+// finish 写入终态的会话行。没有实现 SessionRecorder 的 sink 被放行而
+// 不是失败：会话审计有价值，但为了它拒服务设备是笔亏本买卖。
 func (a TCPAdapter) finish(ctx context.Context, sink protocol.Sink, audit *protocol.SessionAudit, deviceID string, reason protocol.CloseReason) {
 	recorder, ok := sink.(protocol.SessionRecorder)
 	if !ok {
@@ -45,8 +44,8 @@ func (a TCPAdapter) finish(ctx context.Context, sink protocol.Sink, audit *proto
 	_ = recorder.RecordSession(ctx, audit.Snapshot(deviceID, string(reason), clock()))
 }
 
-// TCPAdapter is one vendor listener. Other adapters use separate ports and
-// implement protocol.Adapter without changing this package.
+// TCPAdapter 是一个厂商监听器。其他 adapter 使用各自的端口并实现
+// protocol.Adapter，不必改动本包。
 type TCPAdapter struct {
 	Clock    func() time.Time
 	Registry *protocol.Registry
@@ -59,10 +58,9 @@ func (a TCPAdapter) ServeConn(ctx context.Context, conn net.Conn, sink protocol.
 	if clock == nil {
 		clock = time.Now
 	}
-	// A session is identified by the server-chosen session bytes we hand the
-	// device in the register reply, which is what the device echoes back in
-	// every later frame. Using it as the audit key means a reconnect produces a
-	// distinct row rather than overwriting the previous connection.
+	// 会话由服务器挑定的 session 字节标识，也就是在注册应答里交给
+	// 设备、设备此后每一帧都会回带的那串字节。拿它当审计主键，意味
+	// 着重连会写出一行新记录，而不是覆盖掉上一次连接。
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
@@ -93,12 +91,12 @@ func (a TCPAdapter) ServeConn(ctx context.Context, conn net.Conn, sink protocol.
 		return err
 	}
 	audit := protocol.NewSessionAudit(protocol.TransportTCP, hex.EncodeToString(serverSession[:]), remoteAddrOf(conn), clock())
-	// Set when a newer login displaces this connection, so the audit row says
-	// "replaced" rather than implying the device hung up on its own.
+	// 较新的登录挤掉本连接时置位，好让审计行写「被替换」，而不是
+	// 暗示设备自己挂断。
 	var replaced atomic.Bool
-	// Persist the finished connection on every exit path. The write happens after
-	// the protocol exchange is over, so a database problem here cannot corrupt
-	// the exchange or mask the real error that ended the connection.
+	// 每条退出路径都把结束的连接落库。写入发生在协议交互之后，所以
+	// 这里的数据库问题既不会污染交互，也不会盖掉真正结束连接的那个
+	// 错误。
 	reason := protocol.CloseDeviceClosed
 	defer func() {
 		if errors.Is(serveErr, os.ErrDeadlineExceeded) {
@@ -117,15 +115,13 @@ func (a TCPAdapter) ServeConn(ctx context.Context, conn net.Conn, sink protocol.
 	if err := session.writeFrame(BuildRegisterReply(serverSession, clock())); err != nil {
 		return err
 	}
-	// Ask for the heartbeat period and for per-port telemetry before the first
-	// heartbeat arrives.
+	// 在第一次心跳到达之前，先索要心跳周期和每端口遥测。
 	//
-	// Since 5.8.6 the port block is only present in a heartbeat when the
-	// platform asked for it, so a gateway that never sends this is accepting
-	// whatever the board shipped with. That makes "no port telemetry" and
-	// "nothing is charging" the same observation, and the first is almost never
-	// the truth. It also fixes the read deadline: the vendor's rule is three
-	// missed heartbeats, not any constant this build could pick.
+	// 从 5.8.6 起，端口块只有平台主动要求时才出现在心跳里，所以从不
+	// 发这一帧的网关等于在收下主板出厂时的配置。那会让「没有端口
+	// 遥测」和「什么都没在充电」变成同一个观测，而前者几乎从来不是
+	// 真相。它同时也把读死限定死：厂商的规定是漏掉三次心跳，而不是
+	// 这个构建随便挑的某个常数。
 	interval, err := BuildHeartbeatInterval(serverSession, DefaultHeartbeatSeconds, true)
 	if err != nil {
 		return err
@@ -133,11 +129,10 @@ func (a TCPAdapter) ServeConn(ctx context.Context, conn net.Conn, sink protocol.
 	if err := session.writeFrame(interval); err != nil {
 		return err
 	}
-	// The read deadline follows the period just asked for, at the vendor's rule
-	// of three missed heartbeats. A constant would be wrong in one direction or
-	// the other: too long and a board that has stopped talking keeps its ports
-	// open for minutes, too short and a board honouring a longer period than we
-	// asked for is dropped mid-session.
+	// 读死跟刚申请到的周期走，按厂商漏掉三次心跳的规则算。写死成常数
+	// 总有一边是错的：过长会让已经闭嘴的主板继续占着端口好几分钟；
+	// 过短则会在一台老实执行比我们申请的更长周期的主板还在正常充电
+	// 时把它踢掉。
 	readTimeout := time.Duration(DefaultHeartbeatSeconds*3) * time.Second
 	if a.Registry != nil {
 		detach := a.Registry.Attach(deviceID, session, func(protocol.Session) { replaced.Store(true) })
@@ -154,7 +149,7 @@ func (a TCPAdapter) ServeConn(ctx context.Context, conn net.Conn, sink protocol.
 		audit.Inbound(len(frame.Data), clock())
 		event := protocol.Event{Protocol: a.Name(), DeviceID: deviceID, ReceivedAt: clock(), RawPayload: frame.Data, SessionID: frame.Session}
 		switch frame.Command {
-		case 0xA8: // device time request; record before responding
+		case 0xA8: // 设备对时请求；先记录再应答
 			if len(frame.Data) != 6 {
 				return ErrPayload
 			}
@@ -230,7 +225,7 @@ func (a TCPAdapter) ServeConn(ctx context.Context, conn net.Conn, sink protocol.
 			if err := session.writeFrame(BuildFaultReply(frame.Session, event.Port)); err != nil {
 				return err
 			}
-		case RemoteControl + 1: // A3: remote-control result; vendor may not send it
+		case RemoteControl + 1: // A3：远程控制结果；厂商可能不发
 			if len(frame.Data) != 2 {
 				return ErrPayload
 			}
@@ -238,7 +233,7 @@ func (a TCPAdapter) ServeConn(ctx context.Context, conn net.Conn, sink protocol.
 			if err := sink.Record(ctx, event); err != nil {
 				return err
 			}
-		case 0xC2: // local charging-band report; no acknowledgement per protocol
+		case 0xC2: // 本地分档上报；按协议无需确认
 			meter, err := ParseChargingBand(frame)
 			if err != nil {
 				return err
@@ -251,19 +246,17 @@ func (a TCPAdapter) ServeConn(ctx context.Context, conn net.Conn, sink protocol.
 				return err
 			}
 		case HeartbeatSetReply, ConfigAck, ConfigReport, cmdPowerControlReply:
-			// The board's answer to something this platform just asked it.
+			// 主板对平台刚刚向它发出的某个请求的回答。
 			//
-			// These are ordinary traffic on a healthy link, and before they were
-			// handled they fell through to the default branch below — which meant
-			// a board refusing a parameter table was recorded as "sent a command
-			// we do not recognise" and the reason vanished. That is the same
-			// mistake the stop path was making with 0x00 and 0x04: a refusal
-			// treated as a non-event is a refusal nobody can diagnose.
+			// 这些在健康链路上都是正常流量，而在被显式处理之前它们会落到
+			// 下面的 default 分支里——那意味着一块拒绝了参数表的主板被
+			// 记成「发了个我们不认识的命令」，原因就此消失。
+			// 这跟停止路径当初在 0x00 和 0x04 上犯的是同一个错：把拒绝
+			// 当成无事发生，就等于让这次拒绝谁也诊断不了。
 			//
-			// A decode failure is not fatal. A board that answers with a shape
-			// this build does not know is still a board that is talking, and
-			// dropping the link over it would make it unreachable for a reason
-			// that has nothing to do with the pile being broken.
+			// 解码失败不算致命。一块用这个构建不认识的形状作答的主板，
+			// 仍然是一块还在说话的主板，为此把链路掐掉，会让它因为一个
+			// 跟桩子坏了毫无关系的原因而失联。
 			event.Type = protocol.ConfigResult
 			event.Signal = frame.Command
 			switch frame.Command {
@@ -273,8 +266,8 @@ func (a TCPAdapter) ServeConn(ctx context.Context, conn net.Conn, sink protocol.
 					if accepted {
 						event.ResultCode = 0
 					} else {
-						// The board kept the period it already had, so the read
-						// timeout this connection uses no longer matches the link.
+						// 主板保留了它原来的周期，本连接所用的读超时
+						// 从此与链路不符。
 						event.ResultCode = 1
 					}
 				}
@@ -284,24 +277,23 @@ func (a TCPAdapter) ServeConn(ctx context.Context, conn net.Conn, sink protocol.
 				} else {
 					var rejected ErrConfigRejected
 					if errors.As(err, &rejected) {
-						// The code names the field that was out of range, which
-						// is the difference between an operator fixing a value
-						// and an operator guessing at one.
+						// 错误码指明是哪个字段越界，这正是「运维照着
+						// 改一个值」和「运维靠猜」之间的区别。
 						event.ResultCode = rejected.Code
 					} else {
 						event.ResultCode = 0xFF
 					}
 				}
 			case ConfigReport:
-				// The board telling us what it is actually running. Decoded only
-				// to tell a readable report from an unreadable one; the bytes are
-				// left as they arrived, because RawPayload is the replay record
-				// and replacing it with a re-encoding would mean the thing you
-				// replay is no longer the thing the board sent.
+				// 主板在告诉我们它实际在跑什么。这里只解码到能分辨
+				// 「这份上报读得懂」与「读不懂」为止；字节保持原样，
+				// 因为 RawPayload 就是重放记录，把它换成重新编码的
+				// 结果，意味着你重放的东西已经不是主板发出来的那份
+				// 了。
 				if _, err := DecodeConfig(frame); err != nil {
 					event.ResultCode = 0xFF
 				}
-			default: // cmdPowerControlReply
+			default: // 即 cmdPowerControlReply
 				if _, err := ParsePowerControlReply(frame); err != nil {
 					if errors.Is(err, ErrPowerControlRejected) {
 						event.ResultCode = 1
@@ -314,17 +306,14 @@ func (a TCPAdapter) ServeConn(ctx context.Context, conn net.Conn, sink protocol.
 				return err
 			}
 		default:
-			// An unrecognised command is recorded and skipped, not fatal.
+			// 不认识的命令被记录后跳过，不致命。
 			//
-			// The vendor document marks several commands as optional: the
-			// platform-parameter request is "not sent by some boards", the
-			// charging-band report is "not sent by some boards", and the remote
-			// control reply "is not reported" for reset and upgrade. Boards
-			// running older firmware still send them. Dropping the connection on
-			// one would mean a perfectly healthy pile is unreachable purely
-			// because this build has not implemented a command it does not need
-			// — and the first such command would be the one that keeps it from
-			// being diagnosed.
+			// 厂商文档把若干命令标为可选：平台参数请求「部分主板不发」，
+			// 分档上报「部分主板不发」，远程控制的应答对重启和升级
+			// 「不上报」。跑着老固件的主板照样会发它们。碰上一个就断
+			// 连接，意味着一个完好的充电桩仅仅因为这个构建没有实现
+			// 一个它并不需要的命令而失联——而且第一个这样的命令，恰恰
+			// 就是让人没法诊断的那一个。
 			audit.Unknown(frame.Command)
 		}
 	}

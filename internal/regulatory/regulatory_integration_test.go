@@ -90,7 +90,8 @@ func TestSixRegulatoryObjectsAndOfflineRetry(t *testing.T) {
 	if response.Code != 200 || !strings.Contains(response.Body.String(), `"status":"queued"`) {
 		t.Fatalf("queued status=%d body=%s", response.Code, response.Body.String())
 	}
-	// The first attempt fails but the persisted event stays queued for retry.
+	// 第一次尝试失败，
+	// 但已落库的事件仍留在队列里等待重试。
 	count, err := (Deliverer{DB: db, Sender: failingSender{}}).RunBatch(ctx)
 	if count != 0 || err == nil {
 		t.Fatalf("offline delivery count=%d err=%v", count, err)

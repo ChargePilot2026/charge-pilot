@@ -48,7 +48,7 @@ const thresholdText = (value: AlertRule['threshold']) => {
   return String(value);
 };
 
-/** AlertRules manages the telemetry rules the worker evaluates on every pass. */
+/** AlertRules 管理 worker 每一轮都会求值的遥测规则。 */
 export function AlertRules() {
   const { message } = App.useApp();
   const [rows, setRows] = useState<AlertRule[]>([]);
@@ -237,7 +237,7 @@ export function AlertRules() {
   );
 }
 
-/** AlertSubscriptions routes alerts to webhooks or named operators. */
+/** AlertSubscriptions 把告警路由到 webhook 或指定的人。 */
 export function AlertSubscriptions() {
   const { message } = App.useApp();
   const [rows, setRows] = useState<AlertSubscription[]>([]);

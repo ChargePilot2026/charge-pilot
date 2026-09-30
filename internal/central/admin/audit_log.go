@@ -9,25 +9,23 @@ import (
 	"gorm.io/gorm"
 )
 
-// audit_log lives in admin_db. Resource data for coupons, refunds, invoices,
-// settlements and casework lives in user_db, so a handler that changes one and
-// then reuses its own transaction for the audit writes the audit into
-// user_db.audit_log instead. The two rows are invisible to each other and the
-// trail for a financial action ends up somewhere nobody looks.
+// auditToAdmin 通过 AdminDB 写一条审计，供 user_db 等其他库的业务在事务提交
+// 后补记；失败只打 error 日志、不影响请求返回，理由见下方三段。
 //
-// This helper is the only supported way for a user_db handler to record an
-// action. It writes through AdminDB, after the business transaction has
-// committed, because joining the two would be a cross-schema write and this
-// project does not do those.
+// audit_log 表建在 admin_db，而优惠券、退款、发票、分账和工单这些资源的
+// 数据在 user_db：一个处理函数先改了 user_db 的数据，再拿自己的事务顺手
+// 写审计，审计就会落进 user_db.audit_log 而不是 admin_db.audit_log。
+// 两边的行互相看不见，一次资金操作的轨迹就落在没人看的地方。
 //
-// Failure semantics, chosen deliberately: the business change is already
-// durable when the audit runs, so failing the response would tell the operator
-// an action did not happen when it did, and a retry of a refund or a payout is
-// worse than a missing log line. A failed audit is therefore logged at error
-// level with the full context and the request still succeeds. That trade is
-// recorded in docs/migration/go-rebuild.md rather than left implicit.
-// auditToAdmin 通过 AdminDB 写一条审计，供 user_db 等其他库的业务在事务提交后补记。
-// 失败只打 error 日志、不影响请求返回，理由见上方英文说明。
+// 这个方法是 user_db 侧业务记录动作的唯一受支持入口。它走 AdminDB 写，
+// 并且排在业务事务提交之后：把两件事并进同一次写就是跨 schema 写，
+// 而本项目不做跨 schema 写。
+//
+// 失败语义是刻意选的：审计执行的时候业务变更已经落库，此时让响应判失败，
+// 等于告诉运营一件已经发生的事没有发生；而重试一次退款或一次打款，比少
+// 一行日志更糟。所以审计写失败时只按 error 级别带着完整上下文记日志，
+// 请求照常成功。写失败只打日志、不影响返回这个取舍记在
+// docs/migration/go-rebuild.md 里，不是一句没写下来的默认行为。
 func (a ResourceAPI) auditToAdmin(c *gin.Context, action, target string, id uint64, before, after any, requestID string) {
 	err := resourceAudit(a.Store.AdminDB.WithContext(c.Request.Context()),
 		c.MustGet("admin_profile").(Profile), action, target, id, before, after,
@@ -61,10 +59,9 @@ type auditRow struct {
 	TargetID   *string `json:"target_id"`   // 目标主键（字符串形式）；指针，未指定时为 null
 	RequestID  *string `json:"request_id"`  // 关联请求号；指针，取不到时为 null
 	ClientIP   *string `json:"client_ip"`   // 客户端 IP；指针，取不到时为 null
-	// *string, not *[]byte: encoding/json renders []byte as base64, which would
-	// hand the operator an unreadable blob instead of the change snapshot.
-	// 用 *string 而不是 *[]byte：encoding/json 会把 []byte 编成 base64，
-	// 运营看到的是一串乱码而不是变更快照。
+	// 用 *string 而不是 *[]byte：encoding/json 会把 []byte 渲染成
+	// base64，运营拿到手的就是一串读不懂的 blob，而不是他核对
+	// 这次改动要用的快照。
 	BeforeJSON *string   `json:"before_json"` // 变更前快照；指针，新建记录时为 null
 	AfterJSON  *string   `json:"after_json"`  // 变更后快照；指针，新建记录时为 null
 	CreatedAt  time.Time `json:"created_at"`  // 记录时间
@@ -75,13 +72,13 @@ func (a ResourceAPI) registerAuditLogs(r *gin.Engine) {
 	r.GET("/api/v1/admin/audit-logs", a.Auth.Require("audit.read"), a.listAuditLogs)
 }
 
-// listAuditLogs is the read side of the audit trail. Without it the trail is
-// write-only: operators could act on a screen that recorded nothing they could
-// later inspect.
+// listAuditLogs 是 GET /api/v1/admin/audit-logs 的处理函数：按模块、
+// 动作、操作人、目标类型和时间区间分页查询审计记录，按 ID 倒序。
+// 审计只有写的一侧、没有读的一侧就等于没有审计：运营可以在一个
+// 什么都没记下来的界面上动手，事后无从回查这次改动。
 //
-// listAuditLogs 是 GET /api/v1/admin/audit-logs 的处理函数：按模块、动作、
-// 操作人、目标类型和时间区间分页查询审计记录，按 ID 倒序。
-// 时间参数须为 RFC 3339，不合法直接写 400。
+// 时间参数须为 RFC 3339，不合法直接写 400；分页参数与其它列表
+// 接口一致。
 func (a ResourceAPI) listAuditLogs(c *gin.Context) {
 	page, ok := parsePage(c, "")
 	if !ok {
@@ -89,10 +86,9 @@ func (a ResourceAPI) listAuditLogs(c *gin.Context) {
 	}
 	out := Page[auditRow]{Items: []auditRow{}, Page: page.Page, PageSize: page.PageSize}
 
-	// The filters are collected first and the query is then built twice. Reusing
-	// one sessioned statement for both count and list lets the count's
-	// SELECT count(*) leak into the second statement, which silently drops the
-	// column list.
+	// 筛选条件先收齐，然后同一个查询建两遍：count 与列表各调一次
+	// 带 Session 的语句，会让 count 里的 SELECT count(*) 泄漏进
+	// 第二条语句，列清单被悄悄抹掉。
 	var (
 		module, action, actor, target string
 		from, to                      *time.Time
@@ -147,9 +143,9 @@ func (a ResourceAPI) listAuditLogs(c *gin.Context) {
 		return
 	}
 	var rows []auditRow
-	// CAST(... AS CHAR) is required: MySQL hands back a JSON column in its
-	// internal binary form, which reaches the operator as a base64 blob instead
-	// of the snapshot they need in order to check the change.
+	// CAST(... AS CHAR) 是必需的：MySQL 交回的 JSON 列是它的内部二进制
+	// 形式，到运营手里就成了一串 base64 blob，而不是他核对这次改动
+	// 需要的快照。
 	if err := filtered().
 		Select("id, actor_id, actor_name, module, action, target_type, target_id, request_id, client_ip, " +
 			"CAST(before_json AS CHAR) AS before_json, CAST(after_json AS CHAR) AS after_json, created_at").
@@ -161,11 +157,11 @@ func (a ResourceAPI) listAuditLogs(c *gin.Context) {
 	httpapi.OK(c, out)
 }
 
-// auditEntry carries an audit record out of a user_db transaction so it can be
-// written to admin_db once that transaction has committed.
+// auditEntry 是一条待补写的审计：它替 user_db 的事务把一条审计记录带
+// 出去，等那个事务提交之后再写进 admin_db。
 //
-// auditEntry 是一条待补写的审计：user_db 的业务在事务内攒下这些条目，
-// 事务提交后由 flushAudit 逐条写进 admin_db.audit_log。字段含义与 resourceAudit 相同。
+// user_db 的业务在事务内攒下这些条目，事务提交后由 flushAudit 逐条写进
+// admin_db.audit_log。字段含义与 resourceAudit 相同。
 type auditEntry struct {
 	action    string // 动作，如 create / update / grant
 	target    string // 目标类型，同时也是所属模块，如 coupon

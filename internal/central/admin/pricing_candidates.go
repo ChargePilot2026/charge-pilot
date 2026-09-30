@@ -9,10 +9,10 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// A picker that only lists the applicable options leaves an operator guessing
-// why the template they can see everywhere else is not in the list. So every
-// candidate is returned, each carrying either an empty unavailable_reason or the
-// specific reason it cannot be picked. The list is the documentation.
+// 一个只列"当前能选的项目"的选择器，
+// 会让运营猜不出为什么到处都看得见的模板不在列表里。
+// 所以这里返回全部候选：每个候选要么带一个空的 unavailable_reason，
+// 要么带上它选不了的具体原因——这份列表本身就是文档。
 
 // candidateRow 是 pricing_template 表的一行原始模板数据。Spec 保留原始 JSON，是下面
 // 判断"计费口径是否已失效"的输入：解析失败或校验不过的模板会被直接标成不可用。
@@ -40,13 +40,13 @@ func (a ResourceAPI) pricingTemplateCandidates(c *gin.Context) {
 	}
 	stationID := c.Query("station_id")
 	deviceID := c.Query("device_id")
-	// What is already running here, so an operator can see what they would be
-	// replacing rather than discovering it from the refusal afterwards.
+	// 这里当前在跑的是什么，运营能看清自己将要替换掉的是哪一条，
+	// 而不是事后从拒绝提示里才知道。
 	inUse := map[uint64]string{}
-	// The boards this scope would actually write to, so a template the station's
-	// meters cannot support is refused here with the same wording the apply
-	// will use, rather than being selectable and then turning the operator
-	// away after they have filled the form in.
+	// 这个范围真正会写到的板子。站点电表撑不住的模板在这里就被拒掉，
+	// 而且用的是与真正执行时同一套话术，
+	// 而不是先让它可以被选中，
+	// 等运营填完一整张表再把人挡在门外。
 	var targets []switchTarget
 	if stationID != "" {
 		resolved, err := resolveSwitchTargets(a.Store.AdminDB.WithContext(ctx), parseStationID(stationID), deviceID)
@@ -84,8 +84,8 @@ func (a ResourceAPI) pricingTemplateCandidates(c *gin.Context) {
 		if row.Status != "active" {
 			reason = "模板已停用"
 		}
-		// A stored tariff that the engine can no longer run is not offerable,
-		// and saying so here is cheaper than discovering it at apply time.
+		// 引擎已经算不出来的存量计费口径不该摆上候选，
+		// 在这里说清楚，比等到执行时才发现要便宜得多。
 		if reason == "" && (json.Unmarshal(row.Spec, &spec) != nil || pricing.ValidateSpec(spec) != nil) {
 			reason = "计费口径已失效，请重新编辑"
 		}
@@ -106,10 +106,10 @@ func (a ResourceAPI) pricingTemplateCandidates(c *gin.Context) {
 	httpapi.OK(c, gin.H{"items": items, "permissions": c.MustGet("admin_profile").(Profile).Permissions})
 }
 
-// parseStationID turns the station filter into the id the device lookup needs.
-// A filter that is not a number simply resolves to no devices, which leaves the
-// picker showing every template unfiltered — the same as omitting the filter,
-// which is a better answer than a 400 for a value that came from a dropdown.
+// parseStationID 把站点过滤值转成设备查询需要的 ID。
+// 不是数字的过滤值就当作解析不出任何设备，
+// 于是选择器照样列出全部模板、不加过滤——和不传这个过滤是一个效果，
+// 对一个来自下拉框的值来说，这比回 400 更合适。
 
 // parseStationID 把站点过滤值转成设备查询要用的 ID。解析失败一律返回 0（等价于
 // 不按站点过滤），而不是回 400——这个值来自下拉框，返回 0 至少还能给出未过滤的
@@ -122,8 +122,8 @@ func parseStationID(raw string) uint64 {
 	return id
 }
 
-// registerPricingCandidates wires the picker behind the same read permission as
-// the template list.
+// registerPricingCandidates 把候选选择器挂在
+// 与模板列表相同的那个读取权限后面。
 //
 // registerPricingCandidates 把候选选择器挂在与模板列表相同的读取权限 pricing.read 下。
 func (a ResourceAPI) registerPricingCandidates(r *gin.Engine) {

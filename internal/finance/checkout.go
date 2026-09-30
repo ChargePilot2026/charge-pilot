@@ -11,7 +11,7 @@ type Funding struct {
 
 var ErrInvalidFunding = errors.New("negative amount or credit")
 
-// Fund follows the documented precedence: membership, coupon, wallet, WeChat.
+// Fund 按文档约定的优先级扣款：会员、优惠券、钱包、微信。
 func Fund(total, member, coupon, wallet Money) (Funding, error) {
 	if total < 0 || member < 0 || coupon < 0 || wallet < 0 {
 		return Funding{}, ErrInvalidFunding

@@ -39,8 +39,10 @@ type startResult struct {
 	OccurredAt    time.Time `json:"occurred_at"`
 }
 
-// SyncBatch is replay-safe: central stores one result per command/order, and
-// gateway marks the result reported only after central confirms persistence.
+// SyncBatch 可以安全重放：
+// central 按命令/订单只存一份结果，
+// 而 gateway 只有在 central 确认落库之后
+// 才把结果标记为已上报。
 func (s Synchronizer) SyncBatch(ctx context.Context) (int, error) {
 	if s.GatewayDB == nil || s.ServiceToken == "" {
 		return 0, errors.New("start result synchronizer is not configured")

@@ -19,9 +19,9 @@ var (
 	ErrDebtConflict = errors.New("欠费状态已变化，请刷新后重试")
 )
 
-// Debt is an amount a charge actually cost more than the customer prepaid. It
-// is created by the billing job and collected later, so the charge lifecycle
-// never blocks on collecting the difference.
+// Debt 是一笔充电实际花费超过客户预付的那部分金额。
+// 它由计费任务产生、之后才追收，
+// 因此充电主流程不会因为收取差额而阻塞。
 type Debt struct {
 	ID               uint64     `json:"id" gorm:"column:id"`
 	DebtNo           string     `json:"debt_no" gorm:"column:debt_no"`
@@ -38,7 +38,7 @@ type Debt struct {
 
 func (Debt) TableName() string { return "charge_debt" }
 
-// OutstandingCents recomputes what is still owed.
+// OutstandingCents 重算当前还欠多少。
 func (d Debt) Outstanding() int64 {
 	if d.DebtCents-d.PaidCents < 0 {
 		return 0
@@ -46,12 +46,12 @@ func (d Debt) Outstanding() int64 {
 	return d.DebtCents - d.PaidCents
 }
 
-// DebtStore owns the shortfall lifecycle in user_db, alongside the charge and
-// payment records it references.
+// DebtStore 负责 user_db 里的欠款生命周期，
+// 与它引用的充电记录、支付记录放在同一处。
 type DebtStore struct{ DB *gorm.DB }
 
-// RecordDebt persists or confirms the shortfall recorded on a fee receipt.
-// Replaying billing must never produce a second debt for the same order.
+// RecordDebt 落库或确认费用回单上记下的差额。
+// 重放计费绝不能为同一笔订单产生第二笔欠款。
 func (s DebtStore) RecordDebt(ctx context.Context, chargeOrderID uint64, shortfallCents int64) error {
 	if shortfallCents <= 0 {
 		return nil
@@ -99,7 +99,7 @@ func (s DebtStore) RecordDebt(ctx context.Context, chargeOrderID uint64, shortfa
 	})
 }
 
-// ListDebts returns the debts an account still owes, newest first.
+// ListDebts 返回某个账号仍欠的欠款，按最新优先。
 func (s DebtStore) ListDebts(ctx context.Context, userID uint64, status string, page, pageSize int) ([]Debt, int64, error) {
 	query := s.DB.WithContext(ctx).Table("charge_debt").Where("user_id = ?", userID)
 	if status != "" {
@@ -119,8 +119,8 @@ func (s DebtStore) ListDebts(ctx context.Context, userID uint64, status string, 
 	return rows, total, nil
 }
 
-// OpenDebtPayment creates the payment order used to collect a debt. The amount
-// is exactly the outstanding balance, so a stale page cannot overcharge.
+// OpenDebtPayment 创建用于追收欠款的支付订单。
+// 金额正好是未结余额，所以一个过期的页面无法多收钱。
 func (s DebtStore) OpenDebtPayment(ctx context.Context, debtID uint64, clientRequestID string) (uint64, string, int64, string, error) {
 	if clientRequestID == "" || uuid.Validate(clientRequestID) != nil {
 		return 0, "", 0, "", ErrPaymentIntentConflict
@@ -174,7 +174,7 @@ func (s DebtStore) OpenDebtPayment(ctx context.Context, debtID uint64, clientReq
 	return paymentOrderID, orderNo, amountCents, openID, nil
 }
 
-// loadPayer reads the openid the channel needs to start a payment.
+// loadPayer 读取渠道发起支付所需的 openid。
 func (s DebtStore) loadPayer(tx *gorm.DB, userID uint64, openID *string) error {
 	var payer struct {
 		OpenID string `gorm:"column:openid"`
@@ -189,22 +189,22 @@ func (s DebtStore) loadPayer(tx *gorm.DB, userID uint64, openID *string) error {
 	return nil
 }
 
-// SavePrepay caches the channel parameters so a retried request reuses the same
-// prepay id instead of creating a second one at the channel.
+// SavePrepay 缓存渠道参数，
+// 让重试的请求复用同一个 prepay id，而不是在渠道侧再造一个。
 func (s DebtStore) SavePrepay(ctx context.Context, paymentOrderID uint64, params payment.PrepayParams) error {
 	encoded, err := json.Marshal(params)
 	if err != nil {
 		return err
 	}
-	// charge_prepay is keyed by payment order, so a resend replaces the snapshot.
+	// charge_prepay 以支付订单为键，所以重发只是替换这份快照。
 	return s.DB.WithContext(ctx).Where("payment_order_id = ?", paymentOrderID).
 		Clauses(clause.OnConflict{UpdateAll: true}).
 		Create(map[string]any{"payment_order_id": paymentOrderID, "params_json": string(encoded)}).Error
 }
 
-// SettleDebt applies a verified channel receipt to a debt. The unique keys on
-// charge_debt_receipt make a duplicated callback a no-op rather than a double
-// credit, and the debt only closes once it is fully covered.
+// SettleDebt 把一张验签通过的渠道回单应用到欠款上。
+// charge_debt_receipt 上的唯一键让重复回调成为空操作而不是重复入账，
+// 欠款也只有在被完全覆盖之后才关闭。
 func (s DebtStore) SettleDebt(ctx context.Context, paymentOrderID uint64, paidCents int64, channelRef string) (bool, error) {
 	if paidCents <= 0 || channelRef == "" {
 		return false, ErrDebtConflict
@@ -228,8 +228,8 @@ func (s DebtStore) SettleDebt(ctx context.Context, paymentOrderID uint64, paidCe
 		if err := tx.Table("charge_debt_receipt").Create(map[string]any{
 			"debt_id": payment.BizID, "payment_order_id": paymentOrderID, "paid_cents": paidCents, "channel_ref": channelRef,
 		}).Error; err != nil {
-			// A duplicate channel reference or payment means this receipt was
-			// already applied; treat it as success without crediting again.
+			// 渠道流水号或支付单重复，
+			// 说明这张回单之前已经入过账；按成功处理，不再重复入账。
 			if isDuplicate(err) {
 				return nil
 			}
@@ -259,8 +259,8 @@ func (s DebtStore) SettleDebt(ctx context.Context, paymentOrderID uint64, paidCe
 	return applied, nil
 }
 
-// RemindDebt records that the customer was notified, throttled by the store so
-// repeated page loads cannot spam notifications.
+// RemindDebt 记录已通知过客户，
+// 由 store 做节流，避免反复刷新页面把通知刷成噪音。
 func (s DebtStore) RemindDebt(ctx context.Context, debtID uint64) error {
 	return s.DB.WithContext(ctx).Table("charge_debt").
 		Where("id = ? AND status IN ('unpaid','partial') AND (last_reminder_at IS NULL OR last_reminder_at < DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 1 DAY))", debtID).

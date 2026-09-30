@@ -13,15 +13,15 @@ import (
 	"gorm.io/gorm"
 )
 
-// OpsAPI exposes the worker's operational surface: stream depth, dead-letter
-// inventory and manual replay. It is service-token protected so only the
-// platform, not a browser, can drive a replay.
+// OpsAPI 暴露 worker 的运维接口：流积压深度、死信清单和手动重放。
+// 它受 service token 保护，
+// 所以只有平台能发起重放，浏览器不行。
 type OpsAPI struct {
 	WorkerDB     *gorm.DB
 	ServiceToken string
 	DLQ          outbox.DLQ
-	// Replay runs a parked entry back through its handler. It is injected so the
-	// ops surface does not depend on a specific business handler.
+	// Replay 把一条停放的记录重新送回它的 handler。
+	// 它是注入进来的，这样运维接口就不必依赖某个具体的业务 handler。
 	Replay func(ctx context.Context, stream, eventID, source string, payload []byte) error
 }
 
@@ -87,8 +87,8 @@ func (a OpsAPI) deadLetters(c *gin.Context) {
 	httpapi.OK(c, gin.H{"items": rows, "cursors": cursors})
 }
 
-// replay re-runs parked entries for one stream. The sliding cursor in
-// dlq_replay_cursor guarantees each pass makes forward progress.
+// replay 重跑某一条流上停放的记录。
+// dlq_replay_cursor 里的滑动游标保证每一轮都能向前推进。
 func (a OpsAPI) replay(c *gin.Context) {
 	stream := c.Param("stream")
 	if stream == "" || len(stream) > 64 {

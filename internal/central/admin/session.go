@@ -32,7 +32,7 @@ type sessionRecord struct {
 	Previous    []string `json:"previous,omitempty"` // 最近 32 个已轮换掉的旧密钥散列，只为让上一枚令牌还能用一次
 }
 
-// Sessions 管理后台会话，底层就是 Redis 里的 admin:session:<sid> 键。
+// Sessions 管理后台会话，底层就是 Redis 里的 admin：session：<sid> 键。
 // 结构体只持有 Redis 客户端（字段 Redis），没有本地状态，可以直接按值复制。
 type Sessions struct{ Redis *redis.Client }
 
@@ -206,16 +206,16 @@ func (s Sessions) Matches(ctx context.Context, sid string, id, version uint64) (
 	return record.AdminID == id && record.AuthVersion == version, nil
 }
 
-// ErrInvalidMFAChallenge means the login challenge is unknown, expired, or was
-// already consumed by a successful second factor.
+// ErrInvalidMFAChallenge 表示登录挑战不存在、已经过期，
+// 或者已经被一次成功的二次验证用掉了。
 var ErrInvalidMFAChallenge = errors.New("invalid or expired mfa challenge")
 
-// mfaChallengeTTL bounds how long a verified password stays usable before the
-// second factor must be supplied. It is deliberately short.
+// mfaChallengeTTL 限定一个已验过密码还能用多久——在必须补上二次验证之前。
+// 它被刻意设得很短。
 const mfaChallengeTTL = 5 * time.Minute
 
-// BeginMFA parks a half-finished login. No session exists yet, so the challenge
-// carries only the account identity and cannot be used to reach any API.
+// BeginMFA 把一次没走完的登录挂起。此时还不存在会话，
+// 所以挑战里只带账号身份，拿它碰不到任何 API。
 func (s Sessions) BeginMFA(ctx context.Context, account Account) (string, error) {
 	token, err := randomPart(32)
 	if err != nil {
@@ -231,10 +231,10 @@ func (s Sessions) BeginMFA(ctx context.Context, account Account) (string, error)
 	return token, nil
 }
 
-// ResolveMFA consumes the challenge atomically so one code cannot be replayed
-// for two sessions. A wrong code must not burn the challenge, because the
-// account owner still needs to retry; only the Lua GETDEL style consumption on
-// success happens here, so resolution returns the id and the caller revokes.
+// ResolveMFA 原子地消费掉这个挑战，免得同一个验证码被拿去开两个会话。
+// 验证码填错时不能把挑战烧掉，因为账号主人还得重试；
+// 只有成功时那种 Lua GETDEL 式的消费发生在这里，
+// 所以本函数只返回账号 id，由调用方去注销旧会话。
 func (s Sessions) ResolveMFA(ctx context.Context, token string) (uint64, error) {
 	token = strings.TrimSpace(token)
 	if token == "" {

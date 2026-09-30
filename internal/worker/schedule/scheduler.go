@@ -12,8 +12,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// Handler is intentionally allowlisted in code. Database rows can change a
-// schedule but cannot make the worker execute an arbitrary function.
+// Handler 是在代码里写死白名单的。
+// 数据库行可以改调度，但没法让 worker 去执行任意函数。
 type Handler func(context.Context) (uint64, error)
 
 type Scheduler struct {
@@ -92,9 +92,9 @@ func (s Scheduler) Trigger(ctx context.Context, code, reason string, force bool)
 
 var ErrPaused = errors.New("scheduled task paused")
 
-// execute claims the task with a database lease before running any handler.
-// This prevents two worker replicas or a manual trigger and cron tick from
-// executing the same task at once. An expired lease permits crash recovery.
+// execute 在跑任何 handler 之前，先用数据库租约抢占任务。
+// 这能防止两个 worker 副本，或一次手动触发与一次 cron 滴答
+// 同时执行同一个任务。租约过期则允许崩溃恢复。
 func (s Scheduler) execute(ctx context.Context, task Task, force bool, triggeredBy, reason string) (bool, error) {
 	handler := s.Handlers[task.Code]
 	if handler == nil {
@@ -118,8 +118,8 @@ func (s Scheduler) execute(ctx context.Context, task Task, force bool, triggered
 	if result.Error != nil || result.RowsAffected == 0 {
 		return false, result.Error
 	}
-	// A previous worker may have died while holding this lease. Close its
-	// orphaned running record before writing the new attempt.
+	// 上一个 worker 可能握着这个租约死掉了。
+	// 在写入本次尝试之前，先把它那条孤立的 running 记录收尾。
 	if err := s.DB.WithContext(ctx).Table("task_execution_log").
 		Where("task_code = ? AND status = 'running' AND started_at < ?", task.Code, now.Add(-2*time.Minute)).
 		Updates(map[string]any{"status": "failed", "finished_at": now, "error_msg": "worker stopped before completion"}).Error; err != nil {
@@ -152,8 +152,9 @@ func (s Scheduler) execute(ctx context.Context, task Task, force bool, triggered
 		message = text
 		failures = task.ConsecutiveFailCount + 1
 	}
-	// Use a short independent context so shutdown still records the outcome of
-	// an interrupted execution, while the bounded lease remains recoverable.
+	// 用一个短生命周期的独立 context，
+	// 这样即使执行被中断、进程正在关闭也能把结果记下来，
+	// 同时那个有界的租约仍然可以恢复。
 	finishCtx, finishCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer finishCancel()
 	logErr := s.DB.WithContext(finishCtx).Table("task_execution_log").
@@ -173,8 +174,10 @@ func (s Scheduler) execute(ctx context.Context, task Task, force bool, triggered
 }
 
 func parseSpec(raw string) (spec cron.Schedule, err error) {
-	// All worker plans run in UTC. Reject per-row timezone prefixes so a bad
-	// database edit cannot panic the cron parser or change a task's time basis.
+	// 所有 worker 计划都按 UTC 跑。
+	// 拒绝逐行的时区前缀，
+	// 这样一次手滑的数据库改动既不会让 cron 解析器 panic，
+	// 也不会改变某个任务的时基。
 	if strings.Contains(raw, "TZ=") || len(raw) > 64 {
 		return nil, errors.New("timezone override or oversized cron expression")
 	}

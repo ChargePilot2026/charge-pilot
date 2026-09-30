@@ -148,10 +148,10 @@ func (s BillingOrders) Apply(ctx context.Context, result billing.Result) error {
 		if err := tx.Model(&ChargeOrderRecord{}).Where("id=?", order.ID).Updates(map[string]any{"electric_cents": result.ElectricCents, "service_cents": result.ServiceCents, "total_cents": result.TotalCents}).Error; err != nil {
 			return err
 		}
-		// Order campaigns are evaluated here rather than when the device sent
-		// the end frame, because a threshold cannot be decided before the fee
-		// is known. This sits after the receipt insert, so a replayed
-		// settlement returns early and never grants twice.
+		// 订单类活动在这里求值，
+		// 而不是在设备发出结束帧时求值，
+		// 因为门槛在费用算出来之前无法判定。
+		// 这段代码位于回执插入之后，所以重放的结算会提前返回，永远不会发第二次券。
 		applyOrderCampaigns(tx, order, result.TotalCents)
 		var reserved int64
 		if err := tx.Model(&RefundRecord{}).Select("COALESCE(SUM(refund_cents),0)").Where("payment_order_id=? AND status IN ('pending','processing') AND deleted_at IS NULL", payment.ID).Scan(&reserved).Error; err != nil {
@@ -176,9 +176,9 @@ func (s BillingOrders) Apply(ctx context.Context, result billing.Result) error {
 		if err := tx.Create(&ChargeEventLogRecord{ChargeOrderID: order.ID, EventID: eventID, Event: "fee_calculated", Actor: "billing", Detail: fmt.Sprintf("electric=%d service=%d total=%d shortfall=%d", result.ElectricCents, result.ServiceCents, result.TotalCents, shortfall), OccurredAt: time.Now().UTC()}).Error; err != nil {
 			return err
 		}
-		// A shortfall becomes a collectable debt in the same transaction, so the
-		// amount billed and the amount owed can never disagree. The unique key
-		// on charge_order_id makes a replay a no-op without an empty SET clause.
+		// 差额在同一个事务里变成可追收的欠款，
+		// 所以计费金额与应付金额永远不会互相矛盾。
+		// charge_order_id 上的唯一键让重放成为空操作，也就不用出现空的 SET 子句。
 		if shortfall > 0 {
 			debtNo := fmt.Sprintf("DEBT%020d", order.ID)
 			insert := tx.Table("charge_debt").Create(map[string]any{
@@ -186,8 +186,8 @@ func (s BillingOrders) Apply(ctx context.Context, result billing.Result) error {
 				"user_id": order.UserID, "debt_cents": shortfall, "paid_cents": 0, "status": "unpaid",
 			})
 			if insert.Error != nil && isDuplicate(insert.Error) {
-				// The debt already exists from an earlier attempt; that is the
-				// expected outcome of a replayed billing dispatch.
+				// 欠款在此前某次尝试时已经存在；
+				// 这正是重放计费任务的预期结果。
 				insert = nil
 			}
 			if insert != nil {
@@ -200,13 +200,13 @@ func (s BillingOrders) Apply(ctx context.Context, result billing.Result) error {
 
 var _ billing.Orders = BillingOrders{}
 
-// applyOrderCampaigns grants any threshold or holiday coupon the order earned.
+// applyOrderCampaigns 发放这笔订单挣到的门槛券或节日券。
 //
-// Settlement is the money path: a coupon must never be able to fail or roll it
-// back. A rule that does not apply is not an error, and a rule that errors is
-// logged and swallowed, because the alternative — aborting the transaction —
-// would leave a real, already-done charge unbilled. The grant is idempotent on
-// the order number, so a later retry or a manual re-run can safely re-evaluate.
+// 结算是资金路径：券绝不能让它失败或回滚。
+// 规则不适用不算错误，
+// 规则报错则记录日志后吞掉，因为另一个选择——
+// 中止事务——会让一笔真实发生、
+// 已经完成的充电开不出账单。发放在订单号上是幂等的，所以事后重试或人工重跑都可以安全地重新求值。
 func applyOrderCampaigns(tx *gorm.DB, order ChargeOrderRecord, totalCents int64) {
 	now := time.Now().UTC()
 	for _, trigger := range []string{"threshold_redeem", "holiday"} {

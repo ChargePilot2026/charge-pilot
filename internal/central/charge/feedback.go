@@ -18,15 +18,15 @@ var (
 	errOrderNotReady  = errors.New("order is not a completed order of this user")
 )
 
-// submitFeedback closes the loop on the casework queue. The admin side could
-// list and reply to feedback, but nothing could ever produce a row for it, so
-// the queue was permanently empty; the mini program has no channel to report a
-// problem with a finished charge.
+// submitFeedback 让工单队列形成闭环。
+// 管理端能列出和回复反馈，
+// 却没有任何入口能产生反馈行，
+// 所以队列永远是空的；小程序也没有渠道去反馈一笔已完成充电的问题。
 //
-// The "one feedback per order" rule is checked while holding the charge_order
-// row lock. That lock is what serialises two concurrent submissions for the
-// same order: without it both transactions could read "no feedback yet" and
-// both insert.
+// "一单一反馈"这条规则是在持有 charge_order 行锁时校验的。
+// 正是这把锁把同一笔订单的两个并发提交串行化：
+// 没有它，
+// 两个事务都可能读到"还没有反馈"然后各自插入。
 func (a UserAccountAPI) submitFeedback(c *gin.Context) {
 	userID, ok := a.userID(c)
 	if !ok {
@@ -75,8 +75,8 @@ func (a UserAccountAPI) submitFeedback(c *gin.Context) {
 			DeviceID string
 			Status   string
 		}
-		// charge_order is partitioned by created_month, so the row is addressed
-		// by its primary key rather than by any secondary lookup.
+		// charge_order 按 created_month 分区，
+		// 所以这行是按主键寻址的，不走任何二级查询。
 		if err := tx.Table("charge_order").Clauses(clause.Locking{Strength: "UPDATE"}).
 			Where("id = ? AND deleted_at IS NULL", orderID).Take(&order).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -106,8 +106,8 @@ func (a UserAccountAPI) submitFeedback(c *gin.Context) {
 	})
 	switch {
 	case errors.Is(tx, errOrderNotReady):
-		// Another customer's order must be indistinguishable from one that does
-		// not exist, so both answer with the same not-found code.
+		// 别人的订单与不存在的订单必须无从分辨，
+		// 所以两者返回同一个 not-found 错误码。
 		httpapi.Write(c, 404, 1004, "订单不存在或不可评价", nil)
 	case errors.Is(tx, errFeedbackExists):
 		httpapi.Write(c, 409, 2009, "该订单已评价", nil)
@@ -118,9 +118,9 @@ func (a UserAccountAPI) submitFeedback(c *gin.Context) {
 	}
 }
 
-// httpsImage keeps feedback attachments on TLS hosts. The link is rendered back
-// to other staff in the casework queue, so a plain-HTTP or javascript URL would
-// turn an internal page into a delivery vector.
+// httpsImage 把反馈附件限制在 TLS 域名上。
+// 这个链接会回显给工单队列里的其他客服，
+// 所以一个明文 HTTP 或 javascript 的 URL 会把内部页面变成投放载体。
 func httpsImage(raw string) bool {
 	if len(raw) == 0 || len(raw) > 512 || strings.TrimSpace(raw) != raw {
 		return false

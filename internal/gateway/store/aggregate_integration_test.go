@@ -31,9 +31,9 @@ func aggregateDB(t *testing.T) *gorm.DB {
 
 func sqlPort(p int16) sql.NullInt16 { return sql.NullInt16{Int16: p, Valid: true} }
 
-// The rollups must fold repeated samples into one bucket with a correct running
-// mean and extremes. Re-running the same batch is the interesting case: a
-// replayed device frame would otherwise double the count.
+// 汇总表必须把重复样本折叠进同一个桶，并给出正确的运行均值与极值。
+// 重跑同一批数据才是有意思的那个用例：
+// 一帧被重放的设备数据否则会让计数翻倍。
 func TestRefreshAggregatesFoldsSamplesIntoBuckets(t *testing.T) {
 	orm := aggregateDB(t)
 	ctx := context.Background()
@@ -53,8 +53,8 @@ func TestRefreshAggregatesFoldsSamplesIntoBuckets(t *testing.T) {
 		{DeviceID: deviceID, Port: sqlPort(port), Metric: "power_w", Value: "200", TS: base.Add(5 * time.Minute)},
 		{DeviceID: deviceID, Port: sqlPort(port), Metric: "power_w", Value: "300", TS: base.Add(10 * time.Minute)},
 	}
-	// A second device-level metric with no port, which must land under a NULL
-	// port rather than port 0.
+	// 再加一个不带端口的设备级指标，
+	// 它必须落在 NULL 端口下，而不是端口 0。
 	samples = append(samples, AggregateSample{DeviceID: deviceID, Metric: "signal", Value: "80", TS: base})
 
 	if err := orm.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -71,8 +71,8 @@ func TestRefreshAggregatesFoldsSamplesIntoBuckets(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Column tags are required: the aliases (avg/mn/mx) do not match the Go
-	// field names, and without them every value scans as empty.
+	// 列上的 tag 是必需的：这些别名（avg/mn/mx）与 Go 字段名并不对应，
+	// 没有它们的话每个值都会扫成空。
 	type bucket struct {
 		Avg   string `gorm:"column:avg"`
 		Min   string `gorm:"column:mn"`
@@ -96,7 +96,7 @@ func TestRefreshAggregatesFoldsSamplesIntoBuckets(t *testing.T) {
 		t.Fatalf("mean = %s, want 200", power.Avg)
 	}
 
-	// A device-level metric must be stored with a NULL port.
+	// 设备级指标必须以 NULL 端口存下来。
 	var signalPort *int16
 	if err := orm.Raw("SELECT port_no FROM telemetry_aggregate_15min WHERE device_id = ? AND metric = 'signal'", deviceID).
 		Scan(&signalPort).Error; err != nil {
@@ -106,7 +106,7 @@ func TestRefreshAggregatesFoldsSamplesIntoBuckets(t *testing.T) {
 		t.Fatalf("device-level metric stored with port %d, want NULL", *signalPort)
 	}
 
-	// The hourly rollup covers the same three samples.
+	// 小时汇总覆盖的是同样那三个样本。
 	var hourly bucket
 	if err := orm.Raw(`SELECT CAST(avg_value AS CHAR) avg, CAST(min_value AS CHAR) mn,
 		CAST(max_value AS CHAR) mx, count FROM telemetry_aggregate_hourly
@@ -118,8 +118,8 @@ func TestRefreshAggregatesFoldsSamplesIntoBuckets(t *testing.T) {
 		t.Fatalf("hourly bucket = %+v, want count 3 avg 200", hourly)
 	}
 
-	// Folding the same batch again must double the count, which is what makes
-	// the running mean necessary rather than a simple overwrite.
+	// 再折叠一次同一批数据，计数必须翻倍，
+	// 这正是需要运行均值而不是简单覆盖的原因。
 	if err := RefreshAggregates(ctx, orm, samples[:1]); err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func TestRefreshAggregatesFoldsSamplesIntoBuckets(t *testing.T) {
 	if again.Count != 4 {
 		t.Fatalf("count after a repeated sample = %d, want 4", again.Count)
 	}
-	// (200*3 + 100*1) / 4
+	// 运行均值应为 (200*3 + 100*1) / 4
 	if again.Avg != "175.000000" {
 		t.Fatalf("running mean = %s, want 175", again.Avg)
 	}

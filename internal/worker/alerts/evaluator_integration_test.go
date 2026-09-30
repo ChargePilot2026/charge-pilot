@@ -25,8 +25,9 @@ func openAlertsDB(t *testing.T, key string) *gorm.DB {
 	return orm
 }
 
-// Telemetry is stored under value_num. If the sample struct is not mapped to
-// that column the engine reads zero and no threshold can ever fire.
+// 遥测存在 value_num 这一列下。
+// 如果 sample 结构体没映射到这一列，
+// 引擎读到的就是零，任何阈值都不会触发。
 func TestTelemetrySampleReadsValueNum(t *testing.T) {
 	if os.Getenv("TEST_GATEWAY_DATABASE_URL") == "" {
 		t.Skip("disposable MySQL required")
@@ -59,8 +60,9 @@ func TestTelemetrySampleReadsValueNum(t *testing.T) {
 	}
 }
 
-// A rule with a matching device must raise exactly one alert, and a re-run must
-// reuse the same outbox row instead of colliding on the unique event id.
+// 设备匹配上的规则必须恰好产生一条告警；
+// 重跑时必须复用同一行 outbox，
+// 而不是撞上唯一事件 id。
 func TestAlertRaisesOnceAndOutboxIsIdempotent(t *testing.T) {
 	if os.Getenv("TEST_GATEWAY_DATABASE_URL") == "" || os.Getenv("TEST_ADMIN_DATABASE_URL") == "" {
 		t.Skip("disposable MySQL required")
@@ -85,8 +87,8 @@ func TestAlertRaisesOnceAndOutboxIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A subscription is what turns a raised alert into a queued notification;
-	// without one the alert is still recorded but nothing is published.
+	// 订阅才是把已产生的告警变成待发通知的那一环；
+	// 没有订阅，告警照样入库，但什么都不会发出去。
 	var ruleID uint64
 	adminDB.Table("alert_rule").Where("name = ?", ruleName).Pluck("id", &ruleID)
 	if err := adminDB.Exec("INSERT INTO webhook_subscription(name,url,event_types,secret,enabled) VALUES(?,?,'[\"alert\"]',?,1)",
@@ -108,11 +110,11 @@ func TestAlertRaisesOnceAndOutboxIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The evaluator is correct to raise one alert per matching rule, and a shared
-	// database already carries a wildcard temperature rule that this reading also
-	// trips. Counting the whole run would therefore be asserting on whatever else
-	// the database happens to hold, so the count is scoped to the rule this test
-	// created.
+	// 评估器对每条匹配的规则各发一条告警是正确的；
+	// 而这个共享库里本来就有一条通配的温度规则
+	// 会被同一条读数触发。
+	// 所以统计整轮结果等于在断言数据库里恰好还有什么别的数据；
+	// 因此计数被限定在本测试自己创建的那条规则上。
 	if raised < 1 {
 		t.Fatalf("raised = %d, want this rule's breach to be among them", raised)
 	}
@@ -126,7 +128,8 @@ func TestAlertRaisesOnceAndOutboxIsIdempotent(t *testing.T) {
 	if outbox != 1 {
 		t.Fatalf("outbox rows = %d, want 1", outbox)
 	}
-	// Re-evaluating must not duplicate the alert or trip the outbox unique key.
+	// 重新评估既不能复制出重复告警，
+	// 也不能撞上 outbox 的唯一键。
 	if _, err := e.Evaluate(ctx); err != nil {
 		t.Fatalf("re-evaluation failed on replay: %v", err)
 	}
@@ -140,8 +143,8 @@ func TestAlertRaisesOnceAndOutboxIsIdempotent(t *testing.T) {
 	}
 }
 
-// An active alert closes itself once the reading returns below the threshold,
-// so operators are not paged for a fault that has already cleared.
+// 一旦读数回落到阈值以下，活跃告警会自行关闭，
+// 这样已经自行恢复的故障不会继续呼叫运维。
 func TestAlertAutoResolvesWhenReadingRecovers(t *testing.T) {
 	if os.Getenv("TEST_GATEWAY_DATABASE_URL") == "" || os.Getenv("TEST_ADMIN_DATABASE_URL") == "" {
 		t.Skip("disposable MySQL required")
@@ -166,13 +169,14 @@ func TestAlertAutoResolvesWhenReadingRecovers(t *testing.T) {
 	e := Evaluator{GatewayDB: gatewayDB, AdminDB: adminDB}
 
 	gatewayDB.Exec("INSERT INTO telemetry(device_id,port_no,metric,value_num,ts) VALUES(?,1,'temperature_c',95.5,?)", device, time.Now().UTC())
-	// Scoped to this rule for the same reason as above: a wildcard rule already in
-	// the database trips on the same reading, and counting the whole run would be
-	// asserting on the rest of the database rather than on this behaviour.
+	// 出于和上面相同的理由限定在这条规则上：
+	// 库里已有的通配规则会被同一条读数触发，
+	// 统计整轮结果等于在断言数据库里其余的数据，
+	// 而不是断言这里要验的行为。
 	if raised, err := e.Evaluate(ctx); err != nil || raised < 1 {
 		t.Fatalf("breach: raised=%d err=%v", raised, err)
 	}
-	// Replace the reading with a healthy one and evaluate again.
+	// 把这条读数换成一个正常值，再评估一次。
 	gatewayDB.Exec("DELETE FROM telemetry WHERE device_id = ?", device)
 	gatewayDB.Exec("INSERT INTO telemetry(device_id,port_no,metric,value_num,ts) VALUES(?,1,'temperature_c',40.0,?)", device, time.Now().UTC())
 	if _, err := e.Evaluate(ctx); err != nil {

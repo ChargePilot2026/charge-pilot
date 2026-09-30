@@ -125,7 +125,7 @@ func TestRejectedStartQueuesRefundAtomicallyAndIdempotently(t *testing.T) {
 	if envelope.RefundNo == "" || envelope.PaymentID != uint64(paymentID) || envelope.ChargeID != uint64(orderID) || envelope.AmountCents != refundCents {
 		t.Fatalf("refund outbox envelope=%s", envelopeJSON)
 	}
-	// Drive the automatically queued refund through unknown outcome recovery.
+	// 让自动入队的退款走一遍"结果未知"的恢复流程。
 	orm := testGORMDB(t, db)
 	if err := orm.Create(&ChargePrepayRecord{PaymentOrderID: uint64(paymentID), ParamsJSON: []byte(`{"provider":"simulation"}`)}).Error; err != nil {
 		t.Fatal(err)
@@ -173,8 +173,8 @@ func TestRejectedStartQueuesRefundAtomicallyAndIdempotently(t *testing.T) {
 
 }
 
-// A provider can accept the refund and lose the HTTP response. Recovery must
-// query that same refund, without issuing a second money movement.
+// 渠道可能已经受理了退款却丢掉了 HTTP 响应。
+// 恢复必须去查同一笔退款，而不是再发起一次资金划转。
 type lostRefundResponse struct {
 	result  payment.RefundResult
 	creates int

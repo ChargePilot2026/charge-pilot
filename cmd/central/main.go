@@ -88,10 +88,8 @@ func run(ctx context.Context) error {
 	}
 	wechat.SetHttpClient(xhttp.NewClient().SetTimeout(5 * time.Second))
 	gin.SetMode(gin.ReleaseMode)
-	// Metrics are exposed unauthenticated so a scraper needs no operator
-	// session; the endpoint carries route names, status codes and timings only.
-	// The registry is passed into NewRouter so the recording middleware is
-	// installed before any route is registered.
+	// 指标端点不做鉴权，抓取器因此不必持有运营会话；它只暴露路由名、状态码和耗时。
+	// registry 是在 NewRouter 之前传进去的，这样记录用的中间件会在任何路由注册之前装好。
 	metrics := httpapi.NewMetrics("central")
 	router := httpapi.NewRouter(metrics)
 	metrics.Register(router)

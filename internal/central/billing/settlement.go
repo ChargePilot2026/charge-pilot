@@ -14,25 +14,26 @@ import (
 
 var ErrNoSplitTemplate = errors.New("站点未配置分账模板，无法生成分账")
 
-// SplitTemplate resolves the station's active allocation contract. Central owns
-// admin_db, so the template is read there and never through cross-schema SQL.
+// SplitTemplate 解析站点生效的分账契约。admin_db 归 central 所有，
+// 所以模板直接在那里读取，绝不走跨库 SQL。
 type SplitTemplate struct {
 	ID      uint64
 	Code    string
 	Mode    string
 	Parties []finance.Party
 	Names   map[string]string
-	// IDs maps each party code to its split_party row id, because the settlement
-	// ledger stores the numeric party id and the code separately.
+	// IDs 把每个 party code 映射到它的 split_party 行 id，
+	// 因为结算台账把数字 party id 和 code 分开存放。
 	IDs map[string]uint64
 }
 
-// SplitResolver reads admin_db on behalf of the billing module.
+// SplitResolver 代表计费模块读取 admin_db。
 type SplitResolver struct{ AdminDB *gorm.DB }
 
-// Resolve returns the active template bound to the station. A missing, deleted,
-// disabled, or internally inconsistent template is an error rather than a silent
-// zero split, so a station can never be billed without a recorded allocation.
+// Resolve 返回绑定在该站点上的生效模板。
+// 模板缺失、已删除、已停用或内部不自洽时一律报错，
+// 而不是静悄悄地按零分账，
+// 这样站点绝不会在没有分账记录的情况下被计费。
 func (r SplitResolver) Resolve(ctx context.Context, stationID uint64) (SplitTemplate, error) {
 	if r.AdminDB == nil {
 		return SplitTemplate{}, errors.New("split resolver is not configured")
@@ -72,8 +73,8 @@ func (r SplitResolver) Resolve(ctx context.Context, stationID uint64) (SplitTemp
 		out.Names[p.PartyCode] = p.PartyName
 		out.IDs[p.PartyCode] = p.ID
 	}
-	// Reject an inconsistent template at resolve time so a bad ratio cannot
-	// reach the settlement ledger.
+	// 在解析时就拒绝不自洽的模板，
+	// 让错误的分账比例进不了结算台账。
 	mode := finance.SplitAll
 	if row.Mode == "mode_b" {
 		mode = finance.SplitServiceOnly
@@ -86,9 +87,9 @@ func (r SplitResolver) Resolve(ctx context.Context, stationID uint64) (SplitTemp
 	return out, nil
 }
 
-// Settle writes the allocation for one calculated fee. The unique key on
-// (fee_calculation_id, generation) makes a replayed billing dispatch return the
-// existing settlement instead of paying the parties twice.
+// Settle 为一笔已算出的 fee 写分账。
+// (fee_calculation_id， generation) 上的唯一键让重放的计费派发
+// 返回既有结算，而不是把各方付两次。
 func (s Store) Settle(ctx context.Context, calculationID uint64, template SplitTemplate, fee pricing.ActualFee, month time.Time) (uint64, bool, error) {
 	mode := finance.SplitAll
 	if template.Mode == "mode_b" {
@@ -107,8 +108,8 @@ func (s Store) Settle(ctx context.Context, calculationID uint64, template SplitT
 	} else {
 		pool = fee.ServiceCents
 	}
-	// Every cent of the split pool must reach exactly one party; otherwise the
-	// ledger and the fee record would disagree.
+	// 分账池里的每一分钱都必须恰好落到一个 party 上；
+	// 否则台账和 fee 记录就对不上了。
 	if allocated != pool || pool < 0 || fee.TotalCents < pool {
 		return 0, false, fmt.Errorf("allocation does not preserve the split pool: %d != %d", allocated, pool)
 	}
@@ -179,8 +180,8 @@ func (s Store) Settle(ctx context.Context, calculationID uint64, template SplitT
 	return settlementID, created, nil
 }
 
-// SettlementsDue lists calculated fees that have no settlement yet. Billing and
-// settlement share one billing_db, so this never crosses schemas.
+// SettlementsDue 列出还没有结算的已算出 fee。
+// 计费与结算共用同一个 billing_db，所以这里不跨库。
 func (s Store) SettlementsDue(ctx context.Context, limit int) ([]PendingSettlement, error) {
 	if limit <= 0 {
 		limit = 50
@@ -202,12 +203,13 @@ type PendingSettlement struct {
 	ServiceCents  int64   `gorm:"column:service_cents"`
 }
 
-// CalculationMonth reads the partition month a calculation was filed under so a
-// later replay writes the settlement into the same partition.
+// CalculationMonth 读出一笔 calculation 归档时所在的分区月份，
+// 让之后的重放把结算写进同一个分区。
 func (s Store) CalculationMonth(ctx context.Context, calculationID uint64) (time.Time, error) {
 	var month time.Time
-	// Select the column explicitly: a bare Take would scan every column of the
-	// partitioned fee_calculation row into a single destination.
+	// 显式指定这一列：
+	// 直接 Take 会把分区表 fee_calculation 这一行的所有列
+	// 一起扫进单个目标变量里。
 	err := s.DB.WithContext(ctx).Table("fee_calculation").Select("created_month").Where("id = ?", calculationID).Take(&month).Error
 	return month, err
 }

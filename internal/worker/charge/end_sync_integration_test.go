@@ -88,11 +88,12 @@ func TestEndKeepsPortOwnedUntilCentralAcceptsMeter(t *testing.T) {
 	if err := db.QueryRowContext(ctx, "SELECT status FROM device_port WHERE id = ?", portID).Scan(&state); err != nil || state != "charging" {
 		t.Fatalf("port released early: %s %v", state, err)
 	}
-	// Stored request also survives removal of the original measurements.
+	// 存下来的那份请求在原始测量数据被删掉之后依然不变。
 	if _, err := db.ExecContext(ctx, "DELETE FROM device_event WHERE device_id=? AND event_type='heartbeat'", deviceID); err != nil {
 		t.Fatal(err)
 	}
-	// A late report with an earlier receipt timestamp must not change retry data.
+	// 一条接收时间戳更早的迟到上报，
+	// 也不该改变用于重试的数据。
 	heartbeat.ChargingPorts[0].ChargedMWh = 60000
 	heartbeatJSON, _ = json.Marshal(heartbeat)
 	if _, err := db.ExecContext(ctx, "INSERT INTO device_event(event_key,protocol_name,device_id,event_type,event_json,received_at) VALUES(?,'dc589',?,'heartbeat',?,?)", uuid.NewString(), deviceID, heartbeatJSON, heartbeat.ReceivedAt); err != nil {

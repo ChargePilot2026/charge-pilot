@@ -1,21 +1,18 @@
-// Command devseed writes and removes the local demo dataset for the charging
-// user console (充电用户列表). It exists because the back office is otherwise
-// impossible to look at on a fresh machine: user_db ships with no users, and
-// every number on that page -- order count, spend, wallet balance -- is zero,
-// which hides whether the page is actually reading the right rows.
+// Command devseed 为充电用户控制台（充电用户列表）写入与清除本地示例数据。
+// 它的存在是因为在一台全新机器上后台根本没法看：user_db 出厂没有用户，
+// 那个页面上的每个数字——订单数、消费额、钱包余额——都是 0，
+// 这会掩盖页面到底有没有读到正确的行。
 //
-// Everything it writes is tagged with the demo_ prefix on a natural key, and
-// -clean removes exactly those rows and nothing else. That is the reason this
-// is a Go program rather than a .sql file: user.phone_enc is AES-GCM ciphertext
-// and phone_hash is an irreversible digest, so a demo row cannot be produced by
-// plain SQL. Only code holding the same key can write a row the C-end login
-// would accept.
+// 它写入的每一行都在自然键上带 demo_ 前缀，-clean 只删这些行，不多不少。
+// 这也是它做成 Go 程序而不是 .sql 文件的原因：user.phone_enc 是 AES-GCM 密文、
+// phone_hash 是不可逆摘要，示例行没法用纯 SQL 造出来。
+// 只有持有同一把密钥的代码，才能写出一行 C 端登录会认的记录。
 //
 //	go run ./cmd/devseed          # 写入示例数据
 //	go run ./cmd/devseed -clean   # 删除示例数据
 //
-// DSNs come from DATABASE_URL_USER / DATABASE_URL_ADMIN, the same variables the
-// services use, and the phone key from PHONE_ENCRYPTION_KEY.
+// DSN 取自 DATABASE_URL_USER / DATABASE_URL_ADMIN（与服务用的是同一组变量），
+// 手机号密钥取自 PHONE_ENCRYPTION_KEY。
 package main
 
 import (
@@ -30,13 +27,12 @@ import (
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/phonecrypto"
 )
 
-// demoPrefix marks every natural key this program owns. Cleanup matches on it,
-// so a partially seeded run and a fully seeded run both clean up completely.
+// demoPrefix 标记了本程序拥有的每一个自然键。清理就是按它匹配的，
+// 所以播种了一半和播种完整，两种情况都能清干净。
 const demoPrefix = "demo_"
 
-// demoStation is the one station the demo orders are placed at. Two-wheel
-// charging users only ever charge at a site, so an order without one is not a
-// realistic row to develop against.
+// demoStation 是示例订单所在的唯一站点。两轮车只会在站点充电，
+// 没有站点的订单不是一条能拿来做开发的真实数据。
 const (
 	demoStationName = demoPrefix + "示例站点-望京SOHO"
 	demoStationAddr = "北京市朝阳区望京SOHO T1 楼 B1"
@@ -44,9 +40,8 @@ const (
 	demoDeviceModel = "DC589 8路充电桩"
 )
 
-// demoUser is one seeded charging user. Balance and spend are filled in as the
-// orders are written, not hard-coded, so the list page's aggregates have to be
-// computed correctly to look right.
+// demoUser 是一个示例充电用户。余额与消费额是随着订单写入时顺带算出来的，
+// 不是写死的数值，所以列表页的汇总是真的算对了才显示得对。
 type demoUser struct {
 	openid    string
 	nickname  string
@@ -61,9 +56,8 @@ type demoUser struct {
 	orders    []demoOrder
 }
 
-// demoOrder is one seeded charge order, placed daysAgo before its user's
-// first sighting. Amounts vary so the cumulative spend column is not a
-// suspiciously round number.
+// demoOrder 是一笔示例充电订单，下单时间比它所属用户首次出现早 daysAgo 天。
+// 金额各不相同，免得累计消费那列看起来像是个可疑的整数。
 type demoOrder struct {
 	daysAgo int
 	status  string

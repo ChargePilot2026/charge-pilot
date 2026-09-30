@@ -28,8 +28,9 @@ type eventOutboxRow struct {
 
 func (eventOutboxRow) TableName() string { return "event_outbox" }
 
-// PublishBatch keeps MySQL rows locked until Redis acknowledges the publish.
-// Redis may receive a duplicate if MySQL commit fails; consumers must dedupe event_id.
+// PublishBatch 会一直锁住 MySQL 的行，直到 Redis 确认收到这次发布。
+// 如果 MySQL 提交失败，Redis 侧可能已经收到一份重复消息；
+// 消费端必须按 event_id 去重。
 func (p Publisher) PublishBatch(ctx context.Context) (int, error) {
 	if p.DB == nil || p.Stream == nil || p.Source == "" {
 		return 0, fmt.Errorf("outbox publisher is not configured")

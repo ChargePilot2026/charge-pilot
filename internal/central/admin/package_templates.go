@@ -10,11 +10,10 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// A package template is a prepaid cap a charging user can pick. It is deliberately not
-// part of a pricing template: the cap settles on its own price, so it stays
-// valid whichever tariff is running, and one tariff can be paired with several
-// different package sets. Applying one to a station or a device copies it into
-// a charge_offer, which is what the mini program reads.
+// 套餐模板是充电用户可以选的预付封顶。它刻意不属于计费模板：封顶按
+// 自己的价格结算，所以不管当前在跑哪份费率都仍然有效，一份费率也可以
+// 配好几套不同的套餐。把套餐应用到某个站点或设备时，它会被复制成一条
+// charge_offer，小程序读的就是这个。
 
 // packageTemplateInput 是套餐模板新增与更新共用的请求体。
 type packageTemplateInput struct {
@@ -30,11 +29,10 @@ type packageTemplateInput struct {
 	ExpectedVersion uint32 `json:"expected_version"` // 乐观锁：更新时必填且要等于当前版本号；新增时必须为 0
 }
 
-// validPackageTemplate keeps the package vocabulary identical to what
-// settlement can actually charge. A "package" kind without a duration, or an
-// amount without a positive cap, would be sellable and unpriceable.
-// validPackageTemplate 校验套餐模板，并让"能卖"和"能算钱"保持同一套词：
+// validPackageTemplate 校验套餐模板，并让「能卖」和「能算钱」保持同一套词：
 // 状态只能取 active/disabled，金额类必须填金额且不填时长，时长类必须填时长且不填金额上限。
+// 一份没有时长的「时长类」，或一个没有正数封顶的金额类，是能卖出去、
+// 却算不出钱来的。
 // validPackageTemplate 不校验 ExpectedVersion，那是更新时的乐观锁，由调用方单独判。
 func validPackageTemplate(in packageTemplateInput) bool {
 	if !validText(in.Name, 64) || in.Status != "active" && in.Status != "disabled" {
@@ -47,8 +45,8 @@ func validPackageTemplate(in packageTemplateInput) bool {
 	case "amount":
 		return in.PriceCents > 0 && in.PriceCents <= 1000000 && in.DurationMinutes == 0
 	case "package":
-		// A duration package is settled by the tariff, so it carries no cap of
-		// its own. Giving it one would silently cap a charging user who keeps charging.
+		// 时长类套餐由费率来结算，所以它自己不带封顶。给它加一个，
+		// 就会悄悄把一个还在继续充电的用户给封顶掉。
 		return in.PriceCents == 0 && in.DurationMinutes > 0 && in.DurationMinutes <= 600
 	default:
 		return false
@@ -63,8 +61,8 @@ func packageFields(in packageTemplateInput) map[string]any {
 		"price_cents": in.PriceCents, "duration_minutes": in.DurationMinutes,
 		"min_charge_cents": in.MinChargeCents,
 		"show_remark":      in.ShowRemark, "card_default": in.CardDefault, "status": in.Status,
-		// The display order is part of what a charging user sees, so it is written
-		// rather than validated and dropped.
+		// 展示顺序是充电用户看得见的一部分，所以要落库，
+		// 而不是校验完就丢掉。
 		"sort_order": in.SortOrder,
 	}
 }
@@ -84,9 +82,8 @@ func (a ResourceAPI) registerPackageTemplates(r *gin.Engine) {
 // 响应里带上当前操作者的权限列表，前端据此决定按钮是否可点。
 func (a ResourceAPI) packageTemplates(c *gin.Context) {
 	rows := []map[string]any{}
-	// Where a package is already on sale rides along on the row, so an operator
-	// can see that before applying it again to the same target, which is
-	// refused.
+	// 这个套餐已经在哪些目标上架，是跟着这一行一起返回的，
+	// 这样运营在往同一个目标重复上架（会被拒）之前能先看到。
 	err := a.Store.AdminDB.WithContext(c.Request.Context()).Table("pricing_package_template p").
 		Select("p.id,p.name,p.kind,p.price_cents,p.duration_minutes,p.min_charge_cents," +
 			"p.show_remark,p.card_default,p.sort_order,p.status,p.version," +
@@ -165,9 +162,8 @@ func (a ResourceAPI) updatePackageTemplate(c *gin.Context) {
 		if err := tx.Table("pricing_package_template").Where("id=?", id).Updates(row).Error; err != nil {
 			return err
 		}
-		// Offers already on sale keep their own copy: changing a package must
-		// not change what a station is already selling, nor what a paid order
-		// settled against.
+		// 已在售的 offer 保留自己那份副本：改一个套餐不该改掉某个站点
+		// 正在卖的东西，也不该改掉已经按它结算过的订单。
 		return resourceAudit(tx, actor, "pricing.package_template.update", "pricing_package_template", id, before, row, c.ClientIP(), httpapi.RequestID(c))
 	})
 	if err != nil {
@@ -177,10 +173,8 @@ func (a ResourceAPI) updatePackageTemplate(c *gin.Context) {
 	httpapi.OK(c, gin.H{"id": id, "version": in.ExpectedVersion + 1})
 }
 
-// disablePackageTemplate stops a package being applied again. Offers already on
-// sale stay where they are; a station that is selling it can keep selling.
-// disablePackageTemplate 停用套餐模板：只改模板状态并把版本号 +1，已上架的 charge_offer
-// 原样保留，正在卖这个套餐的站点可以继续卖。
+// disablePackageTemplate 停用套餐模板，让它不能再被应用：只改模板状态并把版本号 +1，
+// 已上架的 charge_offer 原样保留，正在卖这个套餐的站点可以继续卖。
 func (a ResourceAPI) disablePackageTemplate(c *gin.Context) {
 	id, ok := pathID(c)
 	if !ok {
@@ -213,11 +207,8 @@ type applyPackageInput struct {
 	DeviceID  string `json:"device_id"`  // 目标设备号，空串表示整站上架；非空时必须是该站点下的设备
 }
 
-// applyPackageTemplate puts one package on sale at a station or on one device.
-// The same package may sit both station-wide and on a specific device; an offer is
-// only refused when that exact target already sells it.
 // applyPackageTemplate 把套餐上架到某个站点或某台设备。同一个套餐可以既整站在售、
-// 又单独挂在某台设备上，只有"这个完全一样的目标上已经在售"才算重复。
+// 又单独挂在某台设备上，只有「这个完全一样的目标上已经在售」才算重复。
 // 三种已有情况分别处理：已在售则原样返回那条 offer（重试不该被当成冲突），
 // 已下架则把同一条 offer 重新上架（不新建第二行，避免同一目标出现两条用户只能看见一条的记录），
 // 从未上架才新建。响应里的 replayed / relisted 说明这次走的是哪条路径。
@@ -253,8 +244,8 @@ func (a ResourceAPI) applyPackageTemplate(c *gin.Context) {
 		if err := tx.Table("pricing_package_template").Where("id=? AND deleted_at IS NULL", id).Take(&pkg).Error; err != nil {
 			return err
 		}
-		// A disabled package is refused rather than pushed into a station as an
-		// offer nobody can see, which would read as a silent failure.
+		// 已停用的套餐直接拒掉，而不是作为一条谁也看不见的 offer
+		// 推进站点——那看起来就像是一次静悄悄的失败。
 		if pkg.Status != "active" {
 			httpapi.Write(c, 409, 1009, "套餐模板已停用，请先启用后再应用", nil)
 			return errAlreadyReported
@@ -275,13 +266,13 @@ func (a ResourceAPI) applyPackageTemplate(c *gin.Context) {
 				return errAlreadyReported
 			}
 		}
-		// What is already at this exact target decides the answer, and the three
-		// cases are genuinely different.
+		// 这个精确目标上已经有什么，决定了答案怎么给，三种情况
+		// 确实互不相同。
 		//
-		// The status matters, and it did not before: a package taken off sale
-		// left a disabled offer behind, the check counted it, and putting the
-		// package back on sale was refused with "该套餐已在此处上架" for good. An
-		// operator had taken it down and could never put it back up.
+		// 状态是有讲究的，而且以前不是：套餐下架后留下一条 disabled 的
+		// offer，那个检查把它也算成在售，于是再想把套餐上架回去，会
+		// 永远被「该套餐已在此处上架」拒掉。运营明明是自己下架的，
+		// 却再也放不回去了。
 		// existing 是这个精确目标上已有的那条 offer：ID 与状态，状态决定是重放、
 		// 重新上架还是新建。查不到记录时 found.Error 是 gorm.ErrRecordNotFound，按新建处理。
 		existing := struct {
@@ -300,18 +291,16 @@ func (a ResourceAPI) applyPackageTemplate(c *gin.Context) {
 			return found.Error
 		}
 		if found.Error == nil && existing.Status == "active" {
-			// Already on sale at this exact target. A retry after an uncertain
-			// response is the common reason to be here, and it must not look like
-			// a conflict: the caller cannot tell a duplicate from a failure
-			// unless the duplicate says so itself.
+			// 已经在售，而且就是这个目标。走到这里最常见的原因是响应
+			// 不确定之后的重试，它不该看起来像冲突：除非重复自己说
+			// 出来了，否则调用方分不清这是重复还是失败。
 			offerID, replayed = existing.ID, true
 			return nil
 		}
 		if found.Error == nil {
-			// Taken off sale, and the operator is asking for it back. Re-list the
-			// same offer rather than creating a second row for the same package
-			// at the same target, which would leave two rows that differ only in
-			// which one a charging user can see.
+			// 已下架，而运营现在要把它放回去。把同一条 offer 重新上架，
+			// 而不是给同一个套餐的同一个目标再建第二行——那会留下两行
+			// 只有一个区别：充电用户能看见的是哪一条。
 			if err := tx.Table("charge_offer").Where("id=?", existing.ID).
 				Updates(map[string]any{"status": "active", "version": gorm.Expr("version+1")}).Error; err != nil {
 				return err
@@ -321,13 +310,11 @@ func (a ResourceAPI) applyPackageTemplate(c *gin.Context) {
 				map[string]any{"status": "disabled"}, map[string]any{"status": "active"},
 				c.ClientIP(), httpapi.RequestID(c))
 		}
-		// The code goes in with the row. It cannot be added afterwards: the
-		// column is NOT NULL with no default, so an insert that leaves it out
-		// fails outright. Writing it in a second statement after the create
-		// meant the create never succeeded, and putting a package on sale was
-		// impossible. The comment that used to sit above that second write
-		// claimed a code "can be written in the same insert", and the code did
-		// the opposite.
+		// code 是随行写进去的，事后补不上：这一列是 NOT NULL 且没有
+		// 默认值，漏掉它的 insert 会直接失败。写成 create 之后的第二
+		// 条语句，就意味着 create 从来没有成功过，套餐压根上不了架。
+		// 曾经写在第二次写入上方的那条注释声称 code「可以在同一次
+		// insert 里写」，而代码做的正好相反。
 		row := map[string]any{
 			"station_id": in.StationID, "device_id": nullableDevice(in.DeviceID),
 			"package_template_id": id, "name": pkg.Name, "mode": pkg.Kind,

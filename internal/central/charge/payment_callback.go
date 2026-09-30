@@ -19,8 +19,8 @@ import (
 
 var ErrPaymentCallbackConflict = errors.New("verified payment does not match intent")
 
-// VerifiedPayment must only be constructed after the configured payment SDK
-// has verified/decrypted a success notification or queried the same trade.
+// VerifiedPayment 只能在配置好的支付 SDK 已经验签/解密成功通知、
+// 或者查过同一笔交易之后构造。
 type VerifiedPayment struct {
 	Provider        string
 	MerchantID      string
@@ -58,11 +58,11 @@ func (s PaymentCallbackStore) Apply(ctx context.Context, payment VerifiedPayment
 	digest := callbackDigest(payment)
 	var callbackResult PaymentCallbackResult
 	err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// The payment order is located first, because merchant_order_no is the
-		// order_no for both business types. A wallet recharge never creates a
-		// payment intent, so looking the intent up first rejected every recharge
-		// callback: the customer paid, the provider took the money, and the
-		// platform refused the notification and never credited the wallet.
+		// 先定位支付订单，
+		// 因为对两类业务来说 merchant_order_no 都等于 order_no。
+		// 钱包充值不创建支付意图，
+		// 先查意图会把每一笔充值回调都拒掉：
+		// 客户付了钱、渠道收了钱，平台却拒收通知，钱包始终没到账。
 		var order PaymentOrderRecord
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 			Where("order_no = ?", payment.MerchantOrderNo).Take(&order).Error; err != nil {
@@ -85,8 +85,8 @@ func (s PaymentCallbackStore) Apply(ctx context.Context, payment VerifiedPayment
 		if err != nil {
 			return err
 		}
-		// The intent must belong to this exact payment order, otherwise a
-		// verified callback could settle against a different customer's order.
+		// 意图必须属于这同一笔支付订单，
+		// 否则一个验签通过的回调可能结算到别的客户的订单上。
 		if intent.PaymentOrderID != order.ID {
 			return ErrPaymentCallbackConflict
 		}
@@ -149,9 +149,9 @@ func (s PaymentCallbackStore) Apply(ctx context.Context, payment VerifiedPayment
 			return nil
 		}
 
-		// The coupon is consumed only now, when the money actually arrived, so a
-		// payment that is later refunded does not consume the customer's discount
-		// permanently.
+		// 券留到此刻才核销，
+		// 因为钱是真的到账了；
+		// 这样后来被退款的支付不会永久吃掉客户的折扣。
 		if intent.CouponGrantID != 0 {
 			if err := redeemCouponInTx(tx, intent, order, chargeNoFor(order.ID)); err != nil {
 				return err
@@ -242,15 +242,15 @@ func callbackDigest(payment VerifiedPayment) string {
 
 func decimalAmount(amount int64) string { return strconv.FormatInt(amount, 10) }
 
-// settleWalletRecharge credits the balance for a verified wallet recharge.
+// settleWalletRecharge 为验签通过的钱包充值入账。
 //
-// The money is already with the provider by the time this runs, so a frozen or
-// otherwise unusable wallet must still be credited: refusing here would leave
-// the customer short with no record on our side. A frozen wallet simply cannot
-// spend the credit until it is released, which is what the freeze is for.
+// 跑到这里钱已经在渠道那边了，
+// 所以钱包即使被冻结或处于其它不可用状态也必须入账：
+// 此处拒绝会让客户的钱凭空短少，
+// 而我方没有任何记录可查。被冻结的钱包只是在这笔解冻之前用不了，冻结本就是这个意思。
 func settleWalletRecharge(tx *gorm.DB, order PaymentOrderRecord, payment VerifiedPayment, digest string, paidAt time.Time, result *PaymentCallbackResult) error {
-	// wallet_recharge_request is keyed by the client request id; it has no
-	// surrogate id and no soft-delete column, so request_id is the only handle.
+	// wallet_recharge_request 以客户端请求号为键；
+	// 它既没有代理主键也没有软删除列，request_id 是唯一的抓手。
 	var request struct {
 		RequestID string `gorm:"column:request_id"`
 		UserID    uint64 `gorm:"column:user_id"`
@@ -263,8 +263,8 @@ func settleWalletRecharge(tx *gorm.DB, order PaymentOrderRecord, payment Verifie
 		}
 		return err
 	}
-	// The request must belong to the payer and describe the same amount, so a
-	// verified callback cannot credit a different sum than the one requested.
+	// 请求必须属于付款人且金额一致，
+	// 这样一个验签通过的回调不会入账与申请金额不同的数目。
 	if request.UserID != order.UserID || request.Amount != payment.PaidCents || order.TotalCents != payment.PaidCents {
 		return ErrPaymentCallbackConflict
 	}
@@ -277,10 +277,10 @@ func settleWalletRecharge(tx *gorm.DB, order PaymentOrderRecord, payment Verifie
 	if digestErr == nil && previousDigest.RequestDigest != digest {
 		return ErrPaymentCallbackConflict
 	}
-	// A replayed notification must not credit the wallet a second time. A
-	// recharge has no business row to bind biz_id to, so the settled payment
-	// order itself is the proof: already paid, same provider transaction, same
-	// amount, and the same verified payload digest.
+	// 重放的通知不能第二次给钱包入账。
+	// 充值没有业务行可供绑定 biz_id，
+	// 所以已结算的支付订单本身就是凭据：
+	// 已支付、同一笔渠道交易、同一金额，以及同一份验签载荷摘要。
 	if order.Status == "paid" || order.Status == "partial_refunded" || order.Status == "refunded" {
 		if digestErr != nil || !order.WechatTransactionID.Valid ||
 			order.WechatTransactionID.String != payment.TransactionID || order.PaidCents != payment.PaidCents {
@@ -332,9 +332,9 @@ func settleWalletRecharge(tx *gorm.DB, order PaymentOrderRecord, payment Verifie
 	}).Error; err != nil {
 		return err
 	}
-	// The first-recharge campaign is evaluated inside this same transaction, so
-	// a reward can never be paid for a credit that then rolls back. A rule that
-	// does not apply is not an error and never fails the settlement.
+	// 首充活动就在这个事务里求值，
+	// 所以奖励绝不会为一笔随后回滚的入账付出。
+	// 规则不适用不算错误，也永远不会让结算失败。
 	if _, err := ApplyActivityRules(tx, activityEvent{
 		TriggerType: "first_recharge",
 		UserID:      order.UserID,

@@ -11,14 +11,14 @@ import (
 	"gorm.io/gorm"
 )
 
-// Pushing a tariff onto a device is a job with a result, not a transaction.
+// 把一套计费规则推到设备上是一件有结果的事，不是一个事务。
 //
-// The commercial back office this was modelled on keeps a switch log with a
-// status, an operator, the mode before and after, and a snapshot of the
-// packages that were actually sent — and it contains a record that sat "in
-// progress" for days. A synchronous apply cannot express a board that never
-// acknowledged, which is exactly the case an operator most needs to see, so a
-// switch is recorded as a task with one row per device before anything is sent.
+// 对标的商业后台维护着一份切换日志：状态、操作人、切换前后的方式，
+// 以及实际发出去的套餐快照——里面就有一条"进行中"挂了好几天的记录。
+// 同步下发没法表达"板子一直不回执"这种情况，
+// 而运营最需要看到的恰恰就是这种情况，
+// 所以切换在发出任何东西之前，
+// 先记成一个任务，每台设备一行。
 
 // registerSwitchTasks 挂载切换任务的列表与详情两个只读接口，权限均为 pricing.read。
 // 创建任务由计费模板变更流程内部调用 planSwitchTask 完成，不对外暴露。
@@ -27,17 +27,17 @@ func (a ResourceAPI) registerSwitchTasks(r *gin.Engine) {
 	r.GET("/api/v1/admin/settings/switch-tasks/:id", a.Auth.Require("pricing.read"), a.switchTaskDetail)
 }
 
-// createSwitchTask records a planned rollout. The downlink itself is not driven
-// here: a task exists so the attempt is visible, and a device that fails keeps
-// its own row rather than vanishing into a rolled-back transaction.
+// createSwitchTask 登记一次计划中的下发。真正的下发不在这里驱动：
+// 任务的作用就是让这次尝试可见，某台设备失败时它自己那行会留着，
+// 而不是随事务回滚一起消失。
 // planSwitchTask 登记一次计划中的计费方式下发：写一条任务头，再为每台目标设备写一条明细，
 // 明细初始都是 pending。必须用调用方传入的 tx，与业务改动同事务；
 // 真正下发不归这里管，因此一台设备没响应时它那条明细会一直留在表里可见。
 // 任务号由 UTC 时间加站点 ID 后四位拼成，唯一性由数据库唯一索引兜底。
 //
-// createSwitchTask records a planned rollout. The downlink itself is not driven
-// here: a task exists so the attempt is visible, and a device that fails keeps
-// its own row rather than vanishing into a rolled-back transaction.
+// createSwitchTask 登记一次计划中的下发。真正的下发不在这里驱动：
+// 任务的作用就是让这次尝试可见，某台设备失败时它自己那行会留着，
+// 而不是随事务回滚一起消失。
 func (a ResourceAPI) planSwitchTask(tx *gorm.DB, actor Profile, stationID uint64, templateID uint64, mode pricing.ChargeMode, targets []switchTarget, c *gin.Context) (uint64, error) {
 	// 任务号：SW + UTC 时间戳（秒）+ 站点 ID 后四位，人可读且便于按时间检索。
 	number := "SW" + time.Now().UTC().Format("20060102150405") + fmt.Sprintf("%04d", stationID%10000)
@@ -72,10 +72,10 @@ func (a ResourceAPI) planSwitchTask(tx *gorm.DB, actor Profile, stationID uint64
 // 全部一致就给该值，有缺失或不一致返回 nil / "mixed"。
 // before 为 false 时不取任何值（此时任务的"切换前"是空），返回 nil。
 //
-// commonMode collapses the per-board before-modes into the one figure the task
-// header carries. A station where the boards did not all agree gets a marker, not
-// the mode of whichever row was read first: a summary that is wrong for most of
-// the task is worse than no summary, and the per-device rows are always there.
+// commonMode 把各板子切换前的方式收敛成任务头上那一个值。
+// 各板子本来就不一致的站点拿到的是一个标记，而不是恰好先读到的那一行的方式：
+// 一个对任务里大多数设备都错了的汇总，比没有汇总更糟，
+// 而逐台明细一直都在。
 func commonMode(targets []switchTarget, before bool) any {
 	mode := ""
 	for _, target := range targets {
@@ -100,9 +100,9 @@ func commonMode(targets []switchTarget, before bool) any {
 	return mode
 }
 
-// The JSON tags are not decoration. Every other admin endpoint answers in
-// snake_case, and a screen that has to special-case one response is a screen
-// that gets one of the two spellings wrong.
+// 这些 JSON tag 不是装饰。其它后台接口一律用 snake_case 应答，
+// 而一个要为某一个响应单独写特例的页面，
+// 迟早会把两种写法里的一种用错。
 //
 // switchTaskRow 是切换任务表头的一行，其中 StationName 由联表查出，并不是表里的列。
 type switchTaskRow struct {
@@ -151,10 +151,10 @@ func (a ResourceAPI) switchTasks(c *gin.Context) {
 	httpapi.OK(c, rows)
 }
 
-// switchTaskDetail returns the per-device outcome, which is the reason the
-// screen exists: "the switch was applied" is not a useful answer on its own.
+// switchTaskDetail 返回逐台设备的结果，这正是这个页面存在的理由：
+// 只回一句"已下发"，对运营没有任何用处。
 //
-// switchTaskDetail 是 GET /api/v1/admin/settings/switch-tasks/:id 的处理函数：
+// switchTaskDetail 是 GET /api/v1/admin/settings/switch-tasks/：id 的处理函数：
 // 返回任务头加逐台设备的成败明细，按设备 ID 排序。明细才是这个页面存在的理由：
 // 只回一句"已下发"对运营没有任何用处。
 func (a ResourceAPI) switchTaskDetail(c *gin.Context) {
@@ -180,9 +180,9 @@ func (a ResourceAPI) switchTaskDetail(c *gin.Context) {
 	httpapi.OK(c, gin.H{"task": task, "items": items})
 }
 
-// recordSwitchResult is called by the downlink once a device has been written
-// to. It is deliberately separate from planning: the two happen at different
-// times, and a device that never answers must keep a row saying so.
+// recordSwitchResult 由下发链路在写完某台设备后回调。
+// 刻意与登记计划分开：两者发生在不同时刻，
+// 一直没回应的设备也必须留下一条记录说明这件事。
 //
 // recordSwitchResult 由下发链路在写完某台设备后回调：按结果把该条明细置为
 // succeeded 或 failed，并记下实际下发的套餐快照与失败原因。

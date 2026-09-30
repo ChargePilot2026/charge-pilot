@@ -4,15 +4,12 @@ import { apiGet, apiPost, apiPut } from '../api/client';
 import { fromCents, toCents, type Station } from './pricing/model';
 import { LoadError } from '../components/LoadError';
 
-// A package template is a prepaid cap a charging user can pick. It is deliberately not
-// part of a pricing template: the cap settles on its own price, so it stays
-// valid whichever tariff is running, and one tariff can be paired with several
-// different package sets. Applying one copies it into a charge_offer, which is
-// what the mini program reads.
+// 套餐模板是充电用户可以挑的预付封顶。它刻意不并进电价模板：封顶金额自己结算，所以无论
+// 当前跑的是哪套电价它都有效，而一套电价可以配多组不同的套餐。套用某个套餐模板时会把
+// 它复制成一条 charge_offer，小程序读的就是那个。
 //
-// The two kinds are mutually exclusive and the form says so rather than
-// leaving a price field that a duration package must leave empty: an amount is
-// a cap the charging user pays for, a duration package is settled by the tariff.
+// 两种类型互斥，表单直接说明这一点，而不是留一个「按时长套餐必须填空的金额字段」：
+// 金额封顶是充电用户实付的封顶，按时长套餐则由电价来结算。
 
 type PackageTemplate = {
   id: number; name: string; kind: 'amount' | 'package';
@@ -106,9 +103,8 @@ export default function PackageTemplates() {
       return;
     }
     const isAmount = values.kind === 'amount';
-    // The kind decides which of the two numbers exists: an amount needs a
-    // positive cap and no duration, a duration package needs a duration and
-    // carries no cap of its own.
+    // 类型决定这两个数里哪一个存在：金额封顶要一个大于 0 的金额且不填时长，按时长套餐
+    // 要一个时长且自身不带封顶金额。
     if (isAmount && !(Number(values.price_yuan) > 0)) {
       setFormError('按金额封顶必须填写大于 0 的金额，且时长为 0。');
       return;

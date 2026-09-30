@@ -32,9 +32,9 @@ type autoStopOrder struct {
 	PricingSnapshot []byte    `gorm:"column:pricing_snapshot"`
 }
 
-// Run stops a charging order only from persisted order and device evidence.
-// Network loss alone is not evidence that the customer unplugged: the latest
-// device heartbeat must still be fresh for the no-power rule to fire.
+// Run 只依据已落库的订单与设备证据来停止充电订单。
+// 单凭网络断开不能证明用户拔了枪：最新一次设备心跳必须仍然是新鲜的，
+// 断电规则才会触发。
 func (s AutoStopper) Run(ctx context.Context) (int, error) {
 	if s.UserDB == nil || s.GatewayDB == nil || s.ServiceToken == "" {
 		return 0, errors.New("auto stop is not configured")
@@ -96,13 +96,13 @@ func (s AutoStopper) Run(ctx context.Context) (int, error) {
 						}
 					}
 				}
-				// A spend cap is a promise the charging user was shown, and under server
-				// billing nothing on the board is watching it: the device is running
-				// under a time or energy allowance the platform handed it at start,
-				// and it has no idea money is being spent. So the cap is enforced
-				// here, off the same meter the settlement will use. The rule itself
-				// lives in the pricing engine, so a poller, an operator and a test
-				// all apply the same decision.
+				// 消费上限是当时展示给充电用户的一个承诺，
+				// 而在服务端计费下桩上没有任何东西在盯着它：
+				// 设备跑的是平台在开始时下发的时长或电量额度，
+				// 它压根不知道自己在花钱。
+				// 所以上限在这里按结算将要用的同一份计量来强制执行。
+				// 规则本身放在定价引擎里，
+				// 这样轮询器、运维和测试套用的是同一个判定。
 				if !stop && spendCapReached(contract.Rule, samples, order, now) {
 					stop = true
 				}
@@ -119,14 +119,16 @@ func (s AutoStopper) Run(ctx context.Context) (int, error) {
 	return stopped, nil
 }
 
-// spendCapReached reports whether a running server-billed session has hit the
-// ceiling its tariff declares.
+// spendCapReached 判断一个运行中的服务端计费会话
+// 是否已经触到其费率声明的上限。
 //
-// A cap of zero means no cap, and the session is then stopped by the allowance
-// the board was given at start, as it would be without one. A tariff the engine
-// can no longer price produces no decision either: this is a stop rule, and a
-// rule derived from a tariff the engine rejects is not a reason to cut somebody's
-// charge off. Both return false and leave the existing rules in charge.
+// 上限为 0 表示不设上限，
+// 此时会话照旧由开始时下发的额度来终止，与没有上限时一样。
+// 引擎已经算不出价的费率同样不产生判定：
+// 这是一条停止规则，
+// 而从引擎拒绝的费率推导出来的规则，
+// 不构成切断别人充电的理由。
+// 两种情况都返回 false，把决定权留给既有规则。
 func spendCapReached(rule pricing.Rule, samples []protocol.Event, order autoStopOrder, now time.Time) bool {
 	spec := rule.Spec
 	if !spec.Mode.ServerBilled() || spec.SpendCapCents <= 0 {
@@ -134,25 +136,25 @@ func spendCapReached(rule pricing.Rule, samples []protocol.Event, order autoStop
 	}
 	latest, ok := latestMeter(samples, order.PortNo, now)
 	if !ok {
-		// No fresh reading means no claim about how much has been spent. An
-		// unreachable board is a separate problem handled elsewhere; guessing
-		// from a stale meter here would stop sessions that are nowhere near the
-		// ceiling.
+		// 没有新鲜读数就无从声称已经花了多少钱。
+		// 桩不可达是另一个问题，在别处处理；
+		// 在这里拿陈旧计量去猜，
+		// 会停掉那些离上限还很远的会话。
 		return false
 	}
 	plan, err := pricing.StopAtMeter(rule, measuredMeter(order, latest, samples))
 	if err != nil {
-		// A meter that could not be settled on is a question for the settlement
-		// review, not a reason to stop a charge. ErrMeterReview here means the
-		// segments do not add up, which is a billing problem, not a cap breach.
+		// 定不下来的计量是结算复核要回答的问题，不是停止充电的理由。
+		// 这里的 ErrMeterReview 意味着各段电量对不上，
+		// 那是计费问题，不是超限。
 		return false
 	}
 	return plan.ShouldStop
 }
 
-// measuredMeter builds the meter record for a running session out of the latest
-// reading and whatever segments the telemetry could prove, so the spend-cap
-// check and the settlement price the same measurement.
+// measuredMeter 用最新读数和遥测能佐证的各段数据，
+// 为运行中的会话拼出计量记录，
+// 让消费上限判定与结算对同一份测量结果定价。
 func measuredMeter(order autoStopOrder, latest meterReading, samples []protocol.Event) pricing.ActualMeter {
 	ended := latest.at
 	meter := pricing.ActualMeter{
@@ -161,9 +163,9 @@ func measuredMeter(order autoStopOrder, latest meterReading, samples []protocol.
 		ChargedWh:      latest.wh,
 		ChargedSeconds: latest.seconds,
 	}
-	// measuredSegments needs a terminating event to measure up to, so the
-	// reading itself is dressed as one. It is a view of the same telemetry, not
-	// a second measurement.
+	// measuredSegments 需要一个可以测量到头的终止事件，
+	// 所以把这条读数本身装扮成终止事件。
+	// 它是同一份遥测的视图，不是第二次测量。
 	terminal := protocol.Event{
 		DeviceID: order.DeviceID, Port: order.PortNo, Type: protocol.ChargeEnd,
 		StartedAt: ended.Add(-time.Duration(latest.seconds) * time.Second),
@@ -211,7 +213,7 @@ func noPowerForMinute(samples []protocol.Event, port uint8, now time.Time) bool 
 			}
 		}
 		if !seen {
-			// Other ports' telemetry cannot prove this one has no power.
+			// 其他端口的遥测无法证明这个端口没有电。
 			since = time.Time{}
 			continue
 		}

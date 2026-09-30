@@ -79,8 +79,8 @@ func resultConsumer(t *testing.T, userDB, workerDB *gorm.DB) (ResultConsumer, fu
 	}
 }
 
-// A settled refund must move the money exactly once no matter how many times the
-// channel redelivers the event.
+// 一笔已结算的退款，无论渠道把事件重投多少次，
+// 钱都只能变动一次。
 func TestRefundResultPostsExactlyOnce(t *testing.T) {
 	if os.Getenv("TEST_USER_DATABASE_URL") == "" || os.Getenv("TEST_WORKER_DATABASE_URL") == "" || os.Getenv("TEST_STREAM_REDIS_URL") == "" {
 		t.Skip("disposable MySQL and Redis required")
@@ -91,8 +91,9 @@ func TestRefundResultPostsExactlyOnce(t *testing.T) {
 	defer closeConsumer()
 
 	stream := "refund_succeeded_stream"
-	// The handler acknowledges through the consumer group, so the group has to
-	// exist exactly as it would after a production startup.
+	// handler 是通过消费组做 ack 的，
+	// 所以这个组必须先存在，
+	// 且要与生产启动后的状态一致。
 	consumer.Stream.XGroupCreateMkStream(ctx, stream, consumer.consumerGroup(), "0")
 
 	payload, _ := json.Marshal(RefundResult{
@@ -113,15 +114,15 @@ func TestRefundResultPostsExactlyOnce(t *testing.T) {
 	if status != "success" {
 		t.Fatalf("refund status = %q, want success", status)
 	}
-	// The receipt table is keyed by the refund record, so redelivery cannot add
-	// a second one.
+	// 回执表以退款记录为主键，
+	// 所以重复投递不可能再添一条。
 	var receipts int64
 	userDB.Table("refund_success_receipt").
 		Where("refund_record_id IN (SELECT id FROM refund_record WHERE refund_no = ?)", refundNo).Count(&receipts)
 	if receipts != 1 {
 		t.Fatalf("success receipts = %d, want 1", receipts)
 	}
-	// The payment's refunded total must have moved exactly once as well.
+	// 支付单的已退总额同样只能变动一次。
 	var refunded struct {
 		RefundedCents int64 `gorm:"column:refunded_cents"`
 	}
@@ -132,8 +133,8 @@ func TestRefundResultPostsExactlyOnce(t *testing.T) {
 	}
 }
 
-// A channel reporting a different amount than was requested must not be posted;
-// it describes some other refund.
+// 渠道报出的金额与申请金额不一致时绝不能入账；
+// 那描述的是另一笔退款。
 func TestRefundResultRejectsAmountMismatch(t *testing.T) {
 	if os.Getenv("TEST_USER_DATABASE_URL") == "" || os.Getenv("TEST_WORKER_DATABASE_URL") == "" || os.Getenv("TEST_STREAM_REDIS_URL") == "" {
 		t.Skip("disposable MySQL and Redis required")
@@ -159,8 +160,9 @@ func TestRefundResultRejectsAmountMismatch(t *testing.T) {
 	}
 }
 
-// A malformed payload can never succeed on retry, so it goes straight to the
-// dead-letter stream instead of blocking the consumer group.
+// 畸形负载重试也永远不会成功，
+// 所以它直接进死信流，
+// 而不是堵住整个消费组。
 func TestRefundResultDeadLettersUnparseablePayload(t *testing.T) {
 	if os.Getenv("TEST_USER_DATABASE_URL") == "" || os.Getenv("TEST_WORKER_DATABASE_URL") == "" || os.Getenv("TEST_STREAM_REDIS_URL") == "" {
 		t.Skip("disposable MySQL and Redis required")

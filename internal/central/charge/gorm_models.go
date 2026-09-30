@@ -187,9 +187,9 @@ func isMySQLDuplicate(err error) bool {
 	return errors.As(err, &mysqlErr) && mysqlErr.Number == 1062
 }
 
-// ChargeFeeRecord is the settled fee for one order. The amounts live inside
-// result_json because they are produced by the pricing engine as one signed
-// unit; parsing them here keeps that contract in a single place.
+// ChargeFeeRecord 是一笔订单的结算费用。
+// 金额放在 result_json 里，
+// 因为它们由计价引擎作为一个整体签名产出；在这里做解析能让那份契约只存在于一个地方。
 type ChargeFeeRecord struct {
 	ChargeOrderID  uint64 `gorm:"column:charge_order_id;primaryKey"`
 	CalculationNo  string `gorm:"column:calculation_no"`
@@ -199,10 +199,10 @@ type ChargeFeeRecord struct {
 
 func (ChargeFeeRecord) TableName() string { return "charge_fee_receipt" }
 
-// Fees decodes the stored breakdown into flat amounts.
+// Fees 把存下来的费用明细解码成扁平的金额字段。
 func (r ChargeFeeRecord) Fees() (electric, service, total int64, ok bool) {
-	// The receipt stores the full billing Result, whose fee fields sit at the
-	// top level next to the source block.
+	// 回执存的是完整的计费 Result，
+	// 其中费用字段就在顶层，与 source 块并列。
 	var flat struct {
 		ElectricCents int64 `json:"electric_cents"`
 		ServiceCents  int64 `json:"service_cents"`

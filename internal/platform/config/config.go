@@ -35,9 +35,9 @@ type Central struct {
 	WechatAPIv3Key         string `env:"WECHAT_APIV3_KEY"`
 	WechatPrivateKey       string `env:"WECHAT_PRIVATE_KEY_PATH"`
 	WechatNotifyURL        string `env:"WECHAT_NOTIFY_URL"`
-	// PhoneEncryptionKey protects stored phone numbers. It must be 32 bytes
-	// (AES-256) and stable across restarts; without it phone binding is refused
-	// rather than falling back to plaintext storage.
+	// PhoneEncryptionKey 保护存储的手机号。它必须是 32 字节（AES-256），
+	// 并且要跨重启保持稳定；没有它就直接拒绝手机号绑定，
+	// 而不是退回去用明文存。
 	PhoneEncryptionKey string `env:"PHONE_ENCRYPTION_KEY" envDefault:"local-dev-phone-key-32-bytes-xxx"`
 }
 

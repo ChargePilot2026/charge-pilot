@@ -64,8 +64,6 @@ func curveFixture(t *testing.T, ctx context.Context, deviceID string) (orderID, 
 	return orderID, userID
 }
 
-// fakeGateway answers the internal telemetry call so the curve path can be
-// verified without a running gateway.
 func userIDOf(t *testing.T, db *gorm.DB, orderID uint64) uint64 {
 	t.Helper()
 	var id uint64
@@ -73,6 +71,7 @@ func userIDOf(t *testing.T, db *gorm.DB, orderID uint64) uint64 {
 	return id
 }
 
+// fakeGateway 响应内部遥测调用，不用起一个真网关也能验证曲线链路。
 func fakeGateway(points []map[string]any) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-Service-Token") == "" {
@@ -86,8 +85,8 @@ func fakeGateway(points []map[string]any) *httptest.Server {
 	}))
 }
 
-// The curve is read from gateway telemetry, so a missing value_num mapping would
-// surface here as a series full of nulls.
+// TestUserCurveReadsTelemetryValues —— 曲线是从网关遥测里读的，
+// 所以少了 value_num 的映射，这里就会表现为整条曲线全是 null。
 func TestUserCurveReadsTelemetryValues(t *testing.T) {
 	if os.Getenv("TEST_USER_DATABASE_URL") == "" {
 		t.Skip("disposable MySQL required")
@@ -100,7 +99,7 @@ func TestUserCurveReadsTelemetryValues(t *testing.T) {
 	orm, _ := dbconn.WrapGORM(userDB)
 	orm.Table("charge_order").Where("id = ?", orderID).Pluck("order_no", &orderNo)
 
-	// Two time buckets, each carrying a different subset of metrics.
+	// 两个时间桶，每个桶带的指标子集还不一样。
 	first := time.Now().UTC().Add(-18 * time.Minute).Truncate(time.Second)
 	second := first.Add(8 * time.Minute)
 	gateway := fakeGateway([]map[string]any{
@@ -109,8 +108,8 @@ func TestUserCurveReadsTelemetryValues(t *testing.T) {
 	})
 	defer gateway.Close()
 
-	// A real session is required: the curve handler goes through the same
-	// authenticator as production, so the test signs a token and registers it.
+	// 需要真实会话：
+	// 曲线处理器走的是和生产一样的鉴权器，所以测试要签一个 token 并注册进去。
 	redisURL := os.Getenv("TEST_REDIS_URL")
 	if redisURL == "" {
 		t.Skip("redis required")
@@ -177,7 +176,7 @@ func TestUserCurveReadsTelemetryValues(t *testing.T) {
 	if oldest.MeterKWh == nil || *oldest.MeterKWh != 0.1 {
 		t.Fatalf("first meter_kwh = %v", oldest.MeterKWh)
 	}
-	// A metric the device did not report stays null rather than becoming zero.
+	// 设备没有上报的指标保持为 null，而不是变成 0。
 	if oldest.CurrentA != nil {
 		t.Fatalf("unreported current_a should be null, got %v", *oldest.CurrentA)
 	}
@@ -186,8 +185,8 @@ func TestUserCurveReadsTelemetryValues(t *testing.T) {
 	}
 }
 
-// Billing amounts live inside the fee receipt, and the order list must surface
-// them rather than zeros.
+// TestUserHistoryAndDetailExposeFees —— 计费金额存在费用回执里，
+// 订单列表必须把它们显示出来，而不是显示成 0。
 func TestUserHistoryAndDetailExposeFees(t *testing.T) {
 	if os.Getenv("TEST_USER_DATABASE_URL") == "" || os.Getenv("TEST_REDIS_URL") == "" {
 		t.Skip("disposable MySQL and Redis required")
@@ -306,7 +305,7 @@ func TestUserHistoryAndDetailExposeFees(t *testing.T) {
 	}
 }
 
-// Another customer's order must be indistinguishable from a missing one.
+// TestUserDetailHidesForeignOrder —— 别人的订单必须与不存在的订单无从分辨。
 func TestUserDetailHidesForeignOrder(t *testing.T) {
 	if os.Getenv("TEST_USER_DATABASE_URL") == "" || os.Getenv("TEST_REDIS_URL") == "" {
 		t.Skip("disposable MySQL and Redis required")
@@ -322,7 +321,7 @@ func TestUserDetailHidesForeignOrder(t *testing.T) {
 	orm, _ := dbconn.WrapGORM(userDB)
 	orm.Table("charge_order").Where("id = ?", orderID).Pluck("order_no", &orderNo)
 
-	// A second account must not be able to read the first one's order.
+	// 第二个账号不能读到第一个账号的订单。
 	// 这个冒名账号只在本测试里存在，名字带 qa-intruder- 前缀就是为了能被认出来
 	// 摘掉：不清的话，后台「充电用户」列表里会一版版多出叫"用户 #900xxx"的空账号。
 	intruderOpenID := "qa-intruder-" + uuid.NewString()[:8]

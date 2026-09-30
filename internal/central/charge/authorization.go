@@ -12,9 +12,9 @@ import (
 	"gorm.io/gorm"
 )
 
-// StartAuthorization is a read-only guard for the device gateway. It returns
-// an order only after both the charge order and its payment record are marked
-// paid. The payment callback implementation must perform that transition.
+// StartAuthorization 是给设备网关用的只读守卫。
+// 只有在充电订单和它的支付记录都被标记为已支付之后，
+// 它才返回这笔订单。这个状态迁移必须由支付回调的实现来完成。
 type StartAuthorization struct {
 	DB           *gorm.DB
 	ServiceToken string

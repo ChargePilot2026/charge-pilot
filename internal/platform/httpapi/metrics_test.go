@@ -28,9 +28,9 @@ func scrape(t *testing.T, router http.Handler) string {
 	return recorder.Body.String()
 }
 
-// The route label has to be the matched template. Paths in this project embed
-// device ids and order numbers, so labelling by the raw path would mint a new
-// time series per request and take the scrape down.
+// route 标签必须是匹配到的那个模板。本项目的路径里嵌了
+// 设备 ID 和订单号，所以按原始路径打标签会每次请求都新造一条
+// 时间序列，把抓取直接搞挂。
 func TestMetricsLabelRoutesByTemplateNotRawPath(t *testing.T) {
 	router := metricsRouter()
 	for _, id := range []string{"device-aaa", "device-bbb", "device-ccc"} {
@@ -47,14 +47,14 @@ func TestMetricsLabelRoutesByTemplateNotRawPath(t *testing.T) {
 	if !strings.Contains(body, `route="/api/v1/devices/:device_id/telemetry"`) {
 		t.Fatalf("expected the route template label, got:\n%s", body)
 	}
-	// Three distinct devices must not produce three series.
+	// 三台不同的设备不能产生三条序列。
 	if got := strings.Count(body, `route="/api/v1/devices/:device_id/telemetry",status="200"`); got != 1 {
 		t.Fatalf("expected 1 counter series, found %d", got)
 	}
 }
 
-// A request that matched no route must collapse to one label, otherwise an
-// unauthenticated scanner could inflate the series count at will.
+// 一个没匹配到任何路由的请求必须收敛到同一个标签，
+// 否则未认证的扫描器就能随意撑大序列数量。
 func TestMetricsCollapseUnmatchedRequests(t *testing.T) {
 	router := metricsRouter()
 	for i := 0; i < 3; i++ {
@@ -90,8 +90,8 @@ func TestMetricsExposeValidExposition(t *testing.T) {
 			t.Fatalf("exposition missing %q:\n%s", want, body)
 		}
 	}
-	// Every non-comment line must carry the service label or be a HELP/TYPE
-	// companion, and no line may be blank.
+	// 每一行非注释内容都必须带上 service 标签，或者属于 HELP/TYPE
+	// 那一组，而且不允许有空行。
 	for _, line := range strings.Split(strings.TrimSpace(body), "\n") {
 		if strings.HasPrefix(line, "#") {
 			continue

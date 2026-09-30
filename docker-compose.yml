@@ -1,5 +1,5 @@
-# Production topology. scripts/start.sh blocks rollout until the migration
-# checklist is complete and external payment/device acceptance is recorded.
+# 生产拓扑。scripts/start.sh 会拦着不发版，直到迁移清单完成、
+# 且第三方支付与设备验收已经记录在案。
 name: chargepilot
 
 x-go-build: &go-build

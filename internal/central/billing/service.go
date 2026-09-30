@@ -27,14 +27,13 @@ type Service struct {
 	Orders       Orders
 	Splits       SplitResolver
 	ServiceToken string
-	// Bills issues the customer-visible bill once the fee is known. It is
-	// optional so the billing job still runs in deployments that have not
-	// migrated the bill tables yet.
+	// Bills 在费用确定后开具用户可见的账单。它是可选的，
+	// 这样在还没迁移账单表的部署里，计费任务照样能跑。
 	Bills BillIssuer
 }
 
-// BillIssuer is the subset of the bill store billing needs, kept as an
-// interface so this package does not depend on the charge module.
+// BillIssuer 是计费所需的账单存储子集，抽象成接口，
+// 以便本包不依赖 charge 模块。
 type BillIssuer interface {
 	Issue(ctx context.Context, chargeOrderID uint64) (uint64, error)
 }
@@ -67,15 +66,15 @@ func (s Service) Run(ctx context.Context) (int, error) {
 					err = s.Store.MarkDelivered(ctx, id)
 				}
 				if err == nil {
-					// The bill is issued from the same committed fee, so what the
-					// customer is shown cannot drift from what was charged.
+					// 账单由同一笔已提交的 fee 开出，
+					// 因此展示给用户的金额不可能与实际扣费产生偏差。
 					if s.Bills != nil {
 						if _, billErr := s.Bills.Issue(ctx, id); billErr != nil && first == nil {
 							first = billErr
 						}
 					}
-					// Allocation is recorded after the fee is durably known so a
-					// settlement always has a persisted calculation to attach to.
+					// 分账在 fee 持久化确定之后才记录，
+					// 这样每次结算都有一份已落库的 calculation 可以挂靠。
 					if splitErr := s.settleCalculation(ctx, source, result); splitErr != nil && first == nil {
 						first = splitErr
 					}
@@ -85,7 +84,7 @@ func (s Service) Run(ctx context.Context) (int, error) {
 			}
 		}
 		if err != nil {
-			// Do not expose storage errors in the operator-facing queue.
+			// 不要把存储错误暴露到运维可见的队列里。
 			_ = s.Orders.Defer(ctx, id, "pending", "计费依赖暂不可用，等待重试")
 			if first == nil {
 				first = fmt.Errorf("bill order %d: %w", id, err)
@@ -117,13 +116,13 @@ func (s Service) Register(r *gin.Engine) {
 	})
 }
 
-// settleCalculation records the allocation for one freshly calculated fee. The
-// calculation number is derived from the order id, so the settlement no carries
-// the same deterministic identity as the fee it splits.
+// settleCalculation 为一笔刚算出的 fee 记录分账。calculation 号由订单 id 推导而来，
+// 所以 settlement_no 与它所拆分的那笔 fee
+// 带的是同一个确定性标识。
 func (s Service) settleCalculation(ctx context.Context, source Source, result Result) error {
-	// Settlement is an additional ledger on top of a valid fee. Without a
-	// resolver the deployment simply does not split, which must never fail the
-	// charge that was already billed correctly.
+	// 结算是在一笔有效 fee 之上追加的账本。
+	// 没有 resolver 时这个部署就是不做分账，
+	// 但绝不能因此让那笔已经正确计费的订单失败。
 	if source.Rule.StationID == 0 || s.Splits.AdminDB == nil {
 		return nil
 	}
@@ -134,8 +133,8 @@ func (s Service) settleCalculation(ctx context.Context, source Source, result Re
 	template, err := s.Splits.Resolve(ctx, source.Rule.StationID)
 	if err != nil {
 		if errors.Is(err, ErrNoSplitTemplate) || errors.Is(err, gorm.ErrRecordNotFound) {
-			// A station without an active split template is a configuration gap,
-			// not a billing failure: the fee stays valid and settlement retries.
+			// 站点没有生效的分账模板属于配置缺口，不是计费失败：
+			// fee 仍然有效，结算稍后重试。
 			return nil
 		}
 		return err
@@ -148,9 +147,9 @@ func (s Service) settleCalculation(ctx context.Context, source Source, result Re
 	return err
 }
 
-// CalculationID resolves the persisted fee_calculation primary key for an order.
-// The calculation number is derived from the order id, but the settlement ledger
-// references the real row id, so it is read from the receipt instead of guessed.
+// CalculationID 解析某个订单已落库的 fee_calculation 主键。
+// calculation 号由订单 id 推导，但结算台账引用的是真实的行 id，
+// 所以从回执里读出来而不是猜。
 func (s Store) CalculationID(ctx context.Context, chargeOrderID uint64) (uint64, error) {
 	var row struct {
 		CalculationID *uint64 `gorm:"column:calculation_id"`
@@ -164,8 +163,8 @@ func (s Store) CalculationID(ctx context.Context, chargeOrderID uint64) (uint64,
 	return *row.CalculationID, nil
 }
 
-// settleBacklog covers fees calculated before settlement existed, or a station
-// that gained a split template later. It never rewrites an existing settlement.
+// settleBacklog 覆盖结算功能上线前就已算出的 fee，
+// 或后来才配上分账模板的站点。它绝不改写已存在的结算。
 func (s Service) settleBacklog(ctx context.Context) (int, error) {
 	if s.Splits.AdminDB == nil {
 		return 0, nil
@@ -212,7 +211,8 @@ func (s Service) settleBacklog(ctx context.Context) (int, error) {
 	return count, first
 }
 
-// MarkDelivered is separated from user commit; retries recover either side.
+// MarkDelivered 与用户提交是分开的；
+// 重试可以把任意一侧补回来。
 func (s Store) MarkDelivered(ctx context.Context, id uint64) error {
 	return s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Table("fee_delivery").Where("charge_order_id=?", id).Updates(map[string]any{"delivered": true, "delivered_at": gorm.Expr("UTC_TIMESTAMP(3)")}).Error; err != nil {

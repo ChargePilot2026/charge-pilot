@@ -8,22 +8,22 @@ import (
 	"testing"
 )
 
-// requirePattern matches the permission argument of a route guard. The whole
-// point of this test is to catch a permission that was named in code but never
-// seeded into the permission table, and the only place such a string appears
-// is the source.
+// requirePattern 匹配路由守卫传进去的权限参数。这个测试的全部目的
+// 就是抓住"代码里写了权限名、却从没往 permission 表里种下去"的权限，
+// 而这种字符串唯一会出现的地方
+// 就是源码本身。
 var requirePattern = regexp.MustCompile(`Require\("([a-z][a-z0-9_.]*)"\)`)
 
-// TestEveryGuardedPermissionExists is the guard for a failure mode that no other
-// test can see: a route gated behind a permission code that was never inserted
-// into the permission table is not a compile error and not a unit-test failure,
-// it is an endpoint that answers 403 to everyone, permanently and silently.
+// TestEveryGuardedPermissionExists 守的是一种别的测试都看不见的故障模式：
+// 一条挂在"从没写进 permission 表"的权限码后面的路由，
+// 既不是编译错误，也不是单元测试失败，
+// 它是一个对所有人永远静默返回 403 的接口。
 //
-// It happened here. A new route required "device.update", which did not exist —
-// the system had device.read and device.import and no third device permission —
-// so the endpoint could never be called by any role, including the superuser,
-// because Require has no bypass. Nothing noticed because the endpoint had never
-// been exercised.
+// 这里真的发生过。新加的一条路由要求 "device.update"，
+// 而这个权限并不存在——系统里只有 device.read 和 device.import，
+// 没有第三个 device 权限——于是任何角色都调不了这个接口，
+// 超级管理员也不行，因为 Require 没有旁路。
+// 之所以一直没人发现，是因为这个接口从没被调用过。
 func TestEveryGuardedPermissionExists(t *testing.T) {
 	if os.Getenv("TEST_ADMIN_DATABASE_URL") == "" {
 		t.Skip("disposable MySQL required")
@@ -43,11 +43,11 @@ func TestEveryGuardedPermissionExists(t *testing.T) {
 		seeded[row.Code] = true
 	}
 
-	// Scanned from the repository root, so a guard added to any service is
-	// covered and not just the ones in this package.
-	// The test runs in this package's directory, so the repository root is three
-	// levels up. Scanning from there covers a guard added to any service rather
-	// than only the ones in this package.
+	// 从仓库根目录开始扫，所以任何服务里新加的守卫都能被覆盖，
+	// 而不只是本包里的那些。
+	// 测试跑在本包目录下，仓库根在上面三层；
+	// 从那里扫才能覆盖任何服务新加的守卫，
+	// 而不是只有本包的那些。
 	root := filepath.Join("..", "..", "..")
 	entries, err := filepath.Glob(filepath.Join(root, "internal", "*", "*.go"))
 	if err != nil {
@@ -62,8 +62,8 @@ func TestEveryGuardedPermissionExists(t *testing.T) {
 		t.Fatalf("only %d source files were scanned; the root path is wrong", len(entries))
 	}
 
-	// Fixture codes that exist only to prove a denial works. A test asking for a
-	// permission nobody holds is the test succeeding, not a missing seed.
+	// 只为证明"拒绝确实生效"而存在的固定权限码。测试要的是一个谁都没持有的权限，
+	// 那说明测试成功了，而不是漏了种子数据。
 	fixtures := map[string]bool{"nonexistent.permission": true}
 
 	used := map[string]bool{}
@@ -94,11 +94,11 @@ func TestEveryGuardedPermissionExists(t *testing.T) {
 	}
 }
 
-// A permission nobody holds is a route nobody can use, and one nobody can be
-// granted is a route that can never be fixed through the role editor. The
-// metering declaration goes to exactly the roles that onboard hardware, so that
-// whoever can price a station is not automatically the one who certifies what its
-// boards can measure — otherwise the capability check is only advisory.
+// 没人持有的权限就是没人能用的路由；
+// 没人能被授予的权限，就是永远没法通过角色编辑器修好的路由。
+// 所以计量声明恰好只发给那些负责接入硬件的角色，
+// 好让"能给站点定价的人"不会自动变成"能认定它那些板子能计量什么的人"——
+// 否则能力校验就只是走个形式。
 func TestMeteringPermissionGoesToTheRolesThatOnboardBoards(t *testing.T) {
 	if os.Getenv("TEST_ADMIN_DATABASE_URL") == "" {
 		t.Skip("disposable MySQL required")

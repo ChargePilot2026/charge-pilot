@@ -17,8 +17,8 @@ import (
 
 var ErrRefundConflict = errors.New("refund identity or amount conflict")
 
-// RefundExecutor only dispatches explicitly automatic charge refunds. Unknown
-// outcomes remain processing and are queried before every idempotent retry.
+// RefundExecutor 只派发明确属于自动充电退款的请求。
+// 结果未知的退款保持 processing 状态，每次幂等重试之前都先查询一次。
 type RefundExecutor struct {
 	DB           *gorm.DB
 	Provider     payment.RefundProvider
@@ -64,7 +64,7 @@ func (e RefundExecutor) Execute(ctx context.Context, id uint64) error {
 		result, err = e.Provider.CreateRefund(callCtx, request)
 	}
 	if err != nil {
-		// Persist a sanitized diagnostic, never SDK response bodies or credentials.
+		// 只落库脱敏后的诊断信息，绝不落 SDK 响应体或凭据。
 		_ = e.DB.WithContext(ctx).Model(&RefundRecord{}).Where("id = ? AND status='processing'", id).Update("failure_reason", "provider result unknown; query scheduled").Error
 		return fmt.Errorf("refund %s: provider result unknown", r.RefundNo)
 	}
@@ -75,7 +75,7 @@ func (e RefundExecutor) claim(ctx context.Context, id uint64) (RefundRecord, pay
 	var request payment.RefundRequest
 	claimed := false
 	err := e.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Serialize amounts on the payment row before locking an individual request.
+		// 先在支付行上串行化金额，再去锁单条请求。
 		if err := tx.Where("id = ? AND deleted_at IS NULL", id).Take(&r).Error; err != nil {
 			return err
 		}
@@ -111,8 +111,8 @@ func (e RefundExecutor) claim(ctx context.Context, id uint64) (RefundRecord, pay
 				return ErrRefundConflict
 			}
 		} else {
-			// Simulator transactions must never be sent to a real merchant and
-			// real provider transactions must never be settled by the simulator.
+			// 模拟器的交易绝不能发到真实商户，
+			// 真实渠道的交易也绝不能让模拟器去结算。
 			simulated := strings.HasPrefix(p.WechatTransactionID.String, "SIM")
 			if (e.ProviderName == "simulation") != simulated {
 				return ErrRefundConflict
@@ -127,7 +127,7 @@ func (e RefundExecutor) claim(ctx context.Context, id uint64) (RefundRecord, pay
 			return ErrRefundConflict
 		}
 		request = payment.RefundRequest{RefundNo: r.RefundNo, MerchantOrderNo: p.OrderNo, TransactionID: p.WechatTransactionID.String, TotalCents: p.TotalCents, RefundCents: r.RefundCents}
-		// This durable lease also supplies bounded exponential retry after crashes.
+		// 这把持久化的租约同时提供了崩溃之后的有界指数退避重试。
 		delay := time.Duration(30*(1<<min(r.RetryCount, uint32(7)))) * time.Second
 		update := tx.Model(&RefundRecord{}).Where("id = ?", r.ID).Updates(map[string]any{"status": "processing", "retry_count": gorm.Expr("retry_count+1"), "next_attempt_at": time.Now().UTC().Add(delay)})
 		if update.Error != nil {

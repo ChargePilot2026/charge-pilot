@@ -14,7 +14,8 @@ func TestDispatchRejectsInvalidServiceCredentialsBeforeStorage(t *testing.T) {
 		{"", ""}, {"billing-test-secret", ""}, {"billing-test-secret", "wrong-secret"},
 	} {
 		router := gin.New()
-		// No database or order service: unauthorized requests must never reach them.
+		// 不接数据库，也不接订单服务：
+		// 未通过鉴权的请求绝不能走到它们那里。
 		(Service{ServiceToken: tc.configured}).Register(router)
 		req := httptest.NewRequest("POST", "/api/v1/internal/billing/dispatch", nil)
 		req.Header.Set("X-Service-Token", tc.supplied)

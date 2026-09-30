@@ -61,8 +61,8 @@ func (a ResourceAPI) registerOperations(r *gin.Engine) {
 	r.PUT("/api/v1/admin/whitelabel", a.Auth.Require("whitelabel.update"), a.saveWhitelabel)
 }
 
-// MySQL returns JSON and DECIMAL map columns as bytes. Normalize explicitly so
-// JSON values reach browsers as arrays/objects instead of base64 strings.
+// MySQL 把 JSON、DECIMAL 这类列以字节的形式返回。这里显式归一化，
+// 是为了让 JSON 值到浏览器那边是数组/对象，而不是 base64 字符串。
 // normalizeRows 归一化 admin 库查出来的行：MySQL 把 JSON、DECIMAL 等列当 []byte 返回，
 // 先转成字符串；event_types、target_ids 以及所有以 _json 结尾的列在能解析时展开成
 // 数组或对象；布尔列转成 true/false。解析不出来的保持原样——
@@ -121,7 +121,7 @@ func validText(s string, max int) bool {
 }
 
 // httpsURL 只接受可对外访问的 HTTPS 链接：必须能解析、scheme 为 https、有主机名、
-// 不允许夹带 user:pass 凭据，整串长度不超过 512。客服入口、Webhook 地址、
+// 不允许夹带 user：pass 凭据，整串长度不超过 512。客服入口、Webhook 地址、
 // 白标 logo 与协议链接都走这条校验。
 func httpsURL(s string) bool {
 	u, e := url.Parse(s)
@@ -351,8 +351,8 @@ func (a ResourceAPI) createWebhook(c *gin.Context) {
 		httpapi.BadRequest(c, "请填写名称、HTTPS URL 和订阅事件")
 		return
 	}
-	// Reject internal targets at creation time so they never reach the table;
-	// delivery re-checks the same rule to cover DNS rebinding.
+	// 在创建时就拒掉内网目标，让它们永远进不了表；
+	// 真正投递时还会复查同一条规则，用来覆盖 DNS rebinding。
 	if err := netguard.ValidatePublicHTTPS(in.URL); err != nil {
 		httpapi.Write(c, 400, 1002, err.Error(), nil)
 		return

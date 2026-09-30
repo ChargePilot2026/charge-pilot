@@ -1,11 +1,11 @@
-// Command simulator-dc589 runs a local stand-in for a dc589 charging board.
+// Command simulator-dc589 在本地顶替一块 dc589 充电板。
 //
-// It is a development and test tool. It speaks the real 5.8.9 wire protocol to
-// a running gateway, so the charge path can be exercised without vendor
-// hardware. It must never be started in a production process.
+// 它是开发与测试工具，对运行中的网关讲真实的 5.8.9 线路协议，
+// 因此无需厂商硬件也能走通充电链路。
+// 绝不能在生产进程中启动。
 //
-// One command per protocol: a second vendor or an MQTT board gets its own
-// command beside this one.
+// 一种协议一个命令：
+// 换厂商或换成 MQTT 板时，在本命令旁边另起一个。
 package main
 
 import (
@@ -27,8 +27,8 @@ import (
 	"github.com/ChargePilot2026/charge-pilot/internal/gateway/simulator/dc589"
 )
 
-// The board id is sixteen decimal digits on the wire, so a default that is
-// obviously synthetic is used when none is given.
+// 板号在线路上是十六位十进制数字，
+// 所以未指定时用一个一眼就是编造的默认值。
 const defaultBoardID = "5348240514082652"
 
 func main() {
@@ -106,9 +106,9 @@ func run() error {
 	return dc589sim.Run(ctx, config)
 }
 
-// checkBoardID rejects identifiers the frame cannot carry before any connection
-// is attempted, so the failure names the real cause instead of surfacing as an
-// opaque registration rejection.
+// checkBoardID 在建立任何连接之前就拒绝帧承载不了的标识符，
+// 这样报错会指出真正原因，而不是以一个
+// 无从解读的注册被拒呈现。
 func checkBoardID(id string) error {
 	if len(id) != dc589.BoardIDDigits {
 		return fmt.Errorf("board id %q has %d characters; a 5.8.9 board id is exactly %d decimal digits", id, len(id), dc589.BoardIDDigits)
@@ -145,9 +145,9 @@ func provisionEndpoint(baseURL string) string {
 	return strings.TrimRight(baseURL, "/") + "/api/v1/internal/devices/provision"
 }
 
-// provision registers the board with the gateway's internal API. A device that
-// already exists is left alone, because the endpoint is idempotent by design and
-// re-provisioning must not disturb a device that is mid-charge.
+// provision 通过网关内部 API 注册这块板。
+// 已存在的设备原样放过，
+// 因为该接口设计上就是幂等的，而重复开通不能打扰正在充电的设备。
 func provision(endpoint, token, deviceID string, vendorID, stationID uint64, ports uint8) error {
 	if token == "" {
 		return errors.New("provisioning needs a service token; pass -service-token or set SERVICE_TOKEN")

@@ -6,11 +6,11 @@ import (
 	"time"
 )
 
-// Transport identifies the connection kind. These are exactly the values
-// gateway_db.device_session.protocol accepts (an ENUM of tcp and mqtt), and
-// deliberately the transport rather than the vendor adapter name: the column
-// answers "how was this device connected", and the vendor is reachable from the
-// device row. Writing an adapter name such as "dc589" here is rejected by MySQL.
+// Transport 标识连接的种类。这些取值恰好就是
+// gateway_db.device_session.protocol 允许的那些（tcp 与 mqtt 两个值的 ENUM），
+// 刻意取传输方式而不是厂商适配器名：这一列回答的是"这台设备是怎么连上来的"，
+// 而厂商信息从 device 行就能取到。
+// 这里写 "dc589" 这类适配器名，MySQL 会直接拒绝。
 type Transport string
 
 const (
@@ -18,16 +18,15 @@ const (
 	TransportMQTT Transport = "mqtt"
 )
 
-// SessionAudit accumulates per-connection traffic counters so a session can be
-// written to the database once, when the connection ends.
+// SessionAudit 累加每条连接的流量计数器，这样一条会话只要在连接结束时
+// 写一次库就够了。
 //
-// The counters deliberately live in memory and are only flushed on detach.
-// Writing every frame would put a database round trip on the TCP hot path and
-// make a device that is flooding frames able to stall its own connection. A
-// counter that is still running when the process dies is lost, which is the
-// correct trade: the audit question is "how long was this connection up and how
-// much did it move", and a lost row is recoverable while a stalled socket is
-// not.
+// 这些计数器刻意留在内存里，只在 detach 时落盘。
+// 每帧都写会把一次数据库往返放到 TCP 热路径上，
+// 让一台疯狂发帧的设备有能力把自己的连接卡死。
+// 进程死掉时仍在累加的计数器会丢，这是有意做的取舍：
+// 审计要回答的是"这条连接挂了多久、搬了多少数据"，
+// 而丢一行是可以补救的，卡住的 socket 不是。
 type SessionAudit struct {
 	transport  Transport
 	remoteAddr string
@@ -38,16 +37,16 @@ type SessionAudit struct {
 	bytesOut  atomic.Int64
 	framesIn  atomic.Int64
 	framesOut atomic.Int64
-	lastSeen  atomic.Int64 // UnixNano of the most recent frame
-	// unknown is a small set of command bytes this build chose not to act on.
-	// It is bounded rather than a growing map so a device that sprays unknown
-	// commands cannot use it to grow its own session row without limit.
+	lastSeen  atomic.Int64 // 最近一帧的 UnixNano
+	// unknown 是一小撮本版本选择不去处理的命令字节。
+	// 它是定长而不是一个会增长的 map，这样一台狂发未知命令的设备
+	// 就不能借此让自己的会话行无限膨胀下去。
 	unknownMu sync.Mutex
 	unknown   [256]bool
 }
 
-// NewSessionAudit starts tracking one connection. remoteAddr is captured here
-// because the connection is gone by the time the row is written.
+// NewSessionAudit 开始跟踪一条连接。remoteAddr 在这里就记下来，
+// 因为等到写这一行的时候连接早就没了。
 func NewSessionAudit(transport Transport, sessionID, remoteAddr string, startedAt time.Time) *SessionAudit {
 	audit := &SessionAudit{
 		transport:  transport,
@@ -59,8 +58,8 @@ func NewSessionAudit(transport Transport, sessionID, remoteAddr string, startedA
 	return audit
 }
 
-// Inbound records one received frame. dataLen is the payload length, not the
-// length of the framed bytes, so the audit counts what the protocol carried.
+// Inbound 记录一个收到的帧。dataLen 是载荷长度，不是成帧之后的长度，
+// 这样审计统计的才是协议实际承载的量。
 func (a *SessionAudit) Inbound(dataLen int, at time.Time) {
 	if a == nil {
 		return
@@ -70,7 +69,7 @@ func (a *SessionAudit) Inbound(dataLen int, at time.Time) {
 	a.lastSeen.Store(at.UnixNano())
 }
 
-// Outbound records one sent frame.
+// Outbound 记录一个发出的帧。
 func (a *SessionAudit) Outbound(dataLen int, at time.Time) {
 	if a == nil {
 		return
@@ -80,11 +79,11 @@ func (a *SessionAudit) Outbound(dataLen int, at time.Time) {
 	a.lastSeen.Store(at.UnixNano())
 }
 
-// Unknown records that a command arrived and was deliberately not acted on.
+// Unknown 记录"某条命令收到了但被有意忽略"这件事。
 //
-// It is recorded rather than counted so an operator can tell "this board speaks
-// a superset of what we implemented" apart from "this board is healthy". That
-// distinction is what turns a skipped command from a mystery into a to-do.
+// 这里记的是集合而不是计数，这样运维才能把"这块板子讲的是
+// 我们实现范围的超集"和"这块板子一切正常"区分开。
+// 正是这个区别，让一条被跳过的命令从无头案变成待办事项。
 func (a *SessionAudit) Unknown(command byte) {
 	if a == nil {
 		return
@@ -94,8 +93,8 @@ func (a *SessionAudit) Unknown(command byte) {
 	a.unknownMu.Unlock()
 }
 
-// UnknownCommands lists the distinct command bytes that were skipped, in
-// ascending order so the value is stable between runs.
+// UnknownCommands 列出被跳过的那些互不相同的命令字节，
+// 按升序返回，这样多次运行之间取值是稳定的。
 func (a *SessionAudit) UnknownCommands() []int {
 	if a == nil {
 		return nil
@@ -111,7 +110,7 @@ func (a *SessionAudit) UnknownCommands() []int {
 	return out
 }
 
-// SessionRecord is the terminal state of one connection, ready to persist.
+// SessionRecord 是一条连接的终态，随时可以落库。
 type SessionRecord struct {
 	SessionID   string
 	DeviceID    string
@@ -127,9 +126,9 @@ type SessionRecord struct {
 	FramesOut   int64
 }
 
-// Snapshot freezes the counters. endedAt is passed in rather than sampled here
-// so the caller can label the row with the reason it closed, and so the value
-// matches the error the connection actually returned.
+// Snapshot 冻结计数器。endedAt 由调用方传入而不是在这里取当前时间，
+// 这样调用方可以给这一行标上它关闭的原因，
+// 这个值也与连接实际返回的错误对得上。
 func (a *SessionAudit) Snapshot(deviceID, closeReason string, endedAt time.Time) SessionRecord {
 	if a == nil {
 		return SessionRecord{}

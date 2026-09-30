@@ -11,9 +11,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// DebtAPI lets a customer see what they still owe and pay it. The amount always
-// comes from the stored debt, never from the request body, so a tampered client
-// cannot change what is collected.
+// DebtAPI 让客户看到自己还欠多少并把它还掉。
+// 金额永远取自库里存的欠款，绝不取自请求体，
+// 所以被篡改的客户端改不了实际收取的数额。
 type DebtAPI struct {
 	Auth     identity.SessionAuthenticator
 	Debts    DebtStore
@@ -120,7 +120,7 @@ func (a DebtAPI) pay(c *gin.Context) {
 		httpapi.Write(c, 404, 1004, "欠费记录不存在", nil)
 		return
 	}
-	// Another customer's debt must be indistinguishable from a missing one.
+	// 别人的欠款必须与不存在的欠款无从分辨。
 	if owned.UserID != userID {
 		httpapi.Write(c, 404, 1004, "欠费记录不存在", nil)
 		return

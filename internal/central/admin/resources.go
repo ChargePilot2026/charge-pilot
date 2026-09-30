@@ -16,8 +16,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// ResourceStore reads each central module through its own schema connection.
-// No cross-schema SQL or gateway database access is used here.
+// ResourceStore 通过各自 schema 的连接读写中台的每个模块。
+// 这里既不写跨 schema SQL，也不碰网关的数据库。
 //
 // ResourceStore 持有各业务模块自己的库连接：AdminDB 站点/设备/定价，UserDB 用户与订单，
 // BillingDB 计费与分账。三个句柄分开是为了不出现跨库 SQL。
@@ -162,8 +162,8 @@ func resourceFailure(c *gin.Context, err error) {
 	}
 }
 
-// Decode bounded write bodies and reject misspelled fields rather than silently
-// overwriting records with default values. Domain validation follows decoding.
+// 解析写入请求体时限制长度，并拒绝拼错的字段，
+// 而不是拿默认值静默覆盖已有记录。业务校验在解析之后。
 //
 // decodeResource 解析写入请求体：限长 64KB、拒绝未知字段、且只允许一个 JSON 对象，
 // 避免拼错的字段被静默丢弃后用默认值覆盖已有数据。业务校验在解析之后由各接口自己做。
