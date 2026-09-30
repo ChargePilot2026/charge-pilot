@@ -10,6 +10,8 @@
 
 本轮业务方案：[充电方案业务重构方案与计算示例](charging-scheme-redesign.md)，记录已确认规则、计算案例及待审查边界，尚未实施。
 
+目标平台对照：[乐摇摇体验与 ChargePilot 改造方案](leyaoyao-experience-and-redesign.md)，附[体验分支记录与未完成项](leyaoyao-experience-coverage.md)。
+
 ```
 docs/
 ├── README.md                    ← 你在这里(读路径入口)
