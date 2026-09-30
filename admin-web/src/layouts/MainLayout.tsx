@@ -6,7 +6,8 @@ import {
   CustomerServiceOutlined,
 } from '@ant-design/icons';
 import { useEffect, useState, type ReactNode } from 'react';
-import { apiPost, adminSession } from '../api/client';
+import { apiGet, apiPost, adminSession } from '../api/client';
+import type { SessionProfile } from '../api/session';
 
 const { Header, Sider, Content } = Layout;
 const { Text } = Typography;
@@ -56,6 +57,15 @@ export default function MainLayout() {
   const [collapsed, setCollapsed] = useState(false);
   const [, sessionChanged] = useState(0);
   useEffect(() => { const update = () => sessionChanged(v => v + 1); window.addEventListener('cp-session', update); window.addEventListener('storage', update); return () => { window.removeEventListener('cp-session', update); window.removeEventListener('storage', update); }; }, []);
+  const sessionEpoch = adminSession.epoch();
+  useEffect(() => {
+    const sync = () => { void adminSession.syncProfile(() => apiGet<SessionProfile>('/api/v1/admin/auth/me')).catch(() => undefined); };
+    const onVisible = () => { if (document.visibilityState === 'visible') sync(); };
+    sync();
+    window.addEventListener('focus', sync);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => { window.removeEventListener('focus', sync); document.removeEventListener('visibilitychange', onVisible); };
+  }, [sessionEpoch]);
   const navigate = useNavigate();
   const { pathname } = useLocation();
 
