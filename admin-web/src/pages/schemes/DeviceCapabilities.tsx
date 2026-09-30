@@ -1,14 +1,32 @@
 import { useEffect, useRef, useState } from 'react';
-import { Alert, Button, Card, Checkbox, Input, InputNumber, Space, message } from 'antd';
-import { adminSession, apiGet, apiPut } from '../../api/client';
-type Cap = { max_minutes:number; duration:boolean; energy:boolean; online_card:boolean; card_event_identity:boolean; stop_policy_verified:boolean; stop_when_full:boolean };
-type Data = { capabilities:Cap|null; reports_energy:boolean; reports_segmented_power:boolean };
-const labels:Record<Exclude<keyof Cap,'max_minutes'>,string>={duration:'支持时长执行',energy:'支持电量执行',online_card:'在线卡适配已验证',card_event_identity:'移开后重刷才产生新事件的行为已核验',stop_policy_verified:'停止策略已从设备回读核验',stop_when_full:'设备当前启用满充停止'};
-export default function DeviceCapabilities({station,device,editable}:{station:number;device:string;editable:boolean}){
- const [data,setData]=useState<Data>(),[evidence,setEvidence]=useState(''),[error,setError]=useState(''),[busy,setBusy]=useState(false);const epoch=useRef(0),session=useRef<string|null>(null);
- useEffect(()=>{const current=++epoch.current;setData(undefined);setError('');setEvidence('');session.current=adminSession.epoch();apiGet<Data>('/api/v1/admin/settings/device-capabilities',{station_id:station,device_id:device}).then(d=>{if(current===epoch.current&&session.current===adminSession.epoch())setData(d);}).catch(e=>{if(current===epoch.current)setError(e.message);});return()=>{epoch.current++;};},[station,device]);
- const cap=data?.capabilities||{max_minutes:600,duration:false,energy:false,online_card:false,card_event_identity:false,stop_policy_verified:false,stop_when_full:false};
- const patch=(v:Partial<Cap>)=>setData({...data!,capabilities:{...cap,...v}});
- async function save(){if(!data||busy)return;setBusy(true);const current=epoch.current;try{if(session.current!==adminSession.epoch())throw new Error('账号已变化，请重新打开');await apiPut('/api/v1/admin/settings/device-capabilities',{station_id:station,device_id:device,...data,capabilities:cap,evidence});if(current===epoch.current){message.success('已记录能力核验结果');setError('');setEvidence('');}}catch(e:any){if(current===epoch.current)setError(e.message);}finally{setBusy(false);}}
- return <Card size="small" title="设备执行与计量能力">{error&&<Alert type="error" message={error}/>}<Alert type="info" message="填写实测核验结果及依据。登记能力不会向设备写入配置；满充开关必须与设备当前回读结果相同。加时由服务器事务完成。请核验主板每次放卡只产生一次刷卡事件，并验证平台计费时长上限。"/>{data&&<Space direction="vertical" style={{marginTop:12}}><Space>已验证最长时长<InputNumber disabled={!editable||busy} min={1} max={4320} precision={0} value={cap.max_minutes} addonAfter="分钟" onChange={v=>patch({max_minutes:v||0})}/></Space><Space wrap>{Object.entries(labels).map(([key,label])=><Checkbox disabled={!editable||busy} key={key} checked={cap[key as keyof Cap] as boolean} onChange={e=>patch({[key]:e.target.checked})}>{label}</Checkbox>)}</Space><Space><Checkbox disabled={!editable||busy} checked={data.reports_energy} onChange={e=>setData({...data,reports_energy:e.target.checked})}>可靠实际电量</Checkbox><Checkbox disabled={!editable||busy} checked={data.reports_segmented_power} onChange={e=>setData({...data,reports_segmented_power:e.target.checked})}>可靠分段功率</Checkbox></Space>{editable&&<><Input.TextArea aria-label="能力核验依据" placeholder="固件版本、核验时间、回读 / 实测记录等依据" value={evidence} maxLength={1000} onChange={e=>setEvidence(e.target.value)}/><Button disabled={!evidence.trim()} loading={busy} onClick={()=>void save()}>保存核验结果</Button></>}</Space>}</Card>;
+import { Alert, Card, Descriptions, Space, Tag } from 'antd';
+import { adminSession, apiGet } from '../../api/client';
+
+type Cap = { max_minutes: number; duration: boolean; energy: boolean; online_card: boolean; stop_when_full: boolean; reports_energy: boolean; reports_segmented_power: boolean };
+type Data = { protocol_adapter: string; capabilities: Cap };
+const labels = { duration: '时长执行', energy: '电量执行', online_card: '在线刷卡', stop_when_full: '满充停止', reports_energy: '实际电量上报', reports_segmented_power: '功率上报' } as const;
+
+export default function DeviceCapabilities({ station, device }: { station: number; device: string }) {
+  const [data, setData] = useState<Data>();
+  const [error, setError] = useState('');
+  const epoch = useRef(0);
+  useEffect(() => {
+    const current = ++epoch.current, session = adminSession.epoch();
+    setData(undefined); setError('');
+    apiGet<Data>('/api/v1/admin/settings/device-capabilities', { station_id: station, device_id: device })
+      .then(value => { if (current === epoch.current && session === adminSession.epoch()) setData(value); })
+      .catch(cause => { if (current === epoch.current && session === adminSession.epoch()) setError(cause.message); });
+    return () => { epoch.current++; };
+  }, [station, device]);
+  return <Card size="small" title="通信协议与设备能力" loading={!data && !error}>
+    {error && <Alert type="error" message={error} />}
+    {data && <Space direction="vertical" style={{ width: '100%' }}>
+      <Descriptions size="small" items={[
+        { key: 'protocol', label: '通信协议', children: data.protocol_adapter.toUpperCase() },
+        { key: 'duration', label: '单次最长时长', children: `${data.capabilities.max_minutes / 60} 小时` },
+      ]} />
+      <Space wrap>{Object.entries(labels).map(([key, label]) => <Tag key={key} color={data.capabilities[key as keyof typeof labels] ? 'blue' : 'default'}>{label}：{data.capabilities[key as keyof typeof labels] ? '支持' : '不支持'}</Tag>)}</Space>
+      <span style={{ color: '#8c8c8c' }}>能力由创建设备时选定的通信协议自动确定。满充停止是否启用按充电方案配置；在线卡加时由服务器完成，移开卡后再次刷卡触发新事件。</span>
+    </Space>}
+  </Card>;
 }

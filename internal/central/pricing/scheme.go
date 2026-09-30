@@ -343,21 +343,27 @@ func (s Scheme) PreviewScenario(id uint64, m ActualMeter, scenario string, walle
 }
 
 type Capabilities struct {
-	StopPolicyVerified bool   `json:"stop_policy_verified"`
-	StopWhenFull       bool   `json:"stop_when_full"`
-	MaxMinutes         uint16 `json:"max_minutes"`
-	Duration           bool   `json:"duration"`
-	Energy             bool   `json:"energy"`
-	OnlineCard         bool   `json:"online_card"`
-	CardEventIdentity  bool   `json:"card_event_identity"`
+	ReportsEnergy         bool   `json:"reports_energy"`
+	ReportsSegmentedPower bool   `json:"reports_segmented_power"`
+	StopWhenFull          bool   `json:"stop_when_full"`
+	MaxMinutes            uint16 `json:"max_minutes"`
+	Duration              bool   `json:"duration"`
+	Energy                bool   `json:"energy"`
+	OnlineCard            bool   `json:"online_card"`
 }
 
 func (s Scheme) ValidateCapabilities(c Capabilities) error {
 	if err := s.Validate(); err != nil {
 		return err
 	}
-	if !c.StopPolicyVerified || c.StopWhenFull != s.Stop.StopWhenFull {
-		return fmt.Errorf("满充停止配置与设备回读结果不一致或尚未核验；请先核验设备停止策略")
+	if s.Stop.StopWhenFull && !c.StopWhenFull {
+		return fmt.Errorf("设备协议不支持满充停止")
+	}
+	if (s.Energy != nil || s.Amount != nil && s.Amount.Algorithm == ModeServerEnergy) && !c.ReportsEnergy {
+		return fmt.Errorf("设备协议不支持电量上报")
+	}
+	if s.Amount != nil && s.Amount.Algorithm != ModeServerEnergy && !c.ReportsSegmentedPower {
+		return fmt.Errorf("设备协议不支持功率上报")
 	}
 	for _, p := range s.Packages {
 		minutes := p.Minutes
@@ -371,8 +377,8 @@ func (s Scheme) ValidateCapabilities(c Capabilities) error {
 			return fmt.Errorf("设备不支持电量执行")
 		}
 	}
-	if s.Card.PackageID != 0 && (!c.OnlineCard || !c.CardEventIdentity || s.Normalized().Card.MaxMinutes > c.MaxMinutes) {
-		return fmt.Errorf("设备的在线卡、移开后重刷事件行为或累计时长能力尚未验证")
+	if s.Card.PackageID != 0 && (!c.OnlineCard || s.Normalized().Card.MaxMinutes > c.MaxMinutes) {
+		return fmt.Errorf("设备协议不支持在线卡或所需累计时长")
 	}
 	return nil
 }

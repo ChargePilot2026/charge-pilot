@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"github.com/ChargePilot2026/charge-pilot/internal/central/pricing"
 	"net/url"
 	"time"
 
@@ -29,9 +30,10 @@ type Device struct {
 	// 这块板能上报什么，以及它当前按什么口径计费。
 	// 这些信息就挂在设备行上，运营不必再打开定价页面
 	// 去弄清某个计费规则为什么在这儿用不了。
-	ChargeMode            string `json:"charge_mode"`             // 该设备当前实际生效的计费方式，取自 pricing 引擎的 ChargeMode（server_realtime_power / server_max_power / server_energy / device_duration / device_energy / device_power）。
-	ReportsEnergy         bool   `json:"reports_energy"`          // 协议帧里是否带电量：false 表示这块板报不了电量，只有时长口径能落到它身上。
-	ReportsSegmentedPower bool   `json:"reports_segmented_power"` // 协议帧里是否带分段功率：功率档位口径需要它，为 false 时该设备无法应用。
+	ProtocolAdapter       string `json:"protocol_adapter"`
+	ChargeMode            string `json:"charge_mode"`                      // 该设备当前实际生效的计费方式，取自 pricing 引擎的 ChargeMode（server_realtime_power / server_max_power / server_energy / device_duration / device_energy / device_power）。
+	ReportsEnergy         bool   `json:"reports_energy" gorm:"-"`          // 协议帧里是否带电量：false 表示这块板报不了电量，只有时长口径能落到它身上。
+	ReportsSegmentedPower bool   `json:"reports_segmented_power" gorm:"-"` // 协议帧里是否带分段功率：功率档位口径需要它，为 false 时该设备无法应用。
 }
 
 // deviceQuery 组装设备的基础查询：device_meta 左连未删除的站点，并排除已软删除的设备。
@@ -42,7 +44,7 @@ func (s ResourceStore) deviceQuery(ctx context.Context) *gorm.DB {
 
 // deviceColumns 是设备列表与详情共用的列清单。刻意不含站点编码——迁移 admin_db/0044
 // 之后 station 表已经没有 code 列了。
-const deviceColumns = "d.id,d.device_id,d.station_id,d.vendor_id,d.model,d.status,d.install_at,d.charge_mode,d.reports_energy,d.reports_segmented_power,s.name AS station_name"
+const deviceColumns = "d.id,d.device_id,d.station_id,d.vendor_id,d.model,d.status,d.install_at,d.charge_mode,d.protocol_adapter,s.name AS station_name"
 
 // Devices 分页查询设备，支持按状态过滤和按设备编号/型号/站点名模糊搜索（通配符已转义）。
 // 先 Count 再按内部主键倒序取当页。注意关键词不再匹配站点编码。
@@ -67,6 +69,11 @@ func (s ResourceStore) Devices(ctx context.Context, q PageQuery, scopes ...DataS
 		return out, err
 	}
 	err := query.Select(deviceColumns).Order("d.id DESC").Offset((q.Page - 1) * q.PageSize).Limit(q.PageSize).Scan(&out.Items).Error
+	for i := range out.Items {
+		cap, _ := pricing.ProtocolCapabilities(out.Items[i].ProtocolAdapter)
+		out.Items[i].ReportsEnergy = cap.ReportsEnergy
+		out.Items[i].ReportsSegmentedPower = cap.ReportsSegmentedPower
+	}
 	return out, err
 }
 
@@ -117,6 +124,9 @@ func (a ResourceAPI) device(c *gin.Context) {
 		resourceFailure(c, err)
 		return
 	}
+	cap, _ := pricing.ProtocolCapabilities(row.ProtocolAdapter)
+	row.ReportsEnergy = cap.ReportsEnergy
+	row.ReportsSegmentedPower = cap.ReportsSegmentedPower
 	rows := []Device{row}
 	a.enrichDevices(c.Request.Context(), rows)
 	httpapi.OK(c, rows[0])

@@ -27,7 +27,6 @@ func (a ResourceAPI) registerChargingSchemes(r *gin.Engine) {
 	r.POST(p+"/preview", a.Auth.Require("pricing.read"), a.previewChargingScheme)
 	r.GET("/api/v1/admin/stations/:id/charging-scheme", a.Auth.Require("pricing.read"), a.effectiveChargingScheme)
 	r.POST("/api/v1/admin/stations/:id/charging-scheme/inherit", a.Auth.Require("pricing.rule.update"), a.inheritChargingScheme)
-	r.PUT("/api/v1/admin/settings/device-capabilities", a.Auth.Require("device.metering"), a.saveExecutionCapabilities)
 	r.GET("/api/v1/admin/settings/device-capabilities", a.Auth.Require("pricing.read"), a.executionCapabilities)
 }
 
@@ -261,10 +260,8 @@ func (a ResourceAPI) applyChargingScheme(c *gin.Context) {
 
 func checkSchemeTargets(tx *gorm.DB, station uint64, device string, scheme pricing.Scheme) error {
 	var rows []struct {
-		DeviceID              string
-		ExecutionCapabilities []byte
-		ReportsEnergy         bool
-		ReportsSegmentedPower bool
+		DeviceID        string
+		ProtocolAdapter string
 	}
 	q := tx.Table("device_meta").Where("station_id=? AND deleted_at IS NULL", station)
 	if device != "" {
@@ -279,18 +276,12 @@ func checkSchemeTargets(tx *gorm.DB, station uint64, device string, scheme prici
 		return gorm.ErrRecordNotFound
 	}
 	for _, d := range rows {
-		var cap pricing.Capabilities
-		if json.Unmarshal(d.ExecutionCapabilities, &cap) != nil {
-			return fmt.Errorf("设备%s尚未登记执行能力", d.DeviceID)
+		cap, err := pricing.ProtocolCapabilities(d.ProtocolAdapter)
+		if err != nil {
+			return fmt.Errorf("设备%s：%s", d.DeviceID, err)
 		}
 		if err := scheme.ValidateCapabilities(cap); err != nil {
 			return fmt.Errorf("设备%s：%s", d.DeviceID, err)
-		}
-		if scheme.Amount != nil && capabilityBlock(scheme.Amount.Algorithm, deviceCapability{ReportsEnergy: d.ReportsEnergy, ReportsSegmentedPower: d.ReportsSegmentedPower}) != "" {
-			return fmt.Errorf("设备%s缺少所需计量能力", d.DeviceID)
-		}
-		if scheme.Energy != nil && !d.ReportsEnergy {
-			return fmt.Errorf("设备%s未声明实际电量上报能力", d.DeviceID)
 		}
 	}
 	return nil
@@ -402,43 +393,6 @@ func (a ResourceAPI) previewChargingScheme(c *gin.Context) {
 	}
 	httpapi.OK(c, result)
 }
-func (a ResourceAPI) saveExecutionCapabilities(c *gin.Context) {
-	var in struct {
-		StationID             uint64               `json:"station_id"`
-		DeviceID              string               `json:"device_id"`
-		Capabilities          pricing.Capabilities `json:"capabilities"`
-		ReportsEnergy         bool                 `json:"reports_energy"`
-		ReportsSegmentedPower bool                 `json:"reports_segmented_power"`
-		Evidence              string               `json:"evidence"`
-	}
-	if !decodeResource(c, &in) {
-		return
-	}
-	if in.StationID == 0 || !deviceIDPattern.MatchString(in.DeviceID) || in.Capabilities.MaxMinutes == 0 || in.Capabilities.MaxMinutes > 4320 || !validText(strings.TrimSpace(in.Evidence), 1000) {
-		httpapi.BadRequest(c, "设备及执行时长上限无效")
-		return
-	}
-	if !a.requirePricingTargetScope(c, in.StationID, in.DeviceID) {
-		return
-	}
-	err := a.Store.AdminDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
-		var d struct{ ExecutionCapabilities []byte }
-		if err := tx.Table("device_meta").Clauses(clause.Locking{Strength: "UPDATE"}).Where("station_id=? AND device_id=? AND deleted_at IS NULL", in.StationID, in.DeviceID).Take(&d).Error; err != nil {
-			return err
-		}
-		raw, _ := json.Marshal(in.Capabilities)
-		if err := tx.Table("device_meta").Where("station_id=? AND device_id=?", in.StationID, in.DeviceID).Updates(map[string]any{"execution_capabilities": string(raw), "reports_energy": in.ReportsEnergy, "reports_segmented_power": in.ReportsSegmentedPower}).Error; err != nil {
-			return err
-		}
-		return resourceAudit(tx, c.MustGet("admin_profile").(Profile), "device.capabilities", "station", in.StationID, d, in, c.ClientIP(), httpapi.RequestID(c))
-	})
-	if err != nil {
-		resourceFailure(c, err)
-		return
-	}
-	httpapi.OK(c, in)
-}
-
 func (a ResourceAPI) executionCapabilities(c *gin.Context) {
 	station, ok := queryStationID(c, true)
 	if !ok {
@@ -452,14 +406,10 @@ func (a ResourceAPI) executionCapabilities(c *gin.Context) {
 	if !a.requirePricingTargetScope(c, station, device) {
 		return
 	}
-	var d struct {
-		ExecutionCapabilities json.RawMessage `json:"capabilities"`
-		ReportsEnergy         bool            `json:"reports_energy"`
-		ReportsSegmentedPower bool            `json:"reports_segmented_power"`
-	}
-	if err := a.Store.AdminDB.WithContext(c.Request.Context()).Table("device_meta").Where("station_id=? AND device_id=? AND deleted_at IS NULL", station, device).Take(&d).Error; err != nil {
+	adapter, cap, err := (pricing.Store{DB: a.Store.AdminDB}).DeviceCapabilities(c.Request.Context(), station, device)
+	if err != nil {
 		resourceFailure(c, err)
 		return
 	}
-	httpapi.OK(c, d)
+	httpapi.OK(c, gin.H{"protocol_adapter": adapter, "capabilities": cap, "reports_energy": cap.ReportsEnergy, "reports_segmented_power": cap.ReportsSegmentedPower})
 }

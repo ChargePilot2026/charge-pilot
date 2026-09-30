@@ -56,8 +56,7 @@ func TestSimulationHTTPPaymentCreatesChargeOnlyAfterCallback(t *testing.T) {
 	ruleID, _ := rule.LastInsertId()
 	defer adminDB.ExecContext(ctx, "DELETE FROM pricing_rule WHERE id=?", ruleID)
 	offerID := ruleID*100 + 1
-	capabilities, _ := json.Marshal(pricing.Capabilities{StopPolicyVerified: true, Duration: true, MaxMinutes: 600})
-	if _, err := adminDB.ExecContext(ctx, "INSERT INTO device_meta(device_id,station_id,status,execution_capabilities) VALUES('http-pay-device',?,'enabled',?)", stationID, string(capabilities)); err != nil {
+	if _, err := adminDB.ExecContext(ctx, "INSERT INTO device_meta(device_id,station_id,status,protocol_adapter) VALUES('http-pay-device',?,'enabled','dc589')", stationID); err != nil {
 		t.Fatal(err)
 	}
 	defer adminDB.ExecContext(ctx, "DELETE FROM device_meta WHERE device_id='http-pay-device'")

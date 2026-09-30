@@ -70,7 +70,7 @@ func (a ResourceAPI) devicePricingMatrix(c *gin.Context) {
 	// 是站点默认规则的版本号（早先叫 yard/yard_version，现已统一为站点口径）。
 	query := a.Store.AdminDB.WithContext(ctx).Table("device_meta d").
 		Select(`d.device_id, d.model, d.status AS device_status,
-			d.charge_mode, d.reports_energy, d.reports_segmented_power,
+			d.charge_mode, d.protocol_adapter,
 			COALESCE(own.name, station_default.name) AS template_name,
 			COALESCE(own.template_id, station_default.template_id) AS template_id,
 			own.id AS own_rule_id, own.version AS own_version, station_default.version AS station_version,
@@ -113,6 +113,12 @@ func (a ResourceAPI) devicePricingMatrix(c *gin.Context) {
 		return
 	}
 	normalizeRows(rows)
+	for _, row := range rows {
+		adapter, _ := row["protocol_adapter"].(string)
+		cap, _ := pricing.ProtocolCapabilities(adapter)
+		row["reports_energy"] = cap.ReportsEnergy
+		row["reports_segmented_power"] = cap.ReportsSegmentedPower
+	}
 	// 整站范围（device_id 为空）的那条链也要一份：客户端把模板下发到整站时，
 	// 乐观锁比对的正是这一条链的最新版，同样不过滤 status。
 	var stationLatest struct{ Version uint32 }
@@ -301,6 +307,7 @@ func (a ResourceAPI) stationPolicies(c *gin.Context) {
 		return
 	}
 	normalizeRows(rows)
+
 	httpapi.OK(c, gin.H{"items": rows, "permissions": c.MustGet("admin_profile").(Profile).Permissions, "can_manage_default": canManageStationDefault(scope)})
 }
 

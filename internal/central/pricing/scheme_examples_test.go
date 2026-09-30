@@ -175,7 +175,7 @@ func TestSchemeValidationAndSnapshotIsolation(t *testing.T) {
 	if frozen.ValidateCapabilities(Capabilities{Duration: true, Energy: true, MaxMinutes: 600}) == nil {
 		t.Fatal("unverified card capability accepted")
 	}
-	if frozen.ValidateCapabilities(Capabilities{StopPolicyVerified: true, Duration: true, Energy: true, MaxMinutes: 600, OnlineCard: true, CardEventIdentity: true}) != nil {
+	if frozen.ValidateCapabilities(Capabilities{Duration: true, Energy: true, MaxMinutes: 600, OnlineCard: true, ReportsEnergy: true, ReportsSegmentedPower: true}) != nil {
 		t.Fatal("verified modes refused")
 	}
 }

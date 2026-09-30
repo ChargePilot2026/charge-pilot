@@ -3,7 +3,6 @@ package charge
 import (
 	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/json"
 	"errors"
 	"github.com/ChargePilot2026/charge-pilot/internal/central/identity"
 	"github.com/ChargePilot2026/charge-pilot/internal/central/pricing"
@@ -123,14 +122,13 @@ func (a CardAPI) swipe(c *gin.Context) {
 		httpapi.Write(c, 409, 2009, "设备已暂停服务，不接受新的刷卡启动或加时", nil)
 		return
 	}
-	var d struct{ ExecutionCapabilities []byte }
-	if err := a.Pricing.DB.WithContext(c.Request.Context()).Table("device_meta").Where("station_id=? AND device_id=? AND deleted_at IS NULL", port.StationID, port.DeviceID).Take(&d).Error; err != nil {
-		httpapi.Write(c, 503, 5001, "设备能力暂不可读取", nil)
+	_, cap, err := a.Pricing.DeviceCapabilities(c.Request.Context(), port.StationID, port.DeviceID)
+	if err != nil {
+		httpapi.Write(c, 503, 5001, "设备协议能力暂不可读取", nil)
 		return
 	}
-	var cap pricing.Capabilities
-	if json.Unmarshal(d.ExecutionCapabilities, &cap) != nil || !cap.OnlineCard || !cap.CardEventIdentity {
-		httpapi.Write(c, 409, 2009, "在线卡及移开后重刷事件行为尚未验证", nil)
+	if !cap.OnlineCard {
+		httpapi.Write(c, 409, 2009, "设备协议不支持在线卡", nil)
 		return
 	}
 	var active int64

@@ -40,8 +40,7 @@ func TestWholeSchemePublicationAndScopedInheritance(t *testing.T) {
 		t.Fatal(err)
 	}
 	device := "SCHEMEDEV01"
-	capJSON, _ := json.Marshal(pricing.Capabilities{StopPolicyVerified: true, Duration: true, MaxMinutes: 4320})
-	if err := db.Exec("INSERT INTO device_meta(device_id,station_id,status,execution_capabilities) VALUES(?,?,'enabled',?)", device, site, string(capJSON)).Error; err != nil {
+	if err := db.Exec("INSERT INTO device_meta(device_id,station_id,status,protocol_adapter) VALUES(?,?,'enabled','dc589')", device, site).Error; err != nil {
 		t.Fatal(err)
 	}
 	api := ResourceAPI{Store: ResourceStore{AdminDB: db}}

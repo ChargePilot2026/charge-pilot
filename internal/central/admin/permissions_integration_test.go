@@ -99,44 +99,16 @@ func TestEveryGuardedPermissionExists(t *testing.T) {
 // 所以计量声明恰好只发给那些负责接入硬件的角色，
 // 好让"能给站点定价的人"不会自动变成"能认定它那些板子能计量什么的人"——
 // 否则能力校验就只是走个形式。
-func TestMeteringPermissionGoesToTheRolesThatOnboardBoards(t *testing.T) {
+func TestManualCapabilityPermissionIsRemoved(t *testing.T) {
 	if os.Getenv("TEST_ADMIN_DATABASE_URL") == "" {
 		t.Skip("disposable MySQL required")
 	}
-	adminDB := openFinanceDB(t, "TEST_ADMIN_DATABASE_URL")
-	rolesWith := func(code string) map[string]bool {
-		out := map[string]bool{}
-		rows := []struct {
-			Role string `gorm:"column:role_code"`
-		}{}
-		if err := adminDB.Table("role_permission rp").
-			Select("r.code AS role_code").
-			Joins("JOIN permission p ON p.id = rp.permission_id").
-			Joins("JOIN role r ON r.id = rp.role_id AND r.deleted_at IS NULL").
-			Where("p.code = ?", code).Find(&rows).Error; err != nil {
-			t.Fatal(err)
-		}
-		for _, row := range rows {
-			out[row.Role] = true
-		}
-		return out
+	db := openFinanceDB(t, "TEST_ADMIN_DATABASE_URL")
+	var count int64
+	if err := db.Table("permission").Where("code=?", "device.metering").Count(&count).Error; err != nil {
+		t.Fatal(err)
 	}
-	onboarding := rolesWith("device.import")
-	if len(onboarding) == 0 {
-		t.Fatal("no role holds device.import; the fixtures did not load")
-	}
-	metering := rolesWith("device.metering")
-	if len(metering) == 0 {
-		t.Fatal("device.metering exists but no role holds it, so the endpoint is unreachable")
-	}
-	for role := range onboarding {
-		if !metering[role] {
-			t.Fatalf("role %q onboards devices but cannot declare what they report, so a new board is unusable until an administrator edits the role", role)
-		}
-	}
-	for role := range metering {
-		if !onboarding[role] {
-			t.Fatalf("role %q can certify metering but does not onboard devices, which is how the capability gate gets bypassed", role)
-		}
+	if count != 0 {
+		t.Fatal("manual capability verification permission still exists")
 	}
 }

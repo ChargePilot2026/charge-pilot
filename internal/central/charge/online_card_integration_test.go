@@ -26,7 +26,7 @@ func TestCardServerExtensionDebitsOnceAndRefundsUnusedMinutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	t.Cleanup(func() { _ = db.Close() })
 	orm := testGORMDB(t, db)
 	create := func(query string, args ...any) uint64 {
 		t.Helper()

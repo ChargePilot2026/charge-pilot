@@ -636,9 +636,10 @@ func TestUnprocessedDownlinkIsNamedAndSurvives(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	frame.Command = 0xEF
 	gateway.push(t, frame)
 
-	waitFor(t, 5*time.Second, func() bool { return logs.contains("unhandled downlink 0xE0") })
+	waitFor(t, 5*time.Second, func() bool { return logs.contains("unhandled downlink 0xEF") })
 	// 忽略它不能以丢掉链路为代价。
 	mark := gateway.traffic.mark()
 	interval, err := dc589.BuildHeartbeatInterval(gateway.session, 1, false)

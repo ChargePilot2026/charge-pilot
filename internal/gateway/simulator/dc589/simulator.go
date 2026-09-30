@@ -19,13 +19,13 @@ package dc589sim
 import (
 	"bufio"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"log"
 	"net"
 	"sync"
 	"time"
 
-	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol"
 	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol/dc589"
 )
 
@@ -58,6 +58,8 @@ const (
 // Config 是一块模拟板所需的全部配置。
 // 速率一律用协议自身的单位，方便和线路字段直接比对。
 type Config struct {
+	Inputs    <-chan Input
+	StateFile string
 	Identity  dc589.DeviceIdentity
 	PortCount int
 	Gateway   string
@@ -104,34 +106,58 @@ func (discard) Write(p []byte) (int, error) { return len(p), nil }
 // 其余场景在连接结束时返回。
 func Run(ctx context.Context, config Config) error {
 	config = config.withDefaults()
+	if config.PortCount < 1 || config.PortCount > 20 || config.PowerDeciWatts > 65535 {
+		return fmt.Errorf("DC589 needs 1-20 ports and power <=65535 deciwatts")
+	}
+	b := newBoard(config, nil)
+	if err := b.restore(); err != nil {
+		return err
+	}
 	for {
-		err := serveOnce(ctx, config)
+		err := b.serveOnce(ctx)
+		b.online = false
+		b.writer.conn = nil
 		if ctx.Err() != nil {
 			return nil
-		}
-		if config.Scenario != ScenarioReconnect {
-			return err
 		}
 		if err != nil {
 			config.Log.Printf("connection ended: %v; reconnecting in %s", err, config.ReconnectAfter)
 		} else {
 			config.Log.Printf("reconnecting in %s", config.ReconnectAfter)
 		}
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-time.After(config.ReconnectAfter):
+		timer := time.NewTimer(config.ReconnectAfter)
+	backoff:
+		for {
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil
+			case in := <-config.Inputs:
+				out := b.input(in)
+				if in.Reply != nil {
+					in.Reply <- out
+				}
+			case <-timer.C:
+				break backoff
+			}
 		}
 	}
 }
 
-func serveOnce(ctx context.Context, config Config) error {
+func (board *board) serveOnce(ctx context.Context) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	config := board.config
 	dialer := net.Dialer{Timeout: 5 * time.Second}
 	conn, err := dialer.DialContext(ctx, "tcp", config.Gateway)
 	if err != nil {
 		return fmt.Errorf("dial gateway: %w", err)
 	}
-	board := newBoard(config, conn)
+	defer conn.Close()
+	board.conn = conn
+	board.reader = bufio.NewReader(conn)
+	board.writer = &frameWriter{conn: conn, log: config.Log}
+	board.session = [6]byte{}
 
 	// 靠关连接来打断阻塞读。
 	done := make(chan struct{})
@@ -147,10 +173,17 @@ func serveOnce(ctx context.Context, config Config) error {
 	if err := board.register(ctx); err != nil {
 		return err
 	}
+	board.online = true
 	if config.Scenario == ScenarioSilent {
 		config.Log.Printf("scenario %s: registered, staying silent", config.Scenario)
 		<-ctx.Done()
 		return nil
+	}
+	board.missedHeartbeats = 0
+	for _, f := range board.pending {
+		if err := board.writer.send(f); err != nil {
+			return err
+		}
 	}
 	return board.loop(ctx)
 }
@@ -169,10 +202,16 @@ const deciWattSecondsPerMilliWh = 36
 
 // charge 是一笔正在进行的充电的状态。
 type charge struct {
-	port      byte
-	orderBCD  [8]byte
-	mode      dc589.ChargeMode
-	startedAt time.Time
+	consumer       byte
+	card           uint32
+	band           byte
+	peak           uint32
+	floatSeconds   uint32
+	removedSeconds uint32
+	port           byte
+	orderBCD       [8]byte
+	mode           dc589.ChargeMode
+	startedAt      time.Time
 	// wattDeciSeconds 是已送出的电量，单位 0.1 瓦秒。
 	wattDeciSeconds uint64
 	// targetMilliWh 是这笔订单买下的电量，
@@ -220,10 +259,23 @@ func (c *charge) complete() bool {
 }
 
 type board struct {
-	config Config
-	conn   net.Conn
-	reader *bufio.Reader
-	writer *frameWriter
+	online           bool
+	cards            map[uint32]CardStatus
+	module           UpgradeModule
+	ports            map[byte]*PhysicalPort
+	rawConfig        []byte
+	removePower      uint16
+	temperature      int16
+	voltage          uint16
+	smoke            bool
+	pending          []dc589.Frame
+	completed        map[string]bool
+	lastMeter        time.Time
+	missedHeartbeats int
+	config           Config
+	conn             net.Conn
+	reader           *bufio.Reader
+	writer           *frameWriter
 
 	mu       sync.Mutex
 	session  [6]byte
@@ -259,7 +311,7 @@ func factoryTable() dc589.ConfigTable {
 		CardAmountCents:  100, // 刷卡一次 1.00 元
 		CardRefund:       0,   // 刷卡不退费
 		TierWatts:        [5]uint16{100, 200, 300, 400, 500},
-		TierRatioPercent: [5]byte{100, 80, 60, 40, 20},
+		TierRatioPercent: [5]byte{100, 100, 100, 100, 100},
 		StopWhenFull:     0,    // 充满不停
 		FloatDeciWatts:   50,   // 浮充 5.0W
 		FloatSeconds:     1800, // 浮充 30 分钟
@@ -272,10 +324,12 @@ func newBoard(config Config, conn net.Conn) *board {
 	return &board{
 		config:      config,
 		conn:        conn,
-		reader:      bufio.NewReader(conn),
-		writer:      &frameWriter{conn: conn},
+		reader:      nil,
+		writer:      &frameWriter{conn: conn, log: config.Log},
 		charging:    map[byte]*charge{},
 		configTable: factoryTable(),
+		cards:       map[uint32]CardStatus{},
+		ports:       map[byte]*PhysicalPort{}, completed: map[string]bool{}, temperature: 25, voltage: 220,
 	}
 }
 
@@ -329,6 +383,7 @@ func (b *board) register(ctx context.Context) error {
 	}
 	b.mu.Lock()
 	b.session = reply.Session
+
 	// 注册回包本身已经带着服务器时间，
 	// 所以在发出任何别的东西之前板子就已校准。在这里就读掉它而不是等 A9，
 	// 意味着即便服务器从不回答对时请求，也不会让板
@@ -382,25 +437,97 @@ func (b *board) loop(ctx context.Context) error {
 			return nil
 		case err := <-readErr:
 			return err
+		case in := <-b.config.Inputs:
+			out := b.input(in)
+			if in.Reply != nil {
+				in.Reply <- out
+			}
 		case frame := <-frames:
 			if err := b.handle(ctx, frame); err != nil {
 				return err
 			}
-		case <-meter.C:
-			b.advance()
+		case tick := <-meter.C:
+			seconds := 1
+			if !b.lastMeter.IsZero() {
+				seconds = int(tick.Sub(b.lastMeter) / time.Second)
+			}
+			b.lastMeter = tick
+			for i := 0; i < seconds; i++ {
+				b.advance()
+			}
+			if err := b.persist(); err != nil {
+				return err
+			}
 		case <-b.heartbeat.C:
+			b.missedHeartbeats++
+			if b.missedHeartbeats > dc589.MissedHeartbeatsBeforeReset {
+				return fmt.Errorf("three heartbeats unacknowledged")
+			}
 			b.sendHeartbeat()
+			for _, f := range b.pending {
+				if err := b.writer.send(f); err != nil {
+					return err
+				}
+			}
 		}
 	}
 }
 
 // handle 应答一帧服务器下行。
 func (b *board) handle(ctx context.Context, frame dc589.Frame) error {
+	b.writer.session = frame.Session
+
 	switch frame.Command {
+	case 0xB0:
+		if len(frame.Data) != 1 || (frame.Data[0] != 0 && frame.Data[0] != 0xfe) {
+			return nil
+		}
+		return b.sendAllPorts(frame.Data[0] == 0xfe, 0xB1)
+	case 0xB2:
+		if len(frame.Data) != 1 {
+			return nil
+		}
+		return b.writer.send(b.portReport(frame.Data[0], 0xB3))
+	case 0xE0:
+		return b.powerControl(frame)
+	case dc589.RemoteControl:
+		return b.remote(frame)
+	case dc589.OnlineCardDenied, dc589.CardBalanceReply:
+		expected := 7
+		if frame.Command == dc589.OnlineCardDenied {
+			expected = 9
+		}
+		if len(frame.Data) == expected {
+			b.cards[binary.LittleEndian.Uint32(frame.Data[1:5])] = CardStatus{Valid: frame.Data[0] == 0, BalanceUnits: binary.LittleEndian.Uint16(frame.Data[5:7]), Denied: frame.Command == dc589.OnlineCardDenied}
+			b.config.Log.Printf("card %d status %d, balance %.1f yuan", binary.LittleEndian.Uint32(frame.Data[1:5]), frame.Data[0], float64(binary.LittleEndian.Uint16(frame.Data[5:7]))/10)
+		}
+		return nil
+	case dc589.HeartbeatReply:
+		b.missedHeartbeats = 0
+		return nil
+	case dc589.ChargeEndReply:
+		if len(frame.Data) == 2 && frame.Data[0] == 0 {
+			b.acknowledge(dc589.ChargeEnd, frame.Data[1])
+		}
+		return nil
+	case dc589.FaultReply:
+		if len(frame.Data) == 2 && frame.Data[0] == 0 {
+			b.acknowledge(dc589.Fault, frame.Data[1])
+		}
+		return nil
+	case 0xB5:
+		if len(frame.Data) == 2 && frame.Data[0] == 0 {
+			b.acknowledge(0xB4, frame.Data[1])
+		}
+		return nil
 	case dc589.StartCharge:
 		command, err := dc589.ParseStartCommand(frame)
 		if err != nil {
-			return fmt.Errorf("parse start command: %w", err)
+			port := byte(0)
+			if len(frame.Data) > 0 {
+				port = frame.Data[0]
+			}
+			return b.writer.send(dc589.Frame{Command: dc589.StartReply, Data: []byte{2, port}})
 		}
 		return b.start(ctx, command)
 	case dc589.StopCharge:
@@ -408,7 +535,7 @@ func (b *board) handle(ctx context.Context, frame dc589.Frame) error {
 		if err != nil {
 			return fmt.Errorf("parse stop command: %w", err)
 		}
-		return b.stop(port, 0)
+		return b.stop(port, 7)
 	case dc589.TimeReply:
 		// A9 是服务器对本板注册时发出的 A8 的应答。
 		// 这里当初处理的是 A8，两头都不成立：
@@ -438,18 +565,18 @@ func (b *board) handle(ctx context.Context, frame dc589.Frame) error {
 	case dc589.SetConfig:
 		return b.applyConfig(frame)
 	case dc589.ReadConfig:
-		if err := b.writer.send(dc589.BuildReadConfigAck()); err != nil {
-			return err
+		if len(frame.Data) > 1 || (len(frame.Data) == 1 && frame.Data[0] != 0) {
+			return nil
+		}
+		if len(b.rawConfig) > 0 {
+			return b.writer.send(dc589.Frame{Command: dc589.ConfigReport, Data: append([]byte(nil), b.rawConfig...)})
 		}
 		report, err := dc589.BuildConfigReport(b.configTable)
 		if err != nil {
-			// 板子编不出来的表要回「
-			// 写入被拒」而不是丢掉，
-			// 这样平台不会一直等一个永远不会到达的读响应。
-			return b.writer.send(dc589.BuildConfigAck(1))
+			return err
 		}
 		return b.writer.send(report)
-	case dc589.RegisterReply, dc589.HeartbeatReply, dc589.ChargeEndReply, dc589.FaultReply:
+	case dc589.RegisterReply:
 		// 这些是对本板已发出帧的确认。
 		// 回应确认会形成回路，
 		// 所以按协议沉默才是正确读法，而不是 switch 的疏漏。
@@ -483,11 +610,19 @@ func (b *board) setHeartbeat(seconds uint16) {
 // 一个什么都收的模拟器会让 0xC4 的错误路径无从测
 // 试，而那是平台得知费率没有送达设备的唯一途径。
 func (b *board) applyConfig(frame dc589.Frame) error {
+	code := configCode(frame)
+	if code != 0 {
+		return b.writer.send(dc589.BuildConfigAck(code))
+	}
 	table, err := dc589.DecodeConfig(frame)
 	if err != nil {
 		return b.writer.send(dc589.BuildConfigAck(1))
 	}
 	b.configTable = table
+	b.rawConfig = append([]byte(nil), frame.Data...)
+	if err := b.persist(); err != nil {
+		return err
+	}
 	return b.writer.send(dc589.BuildConfigAck(0))
 }
 
@@ -495,26 +630,38 @@ func (b *board) applyConfig(frame dc589.Frame) error {
 // 拒绝会被服务器转成退款，所以要用非零的结果码回应。
 func (b *board) start(ctx context.Context, command dc589.StartCommand) error {
 	code := byte(0)
-	if b.config.Scenario == ScenarioRejectStart {
+	duplicate := false
+	if command.Port == 0 || int(command.Port) > b.config.PortCount {
+		code = 3
+	} else if b.portState(command.Port) == 3 || b.portState(command.Port) == 4 || b.config.Scenario == ScenarioRejectStart {
 		code = 1
+	} else if !command.Mode.IsNormal() && command.Mode != dc589.LongTime && command.Mode != dc589.LongEnergy && command.Mode != dc589.LongPlatformBilling {
+		code = 2
+	} else if (command.ConsumerType != 2 && command.ConsumerType != 3) || command.Quantity == 0 {
+		code = 2
+	} else if command.ConsumerType == 3 && command.CardNumber == 0 {
+		code = 2
 	}
-	reply, err := dc589.BuildCommandResult(dc589.StartReply, code, command.Port)
-	if err != nil {
-		return err
+	key := fmt.Sprintf("%d:%x", command.Port, command.OrderBCD)
+	if c := b.charging[command.Port]; c != nil {
+		if c.orderBCD == command.OrderBCD && c.mode == command.Mode && c.card == command.CardNumber && c.consumer == command.ConsumerType {
+			duplicate = true
+		} else {
+			code = 2
+		}
 	}
+	if b.completed[key] {
+		code = 2
+	}
+	reply, _ := dc589.BuildCommandResult(dc589.StartReply, code, command.Port)
 	if err := b.writer.send(reply); err != nil {
 		return err
 	}
-	if code != 0 {
-		b.config.Log.Printf("refused start on port %d", command.Port)
+	if code != 0 || duplicate {
 		return nil
 	}
-
 	port := command.Port
-	if port == 0 || int(port) > b.config.PortCount {
-		return fmt.Errorf("start for port %d, but the board has %d ports", port, b.config.PortCount)
-	}
-	running := &charge{port: port, orderBCD: command.OrderBCD, mode: command.Mode, startedAt: b.now()}
+	running := &charge{port: port, orderBCD: command.OrderBCD, mode: command.Mode, startedAt: b.now(), consumer: command.ConsumerType, card: command.CardNumber, band: 1}
 	// 数量在按时间下单时是分钟、在按电量下单时是瓦时，
 	// 所以一个字段同时承载两者，只有模式能说
 	// 明它到底是哪个。把电量数字当成秒数
@@ -525,22 +672,12 @@ func (b *board) start(ctx context.Context, command dc589.StartCommand) error {
 	} else {
 		running.remaining = time.Duration(command.Quantity) * time.Minute
 	}
-	if b.config.Scenario == ScenarioStopOnCommand || b.config.Scenario == ScenarioFault {
-		// 这两个场景靠命令或故障结束而不是自己跑完，
-		// 所以上限只要远到不可能成为结束原因即可。
-		// 但两种模式下它仍必须是个真实数值：
-		// 心跳会上报预计剩余时间，而回「剩余为
-		// 零」的充电在平台看来就是即将自行结束。
-		const unbounded = 24 * time.Hour
-		running.remaining = unbounded
-		if running.targetMilliWh == 0 {
-			running.targetMilliWh = uint32(uint64(b.config.PowerDeciWatts) *
-				uint64(unbounded/time.Second) / deciWattSecondsPerMilliWh)
-		}
-	}
 	b.mu.Lock()
 	b.charging[port] = running
 	b.mu.Unlock()
+	if err := b.persist(); err != nil {
+		return err
+	}
 	b.config.Log.Printf("started charge on port %d, mode %d, quantity %d", port, command.Mode, command.Quantity)
 	return nil
 }
@@ -549,13 +686,22 @@ func (b *board) start(ctx context.Context, command dc589.StartCommand) error {
 // 这才让订单收尾。对没在充电的端口下发的停止同样要确认：
 // 它是一条合法的迟到命令，不构成断连接的理由。
 func (b *board) stop(port byte, reason byte) error {
-	ack, err := dc589.BuildCommandResult(dc589.StopReply, 0, port)
+	code := byte(0x10)
+	if port == 0 || int(port) > b.config.PortCount {
+		code = 0
+	} else if b.portState(port) == 3 || b.portState(port) == 4 {
+		code = 4
+	} else if b.charging[port] == nil {
+		code = 1
+	}
+	ack, err := dc589.BuildCommandResult(dc589.StopReply, code, port)
 	if err != nil {
 		return err
 	}
 	b.mu.Lock()
 	running, ok := b.charging[port]
 	if ok {
+		b.completed[fmt.Sprintf("%d:%x", port, running.orderBCD)] = true
 		delete(b.charging, port)
 	}
 	b.mu.Unlock()
@@ -577,14 +723,25 @@ func (b *board) reportEnd(running *charge, reason byte) error {
 		StartedAt:      running.startedAt,
 		EndedAt:        ended,
 		ChargedMWh:     running.chargedMilliWh(),
-		PowerDeciWatts: b.config.PowerDeciWatts,
+		PowerDeciWatts: b.power(running.port),
 		StopReason:     reason,
-		ConsumerType:   2,
+		ConsumerType:   running.consumer,
 	})
 	if err != nil {
 		return fmt.Errorf("build charge end: %w", err)
 	}
-	if err := b.writer.send(frame); err != nil {
+	frame.Data[0] = 1
+	frame.Data[25] = byte(running.mode)
+	frame.Data[41] = running.band
+	binary.LittleEndian.PutUint32(frame.Data[36:40], running.card)
+	binary.LittleEndian.PutUint16(frame.Data[30:32], uint16(running.remainingMilliWh()/1000))
+	left := b.remainingSecs(running)
+	binary.LittleEndian.PutUint16(frame.Data[22:24], uint16(left/60))
+	frame.Data[24] = byte(left % 60)
+	if running.consumer == 0 || running.consumer == 1 {
+		binary.LittleEndian.PutUint16(frame.Data[34:36], b.configTable.CardAmountCents)
+	}
+	if err := b.queueReport(frame); err != nil {
 		return err
 	}
 	b.config.Log.Printf("finished charge on port %d: %d mWh over %s", running.port, running.chargedMilliWh(), ended.Sub(running.startedAt).Truncate(time.Second))
@@ -604,48 +761,74 @@ func (b *board) remainingSecs(running *charge) uint32 {
 		}
 		return uint32(running.remaining / time.Second)
 	}
-	if b.config.PowerDeciWatts == 0 {
+	if b.power(running.port) == 0 {
 		return 0
 	}
-	return uint32(uint64(running.remainingMilliWh()) * deciWattSecondsPerMilliWh / uint64(b.config.PowerDeciWatts))
+	return uint32(uint64(running.remainingMilliWh()) * deciWattSecondsPerMilliWh / uint64(b.power(running.port)))
 }
 
 // advance 把每一笔进行中的充电向前推进一秒模拟时间。
 func (b *board) advance() {
-	b.mu.Lock()
+	now := b.now()
 	var finished []*charge
-	for port, running := range b.charging {
-		// 一个 tick 就是一秒，
-		// 所以板子在这一秒里送出平台配置的功率。
-		// 关键在于电量由它上报的同一个数字推导出来：
-		// 一份和功率读数差一个固定比例的结算没人会发现，
-		// 因为电量仍落在运维会认为合理的区间里。
-		running.wattDeciSeconds += uint64(b.config.PowerDeciWatts)
-		if !energyBilled(running.mode) {
-			running.remaining -= time.Second
+	for port, c := range b.charging {
+		power := b.power(port)
+		c.wattDeciSeconds += uint64(power)
+		if power > c.peak {
+			c.peak = power
 		}
-		if b.config.Scenario == ScenarioFault && !running.faultSent && time.Since(running.startedAt) >= b.config.FaultAfter {
-			running.faultSent = true
-			b.config.Log.Printf("reporting a fault on port %d", port)
-			if frame, err := dc589.BuildFault(port, 0x35); err == nil {
-				_ = b.writer.send(frame)
+		if !energyBilled(c.mode) {
+			c.remaining -= time.Second
+		}
+		reason := byte(255)
+		if b.physical(port).Fault != 0 {
+			reason = 3
+		} else if b.smoke {
+			reason = 8
+		} else if b.deviceStatus() == 1 {
+			reason = 9
+		}
+		if !b.physical(port).Connected || power <= uint32(b.removePower) {
+			c.removedSeconds++
+		} else {
+			c.removedSeconds = 0
+		}
+		if power > 0 && power <= uint32(b.configTable.FloatDeciWatts) {
+			c.floatSeconds++
+		} else {
+			c.floatSeconds = 0
+		}
+		long := c.mode == dc589.LongTime || c.mode == dc589.LongEnergy || c.mode == dc589.LongPlatformBilling
+		if !long && c.removedSeconds >= uint32(b.configTable.RemoveSeconds) {
+			reason = 1
+		}
+		if !long && b.configTable.StopWhenFull == 1 && c.floatSeconds >= uint32(b.configTable.FloatSeconds) {
+			reason = 2
+		}
+		if b.config.Scenario == ScenarioFault && !c.faultSent && now.Sub(c.startedAt) >= b.config.FaultAfter {
+			c.faultSent = true
+			_ = b.sendFault(port, 0x35)
+			reason = 3
+		}
+		if reason == 255 && c.complete() && b.config.Scenario != ScenarioStopOnCommand {
+			reason = 0
+			if energyBilled(c.mode) {
+				reason = 10
 			}
 		}
-		if !running.complete() {
+		if reason != 255 {
+			c.stopReason = reason
+			finished = append(finished, c)
+			delete(b.charging, port)
+			b.completed[fmt.Sprintf("%d:%x", port, c.orderBCD)] = true
 			continue
 		}
-		switch b.config.Scenario {
-		case ScenarioStopOnCommand, ScenarioFault:
-			// 这两个场景靠命令或故障结束，而不是自己跑完。
-			continue
-		default:
-			finished = append(finished, running)
-			delete(b.charging, port)
+		if err := b.updateBand(c); err != nil {
+			b.config.Log.Printf("band report: %v", err)
 		}
 	}
-	b.mu.Unlock()
-	for _, running := range finished {
-		if err := b.reportEnd(running, 0); err != nil {
+	for _, c := range finished {
+		if err := b.reportEnd(c, c.stopReason); err != nil {
 			b.config.Log.Printf("charge end failed: %v", err)
 		}
 	}
@@ -660,50 +843,53 @@ func (b *board) advance() {
 // 消除的歧义——还会导致一个明确关
 // 掉了端口遥测的平台照样收到它。
 func (b *board) sendHeartbeat() {
-	b.mu.Lock()
-	var status *dc589.PortStatus
-	if b.portTelemetry && len(b.charging) > 0 {
-		ports := make([]byte, b.config.PortCount)
-		charging := make([]protocol.PortTelemetry, 0, len(b.charging))
-		for port, running := range b.charging {
-			ports[port-1] = 1
-			charging = append(charging, protocol.PortTelemetry{
-				Port:           port,
-				RemainingSecs:  b.remainingSecs(running),
-				ChargedSeconds: uint32(time.Since(running.startedAt).Seconds()),
-				RemainingMWh:   running.remainingMilliWh(),
-				ChargedMWh:     running.chargedMilliWh(),
-				PowerDeciWatts: b.config.PowerDeciWatts,
-			})
+	if b.portTelemetry {
+		if err := b.sendAllPorts(false, dc589.Heartbeat); err != nil {
+			b.config.Log.Printf("heartbeat: %v", err)
 		}
-		status = &dc589.PortStatus{PortStates: ports, Charging: charging, TemperatureC: 25}
-	}
-	b.mu.Unlock()
-
-	frame, err := dc589.BuildHeartbeat(b.config.Identity, status)
-	if err != nil {
-		b.config.Log.Printf("build heartbeat: %v", err)
 		return
 	}
-	if err := b.writer.send(frame); err != nil {
-		b.config.Log.Printf("send heartbeat: %v", err)
+	frame, err := dc589.BuildHeartbeat(b.config.Identity, nil)
+	if err == nil {
+		err = b.writer.send(frame)
+	}
+	if err != nil {
+		b.config.Log.Printf("heartbeat: %v", err)
 	}
 }
 
 func (b *board) readFrame() (dc589.Frame, error) {
 	_ = b.conn.SetReadDeadline(time.Now().Add(120 * time.Second))
-	return dc589.ReadFrame(b.reader)
+	if b.reader == nil {
+		b.reader = bufio.NewReader(b.conn)
+	}
+	f, err := dc589.ReadFrame(b.reader)
+	if err == nil {
+		b.config.Log.Printf("RX %02X session=%x bytes=%d", f.Command, f.Session, len(f.Data))
+	}
+	return f, err
 }
 
 // frameWriter 串行化写操作。
 // 心跳、命令回包和充电结束上报分别来自循环里的不同
 // 位置，而两帧在链路上交插会让服务器的读取器错位。
 type frameWriter struct {
-	conn net.Conn
-	mu   sync.Mutex
+	log     *log.Logger
+	session [6]byte
+	conn    net.Conn
+	mu      sync.Mutex
 }
 
 func (w *frameWriter) send(frame dc589.Frame) error {
+	if w.conn == nil {
+		return fmt.Errorf("device is disconnected")
+	}
+	switch frame.Command {
+	case dc589.StartReply, dc589.StopReply, dc589.HeartbeatSetReply, dc589.ConfigAck, dc589.ConfigReport, 0xB1, 0xB3, 0xE1:
+		if w.session != ([6]byte{}) {
+			frame.Session = w.session
+		}
+	}
 	raw, err := dc589.Encode(frame)
 	if err != nil {
 		return err
@@ -712,5 +898,8 @@ func (w *frameWriter) send(frame dc589.Frame) error {
 	defer w.mu.Unlock()
 	_ = w.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	_, err = w.conn.Write(raw)
+	if w.log != nil {
+		w.log.Printf("TX %02X session=%x bytes=%d result=%v", frame.Command, frame.Session, len(frame.Data), err)
+	}
 	return err
 }

@@ -16,6 +16,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -59,8 +60,14 @@ func run() error {
 		vendorID      = flag.Uint64("vendor-id", 0, "vendor id for provisioning")
 		stationID     = flag.Uint64("station-id", 0, "station id for provisioning")
 		token         = flag.String("service-token", os.Getenv("SERVICE_TOKEN"), "service token for the provisioning call")
+		control       = flag.String("control", "127.0.0.1:9190", "loopback HTTP listener for /state and /events; empty disables it")
+		stateFile     = flag.String("state-file", "", "persist configuration, ports, active charges and pending reports in this JSON file")
+		tui           = flag.Bool("tui", true, "interactive terminal UI; set false for headless/CI")
 	)
 	flag.Parse()
+	if *ports < 1 || *ports > 20 || *power > 65535 || *software < 0 || *software > 65535 || *strength < 0 || *strength > 255 {
+		return errors.New("ports must be 1-20; power/software 0-65535; signal 0-255")
+	}
 
 	logger := log.New(os.Stdout, "dc589sim ", log.LstdFlags)
 	if err := checkBoardID(*boardID); err != nil {
@@ -102,7 +109,36 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	config.StateFile = *stateFile
+	inputs := make(chan dc589sim.Input, 16)
+	config.Inputs = inputs
+	if *control != "" {
+		host, _, err := net.SplitHostPort(*control)
+		if err != nil {
+			return err
+		}
+		ip := net.ParseIP(host)
+		if ip == nil || !ip.IsLoopback() {
+			return errors.New("control listener must use a loopback IP")
+		}
+		listener, err := net.Listen("tcp", *control)
+		if err != nil {
+			return err
+		}
+		server := &http.Server{Handler: dc589sim.ControlHandler(ctx, inputs), ReadHeaderTimeout: 5 * time.Second}
+		defer server.Close()
+		go func() {
+			if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				logger.Printf("control: %v", err)
+				stop()
+			}
+		}()
+		logger.Printf("physical controls: http://%s/state and POST /events", *control)
+	}
 	logger.Printf("connecting to %s, scenario %s", *gateway, choice)
+	if *tui {
+		return dc589sim.RunTUI(ctx, config, inputs, stop)
+	}
 	return dc589sim.Run(ctx, config)
 }
 

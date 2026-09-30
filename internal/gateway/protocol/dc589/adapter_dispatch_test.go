@@ -185,7 +185,7 @@ func TestConfigReportIsNotTreatedAsUnknown(t *testing.T) {
 // 的形态被看见。
 func TestPowerControlRefusalIsRecorded(t *testing.T) {
 	sink := serveWithFrames(t, []Frame{{Command: cmdPowerControlReply,
-		Data: []byte{byte(PowerSet), byte(PowerOpRemove), 0xFF, 0xF1, 0, 0}}})
+		Data: []byte{byte(PowerSet), byte(PowerOpRemove), 0xF1, 0xFF, 0, 0}}})
 	results := sink.findConfigResults()
 	if len(results) == 0 {
 		t.Fatalf("a power-control refusal produced no config result; events were %+v", sink.all())

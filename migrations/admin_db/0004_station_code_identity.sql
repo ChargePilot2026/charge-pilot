@@ -1,4 +1,0 @@
--- +goose NO TRANSACTION
--- +goose Up
-
-CREATE TABLE IF NOT EXISTS station_code_identity (code VARCHAR(64) NOT NULL PRIMARY KEY) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

@@ -13,7 +13,7 @@ internal/gateway/  设备协议适配器；dc589 独立监听 :9100
 internal/central/  用户、订单、支付、后台及财务领域
 internal/worker/   异步任务
 internal/platform/ 配置、数据库、鉴权、HTTP 基础设施
-migrations/        五个 MySQL schema 的 SQL 迁移
+migrations/        五个 MySQL schema 的 init SQL
 admin-web/         PC 前端
 miniprogram/       微信小程序
 docs/              需求、接口、数据库和迁移验收记录
@@ -22,6 +22,15 @@ docs/              需求、接口、数据库和迁移验收记录
 `dc589` 对应当前提供的设备协议 PDF。新协议应实现 `internal/gateway/protocol.Adapter`，可以在新 TCP 端口监听。MQTT 当前暂缓。
 
 ## 本地验证
+
+后端格式化使用 gofmt，lint 使用 go vet。首次克隆后执行 `./scripts/install-hooks.ps1`（PowerShell）或 `sh scripts/install-hooks.sh`，启用仓库 pre-commit；提交前强制检查工作区及已暂存 Go 源码格式，再运行 go vet，失败则阻止提交。CI 使用同一检查入口。
+
+```powershell
+go run ./tools/backend-check -fix -fmt-only # 格式化；之后重新暂存
+go run ./tools/backend-check                # fmt + lint
+```
+
+也可使用 `make fmt`、`make lint`、`make check`。数据库尚未发布，直接修改 [init](migrations/README.md) 后重建开发表结构。设备默认拥有所选协议声明的全部能力，不需要逐台人工核验。[双模拟器与完整 TUI](docs/simulator-dc589.md) 可用于后台和充电用户流程测试。
 
 ```bash
 go test ./...

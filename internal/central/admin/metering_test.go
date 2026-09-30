@@ -20,37 +20,13 @@ func meterless() deviceCapability {
 }
 
 func TestCapabilityAllowsOnlyWhatTheBoardCanReport(t *testing.T) {
-	cases := []struct {
-		name  string
-		cap   deviceCapability
-		mode  pricing.ChargeMode
-		block bool
-	}{
-		{"时长无需计量", meterless(), pricing.ModeDeviceDuration, false},
-		{"服务端电量需电量上报", meterless(), pricing.ModeServerEnergy, true},
-		{"设备电量需电量上报", meterless(), pricing.ModeDeviceEnergy, true},
-		{"服务端实时功率需分段功率", meterless(), pricing.ModeServerRealtimePower, true},
-		{"服务端最大功率需分段功率", meterless(), pricing.ModeServerMaxPower, true},
-		{"设备功率档位需分段功率", meterless(), pricing.ModeDevicePower, true},
-		{"有电量上报则服务端电量放行",
-			deviceCapability{ReportsEnergy: true}, pricing.ModeServerEnergy, false},
-		{"有电量上报仍然不放行功率",
-			deviceCapability{ReportsEnergy: true}, pricing.ModeServerRealtimePower, true},
-		{"有分段功率则功率放行",
-			deviceCapability{ReportsSegmentedPower: true}, pricing.ModeServerMaxPower, false},
-		{"两者都有则两类都放行",
-			deviceCapability{ReportsEnergy: true, ReportsSegmentedPower: true}, pricing.ModeDevicePower, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			reason := capabilityBlock(tc.mode, tc.cap)
-			if tc.block && reason == "" {
-				t.Fatalf("%s was allowed on a board that reports nothing", tc.mode)
-			}
-			if !tc.block && reason != "" {
-				t.Fatalf("%s was refused for %q", tc.mode, reason)
-			}
-		})
+	for _, mode := range []pricing.ChargeMode{pricing.ModeDeviceDuration, pricing.ModeDeviceEnergy, pricing.ModeDevicePower, pricing.ModeServerEnergy, pricing.ModeServerMaxPower, pricing.ModeServerRealtimePower} {
+		if reason := capabilityBlock(mode, deviceCapability{ProtocolAdapter: "dc589"}); reason != "" {
+			t.Fatalf("%s: %s", mode, reason)
+		}
+		if reason := capabilityBlock(mode, deviceCapability{ProtocolAdapter: "unknown", ReportsEnergy: true, ReportsSegmentedPower: true}); reason == "" {
+			t.Fatal("manual flags granted unknown protocol abilities")
+		}
 	}
 }
 
@@ -74,7 +50,7 @@ func TestUnclassifiedDeviceIsRefusedEveryMeteredMode(t *testing.T) {
 func TestCheckMeteringNamesEveryBlockedDevice(t *testing.T) {
 	targets := []switchTarget{
 		{DeviceID: "A", Cap: deviceCapability{DeviceID: "A"}},
-		{DeviceID: "B", Cap: deviceCapability{DeviceID: "B", ReportsEnergy: true, ReportsSegmentedPower: true}},
+		{DeviceID: "B", Cap: deviceCapability{DeviceID: "B", ProtocolAdapter: "dc589"}},
 		{DeviceID: "C", Cap: deviceCapability{DeviceID: "C"}},
 	}
 	blocked := checkMetering(pricing.ModeServerEnergy, targets)
@@ -84,8 +60,8 @@ func TestCheckMeteringNamesEveryBlockedDevice(t *testing.T) {
 	if blocked[0][:1] != "A" || blocked[1][:1] != "C" {
 		t.Fatalf("blocked = %v, want the offenders in device order", blocked)
 	}
-	if got := checkMetering(pricing.ModeDeviceDuration, targets); len(got) != 0 {
-		t.Fatalf("a duration tariff blocked %v, want nothing", got)
+	if got := checkMetering(pricing.ModeDeviceDuration, targets); len(got) != 2 {
+		t.Fatalf("a duration tariff blocked %v, want unsupported protocols blocked", got)
 	}
 }
 
@@ -112,7 +88,7 @@ func TestCheckImportAgainstStationRefusesABoardThatCannotBeMetered(t *testing.T)
 	db := dbWithStationMode(t, pricing.ModeServerEnergy)
 	station := stationOf(t, db)
 	devices := []ImportDevice{
-		{DeviceID: "DC589OK001", StationID: station, ReportsEnergy: true},
+		{DeviceID: "DC589OK001", StationID: station, ProtocolAdapter: "dc589"},
 		{DeviceID: "DC589BAD01", StationID: station},
 	}
 	// 整批一起拒，不是拒一半：一支只有部分设备能计价的机队，等于要运营手工去对账。
@@ -128,7 +104,7 @@ func TestCheckImportAgainstStationRefusesABoardThatCannotBeMetered(t *testing.T)
 		}
 	}
 	if err := checkImportAgainstStation(db,
-		[]ImportDevice{{DeviceID: "DC589OK001", StationID: station, ReportsEnergy: true}}); err != nil {
+		[]ImportDevice{{DeviceID: "DC589OK001", StationID: station, ProtocolAdapter: "dc589"}}); err != nil {
 		t.Fatalf("a fully measurable batch was refused: %v", err)
 	}
 }
@@ -144,7 +120,7 @@ func TestCheckImportAgainstStationAllowsWhenNothingNeedsAMeter(t *testing.T) {
 	timed := dbWithStationMode(t, pricing.ModeDeviceDuration)
 	station = stationOf(t, timed)
 	if err := checkImportAgainstStation(timed,
-		[]ImportDevice{{DeviceID: "DC589NEW002", StationID: station}}); err != nil {
+		[]ImportDevice{{DeviceID: "DC589NEW002", StationID: station, ProtocolAdapter: "dc589"}}); err != nil {
 		t.Fatalf("a board was refused from a duration-priced station: %v", err)
 	}
 }

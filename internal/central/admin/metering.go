@@ -6,33 +6,17 @@ import (
 	"strings"
 
 	"github.com/ChargePilot2026/charge-pilot/internal/central/pricing"
-	"github.com/ChargePilot2026/charge-pilot/internal/platform/httpapi"
-	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
-// 一块板子能报什么，是它的固件决定的，不是运营决定的。
-//
-// 厂商协议在结束充电帧里带一个电量读数，
-// 在计量帧里带一张分段功率表。帧里两者都
-// 没有的桩，压根没法按 kWh 或按功率
-// 计费——只能告诉它要跑多久。照样给这样
-// 的桩下发一份费率，就是那种几周后以一笔
-// 对不上的结算才暴露的错误，所以能力按设
-// 备记录下来，在发布费率之前先校验一遍。
-//
-// 默认是拒绝。能力从未声明过的设备一律当作什么
-// 都不报，因为新协议不承诺它没有明确携带的字段。
-
-// deviceCapability 是一块板子当前声明的计量能力，映射 device_meta 的四列。
-// 默认一律视为"不上报"：没声明过能力的设备，等于什么都不报，因为新协议不承诺
-// 它没有明确携带的字段。
+// 设备能力由创建时选定的通信协议自动确定。
 type deviceCapability struct {
-	DeviceID              string `gorm:"column:device_id"`               // 设备号，全网唯一，是这块板子的标识
-	ChargeMode            string `gorm:"column:charge_mode"`             // 设备充电类型（厂商协议值），空串表示尚未归类；另有取值 none 仅用于任务日志
-	ReportsEnergy         bool   `gorm:"column:reports_energy"`          // 是否在结束充电帧里上报电量，决定能否按电量计费
-	ReportsSegmentedPower bool   `gorm:"column:reports_segmented_power"` // 是否上报分段功率表，决定能否按功率计费
+	ProtocolAdapter       string `gorm:"column:protocol_adapter"`
+	DeviceID              string `gorm:"column:device_id"`   // 设备号，全网唯一，是这块板子的标识
+	ChargeMode            string `gorm:"column:charge_mode"` // 设备充电类型（厂商协议值），空串表示尚未归类；另有取值 none 仅用于任务日志
+	ReportsEnergy         bool   `gorm:"-"`                  // 是否在结束充电帧里上报电量，决定能否按电量计费
+	ReportsSegmentedPower bool   `gorm:"-"`                  // 是否上报分段功率表，决定能否按功率计费
 }
 
 // capabilityBlock 给出这块设备跑
@@ -42,6 +26,11 @@ type deviceCapability struct {
 // 拒绝理由是写给运营看的：只回一句「不支持」的拒
 // 绝，会被人当成检查太严，直接把检查关掉绕过去。
 func capabilityBlock(mode pricing.ChargeMode, cap deviceCapability) string {
+	abilities, err := pricing.ProtocolCapabilities(cap.ProtocolAdapter)
+	if err != nil {
+		return err.Error()
+	}
+	cap.ReportsEnergy, cap.ReportsSegmentedPower = abilities.ReportsEnergy, abilities.ReportsSegmentedPower
 	switch mode {
 	case pricing.ModeDeviceDuration:
 		// 板子自己数自己的分钟数、自己停。我们这边什么都不测，
@@ -49,11 +38,11 @@ func capabilityBlock(mode pricing.ChargeMode, cap deviceCapability) string {
 		return ""
 	case pricing.ModeServerEnergy, pricing.ModeDeviceEnergy:
 		if !cap.ReportsEnergy {
-			return "未声明电量上报能力，无法按电量计费"
+			return "设备协议不支持电量上报，无法按电量计费"
 		}
 	case pricing.ModeServerRealtimePower, pricing.ModeServerMaxPower, pricing.ModeDevicePower:
 		if !cap.ReportsSegmentedPower {
-			return "未声明分段功率上报能力，无法按功率计费"
+			return "设备协议不支持分段功率上报，无法按功率计费"
 		}
 	}
 	return ""
@@ -88,11 +77,11 @@ type switchTarget struct {
 func resolveSwitchTargets(tx *gorm.DB, stationID uint64, deviceID string) ([]switchTarget, error) {
 	rows := []deviceCapability{}
 	query := tx.Table("device_meta").
-		Select("device_id, charge_mode, reports_energy, reports_segmented_power").
+		Select("device_id, charge_mode, protocol_adapter").
 		Where("station_id=? AND deleted_at IS NULL", stationID)
 	if deviceID != "" {
 		query = tx.Table("device_meta").
-			Select("device_id, charge_mode, reports_energy, reports_segmented_power").
+			Select("device_id, charge_mode, protocol_adapter").
 			Where("station_id=? AND device_id=? AND deleted_at IS NULL", stationID, deviceID)
 	}
 	if err := query.Clauses(clause.Locking{Strength: "SHARE"}).Order("device_id").Find(&rows).Error; err != nil {
@@ -215,79 +204,6 @@ func checkMetering(mode pricing.ChargeMode, targets []switchTarget) []string {
 	return blocked
 }
 
-// registerDeviceMetering 挂载设备计量能力申报接口：运营在后台手工登记某块板子
-// 能上报什么，只有这一处是人工填的，所以同样要审计。
-func (a ResourceAPI) registerDeviceMetering(r *gin.Engine) {
-	r.PUT("/api/v1/admin/settings/device-metering", a.Auth.Require("device.metering"), a.updateDeviceMetering)
-}
-
-// meteringInput 是设备计量能力申报的请求体，站点与设备必填。
-type meteringInput struct {
-	StationID  uint64 `json:"station_id"`  // 站点 id，必填
-	DeviceID   string `json:"device_id"`   // 设备号，必填且要符合设备号格式
-	ChargeMode string `json:"charge_mode"` // 设备充电类型，空串表示尚未归类；非空时须是六种计费方式之一
-	// ReportsEnergy、ReportsSegmentedPower 这两项能力
-	// 用指针传，是为了让表单
-	// 漏填其中一项时直接报成参数错误，
-	// 而不是把运营根本没看过的那项
-	// 能力默默降级成 false。
-	ReportsEnergy         *bool `json:"reports_energy"`          // 是否上报电量；必填，nil 视为未申报
-	ReportsSegmentedPower *bool `json:"reports_segmented_power"` // 是否上报分段功率；必填，nil 视为未申报
-}
-
-// updateDeviceMetering 申报某块板子能上报什么。
-// 设备必须已存在（这里只改能力，不建设备），改前快照
-// 与改动内容在同一事务内写审计——这是这份信息唯一靠
-// 人手填进来的地方，所以和其它任何改变设备行为的写入
-// 一样要留痕。
-func (a ResourceAPI) updateDeviceMetering(c *gin.Context) {
-	var in meteringInput
-	if !decodeResource(c, &in) {
-		return
-	}
-	if in.StationID == 0 || !deviceIDPattern.MatchString(in.DeviceID) ||
-		in.ReportsEnergy == nil || in.ReportsSegmentedPower == nil {
-		httpapi.BadRequest(c, "请选择站点与设备，并同时声明电量与分段功率能力")
-		return
-	}
-	if !a.requirePricingTargetScope(c, in.StationID, in.DeviceID) {
-		return
-	}
-	// 充电类型是厂商协议里的一个取值，不是随便写的字符串。
-	// 留空记的是「这块板子还没归类」，和「已归成某个常规
-	// 类型」是两回事。
-	if in.ChargeMode != "" && !validDeviceChargeMode(in.ChargeMode) {
-		httpapi.BadRequest(c, "设备充电类型无效")
-		return
-	}
-	actor := c.MustGet("admin_profile").(Profile)
-	err := a.Store.AdminDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
-		var before deviceCapability
-		if err := tx.Table("device_meta").Clauses(clause.Locking{Strength: "UPDATE"}).
-			Select("device_id, charge_mode, reports_energy, reports_segmented_power").
-			Where("device_id=? AND station_id=? AND deleted_at IS NULL", in.DeviceID, in.StationID).
-			Take(&before).Error; err != nil {
-			return err
-		}
-		row := map[string]any{
-			"charge_mode": in.ChargeMode, "reports_energy": *in.ReportsEnergy,
-			"reports_segmented_power": *in.ReportsSegmentedPower,
-		}
-		if err := tx.Table("device_meta").
-			Where("device_id=? AND station_id=? AND deleted_at IS NULL", in.DeviceID, in.StationID).
-			Updates(row).Error; err != nil {
-			return err
-		}
-		return resourceAudit(tx, actor, "device.metering.update", "device_meta", 0, before, row,
-			c.ClientIP(), httpapi.RequestID(c))
-	})
-	if err != nil {
-		resourceFailure(c, err)
-		return
-	}
-	httpapi.OK(c, gin.H{"station_id": in.StationID, "device_id": in.DeviceID, "updated": true})
-}
-
 // stationModeOf 取出站点默认规则
 // 当前生效的计费方式；站点还没有生效的默认规则
 // 时返回 false，口径 JSON 解析不出
@@ -341,6 +257,7 @@ func checkImportAgainstStation(tx *gorm.DB, devices []ImportDevice) error {
 		}
 		cap := deviceCapability{
 			DeviceID:              d.DeviceID,
+			ProtocolAdapter:       d.ProtocolAdapter,
 			ChargeMode:            d.ChargeMode,
 			ReportsEnergy:         d.ReportsEnergy,
 			ReportsSegmentedPower: d.ReportsSegmentedPower,

@@ -196,7 +196,7 @@ func EncodeConfig(table ConfigTable) ([]byte, error) {
 	data = append(data, byte(4)) // 音量，平台不改动
 	data = binary.LittleEndian.AppendUint16(data, first.LocalCoinTime)
 	data = binary.LittleEndian.AppendUint16(data, first.LocalCardTime)
-	data = append(data, byte(first.CardAmountCents))
+	data = append(data, byte(first.CardAmountCents/10))
 	data = append(data, first.CardRefund)
 	for _, watts := range first.TierWatts {
 		data = binary.LittleEndian.AppendUint16(data, watts*10) // 0.1W 单位
@@ -225,7 +225,7 @@ func decodeConfigTable(frame Frame) (ConfigTable, error) {
 	table.RunMode = data[offRunMode]
 	table.LocalCoinTime = binary.LittleEndian.Uint16(data[offCoinTime : offCoinTime+2])
 	table.LocalCardTime = binary.LittleEndian.Uint16(data[offCardTime : offCardTime+2])
-	table.CardAmountCents = uint16(data[offCardAmount])
+	table.CardAmountCents = uint16(data[offCardAmount]) * 10
 	table.CardRefund = data[offCardRefund]
 	for i := range table.TierWatts {
 		at := offTierWatts + i*2

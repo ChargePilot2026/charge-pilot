@@ -46,7 +46,7 @@ export default function AppliedScheme({ station, deviceId, onDeviceChange }: { s
   return <Space direction="vertical" style={{ width: '100%' }}>
     <Space><Select aria-label="配置范围" style={{ width: 280 }} disabled={busy} value={deviceId || ''} onChange={v => onDeviceChange(v || null)} options={[{ value: '', label: `${station.name} · 站点生效方案` }, ...devices.map(d => ({ value: d.device_id, label: `设备 ${d.device_id}` }))]} /><Button disabled={busy} onClick={() => void load()}>刷新</Button></Space>
     {error && <Alert type="error" showIcon message={error} />}
-    {deviceId && <DeviceCapabilities station={station.id} device={deviceId} editable={permissions.includes('device.metering')} />}
+    {deviceId && <DeviceCapabilities station={station.id} device={deviceId} />}
     {effective && <Card title={deviceId ? '设备生效方案' : '站点生效方案'} extra={<Tag>{effective.inherited ? '继承站点' : deviceId ? '设备独立配置' : '站点默认'}</Tag>}>
       {(permissions.includes('pricing.rule.create') || (deviceId && !effective.inherited && effective.scheme && permissions.includes('pricing.rule.update'))) && <Space wrap style={{ display: 'flex', marginBottom: 16 }}>
         {permissions.includes('pricing.rule.create') && <><Select aria-label="选择完整方案模板" style={{ width: 300 }} value={selected} onChange={setSelected} options={templates.map(t => ({ value: t.id, label: `${t.scheme.name} · v${t.version}` }))} placeholder="选择完整方案模板" /><Button type="primary" disabled={!selected || busy} loading={busy} onClick={() => void apply().catch(() => {})}>复制并应用整套方案</Button>{effective.scheme && <Button disabled={busy} onClick={() => setEditing(structuredClone(effective.scheme!))}>{deviceId ? '编辑设备独立方案' : '编辑站点方案'}</Button>}</>}

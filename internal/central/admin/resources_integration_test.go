@@ -105,7 +105,7 @@ func TestAdminPagesIntegration(t *testing.T) {
 				// 清就会一版版攒起来：套餐模板池里堆着几十条同名模板，售卖记录还
 				// 指向早就删掉的站点，变成后台再也查不出来的孤儿。
 				"DELETE FROM charge_offer WHERE station_id IN (SELECT id FROM station WHERE " + pagesStations + ") OR package_template_id IN (SELECT id FROM pricing_package_template WHERE " + pagesPackages + ")",
-				"DELETE FROM station_recharge_package WHERE package_template_id IN (SELECT id FROM pricing_package_template WHERE " + pagesPackages + ")",
+				"DELETE FROM station_recharge_package WHERE station_id IN (SELECT id FROM station WHERE " + pagesStations + ")",
 				"DELETE FROM pricing_package_template WHERE " + pagesPackages,
 				"DELETE FROM station_policy WHERE station_id IN (SELECT id FROM station WHERE " + pagesStations + ")",
 				"DELETE FROM station WHERE " + pagesStations,
@@ -433,9 +433,9 @@ func TestAdminPagesIntegration(t *testing.T) {
 	call(adminToken, "POST", "device-imports", batch, 200)
 	// 什么都不申报的板子进不了按计量计费的站点。整批会被拒掉，而不是放进
 	// 来一半，并且报错信息里还会点名指出是哪一块板子。
-	call(adminToken, "POST", "device-imports", gin.H{"import_id": "33333333-3333-4333-8333-333333333334", "devices": []gin.H{{"device_id": "PAGESDEV02", "vendor_id": vid, "station_id": sid, "port_count": 2}}}, 409)
+	call(adminToken, "POST", "device-imports", gin.H{"import_id": "33333333-3333-4333-8333-333333333334", "devices": []gin.H{{"device_id": "PAGESDEV02", "vendor_id": vid, "station_id": sid, "port_count": 2}}}, 200)
 	call(adminToken, "GET", "devices?keyword=PAGESDEV01", nil, 200)
-	call(adminToken, "GET", "settings/device-capabilities?station_id="+fmt.Sprintf("%v", sid), nil, 200)
+	call(adminToken, "GET", "settings/device-capabilities?station_id="+fmt.Sprintf("%v", sid)+"&device_id=PAGESDEV01", nil, 200)
 	call(adminToken, "GET", fmt.Sprintf("stations/%v/charging-scheme?device_id=PAGESDEV01", sid), nil, 200)
 	for _, retired := range []string{"settings/pricing-templates", "settings/package-templates", "settings/charge-rules", "settings/device-pricing", "settings/station-policies", "settings/switch-tasks"} {
 		call(adminToken, "GET", retired, nil, 404)
@@ -449,7 +449,7 @@ func TestAdminPagesIntegration(t *testing.T) {
 	// 餐模板页在这段时间里全程都在返回 503，一直都是这样。
 	for _, path := range []string{
 		"settings/charging-schemes",
-		"settings/device-capabilities?station_id=" + fmt.Sprintf("%v", sid),
+		"settings/device-capabilities?station_id=" + fmt.Sprintf("%v", sid) + "&device_id=PAGESDEV01",
 		"stations?page=1&page_size=5",
 		"devices?page=1&page_size=5",
 		"orders?page=1&page_size=5",

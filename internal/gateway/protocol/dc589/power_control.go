@@ -6,9 +6,8 @@ import (
 	"fmt"
 )
 
-// 0xE0 / 0xE1 是 5.8.9 才有的命令，也是协议自带的「别给这块板分档」的手段，
-// 正是按服务计费的那些模式需要的入口。另一条路——充电类型 4——只能在整个会话
-// 期间隐含这个前提，而这两条命令是把开关直接写到板子上。
+// 0xE0 / 0xE1 设置或查询“移除功率”，参数单位为 0.1W。
+// 这是充电器移除检测的功率阈值，不能用它表示关闭计费分档。
 //
 // 这里实现的只有文档定义的那一个操作。文档只写了「操作类型：0 = 移除功率」，
 // 其余没有列举，而其余部分正是 docs/migration/go-rebuild.md 里的未决条目 28。
@@ -33,9 +32,7 @@ const (
 type PowerOperation byte
 
 const (
-	// PowerOpRemove 关闭分档功率控制：主板不再把输出拆成若干
-	// 档，而是按一个恒定值供电，这正是平台自己做功率定价时
-	// 需要的。
+	// PowerOpRemove 表示文档中的移除功率参数。
 	PowerOpRemove PowerOperation = 0
 )
 
@@ -86,7 +83,7 @@ func encodePowerControl(c PowerControl) ([]byte, error) {
 	data := make([]byte, powerControlDataBytes)
 	data[0] = byte(c.Control)
 	data[1] = byte(c.Operation)
-	binary.BigEndian.PutUint16(data[2:4], c.DeciWatts)
+	binary.LittleEndian.PutUint16(data[2:4], c.DeciWatts)
 	// data[4:6] 保持为零：文档称它为保留位，却没说非零
 	// 代表什么，所以永远不发非零值。
 	return data, nil
@@ -105,27 +102,26 @@ func BuildPowerControl(session [6]byte, c PowerControl) (Frame, error) {
 // 应答就是一次拒绝，这里直接返回 ErrPowerControlRejected，而不是
 // 丢给调用方一个还得记得自己检查的值。
 func ParsePowerControlReply(frame Frame) (PowerControl, error) {
-	if len(frame.Data) != powerControlDataBytes {
+	if frame.Command != cmdPowerControlReply || len(frame.Data) != powerControlDataBytes {
 		return PowerControl{}, ErrPayload
 	}
 	reply := PowerControl{
 		Control:   PowerControlKind(frame.Data[0]),
 		Operation: PowerOperation(frame.Data[1]),
-		DeciWatts: binary.BigEndian.Uint16(frame.Data[2:4]),
+		DeciWatts: binary.LittleEndian.Uint16(frame.Data[2:4]),
 	}
-	if reply.DeciWatts == powerControlFailure {
+	if reply.DeciWatts == powerControlFailure || reply.Control == 2 {
 		return reply, ErrPowerControlRejected
 	}
-	if !reply.Valid() {
+	if reply.Control > PowerSet || reply.Operation != PowerOpRemove || frame.Data[4] != 0 || frame.Data[5] != 0 {
 		return reply, ErrPayload
 	}
 	return reply, nil
 }
 
-// SetNoTiering 是按服务计费的模式需要的那个动作：把主板带出
-// 分档功率控制，让平台自己的功率定价成为唯一生效的规则。它是
-// 一个有名字的操作而不是一帧裸数据，这样调用点上一眼能看出
-// 意图。
+// SetNoTiering retains the historical helper name; the wire command actually
+// sets the removal-detection threshold to zero. It does not disable tiers.
+// Deprecated: use BuildPowerControl with an explicit DeciWatts value.
 func SetNoTiering(session [6]byte) (Frame, error) {
 	return BuildPowerControl(session, PowerControl{Control: PowerSet, Operation: PowerOpRemove})
 }

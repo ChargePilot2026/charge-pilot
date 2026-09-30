@@ -42,12 +42,13 @@ func TestPaidStartDispatchRequiresCallbackCreatedOrder(t *testing.T) {
 		_, _ = db.ExecContext(ctx, "DELETE FROM payment_callback_idempotent WHERE wechat_transaction_id = ?", transactionID)
 		_, _ = db.ExecContext(ctx, "DELETE FROM user WHERE id = ?", userID)
 	}()
+	scheme := pricing.Scheme{Name: "Dispatch Test", Packages: []pricing.Package{{ID: 1, Name: "60 minutes", Mode: "duration", PriceCents: 140, Minutes: 60}}}.Normalized()
 	intent, err := (centralcharge.PaymentIntentStore{DB: testGORMDB(t, db)}).Reserve(ctx, centralcharge.IntentInput{
 		UserID: uint64(userID), ClientRequestID: uuid.NewString(),
 		Port: centralcharge.ScanResult{Kind: "port", DeviceID: "dispatch-device", StationID: 9,
 			Port: &centralcharge.ScanPort{PortID: "dispatch-device:1", DeviceID: "dispatch-device", PortNo: 1, Online: true, Available: true}},
-		Energy: "1", Minutes: 60,
-		Rule: pricing.Rule{ID: 3, StationID: 9, Version: 1, Spec: pricing.Spec{Mode: pricing.ModeServerEnergy, Electric: &pricing.ElectricLine{Basis: pricing.BasisEnergy, Periods: []pricing.Period{{EndMinute: 1440, ElectricCents: 100}}}, Service: &pricing.ServiceLine{Basis: pricing.ServiceEnergy, CentsPerKWh: 40}}},
+		Rule:  pricing.Rule{ID: 3, StationID: 9, Version: 1, Spec: scheme.SpecFor(scheme.Packages[0])},
+		Offer: &pricing.Offer{ID: 301, PackageID: 1, StationID: 9, Name: "60 minutes", Mode: "duration", PriceCents: 140, DurationMinutes: 60},
 	})
 	if err != nil {
 		t.Fatal(err)

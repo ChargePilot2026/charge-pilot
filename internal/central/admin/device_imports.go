@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/ChargePilot2026/charge-pilot/internal/central/pricing"
 	"io"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -22,11 +24,12 @@ import (
 // ImportDevice 是批量导入里的一行设备声明：设备编号、归属厂商、所在站点、端口数、型号与计量能力。
 // 计量能力放在导入里是为了让一批设备一次性完成分类——没被分类的设备会被所有需要电表的计费方式拒绝，等于整批不可计费。
 type ImportDevice struct {
-	DeviceID  string  `json:"device_id"`  // 设备编号，全局唯一，8–32 位字母数字及 _ -，大小写不敏感判重
-	VendorID  uint64  `json:"vendor_id"`  // 厂商 ID，必须非 0
-	StationID uint64  `json:"station_id"` // 所属站点 ID，必须非 0 且该站点处于 active
-	PortCount uint8   `json:"port_count"` // 充电端口数，必须非 0
-	Model     *string `json:"model"`      // 型号，可空；非空时最多 128 字
+	ProtocolAdapter string  `json:"protocol_adapter"` // Resolved by the server from the selected vendor; never trust the client.
+	DeviceID        string  `json:"device_id"`        // 设备编号，全局唯一，8–32 位字母数字及 _ -，大小写不敏感判重
+	VendorID        uint64  `json:"vendor_id"`        // 厂商 ID，必须非 0
+	StationID       uint64  `json:"station_id"`       // 所属站点 ID，必须非 0 且该站点处于 active
+	PortCount       uint8   `json:"port_count"`       // 充电端口数，必须非 0
+	Model           *string `json:"model"`            // 型号，可空；非空时最多 128 字
 	// 计量能力放在导入里，是为了让一批设备一次就分类完，
 	// 而这也是回填这些字段唯一实际可行的办法：
 	// 从没被分类过的设备会被所有需要电表的计费方式拒绝，
@@ -110,6 +113,32 @@ func (a ResourceAPI) createImport(c *gin.Context) {
 	if !ok || !requireImportScope(c, scope, in.Devices) {
 		return
 	}
+	// Resolve once per vendor; this trusted snapshot also survives import retries.
+	adapters := map[uint64]string{}
+	for i := range in.Devices {
+		d := &in.Devices[i]
+		adapter, found := adapters[d.VendorID]
+		if !found {
+			var vendor vendorRow
+			if err := a.requestVendor(c.Request.Context(), http.MethodGet, "/"+strconv.FormatUint(d.VendorID, 10), nil, nil, &vendor, httpapi.RequestID(c)); err != nil {
+				vendorFailure(c, err)
+				return
+			}
+			if vendor.Status != "enabled" || vendor.Protocol != "tcp" {
+				httpapi.BadRequest(c, "请选择已启用且支持的通信协议厂商")
+				return
+			}
+			if _, err := pricing.ProtocolCapabilities(vendor.AdapterClass); err != nil {
+				httpapi.BadRequest(c, err.Error())
+				return
+			}
+			adapter = vendor.AdapterClass
+			adapters[d.VendorID] = adapter
+		}
+		d.ProtocolAdapter = adapter
+		cap, _ := pricing.ProtocolCapabilities(adapter)
+		d.ReportsEnergy, d.ReportsSegmentedPower = cap.ReportsEnergy, cap.ReportsSegmentedPower
+	}
 	body, _ := json.Marshal(in.Devices)
 	p := c.MustGet("admin_profile").(Profile)
 	err := a.Store.AdminDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
@@ -163,7 +192,7 @@ func (a ResourceAPI) createImport(c *gin.Context) {
 		if err := checkImportAgainstStation(tx, arriving); err != nil {
 			var blocked *errMeteringBlocked
 			if errors.As(err, &blocked) {
-				httpapi.Write(c, 409, 1009, err.Error()+"，请补录该设备的计量能力或先改用该站点可执行的计费方式", nil)
+				httpapi.Write(c, 409, 1009, err.Error()+"，请检查所选通信协议或站点计费方式", nil)
 				return errAlreadyReported
 			}
 			return err
@@ -264,7 +293,7 @@ func (a ResourceAPI) runImport(c *gin.Context, id string) {
 			row := map[string]any{
 				"device_id": d.DeviceID, "vendor_id": d.VendorID, "station_id": d.StationID,
 				"model": d.Model, "status": "enabled",
-				"reports_energy": d.ReportsEnergy, "reports_segmented_power": d.ReportsSegmentedPower,
+				"protocol_adapter": d.ProtocolAdapter,
 			}
 			// 已存在的设备保持它原来被分类成的样子。
 			// 导入是设备上线记录，不是重新分类；

@@ -76,7 +76,7 @@ func TestRejectedStartQueuesRefundAtomicallyAndIdempotently(t *testing.T) {
 
 	result := StartResult{CommandID: commandID, ChargeOrderID: uint64(orderID), OrderNo: orderNo,
 		DeviceID: "BOARD-TEST", PortNo: 1, PortID: uint64(orderID) + 1000000,
-		Success: false, ResultCode: 7, OccurredAt: time.Now().UTC()}
+		Success: false, ResultCode: 1, OccurredAt: time.Now().UTC()}
 	store := StartResultStore{DB: testGORMDB(t, db)}
 	replayed, err := store.Apply(ctx, result)
 	if err != nil || replayed {

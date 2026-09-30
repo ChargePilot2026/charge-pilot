@@ -42,7 +42,7 @@ func TestPowerControlRejectsTheDocumentedFailureMarker(t *testing.T) {
 	// 认出来的，不必去靠一个文档没定义的错误码来区分。
 	_, err := ParsePowerControlReply(Frame{
 		Command: cmdPowerControlReply,
-		Data:    []byte{byte(PowerSet), byte(PowerOpRemove), 0xFF, 0xF1, 0, 0},
+		Data:    []byte{byte(PowerSet), byte(PowerOpRemove), 0xF1, 0xFF, 0, 0},
 	})
 	if !errors.Is(err, ErrPowerControlRejected) {
 		t.Fatalf("err = %v, want ErrPowerControlRejected", err)

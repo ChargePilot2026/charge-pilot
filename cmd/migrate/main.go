@@ -85,6 +85,15 @@ func migrateOne(ctx context.Context, db *sql.DB, schema, directory string) error
 	if tableCount > 0 && versionTableCount == 0 {
 		return errors.New("schema already contains tables without Goose history; rebuild test database first")
 	}
+	if versionTableCount > 0 {
+		version, err := goose.GetDBVersionContext(ctx, db)
+		if err != nil {
+			return err
+		}
+		if version > 1 {
+			return errors.New("legacy migration history detected; rebuild the pre-release database using the consolidated init")
+		}
+	}
 	return goose.UpContext(ctx, db, directory)
 }
 

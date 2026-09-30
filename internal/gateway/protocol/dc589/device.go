@@ -251,6 +251,9 @@ func ParseStartCommand(frame Frame) (StartCommand, error) {
 		return StartCommand{}, ErrPayload
 	}
 	command := StartCommand{Port: frame.Data[0], Mode: ChargeMode(frame.Data[9])}
+	command.ConsumerType = frame.Data[10]
+	command.CardNumber = binary.LittleEndian.Uint32(frame.Data[13:17])
+	command.CardBalanceUnits = binary.LittleEndian.Uint16(frame.Data[17:19])
 	copy(command.OrderBCD[:], frame.Data[1:9])
 	command.Quantity = binary.LittleEndian.Uint16(frame.Data[11:13])
 	if command.Port == 0 {

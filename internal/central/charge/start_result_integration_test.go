@@ -31,7 +31,13 @@ func TestStartResultChangesPaidOrderOnlyOnce(t *testing.T) {
 	userID, _ := user.LastInsertId()
 	defer db.ExecContext(ctx, "DELETE FROM user WHERE id = ?", userID)
 	orderNo := "ORD-" + unique
-	order, err := db.ExecContext(ctx, "INSERT INTO charge_order (order_no,user_id,device_id,port_no,status,created_month,charge_mode,charge_quantity) VALUES (?,?,?,1,'paid',?,4,600)", orderNo, userID, "BOARD-TEST", month)
+	paid, err := db.ExecContext(ctx, "INSERT INTO payment_order(order_no,biz_type,biz_id,user_id,pay_method,total_cents,paid_cents,status,paid_at,created_month) VALUES(?,'charge',0,?,'wechat',100,100,'paid',UTC_TIMESTAMP(3),?)", "PAY-"+unique, userID, month)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paymentID, _ := paid.LastInsertId()
+	defer db.ExecContext(ctx, "DELETE FROM payment_order WHERE id=?", paymentID)
+	order, err := db.ExecContext(ctx, "INSERT INTO charge_order (order_no,user_id,device_id,port_no,status,created_month,charge_mode,charge_quantity,payment_order_id) VALUES (?,?,?,1,'paid',?,4,600,?)", orderNo, userID, "BOARD-TEST", month, paymentID)
 	if err != nil {
 		t.Fatal(err)
 	}

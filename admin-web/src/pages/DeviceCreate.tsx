@@ -1,10 +1,9 @@
-import { Alert, Button, Collapse, Form, Input, InputNumber, Modal, Select, Space, Spin, Switch, message } from 'antd';
+import { Alert, Button, Form, Input, InputNumber, Modal, Select, Spin, message } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import { useEffect, useRef, useState } from 'react';
 import { apiGet, apiPost } from '../api/client';
 import { listVendors, type Vendor } from '../api/vendors';
 import { LoadError } from '../components/LoadError';
-import { MODE_OPTIONS, type ChargeMode } from './pricing/model';
 
 type StationChoice = { id: number; name: string };
 type DeviceForm = {
@@ -13,9 +12,6 @@ type DeviceForm = {
   station_id: number;
   port_count: number;
   model?: string;
-  charge_mode: ChargeMode;
-  reports_energy: boolean;
-  reports_segmented_power: boolean;
 };
 type CreateJob = { import_id: string; status: string; last_error?: string | null };
 const supportsVendor = (vendor: Vendor | undefined) => vendor?.adapter_class === 'dc589' && vendor.protocol === 'tcp';
@@ -106,7 +102,7 @@ export default function DeviceCreate({ onComplete, canReadStations, station }: {
 
   const showEditor = () => {
     form.resetFields();
-    form.setFieldsValue({ station_id: station?.id, port_count: 2, charge_mode: 'device_duration', reports_energy: false, reports_segmented_power: false });
+    form.setFieldsValue({ station_id: station?.id, port_count: 2 });
     request.current = undefined;
     setError('');
     setVendorsError(''); setVendors([]);
@@ -125,8 +121,7 @@ export default function DeviceCreate({ onComplete, canReadStations, station }: {
       const device = {
         device_id: values.device_id.trim(), vendor_id: values.vendor_id,
         station_id: values.station_id, port_count: values.port_count,
-        model: values.model?.trim() || null, charge_mode: values.charge_mode,
-        reports_energy: !!values.reports_energy, reports_segmented_power: !!values.reports_segmented_power,
+        model: values.model?.trim() || null,
       };
       const signature = JSON.stringify(device);
       // 超时或失败后，未修改配置的重试沿用同一个幂等键。
@@ -171,7 +166,7 @@ export default function DeviceCreate({ onComplete, canReadStations, station }: {
           rules={[{ required: true, message: '请填写设备编号' }, { pattern: /^[A-Za-z0-9_-]{8,32}$/, message: '设备编号须为 8–32 位字母、数字、下划线或短横线' }]}>
           <Input maxLength={32} placeholder="如：CP000001" />
         </Form.Item>
-        <Form.Item name="vendor_id" label="厂商" extra="仅可选择已启用且支持 DC589 协议的厂商。"
+        <Form.Item name="vendor_id" label="厂商" extra="选择厂商即确定通信协议，设备能力自动按该协议启用。"
           rules={[{ required: true, message: '请选择厂商' }, positiveID, {
             validator: (_: unknown, value: number | undefined) => {
               if (value === undefined) return Promise.resolve();
@@ -212,16 +207,6 @@ export default function DeviceCreate({ onComplete, canReadStations, station }: {
         <Form.Item name="model" label="型号（选填）" rules={[{ max: 128, message: '型号最多 128 个字符' }]}>
           <Input maxLength={128} placeholder="设备型号" />
         </Form.Item>
-        <Collapse ghost items={[{ key: 'capabilities', label: '计费方式与计量能力', forceRender: true, children: <>
-          <Form.Item name="charge_mode" label="初始计费方式" extra="站点已配置计费规则时，按站点规则执行。">
-            <Select options={MODE_OPTIONS as never} />
-          </Form.Item>
-          <Space direction="vertical" style={{ width: '100%' }}>
-            <Form.Item name="reports_energy" label="设备支持上报电量" valuePropName="checked"><Switch /></Form.Item>
-            <Form.Item name="reports_segmented_power" label="设备支持上报分段功率" valuePropName="checked"><Switch /></Form.Item>
-          </Space>
-          <div style={{ color: '#8c8c8c' }}>请按设备实际能力填写。站点按电量或功率计费时，需要对应的计量能力。</div>
-        </> }]} />
       </Form>
     </Modal>
   </>;

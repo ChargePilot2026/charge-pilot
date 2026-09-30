@@ -15,14 +15,12 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Formatting
-        run: test -z "$(gofmt -l cmd internal)"
+      - name: Backend formatting and lint
+        run: go run ./tools/backend-check
       - name: Check Go module graph
         run: go mod tidy -diff
       - name: Unit tests
         run: go test ./...
-      - name: Static checks
-        run: go vet ./...
       - name: Build services
         run: |
           go build -o /tmp/chargepilot-gateway ./cmd/gateway
