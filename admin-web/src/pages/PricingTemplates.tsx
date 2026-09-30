@@ -2,9 +2,11 @@ import { useEffect, useState } from 'react';
 import { Alert, Button, Collapse, Descriptions, Divider, Form, Input, InputNumber, Modal, Select, Space, Spin, Steps, Switch, Table, Tag, message } from 'antd';
 import { apiGet, apiPost, apiPut } from '../api/client';
 import { LoadError } from '../components/LoadError';
+import PeriodTimeInput from './pricing/PeriodTimeInput';
 import {
   DEFAULT_DISPLAY, MODE_META, MODE_OPTIONS, SERVICE_OPTIONS, blankPeriod, describeDisplay, describeSpec, defaultSpecForm,
-  formToSpec, insertPeriod, insertTier, isServerBilled, minuteToClock, modeLabel, removePeriod, removeTier,
+  clockToMinute, formToSpec, insertTier, isServerBilled, minuteToClock, modeLabel, removePeriod, removeTier,
+  splitPeriod, suggestedSplitMinute,
   specToForm, validateSpecForm, type ChargeMode, type PeriodForm, type SpecForm, type Station, type Template, type TierForm,
 } from './pricing/model';
 
@@ -29,6 +31,9 @@ export default function PricingTemplates() {
   const [open, setOpen] = useState(false);
   const [formError, setFormError] = useState('');
   const [localErrors, setLocalErrors] = useState<string[]>([]);
+  const [timeErrors, setTimeErrors] = useState<Record<number, string>>({});
+  const [periodAction, setPeriodAction] = useState<{ key: number; kind: 'split' | 'delete'; time: string } | null>(null);
+  const [splitError, setSplitError] = useState('');
 
   const [viewing, setViewing] = useState<Template | null>(null);
   const [viewError, setViewError] = useState<string | null>(null);
@@ -96,6 +101,7 @@ export default function PricingTemplates() {
   const openEditor = async (source?: Template) => {
     setFormError('');
     setLocalErrors([]);
+    setTimeErrors({}); setPeriodAction(null); setSplitError('');
     setStep(0);
     if (source) {
       // 详情接口才是权威；列表行只带摘要字段，所以从表格直接编辑会把电价本身丢掉。
@@ -133,13 +139,19 @@ export default function PricingTemplates() {
   const switchMode = (next: ChargeMode) => {
     const previous = form.getFieldValue('mode') as ChargeMode;
     if (previous === next) return;
+    setTimeErrors({}); setPeriodAction(null); setSplitError('');
     form.setFieldsValue(specToForm({ mode: next }));
   };
 
   const save = async () => {
+    if (server && (Object.keys(timeErrors).length || periodAction)) {
+      setFormError(periodAction ? '请先完成或取消当前时段操作。' : '请修正时段结束时间后再保存。');
+      return;
+    }
     let values: any;
     try {
-      values = await form.validateFields();
+      await form.validateFields();
+      values = form.getFieldsValue(true);
     } catch {
       return;
     }
@@ -296,61 +308,114 @@ export default function PricingTemplates() {
 
   const renderPeriods = () => {
     const list = periods.length ? periods : [blankPeriod()];
+    const hasTimeErrors = Object.keys(timeErrors).length > 0;
+    const validCoverage = list.every((p, i) => Number.isInteger(p.end_minute)
+      && p.end_minute > (i ? list[i - 1].end_minute : 0) && p.end_minute <= 1440)
+      && list[list.length - 1].end_minute === 1440;
     return <>
-      <Alert type="info" showIcon style={{ marginBottom: 8 }}
-        message="时段是链式的：只填「本段结束时刻」，开始时刻由上一段结束时刻推导，必须严格递增且最后一段正好 24:00。" />
-      {list.map((period, pi) => {
-        const startMinute = pi > 0 ? Number(periods[pi - 1]?.end_minute ?? 0) : 0;
+      <div className="pricing-period-hint">直接填写时间，开始时间自动衔接，最后一段固定至 24:00。</div>
+      {validCoverage && <div className="pricing-day-preview">
+        <div className="pricing-day-track" role="img" aria-label={`全天时段覆盖：${list.map((p, i) => `${minuteToClock(i ? list[i - 1].end_minute : 0)}至${minuteToClock(p.end_minute)}`).join('、')}`}>
+          {list.map((p, i) => <div key={i} className="pricing-day-segment" style={{ flex: p.end_minute - (i ? list[i - 1].end_minute : 0) }}>
+            {p.end_minute - (i ? list[i - 1].end_minute : 0) >= 120 ? `第 ${i + 1} 段` : ''}
+          </div>)}
+        </div>
+        <div className="pricing-day-axis"><span>00:00</span><span>12:00</span><span>24:00</span></div>
+      </div>}
+      <Form.List name="periods">{(fields, { add, remove }) => fields.map(field => {
+        const pi = field.name;
+        const period = list[pi];
+        if (!period) return null;
+        const startMinute = pi ? list[pi - 1].end_minute : 0;
         const isLast = pi === list.length - 1;
-        return <div key={pi} style={{ border: '1px solid #f0f0f0', borderRadius: 6, padding: 12, marginBottom: 8 }}>
-          <Space align="start" wrap>
-            <Form.Item
-              name={['periods', pi, 'end_minute']}
-              label={`第 ${pi + 1} 段结束时刻`}
-              extra={isLast ? '最后一段必须为 24:00' : undefined}
-              rules={[{ required: true }]}
-            >
-              <InputNumber min={1} max={1440} step={15} addonAfter={minuteToClock(Number(period.end_minute) || 1440)} style={{ width: 190 }} />
-            </Form.Item>
-            {energyBasis
-              ? <Form.Item name={['periods', pi, 'electric_yuan']} label="电价（元/度）" rules={[{ required: true }]}>
+        const duration = period.end_minute - startMinute;
+        const activeAction = periodAction?.key === field.key ? periodAction : null;
+        const endError = timeErrors[field.key];
+        const closeAction = () => { setPeriodAction(null); setSplitError(''); };
+        const tierEditor = <>
+          <div className="pricing-period-hint">只填上限瓦数，下限由上一档自动衔接。</div>
+          {(period.tiers || []).map((tier, ti) => {
+            const lower = ti ? Number(period.tiers[ti - 1]?.max_watts ?? 0) + 1 : 0;
+            return <Space key={ti} align="start" wrap style={{ marginBottom: 8 }}>
+              <Form.Item name={[pi, 'tiers', ti, 'max_watts']} label={`第 ${ti + 1} 档上限（${lower}–${Number(tier.max_watts) || 0} 瓦）`} rules={[{ required: true }]}>
+                <InputNumber min={0} max={9990} step={100} addonAfter="瓦" style={{ width: 220 }} />
+              </Form.Item>
+              <Form.Item name={[pi, 'tiers', ti, 'electric_yuan']} label={`电费单价（${tierUnit}）`} rules={[{ required: true }]}>
                 <InputNumber min={0} max={10000} step={0.01} precision={2} addonBefore="¥" style={{ width: 190 }} />
               </Form.Item>
-              : null}
-            <Form.Item label="本段覆盖">
-              <Input readOnly value={`${minuteToClock(startMinute)} → ${minuteToClock(Number(period.end_minute) || 1440)}`} style={{ width: 190 }} />
+              {serviceBasis === 'minute_power' && <Form.Item name={[pi, 'tiers', ti, 'service_yuan']} label="服务费单价（元/小时）" rules={[{ required: true }]}>
+                <InputNumber min={0} max={10000} step={0.01} precision={2} addonBefore="¥" style={{ width: 190 }} />
+              </Form.Item>}
+              <Button onClick={() => setTiers(pi, insertTier(period.tiers || [], ti + 1))} disabled={(period.tiers || []).length >= 8}>插入档位</Button>
+              <Button danger disabled={(period.tiers || []).length <= 1} onClick={() => setTiers(pi, removeTier(period.tiers || [], ti))}>删除档位</Button>
+            </Space>;
+          })}
+          <Button onClick={() => setTiers(pi, insertTier(period.tiers || [], (period.tiers || []).length))} disabled={(period.tiers || []).length >= 8}>在本段末尾添加档位</Button>
+        </>;
+        return <div key={field.key} className="pricing-period-item">
+          <div className={`pricing-period-row${energyBasis ? ' pricing-period-row-energy' : ''}`}>
+            <strong className="pricing-period-number">第 {pi + 1} 段</strong>
+            <Form.Item label="开始时间 · 自动"><Input aria-label={`第 ${pi + 1} 段开始时间`} readOnly value={minuteToClock(startMinute)} /></Form.Item>
+            <Form.Item name={[pi, 'end_minute']} label={`结束时间${isLast ? ' · 固定' : ''}`}>
+              <PeriodTimeInput periods={list} index={pi} fixed={isLast} onValidityChange={error => setTimeErrors(previous => {
+                if (previous[field.key] === error) return previous;
+                const next = { ...previous };
+                if (error) next[field.key] = error; else delete next[field.key];
+                return next;
+              })} />
             </Form.Item>
-            <Button onClick={() => setPeriods(insertPeriod(periods, pi + 1))} disabled={list.length >= 48}>在此后插入时段</Button>
-            <Button danger disabled={list.length <= 1} onClick={() => setPeriods(removePeriod(periods, pi))}>删除本段</Button>
-          </Space>
-          {!energyBasis && <>
-            <Divider orientation="left" plain style={{ margin: '4px 0 12px' }}>功率档位（链式：只填上限瓦数，下限由上一档 +1 推导）</Divider>
-            {(period.tiers || []).map((tier, ti) => {
-              const lower = ti > 0 ? Number((period.tiers || [])[ti - 1]?.max_watts ?? 0) + 1 : 0;
-              return <Space key={ti} align="start" wrap style={{ marginBottom: 8 }}>
-                <Form.Item
-                  name={['periods', pi, 'tiers', ti, 'max_watts']}
-                  label={`第 ${ti + 1} 档上限（${lower}–${Number(tier.max_watts) || 0} 瓦）`}
-                  rules={[{ required: true }]}
-                >
-                  <InputNumber min={0} max={9990} step={100} addonAfter="瓦" style={{ width: 220 }} />
-                </Form.Item>
-                <Form.Item name={['periods', pi, 'tiers', ti, 'electric_yuan']} label={`电费单价（${tierUnit}）`} rules={[{ required: true }]}>
-                  <InputNumber min={0} max={10000} step={0.01} precision={2} addonBefore="¥" style={{ width: 190 }} />
-                </Form.Item>
-                {serviceBasis === 'minute_power' && (
-                  <Form.Item name={['periods', pi, 'tiers', ti, 'service_yuan']} label="服务费单价（元/小时）" rules={[{ required: true }]}>
-                    <InputNumber min={0} max={10000} step={0.01} precision={2} addonBefore="¥" style={{ width: 190 }} />
-                  </Form.Item>
-                )}
-                <Button onClick={() => setTiers(pi, insertTier(period.tiers || [], ti + 1))} disabled={(period.tiers || []).length >= 8}>插入档位</Button>
-                <Button danger disabled={(period.tiers || []).length <= 1} onClick={() => setTiers(pi, removeTier(period.tiers || [], ti))}>删除档位</Button>
-              </Space>;
-            })}
-            <Button onClick={() => setTiers(pi, insertTier(period.tiers || [], (period.tiers || []).length))} disabled={(period.tiers || []).length >= 8}>在本段末尾添加档位</Button>
-          </>}
+            <div className="pricing-period-duration"><span>覆盖时长</span><div>{duration >= 0 ? `${Math.floor(duration / 60)} 小时 ${duration % 60} 分` : '时间无效'}</div></div>
+            {energyBasis && <Form.Item name={[pi, 'electric_yuan']} label="电价（元/度）" rules={[{ required: true }]}>
+              <InputNumber min={0} max={10000} step={0.01} precision={2} addonBefore="¥" style={{ width: '100%' }} />
+            </Form.Item>}
+            <Space className="pricing-period-actions" wrap>
+              <Button type="link" disabled={list.length >= 48 || duration < 2 || hasTimeErrors} onClick={() => {
+                const minute = suggestedSplitMinute(form.getFieldValue('periods'), pi);
+                if (minute === undefined) return;
+                setPeriodAction({ key: field.key, kind: 'split', time: minuteToClock(minute) }); setSplitError('');
+              }}>拆分此时段</Button>
+              <Button type="link" danger disabled={list.length <= 1 || hasTimeErrors} onClick={() => {
+                setPeriodAction({ key: field.key, kind: 'delete', time: '' }); setSplitError('');
+              }}>删除时段</Button>
+            </Space>
+          </div>
+          {activeAction && <div className="pricing-period-confirm">
+            {activeAction.kind === 'split' ? <>
+              <label htmlFor={`period-split-${field.key}`}>拆分时间</label>
+              <Space wrap>
+                <Input id={`period-split-${field.key}`} aria-label="拆分时间" value={activeAction.time} placeholder="HH:mm" maxLength={5} style={{ width: 120 }} status={splitError ? 'error' : undefined}
+                  onChange={e => { setPeriodAction({ ...activeAction, time: e.target.value }); setSplitError(''); }} />
+                <Button type="primary" disabled={hasTimeErrors} onClick={() => {
+                  const minute = clockToMinute(activeAction.time.trim());
+                  try {
+                    if (minute === undefined) throw new Error('请输入有效时间，例如 08:00。');
+                    const next = splitPeriod(form.getFieldValue('periods'), pi, minute);
+                    form.setFieldValue(['periods', pi, 'end_minute'], next[pi].end_minute);
+                    add(next[pi + 1], pi + 1);
+                    closeAction(); setLocalErrors([]); setFormError('');
+                    requestAnimationFrame(() => form.scrollToField(['periods', pi + 1, 'end_minute'], { focus: true, block: 'nearest' }));
+                  } catch (error) { setSplitError(error instanceof Error ? error.message : '拆分时间无效。'); }
+                }}>确认拆分</Button>
+                <Button onClick={closeAction}>取消</Button>
+              </Space>
+              <div className="pricing-period-hint">新时段复制本段全部费率，你可以继续修改。</div>
+              {splitError && <div className="pricing-time-error" role="alert">{splitError}</div>}
+            </> : <>
+              <div>{isLast ? `删除后，第 ${pi} 段将延长至 24:00，使用第 ${pi} 段费率。`
+                : `删除后，第 ${pi + 2} 段将从 ${minuteToClock(startMinute)} 开始，使用第 ${pi + 2} 段费率。`}</div>
+              <Space><Button danger disabled={hasTimeErrors} onClick={() => {
+                const next = removePeriod(form.getFieldValue('periods'), pi);
+                remove(pi);
+                form.setFieldValue(['periods', next.length - 1, 'end_minute'], next[next.length - 1].end_minute);
+                closeAction(); setLocalErrors([]); setFormError('');
+              }}>确认删除</Button><Button onClick={closeAction}>取消</Button></Space>
+            </>}
+          </div>}
+          {!energyBasis && <Collapse size="small" ghost items={[{ key: 'tiers', label: `功率档位 · ${(period.tiers || []).length} 档`, forceRender: true, children: tierEditor }]} />}
+          {endError && <span className="pricing-period-hint">覆盖预览仍显示上一次有效时间。</span>}
         </div>;
-      })}
+      })}</Form.List>
+      <div className="pricing-period-hint" aria-live="polite">{hasTimeErrors ? '请修正结束时间后再保存。' : validCoverage ? `已完整覆盖全天 · ${list.length} 个时段` : '时段尚未完整覆盖全天。'}{list.length >= 48 ? ' 已达到 48 段上限。' : ''}</div>
     </>;
   };
 
@@ -494,7 +559,7 @@ export default function PricingTemplates() {
       footer={[
         <Button key="cancel" onClick={() => setOpen(false)}>取消</Button>,
         step > 0 && <Button key="back" onClick={() => { setLocalErrors([]); setFormError(''); setStep(step - 1); }}>上一步</Button>,
-        <Button key="next" type="primary" loading={saving} onClick={async () => {
+        <Button key="next" type="primary" loading={saving} disabled={step === 1 && server && (Object.keys(timeErrors).length > 0 || !!periodAction)} onClick={async () => {
           if (step === 0) {
             try {
               await form.validateFields(['name', 'mode']);

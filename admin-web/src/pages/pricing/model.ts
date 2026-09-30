@@ -1,8 +1,8 @@
 // 计价模型集中放在这一处：线上的数据结构，以及把存下来的 Spec 换算成运营脑子里
 // 装得下的东西的那套算术。
 //
-// 编辑器一律以「元」和「人看的分钟」为单位（运营读的就是这个），而这个文件是唯一
-// 把它换算成引擎实际存的「分」和「结束分钟」的地方。后端强制的链条不变量在这里也
+// 编辑器以「元」和 HH:mm 时间展示，本模型保留「结束分钟」并提供时间换算。
+// 电费换算成引擎实际存的「分」也集中在这里。后端强制的链条不变量在这里
 // 一起校验，并且报错要点名是哪一段出问题——服务端只回一句"参数无效"，等于没告诉
 // 运营任何能照着改的东西。
 
@@ -123,9 +123,10 @@ export const minuteToClock = (minute: number) => {
   const m = Math.max(0, Math.min(1440, Math.round(minute || 0)));
   return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
 };
-export const clockToMinute = (value: string) => {
-  const [h, m] = String(value || '0:0').split(':').map(Number);
-  return (h || 0) * 60 + (m || 0);
+export const clockToMinute = (value: string): number | undefined => {
+  if (typeof value !== 'string' || !/^(?:[01]\d|2[0-3]):[0-5]\d$|^24:00$/.test(value)) return undefined;
+  const [hours, minutes] = value.split(':').map(Number);
+  return hours * 60 + minutes;
 };
 
 export type TierForm = { max_watts: number; electric_yuan: number; service_yuan: number };
@@ -281,28 +282,61 @@ export function formToSpec(form: SpecForm): Spec {
   return spec;
 }
 
-// insertPeriod 把一段时段接到 `at` 位置的链条里。链条不允许有缺口，所以新时段必须从
-// 相邻那一段里切一块下来，而不能并排放在旁边：追加时把原来的尾巴推到新的边界上、
-// 把 1440 交给新时段，插在中间时则把它落进去的那一段劈成两半。
-export function insertPeriod(periods: PeriodForm[], at: number): PeriodForm[] {
-  const list = (periods || []).map(p => ({ ...p, tiers: [...(p.tiers || [])] }));
-  const prevEnd = at > 0 ? Number(list[at - 1].end_minute) : 0;
-  const nextEnd = at < list.length ? Number(list[at].end_minute) : 1440;
-  const candidate = Math.floor((prevEnd + nextEnd) / 2);
-  const end = Math.min(Math.max(candidate, prevEnd + 1), nextEnd - 1);
-  const fresh: PeriodForm = { end_minute: at < list.length ? end : 1440, electric_yuan: 0, tiers: [blankTier()] };
-  if (at >= list.length) {
-    if (list.length > 0) list[list.length - 1].end_minute = end;
-    list.push(fresh);
-  } else {
-    list.splice(at, 0, fresh);
+const copyPeriod = (period: PeriodForm): PeriodForm => ({
+  ...period,
+  tiers: (period.tiers || []).map(tier => ({ ...tier })),
+});
+
+// 修改分界只影响相邻两段的覆盖范围；保留其它分界与费率，禁止产生空时段。
+export function validatePeriodEndMinute(periods: PeriodForm[], at: number, end: number | undefined): string | undefined {
+  if (!Number.isInteger(at) || at < 0 || at >= periods.length) return '时段不存在';
+  if (end === undefined || !Number.isInteger(end) || end < 1 || end > 1440) {
+    return '请输入有效时间（HH:mm），范围为 00:01–24:00';
   }
+  const start = at > 0 ? Number(periods[at - 1].end_minute) : 0;
+  if (!Number.isInteger(start) || start < 0 || start >= 1440) return '相邻时段时间无效，请先修正';
+  if (at === periods.length - 1) return end === 1440 ? undefined : '最后一段结束时间固定为 24:00';
+  const next = Number(periods[at + 1].end_minute);
+  if (!Number.isInteger(next) || next > 1440 || next <= start) {
+    return '相邻时段时间无效，请先修正';
+  }
+  if (end <= start || end >= next) return `结束时间须晚于 ${minuteToClock(start)}，且早于 ${minuteToClock(next)}`;
+  return undefined;
+}
+
+export function suggestedSplitMinute(periods: PeriodForm[], at: number): number | undefined {
+  if (!Number.isInteger(at) || at < 0 || at >= periods.length) return undefined;
+  const start = at > 0 ? Number(periods[at - 1].end_minute) : 0;
+  const end = Number(periods[at].end_minute);
+  if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end > 1440 || end - start < 2) return undefined;
+  const midpoint = (start + end) / 2;
+  const rounded = Math.round(midpoint / 15) * 15;
+  return rounded > start && rounded < end ? rounded : Math.max(start + 1, Math.min(end - 1, Math.floor(midpoint)));
+}
+
+// 两半各自复制全部费率，随后编辑任一半都不会改变另一半或原始表单。
+export function splitPeriod(periods: PeriodForm[], at: number, splitMinute: number): PeriodForm[] {
+  if (periods.length >= 48) throw new RangeError('时段最多 48 段');
+  if (!Number.isInteger(at) || at < 0 || at >= periods.length) throw new RangeError('时段不存在');
+  const start = at > 0 ? Number(periods[at - 1].end_minute) : 0;
+  const end = Number(periods[at].end_minute);
+  if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end > 1440 || end - start < 2) {
+    throw new RangeError('当前时段不足两分钟或时间无效，无法拆分');
+  }
+  if (!Number.isInteger(splitMinute) || splitMinute <= start || splitMinute >= end) {
+    throw new RangeError(`拆分时间须晚于 ${minuteToClock(start)}，且早于 ${minuteToClock(end)}`);
+  }
+  const list = periods.map(copyPeriod);
+  const first = list[at];
+  const second = copyPeriod(first);
+  first.end_minute = splitMinute;
+  list.splice(at + 1, 0, second);
   return list;
 }
 
 export function removePeriod(periods: PeriodForm[], at: number): PeriodForm[] {
-  const list = (periods || []).map(p => ({ ...p, tiers: [...(p.tiers || [])] }));
-  if (list.length <= 1) return list;
+  const list = (periods || []).map(copyPeriod);
+  if (list.length <= 1 || !Number.isInteger(at) || at < 0 || at >= list.length) return list;
   list.splice(at, 1);
   if (list.length > 0) list[list.length - 1].end_minute = 1440;
   return list;
@@ -351,7 +385,7 @@ export function validateSpecForm(form: SpecForm): string[] {
       const end = Number(p.end_minute);
       const where = `第 ${i + 1} 段`;
       if (!Number.isInteger(end) || end < 1 || end > 1440) {
-        errors.push(`${where}结束时刻无效：${end}，应为 1..1440 的分钟数（即 00:01–24:00）`);
+        errors.push(`${where}结束时间无效，请填写 00:01–24:00 之间的有效时间`);
       } else if (end <= prev) {
         errors.push(`${where}结束时刻（${minuteToClock(end)}）必须晚于上一段结束时刻（${minuteToClock(prev)}），时段按时间先后排列且不能重叠`);
       } else {
@@ -380,7 +414,7 @@ export function validateSpecForm(form: SpecForm): string[] {
     });
     if (periods.length > 0) {
       const last = Number(periods[periods.length - 1].end_minute);
-      if (last !== 1440) errors.push(`最后一段结束时刻必须是 24:00（1440 分钟），当前为 ${minuteToClock(last)}，否则一天中有时段没有费率`);
+      if (last !== 1440) errors.push(`最后一段结束时间必须是 24:00，当前为 ${minuteToClock(last)}，否则一天中有时段没有费率`);
     }
     if (form.mode === 'server_realtime_power' && !form.tier_price_basis) errors.push('请选择档位单价的换算口径');
     if (form.service_basis === 'minute_power' && basisOf(form.mode) === 'energy') {

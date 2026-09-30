@@ -7,3 +7,33 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 .stat-card { background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.05); }
 .login-bg { display: flex; align-items: center; justify-content: center; min-height: 100vh; background: linear-gradient(135deg, #1677ff 0%, #4096ff 100%); }
 .login-card { background: #fff; padding: 32px; border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,.12); width: 360px; }
+.pricing-period-hint { color: #666; font-size: 12px; margin-bottom: 8px; }
+.pricing-day-preview { margin: 12px 0; }
+.pricing-day-track { display: flex; gap: 3px; height: 24px; }
+.pricing-day-segment { display: flex; align-items: center; justify-content: center; min-width: 0; overflow: hidden; background: #e6f4ff; color: #0958d9; font-size: 12px; white-space: nowrap; }
+.pricing-day-axis { display: flex; justify-content: space-between; margin-top: 4px; color: #666; font-size: 12px; }
+.pricing-period-item { border-bottom: 1px solid #f0f0f0; padding: 12px 0; }
+.pricing-period-row { display: grid; grid-template-columns: 60px minmax(110px, 1fr) minmax(150px, 1fr) 108px auto; gap: 12px; align-items: start; }
+.pricing-period-row-energy { grid-template-columns: 60px minmax(100px, 1fr) minmax(150px, 1fr) 100px minmax(130px, 1fr) auto; }
+.pricing-period-row .ant-form-item { min-width: 0; margin-bottom: 8px; }
+.pricing-period-row .ant-form-item-label > label { font-size: 12px; color: #666; }
+.pricing-period-number { padding-top: 30px; white-space: nowrap; }
+.pricing-period-duration > span { display: block; color: #666; font-size: 12px; margin-bottom: 8px; }
+.pricing-period-duration > div { padding-top: 5px; font-variant-numeric: tabular-nums; }
+.pricing-period-actions { padding-top: 26px; }
+.pricing-period-actions .ant-btn { padding-inline: 0; }
+.pricing-period-confirm { padding: 12px; margin-bottom: 8px; background: #fafafa; border-radius: 6px; }
+.pricing-period-confirm > label { display: block; margin-bottom: 8px; }
+.pricing-period-confirm > div:first-child { margin-bottom: 8px; }
+.pricing-period-confirm .pricing-period-hint { margin: 8px 0 0; }
+.pricing-time-error { margin-top: 4px; color: #ff4d4f; font-size: 12px; }
+@media (max-width: 900px) {
+  .pricing-period-row, .pricing-period-row-energy { grid-template-columns: 60px minmax(110px, 1fr) minmax(150px, 1fr); }
+  .pricing-period-duration { grid-column: 2; }
+  .pricing-period-actions { grid-column: 1 / -1; padding-top: 0; }
+}
+@media (max-width: 520px) {
+  .pricing-period-row, .pricing-period-row-energy { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
+  .pricing-period-number { grid-column: 1 / -1; padding-top: 0; }
+  .pricing-period-duration { grid-column: 1; }
+}
