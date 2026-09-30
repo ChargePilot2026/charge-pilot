@@ -3,6 +3,7 @@ import { ReloadOutlined } from '@ant-design/icons';
 import { useEffect, useRef, useState } from 'react';
 import { apiGet } from '../api/client';
 import DeviceImport from './DeviceImport';
+import DeviceCreate from './DeviceCreate';
 import { LoadError } from '../components/LoadError';
 
 interface Device {
@@ -38,6 +39,7 @@ export default function DevicesPage() {
     <Space style={{marginBottom:12}}>
       <Typography.Title level={3} style={{margin:0}}>设备</Typography.Title>
       <Button icon={<ReloadOutlined/>} onClick={load}>刷新</Button>
+      {permissions.includes('device.import') && <DeviceCreate canReadStations={permissions.includes('station.read')} onComplete={()=>setQuery({...query,page:1})}/>}
       {permissions.includes('device.import') && <DeviceImport onComplete={()=>setQuery({...query,page:1})}/>}
     </Space>
     <div style={{marginBottom:12}}><Space wrap>
