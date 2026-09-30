@@ -5,7 +5,7 @@ import { LoadError } from '../components/LoadError';
 import PeriodTimeInput from './pricing/PeriodTimeInput';
 import {
   DEFAULT_DISPLAY, MODE_META, MODE_OPTIONS, SERVICE_OPTIONS, blankPeriod, describeDisplay, describeSpec, defaultSpecForm,
-  clockToMinute, formToSpec, insertTier, isServerBilled, minuteToClock, modeLabel, removePeriod, removeTier,
+  canInsertTier, clockToMinute, formToSpec, insertTier, isServerBilled, minuteToClock, modeLabel, removePeriod, removeTier,
   splitPeriod, suggestedSplitMinute,
   specToForm, validateSpecForm, type ChargeMode, type PeriodForm, type SpecForm, type Station, type Template, type TierForm,
 } from './pricing/model';
@@ -281,7 +281,8 @@ export default function PricingTemplates() {
 
   const setPeriods = (next: PeriodForm[]) => form.setFieldValue('periods', next);
   const setTiers = (pi: number, next: TierForm[]) => {
-    const copy = periods.map((p, i) => (i === pi ? { ...p, tiers: next } : p));
+    const current: PeriodForm[] = form.getFieldValue('periods') || [];
+    const copy = current.map((p, i) => (i === pi ? { ...p, tiers: next } : p));
     setPeriods(copy);
   };
 
@@ -346,11 +347,11 @@ export default function PricingTemplates() {
               {serviceBasis === 'minute_power' && <Form.Item name={[pi, 'tiers', ti, 'service_yuan']} label="服务费单价（元/小时）" rules={[{ required: true }]}>
                 <InputNumber min={0} max={10000} step={0.01} precision={2} addonBefore="¥" style={{ width: 190 }} />
               </Form.Item>}
-              <Button onClick={() => setTiers(pi, insertTier(period.tiers || [], ti + 1))} disabled={(period.tiers || []).length >= 8}>插入档位</Button>
+              <Button onClick={() => setTiers(pi, insertTier(period.tiers || [], ti + 1))} disabled={!canInsertTier(period.tiers || [], ti + 1)}>插入档位</Button>
               <Button danger disabled={(period.tiers || []).length <= 1} onClick={() => setTiers(pi, removeTier(period.tiers || [], ti))}>删除档位</Button>
             </Space>;
           })}
-          <Button onClick={() => setTiers(pi, insertTier(period.tiers || [], (period.tiers || []).length))} disabled={(period.tiers || []).length >= 8}>在本段末尾添加档位</Button>
+          <Button onClick={() => setTiers(pi, insertTier(period.tiers || [], (period.tiers || []).length))} disabled={!canInsertTier(period.tiers || [], (period.tiers || []).length)}>在本段末尾添加档位</Button>
         </>;
         return <div key={field.key} className="pricing-period-item">
           <div className={`pricing-period-row${energyBasis ? ' pricing-period-row-energy' : ''}`}>

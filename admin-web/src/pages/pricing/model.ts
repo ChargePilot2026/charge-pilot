@@ -342,19 +342,25 @@ export function removePeriod(periods: PeriodForm[], at: number): PeriodForm[] {
   return list;
 }
 
-export function insertTier(tiers: TierForm[], at: number): TierForm[] {
-  const list = [...(tiers || [])];
-  const prev = at > 0 ? Number(list[at - 1].max_watts) : -1;
-  const next = at < list.length ? Number(list[at].max_watts) : 9990;
-  const candidate = Math.floor((prev + next) / 2);
-  const ceiling = Math.min(Math.max(candidate, prev + 1), next - 1);
-  const fresh: TierForm = { max_watts: at < list.length ? ceiling : 9990, electric_yuan: 0, service_yuan: 0 };
-  if (at >= list.length) {
-    if (list.length > 0) list[list.length - 1].max_watts = ceiling;
-    list.push(fresh);
-  } else {
-    list.splice(at, 0, fresh);
+export function canInsertTier(tiers: TierForm[], at: number): boolean {
+  if (tiers.length >= 8 || !Number.isInteger(at) || at < 0 || at > tiers.length) return false;
+  let previous = -1;
+  for (const tier of tiers) {
+    if (!Number.isInteger(tier.max_watts) || tier.max_watts <= previous || tier.max_watts > 9990) return false;
+    previous = tier.max_watts;
   }
+  const prev = at > 0 ? tiers[at - 1].max_watts : -1;
+  const next = at < tiers.length ? tiers[at].max_watts : 9991;
+  return Number.isInteger(prev) && Number.isInteger(next) && prev >= -1 && next <= 9991 && next - prev > 1;
+}
+
+// 新增档位保留已有上限与费率；末档覆盖剩余功率，中间档位使用相邻上限的中点。
+export function insertTier(tiers: TierForm[], at: number): TierForm[] {
+  if (!canInsertTier(tiers, at)) throw new RangeError('档位已达上限或相邻档位间没有可插入的整数瓦数');
+  const list = tiers.map(tier => ({ ...tier }));
+  const prev = at > 0 ? list[at - 1].max_watts : -1;
+  const ceiling = at < list.length ? Math.floor((prev + list[at].max_watts) / 2) : 9990;
+  list.splice(at, 0, { max_watts: ceiling, electric_yuan: 0, service_yuan: 0 });
   return list;
 }
 
@@ -407,9 +413,6 @@ export function validateSpecForm(form: SpecForm): string[] {
           if (!isMoney(Number(t.electric_yuan))) errors.push(`${label}电费单价必须为 0–10000 元之间`);
           if (form.service_basis === 'minute_power' && !isMoney(Number(t.service_yuan))) errors.push(`${label}服务费单价必须为 0–10000 元之间`);
         });
-        if (tiers.length > 0 && Number(tiers[0].max_watts) !== 0) {
-          errors.push(`${where}第一档上限必须是 0 瓦：从 0 瓦起，档位下限由上一档上限 +1 推导`);
-        }
       }
     });
     if (periods.length > 0) {

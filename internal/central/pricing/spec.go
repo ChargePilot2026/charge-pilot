@@ -23,7 +23,7 @@ const maxRateCents = 1000000
 // 编辑器正是靠这一点保证各档不会重叠。两端各自独立存储才会让一份电价表中间漏出
 // 空档——而阶梯里的空档，意味着落在空档里的那次充电根本无法计价。
 type Tier struct {
-	// MaxWatts 是含端点的上界。第一档必须为 0，且各档数值必须严格递增。
+	// MaxWatts 是含端点的上界。第一档下限为 0，各档上界必须严格递增。
 	MaxWatts int `json:"max_watts"`
 	// ElectricCents 在电量口径下是每 kWh 的分，在功率口径下是每小时的分，
 	// 具体由 TierPriceBasis 决定。
