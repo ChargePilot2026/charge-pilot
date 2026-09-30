@@ -13,6 +13,7 @@ var (
 	ErrInvalidPricing  = errors.New("invalid quote input or pricing rule")
 	ErrMeterReview     = errors.New("实际计量不足或矛盾，需补充分时计量后核算")
 	ErrRuleUnavailable = errors.New("active station pricing rule unavailable")
+	ErrLegacyPricing   = errors.New("实时功率模板使用旧版电价，请先编辑并转换为元/度后再保存、复制或应用")
 
 	beijing = time.FixedZone("Asia/Shanghai", 8*3600)
 )
@@ -25,8 +26,8 @@ const maxRateCents = 1000000
 type Tier struct {
 	// MaxWatts 是含端点的上界。第一档下限为 0，各档上界必须严格递增。
 	MaxWatts int `json:"max_watts"`
-	// ElectricCents 在电量口径下是每 kWh 的分，在功率口径下是每小时的分，
-	// 具体由 TierPriceBasis 决定。
+	// ElectricCents 在实时功率口径下为每 kWh 的分，在最大功率口径下为每小时的分。
+	// 旧版实时功率快照仍由 TierPriceBasis 标记原计算行为。
 	ElectricCents int64 `json:"electric_cents"`
 	// ServiceCents 只有服务费口径为 ServiceMinutePower 时才会被读取。
 	ServiceCents int64 `json:"service_cents,omitempty"`
@@ -117,9 +118,8 @@ type Spec struct {
 	Service *ServiceLine `json:"service,omitempty"`
 	// Multiplier 是一张独立的费率卡，归电费所有。
 	Multiplier *ChannelMultiplier `json:"multiplier,omitempty"`
-	// TierPriceBasis 只被 BasisRealtimePower 读取：那里存的是每小时的「分」，
-	// 要作用到一段电量上之前必须先换算成每 kWh 的分。它之所以是一个显式的
-	// 存储选择，是因为行业里的这个换算是商业决策，而不是算术事实。
+	// TierPriceBasis 只被 BasisRealtimePower 读取。新模板固定为 TierPerKWh；
+	// 旧版值及省略值只为已发布规则和冻结的订单快照保留历史计算行为。
 	TierPriceBasis TierPriceBasis `json:"tier_price_basis,omitempty"`
 	// LossRateBP 按比例抬高计费电量以覆盖线损，10000 表示无损耗。
 	LossRateBP int32 `json:"loss_rate_bp,omitempty"`
@@ -258,6 +258,18 @@ func ValidateSpec(spec Spec) error {
 	}
 	_, err := compilePeriods(spec.Electric.Periods)
 	return err
+}
+
+// ValidateTemplateSpec 校验新写入或新发布的模板。结算仍用 ValidateSpec，
+// 避免把旧订单的冻结价格拒掉或按新算法重算。
+func ValidateTemplateSpec(spec Spec) error {
+	if err := ValidateSpec(spec); err != nil {
+		return err
+	}
+	if spec.Mode == ModeServerRealtimePower && spec.TierPriceBasis != TierPerKWh {
+		return ErrLegacyPricing
+	}
+	return nil
 }
 
 // compilePeriods 把存储的时段链展开成按分钟的查表，链的不变量也在这里落地：

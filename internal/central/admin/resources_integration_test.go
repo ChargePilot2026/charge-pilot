@@ -78,7 +78,7 @@ func TestAdminPagesIntegration(t *testing.T) {
 		const (
 			pagesUsers     = "openid LIKE 'pages%'"
 			pagesDevices   = "device_id LIKE 'PAGES%'"
-			pagesTemplates = "name IN ('集成计费模板','坏时段','空档位','设备计费带费率','模式与费率不符','改价后的模板','模板副本','并发模板','已绑定模板','名称可更新','分页站点','更新站点','上下架套餐')"
+			pagesTemplates = "name IN ('集成计费模板','坏时段','空档位','设备计费带费率','模式与费率不符','改价后的模板','模板副本','并发模板','已绑定模板','名称可更新','分页站点','更新站点','上下架套餐','旧版单位测试模板','旧版单位测试副本')"
 			pagesPackages  = "name = '上下架套餐'"
 			pagesPayment   = "order_no LIKE 'PAGES_%' OR wechat_transaction_id LIKE 'SIMPAGES%'"
 		)
@@ -364,6 +364,42 @@ func TestAdminPagesIntegration(t *testing.T) {
 		"display": gin.H{"show_energy": true, "show_power": true, "show_fee_split": true},
 	}
 	pricingTemplateID := fmt.Sprintf("%.0f", data(call(adminToken, "POST", "settings/pricing-templates", tmpl, 200))["id"].(float64))
+	// 新写入和新发布只收元/度；存量模板可读，转换前不能再扩散旧口径。
+	legacySpecJSON := `{"mode":"server_realtime_power","tier_price_basis":"per_hour_at_ceiling","electric":{"basis":"realtime_power","periods":[{"end_minute":1440,"tiers":[{"max_watts":200,"electric_cents":100}]}]}}`
+	exec(adb, "INSERT INTO pricing_template(name,spec_json,display_json,status,version) VALUES(?,?,?,'active',1)", "旧版单位测试模板", legacySpecJSON, `{}`)
+	var legacyTemplateID uint64
+	if err := adb.Table("pricing_template").Select("id").Where("name=?", "旧版单位测试模板").Scan(&legacyTemplateID).Error; err != nil {
+		t.Fatal(err)
+	}
+	legacyPath := fmt.Sprintf("settings/pricing-templates/%d", legacyTemplateID)
+	legacyDetail := data(call(adminToken, "GET", legacyPath, nil, 200))
+	if legacyDetail["spec"].(map[string]any)["tier_price_basis"] != "per_hour_at_ceiling" {
+		t.Fatal("legacy template read was silently rewritten")
+	}
+	var legacySpecMap map[string]any
+	if err := json.Unmarshal([]byte(legacySpecJSON), &legacySpecMap); err != nil {
+		t.Fatal(err)
+	}
+	legacyInput := gin.H{"name": "旧版单位测试模板", "spec": legacySpecMap, "expected_version": 1}
+	call(adminToken, "POST", "settings/pricing-templates", legacyInput, 400)
+	call(adminToken, "PUT", legacyPath, legacyInput, 400)
+	call(adminToken, "POST", legacyPath+"/copy", gin.H{"name": "旧版单位测试副本"}, 409)
+	call(adminToken, "POST", legacyPath+"/apply", gin.H{"request_id": "aa000000-0000-4000-8000-000000000080", "station_id": sid, "expected_version": 0}, 409)
+	candidates := data(call(adminToken, "GET", fmt.Sprintf("settings/pricing-template-candidates?station_id=%.0f", sid), nil, 200))["items"].([]any)
+	for _, item := range candidates {
+		row := item.(map[string]any)
+		if row["id"].(float64) == float64(legacyTemplateID) && !strings.Contains(row["unavailable_reason"].(string), "旧版电价") {
+			t.Fatal("legacy candidate was selectable")
+		}
+	}
+	// 按旧引擎实际结果 100 分 × 200 / 1000 = 20 分/度转换，保留原收费水平。
+	legacySpecMap["tier_price_basis"] = "per_kwh"
+	legacySpecMap["electric"].(map[string]any)["periods"].([]any)[0].(map[string]any)["tiers"].([]any)[0].(map[string]any)["electric_cents"] = 20
+	call(adminToken, "PUT", legacyPath, legacyInput, 200)
+	call(adminToken, "POST", legacyPath+"/copy", gin.H{"name": "旧版单位测试副本"}, 200)
+	if data(call(adminToken, "GET", legacyPath, nil, 200))["version"].(float64) != 2 {
+		t.Fatal("legacy conversion lost optimistic versioning")
+	}
 	call(fin1, "POST", "settings/pricing-templates", tmpl, 403)
 	// 一串没能延伸到午夜之前的时段，会让夜里的电价落空；这种模板在入口
 	// 处就被拒掉，而不是先存进去、留一个窟窿在那里面。

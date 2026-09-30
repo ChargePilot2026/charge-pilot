@@ -8,6 +8,27 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 .login-bg { display: flex; align-items: center; justify-content: center; min-height: 100vh; background: linear-gradient(135deg, #1677ff 0%, #4096ff 100%); }
 .login-card { background: #fff; padding: 32px; border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,.12); width: 360px; }
 .pricing-period-hint { color: #666; font-size: 12px; margin-bottom: 8px; }
+.pricing-billing-controls { padding: 16px; background: #fafafa; border: 1px solid #f0f0f0; border-radius: 8px; }
+.pricing-billing-title, .pricing-tier-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-bottom: 12px; }
+.pricing-billing-title > span, .pricing-tier-heading > span { color: #666; font-size: 12px; }
+.pricing-billing-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.pricing-billing-fields .ant-form-item { min-width: 0; margin-bottom: 8px; }
+.pricing-billing-controls .pricing-period-hint:last-child { margin-bottom: 0; }
+.pricing-billing-explanation { margin-bottom: 8px; }
+.pricing-billing-example { color: #0958d9; font-size: 13px; line-height: 1.6; }
+.pricing-tier-editor { margin-top: 12px; }
+.pricing-tier-scroll { max-width: 100%; overflow-x: auto; border: 1px solid #f0f0f0; border-radius: 6px; }
+.pricing-tier-table { border-collapse: collapse; width: 100%; min-width: 580px; table-layout: fixed; }
+.pricing-tier-table th, .pricing-tier-table td { padding: 10px 12px; text-align: left; vertical-align: top; border-bottom: 1px solid #f0f0f0; }
+.pricing-tier-table thead th { background: #fafafa; font-size: 12px; font-weight: 500; color: #666; }
+.pricing-tier-table th:last-child, .pricing-tier-table td:last-child { width: 56px; }
+.pricing-tier-table tbody th { font-weight: 400; font-size: 13px; }
+.pricing-tier-table tbody th small { display: block; margin-top: 4px; color: #666; font-variant-numeric: tabular-nums; }
+.pricing-tier-table tbody tr:last-child > * { border-bottom: 0; }
+.pricing-tier-table .ant-form-item { margin-bottom: 0; }
+.pricing-tier-table .ant-btn { padding-inline: 4px; }
+.pricing-tier-footer { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin-top: 10px; }
+.pricing-tier-footer .pricing-period-hint { margin-bottom: 0; }
 .pricing-day-preview { margin: 12px 0; }
 .pricing-day-track { display: flex; gap: 3px; height: 24px; }
 .pricing-day-segment { display: flex; align-items: center; justify-content: center; min-width: 0; overflow: hidden; background: #e6f4ff; color: #0958d9; font-size: 12px; white-space: nowrap; }
@@ -47,6 +68,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
   .pricing-period-actions { grid-column: 1 / -1; padding-top: 0; }
 }
 @media (max-width: 520px) {
+  .pricing-billing-fields { grid-template-columns: minmax(0, 1fr); }
   .pricing-period-row, .pricing-period-row-energy { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
   .pricing-period-number { grid-column: 1 / -1; padding-top: 0; }
   .pricing-period-duration { grid-column: 1; }

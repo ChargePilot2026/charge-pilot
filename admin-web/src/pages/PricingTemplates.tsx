@@ -1,13 +1,13 @@
 import { useEffect, useState } from 'react';
-import { Alert, Button, Collapse, Descriptions, Divider, Form, Input, InputNumber, Modal, Select, Space, Spin, Steps, Switch, Table, Tag, message } from 'antd';
+import { Alert, Button, Collapse, Descriptions, Divider, Dropdown, Form, Input, InputNumber, Modal, Select, Space, Spin, Steps, Switch, Table, Tag, message } from 'antd';
 import { apiGet, apiPost, apiPut } from '../api/client';
 import { LoadError } from '../components/LoadError';
 import PeriodTimeInput from './pricing/PeriodTimeInput';
 import {
   DEFAULT_DISPLAY, MODE_META, MODE_OPTIONS, SERVICE_OPTIONS, blankPeriod, describeDisplay, describeSpec, defaultSpecForm,
-  canInsertTier, clockToMinute, formToSpec, insertTier, isServerBilled, minuteToClock, modeLabel, removePeriod, removeTier,
+  canInsertTier, clockToMinute, convertLegacyPowerForm, effectiveTierElectricCents, formToSpec, insertTier, isLegacyPowerPricing, isServerBilled, minuteToClock, modeLabel, removePeriod, removeTier,
   splitPeriod, suggestedSplitMinute,
-  specToForm, validateSpecForm, type ChargeMode, type PeriodForm, type SpecForm, type Station, type Template, type TierForm,
+  specToForm, tierRateUnits, validateSpecForm, type ChargeMode, type PeriodForm, type SpecForm, type Station, type Template, type TierForm,
 } from './pricing/model';
 
 // 下发模板时用来查乐观锁版本号的那一列设备。字段取自
@@ -53,7 +53,7 @@ export default function PricingTemplates() {
   const [form] = Form.useForm();
   const mode = Form.useWatch<ChargeMode>('mode', form) || 'server_realtime_power';
   const serviceBasis = Form.useWatch<string>('service_basis', form) || 'none';
-  const tierPriceBasis = Form.useWatch<string>('tier_price_basis', form) || 'per_hour_at_ceiling';
+  const tierPriceBasis = Form.useWatch<SpecForm['tier_price_basis']>('tier_price_basis', { form, preserve: true }) || 'per_kwh';
   const multiplierOn = !!Form.useWatch('multiplier_on', form);
   const showFeeSplit = !!Form.useWatch(['display', 'show_fee_split'], form);
   // preserve 必须为 true：默认取值走 getFieldsValue()，那份对象只由「已挂载的
@@ -63,7 +63,8 @@ export default function PricingTemplates() {
   const periods: PeriodForm[] = Form.useWatch('periods', { form, preserve: true }) || [];
   const energyBasis = mode === 'server_energy';
   const server = isServerBilled(mode);
-  const tierUnit = mode === 'server_max_power' || (mode === 'server_realtime_power' && tierPriceBasis === 'per_kwh') ? '元/小时' : '元/度';
+  const tierUnits = tierRateUnits(mode);
+  const legacyPricing = mode === 'server_realtime_power' && tierPriceBasis !== 'per_kwh';
 
   const load = async () => {
     setLoading(true);
@@ -298,7 +299,7 @@ export default function PricingTemplates() {
       </Space>
       <Form.Item name="mode" label="计费方式" rules={[{ required: true }]}>
         <Select
-          style={{ width: 420 }}
+          style={{ width: '100%', maxWidth: 600 }}
           options={MODE_OPTIONS as never}
           onChange={(value: ChargeMode) => switchMode(value)}
         />
@@ -333,26 +334,52 @@ export default function PricingTemplates() {
         const activeAction = periodAction?.key === field.key ? periodAction : null;
         const endError = timeErrors[field.key];
         const closeAction = () => { setPeriodAction(null); setSplitError(''); };
-        const tierEditor = <>
-          <div className="pricing-period-hint">只填上限瓦数，下限由上一档自动衔接。</div>
-          {(period.tiers || []).map((tier, ti) => {
-            const lower = ti ? Number(period.tiers[ti - 1]?.max_watts ?? 0) + 1 : 0;
-            return <Space key={ti} align="start" wrap style={{ marginBottom: 8 }}>
-              <Form.Item name={[pi, 'tiers', ti, 'max_watts']} label={`第 ${ti + 1} 档上限（${lower}–${Number(tier.max_watts) || 0} 瓦）`} rules={[{ required: true }]}>
-                <InputNumber min={0} max={9990} step={100} addonAfter="瓦" style={{ width: 220 }} />
-              </Form.Item>
-              <Form.Item name={[pi, 'tiers', ti, 'electric_yuan']} label={`电费单价（${tierUnit}）`} rules={[{ required: true }]}>
-                <InputNumber min={0} max={10000} step={0.01} precision={2} addonBefore="¥" style={{ width: 190 }} />
-              </Form.Item>
-              {serviceBasis === 'minute_power' && <Form.Item name={[pi, 'tiers', ti, 'service_yuan']} label="服务费单价（元/小时）" rules={[{ required: true }]}>
-                <InputNumber min={0} max={10000} step={0.01} precision={2} addonBefore="¥" style={{ width: 190 }} />
-              </Form.Item>}
-              <Button onClick={() => setTiers(pi, insertTier(period.tiers || [], ti + 1))} disabled={!canInsertTier(period.tiers || [], ti + 1)}>插入档位</Button>
-              <Button danger disabled={(period.tiers || []).length <= 1} onClick={() => setTiers(pi, removeTier(period.tiers || [], ti))}>删除档位</Button>
-            </Space>;
-          })}
-          <Button onClick={() => setTiers(pi, insertTier(period.tiers || [], (period.tiers || []).length))} disabled={!canInsertTier(period.tiers || [], (period.tiers || []).length)}>在本段末尾添加档位</Button>
-        </>;
+        const tiers = period.tiers || [];
+        const insertionPositions = [tiers.length, ...tiers.map((_, i) => i)].filter(at => canInsertTier(tiers, at));
+        const tierEditor = <div className="pricing-tier-editor">
+          <div className="pricing-tier-heading"><strong>功率档位 · {tiers.length} 档</strong>
+            <span>{serviceBasis === 'minute_power' ? '电费与服务费一起填写' : '填写各档电费单价'}</span></div>
+          <div className="pricing-tier-scroll" role="region" aria-label={`第 ${pi + 1} 段功率档位`} tabIndex={0}>
+            <table className="pricing-tier-table" aria-label={`第 ${pi + 1} 段档位费率`}>
+              <thead><tr><th scope="col">档位 / 覆盖范围</th><th scope="col">功率上限（瓦）</th>
+                <th scope="col">{legacyPricing ? '旧版填写值' : `电费（${tierUnits.electric}）`}</th>
+                {legacyPricing && <th scope="col">实际电价（元/度）</th>}
+                {serviceBasis === 'minute_power' && <th scope="col">服务费（{tierUnits.service}）</th>}
+                <th scope="col">操作</th></tr></thead>
+              <tbody>{tiers.map((tier, ti) => {
+                const lower = ti ? Number(tiers[ti - 1]?.max_watts ?? 0) + 1 : 0;
+                const prefix = `第 ${pi + 1} 段第 ${ti + 1} 档`;
+                return <tr key={ti}>
+                  <th scope="row"><span>第 {ti + 1} 档</span><small>{lower}–{tier.max_watts ?? '待填写'} 瓦</small></th>
+                  <td><Form.Item name={[pi, 'tiers', ti, 'max_watts']} rules={[{ required: true, message: '请填写功率上限' }]}>
+                    <InputNumber aria-label={`${prefix}上限`} disabled={legacyPricing} min={0} max={9990} step={100} precision={0} style={{ width: '100%' }} />
+                  </Form.Item></td>
+                  <td><Form.Item name={[pi, 'tiers', ti, 'electric_yuan']} rules={[{ required: true, message: '请填写电费单价' }]}>
+                    <InputNumber aria-label={`${prefix}${legacyPricing ? '旧版填写值' : `电费（${tierUnits.electric}）`}`} disabled={legacyPricing} min={0} max={10000} step={0.01} precision={2} style={{ width: '100%' }} />
+                  </Form.Item></td>
+                  {legacyPricing && <td>{(Math.trunc(Math.round(Number(tier.electric_yuan) * 100) * Number(tier.max_watts) / 1000) / 100).toFixed(2)}</td>}
+                  {serviceBasis === 'minute_power' && <td><Form.Item name={[pi, 'tiers', ti, 'service_yuan']} rules={[{ required: true, message: '请填写服务费单价' }]}>
+                    <InputNumber aria-label={`${prefix}服务费（${tierUnits.service}）`} min={0} max={10000} step={0.01} precision={2} style={{ width: '100%' }} />
+                  </Form.Item></td>}
+                  <td><Button type="text" danger aria-label={`删除${prefix}`} disabled={legacyPricing || tiers.length <= 1}
+                    onClick={() => setTiers(pi, removeTier(form.getFieldValue(['periods', pi, 'tiers']) || [], ti))}>删除</Button></td>
+                </tr>;
+              })}</tbody>
+            </table>
+          </div>
+          <div className="pricing-tier-footer">
+            <Dropdown trigger={['click']} menu={{
+              items: insertionPositions.map(at => ({ key: String(at), label: at === tiers.length ? '在末尾追加' : at === 0 ? '在第 1 档前插入' : `在第 ${at} 档后插入` })),
+              onClick: ({ key }) => {
+                const current: TierForm[] = form.getFieldValue(['periods', pi, 'tiers']) || [];
+                if (canInsertTier(current, Number(key))) setTiers(pi, insertTier(current, Number(key)));
+              },
+            }} disabled={legacyPricing || !insertionPositions.length}>
+              <Button disabled={legacyPricing || !insertionPositions.length}>＋ 新增档位 ▾</Button>
+            </Dropdown>
+            <span className="pricing-period-hint">{tiers.length >= 8 ? '已达到 8 档上限。' : !insertionPositions.length ? '请先填写有效的递增上限，并留出新增范围。' : '只填上限，下限自动衔接；新增保留已有费率。最多 8 档，最高 9990 瓦。'}</span>
+          </div>
+        </div>;
         return <div key={field.key} className="pricing-period-item">
           <div className={`pricing-period-row${energyBasis ? ' pricing-period-row-energy' : ''}`}>
             <strong className="pricing-period-number">第 {pi + 1} 段</strong>
@@ -412,7 +439,7 @@ export default function PricingTemplates() {
               }}>确认删除</Button><Button onClick={closeAction}>取消</Button></Space>
             </>}
           </div>}
-          {!energyBasis && <Collapse size="small" ghost items={[{ key: 'tiers', label: `功率档位 · ${(period.tiers || []).length} 档`, forceRender: true, children: tierEditor }]} />}
+          {!energyBasis && tierEditor}
           {endError && <span className="pricing-period-hint">覆盖预览仍显示上一次有效时间。</span>}
         </div>;
       })}</Form.List>
@@ -423,36 +450,44 @@ export default function PricingTemplates() {
   const stepTwo = (
     <Form form={form} name="pricing_spec" layout="vertical">
       {server ? <>
-        {mode === 'server_realtime_power' && (
-          <>
-            <Form.Item name="tier_price_basis" label="档位单价口径" rules={[{ required: true }]}
-              extra="档位单价的换算方式会直接改变账单金额，切换前请先用测试站点验算。">
-              <Select style={{ width: 360 }} options={[
-                { value: 'per_hour_at_ceiling', label: '元/小时，按档位上限折算成每度电价' },
-                { value: 'per_kwh', label: '元/度，档位单价直接作为电价' },
-              ]} />
+        {legacyPricing && <Alert type="warning" showIcon style={{ marginBottom: 12 }} message="这是旧版电价，请先转换后编辑"
+          description="下表列出原填写值与实际等效电价。转换将沿用原实际收费水平，不按“元/小时”的旧文字重新定价。保存只更新模板，已应用的站点规则和历史订单保持原样。"
+          action={<Button onClick={() => {
+            try {
+              form.setFieldsValue(convertLegacyPowerForm(form.getFieldsValue(true) as SpecForm));
+              setFormError(''); setLocalErrors([]);
+              message.success('已按原实际收费转换为元/度，请核对单价后保存');
+            } catch (e: any) { setFormError(e.message || '旧版电价无法转换，请新建模板重新定价'); }
+          }}>转换为元/度编辑</Button>} />}
+        {!legacyPricing && editing && isLegacyPowerPricing(editing.spec) && <Alert type="info" showIcon style={{ marginBottom: 12 }}
+          message="已按原实际收费转换为元/度。请核对单价后保存；站点现行规则保持原样，应用模板后才使用新版本。" />}
+        <div className="pricing-billing-controls" role="region" aria-label="收费口径与服务费">
+          <div className="pricing-billing-title"><strong>电费怎么收</strong><Tag color="blue">{mode === 'server_max_power' ? '按最高功率分档 · 元/小时' : energyBasis ? '统一电价 · 元/度' : '按实时功率分档 · 元/度'}</Tag></div>
+          <div className="pricing-billing-explanation">{MODE_META[mode].hint}</div>
+          {!legacyPricing && <div className="pricing-billing-example">{mode === 'server_max_power'
+            ? '电费示例：最高功率 200 瓦，所在档位 1 元/小时，充电 1 小时 → 电费 1.00 元。'
+            : '电费示例：200 瓦充电 1 小时，用电 0.2 度；电价 1 元/度 → 电费 0.20 元。'}</div>}
+          <Divider style={{ margin: '12px 0' }} />
+          <div className="pricing-billing-fields">
+            <Form.Item name="service_basis" label="服务费口径" rules={[{ required: true }]}>
+              <Select options={SERVICE_OPTIONS.filter(o => !(o.value === 'minute_power' && energyBasis)).map(o => ({ value: o.value, label: o.value === 'minute_power' ? `${o.label}（${tierUnits.service}）` : o.label }))} />
             </Form.Item>
-            <Alert type="warning" showIcon style={{ marginBottom: 12 }} message="档位单价的换算方式会直接改变账单金额，切换前请先用测试站点验算。" />
-          </>
-        )}
+            {serviceBasis === 'energy' && <Form.Item name="service_kwh_yuan" label="统一服务费（元/度）" rules={[{ required: true }]}>
+              <InputNumber min={0} max={10000} step={0.01} precision={2} addonBefore="¥" style={{ width: '100%' }} />
+            </Form.Item>}
+            {serviceBasis === 'minute' && <Form.Item name="service_minute_yuan" label="统一服务费（元/分钟）" rules={[{ required: true }]}>
+              <InputNumber min={0} max={10000} step={0.01} precision={2} addonBefore="¥" style={{ width: '100%' }} />
+            </Form.Item>}
+            {serviceBasis === 'session' && <Form.Item name="service_session_yuan" label="每次充电服务费（元/次）" rules={[{ required: true }]}>
+              <InputNumber min={0} max={10000} step={0.5} precision={2} addonBefore="¥" style={{ width: '100%' }} />
+            </Form.Item>}
+          </div>
+          <div className="pricing-period-hint" aria-live="polite">{serviceBasis === 'minute_power'
+            ? `服务费在下面的档位表中与电费一起填写，${mode === 'server_max_power' ? '按整场最高功率所在档位单价乘充电小时数' : '按各时段实时功率所在档位单价乘电量'}。切换口径会保留已填写的单价。`
+            : serviceBasis === 'none' ? '仅收取电费。' : `此服务费单价适用于所有时段${energyBasis ? '' : '和档位'}，${serviceBasis === 'energy' ? '按电量结算' : serviceBasis === 'minute' ? '按充电分钟数结算' : '每次充电收取一次'}。`}</div>
+        </div>
         <Divider orientation="left" plain>时段费率</Divider>
         {renderPeriods()}
-        <Divider orientation="left" plain>服务费</Divider>
-        <Space align="start" wrap>
-          <Form.Item name="service_basis" label="服务费口径" rules={[{ required: true }]}>
-            <Select style={{ width: 320 }} options={SERVICE_OPTIONS.filter(o => !(o.value === 'minute_power' && energyBasis)).map(o => ({ value: o.value, label: o.label }))} />
-          </Form.Item>
-          {serviceBasis === 'energy' && <Form.Item name="service_kwh_yuan" label="服务费（元/度）" rules={[{ required: true }]} extra="在时段费率的每个档位上单独收取。">
-            <InputNumber min={0} max={10000} step={0.01} precision={2} addonBefore="¥" style={{ width: 180 }} />
-          </Form.Item>}
-          {serviceBasis === 'minute' && <Form.Item name="service_minute_yuan" label="服务费（元/分钟）" rules={[{ required: true }]}>
-            <InputNumber min={0} max={10000} step={0.01} precision={2} addonBefore="¥" style={{ width: 180 }} />
-          </Form.Item>}
-          {serviceBasis === 'session' && <Form.Item name="service_session_yuan" label="服务费（元/次）" rules={[{ required: true }]}>
-            <InputNumber min={0} max={10000} step={0.5} precision={2} addonBefore="¥" style={{ width: 180 }} />
-          </Form.Item>}
-          {serviceBasis === 'minute_power' && <Alert type="info" showIcon style={{ marginTop: 28 }} message="按功率档位收取服务费时，单价取自各时段各档位的服务费单价，无需在此另填。" />}
-        </Space>
 
         <Collapse ghost style={{ marginTop: 8 }} items={[{ key: 'extra', label: '全局策略与封顶（点击展开）', children: <Space direction="vertical" style={{ width: '100%' }}>
           <Form.Item name="loss_percent" label="电损率（%）" extra="按此比例放大可计费电量，弥补线路损耗。">
@@ -552,14 +587,15 @@ export default function PricingTemplates() {
       { title: '名称', render: (_: unknown, r: Template) => <>{r.name}<div style={{ color: '#999' }}>v{r.version}{r.remark ? ` · ${r.remark}` : ''}</div></> },
       { title: '计费方式', render: (_: unknown, r: Template) => <Tag color={r.spec && isServerBilled(r.spec.mode) ? 'blue' : 'purple'}>{modeLabel(r.spec?.mode)}</Tag> },
       { title: '费率', render: (_: unknown, r: Template) => describeSpec(r.spec) },
-      { title: '状态', dataIndex: 'status', render: (s: string) => <Tag color={s === 'active' ? 'green' : 'default'}>{s === 'active' ? '可应用' : '已停用'}</Tag> },
+      { title: '状态', render: (_: unknown, r: Template) => <>{r.status === 'active' && isLegacyPowerPricing(r.spec)
+        ? <Tag color="orange">旧版 · 待转换</Tag> : <Tag color={r.status === 'active' ? 'green' : 'default'}>{r.status === 'active' ? '可应用' : '已停用'}</Tag>}</> },
       { title: '已应用站点', dataIndex: 'applied_stations', render: (v?: string) => v || <span style={{ color: '#999' }}>未应用</span> },
       {
         title: '操作', render: (_: unknown, r: Template) => <Space>
           <Button type="link" onClick={() => void view(r)}>查看</Button>
-          {canCreate && r.status === 'active' && <Button type="link" onClick={() => void openApply(r)}>应用</Button>}
+          {canCreate && r.status === 'active' && <Button type="link" disabled={isLegacyPowerPricing(r.spec)} title={isLegacyPowerPricing(r.spec) ? '请先编辑并转换旧版电价' : undefined} onClick={() => void openApply(r)}>应用</Button>}
           {canUpdate && <Button type="link" onClick={() => void openEditor(r)}>编辑</Button>}
-          {canCreate && <Button type="link" onClick={() => copyTemplate(r)}>复制</Button>}
+          {canCreate && <Button type="link" disabled={isLegacyPowerPricing(r.spec)} title={isLegacyPowerPricing(r.spec) ? '请先编辑并转换旧版电价' : undefined} onClick={() => copyTemplate(r)}>复制</Button>}
           {canUpdate && r.status === 'active' && <Button type="link" danger onClick={() => disableTemplate(r)}>停用</Button>}
           {canUpdate && r.status !== 'active' && <Button type="link" onClick={() => enableTemplate(r)}>启用</Button>}
         </Space>,
@@ -573,7 +609,7 @@ export default function PricingTemplates() {
       footer={[
         <Button key="cancel" onClick={() => setOpen(false)}>取消</Button>,
         step > 0 && <Button key="back" onClick={() => { setLocalErrors([]); setFormError(''); setStep(step - 1); }}>上一步</Button>,
-        <Button key="next" type="primary" loading={saving} disabled={step === 1 && server && (Object.keys(timeErrors).length > 0 || !!periodAction)} onClick={async () => {
+        <Button key="next" type="primary" loading={saving} disabled={step === 1 && server && (legacyPricing || Object.keys(timeErrors).length > 0 || !!periodAction)} onClick={async () => {
           if (step === 0) {
             try {
               await form.validateFields(['name', 'mode']);
@@ -612,12 +648,13 @@ export default function PricingTemplates() {
         ]} />
         <Divider orientation="left" plain>费率</Divider>
         <div>{describeSpec(viewing.spec)}</div>
+        {isLegacyPowerPricing(viewing.spec) && <Alert type="info" showIcon style={{ marginTop: 8 }} message="下方电价是按旧版实际计算结果展示的等效元/度单价，原模板未改动。编辑转换后才可再次应用。" />}
         {viewing.spec?.electric?.periods?.map((p, i, all) => <div key={i} style={{ marginTop: 8 }}>
           {/* 时段是链式的，开始时刻由上一段的结束时刻推导，不是都从 00:00 起 */}
           <strong>时段 {i + 1}：</strong>{minuteToClock(i > 0 ? (all[i - 1]?.end_minute ?? 0) : 0)} → {minuteToClock(p.end_minute)}
           {p.tiers?.length
             ? p.tiers.map((t, j) => <div key={j} style={{ paddingLeft: 16, color: '#666' }}>
-              第 {j + 1} 档：{j > 0 ? `${p.tiers![j - 1].max_watts + 1}–` : '0–'}{t.max_watts} 瓦 · 电费 ¥{(t.electric_cents / 100).toFixed(2)}{t.service_cents ? ` · 服务费 ¥${(t.service_cents / 100).toFixed(2)}` : ''}
+              第 {j + 1} 档：{j > 0 ? `${p.tiers![j - 1].max_watts + 1}–` : '0–'}{t.max_watts} 瓦 · 电费 ¥{(effectiveTierElectricCents(viewing.spec!, t) / 100).toFixed(2)} / {tierRateUnits(viewing.spec!.mode).electric.replace('元/', '')}{viewing.spec?.service?.basis === 'minute_power' ? ` · 服务费 ¥${((t.service_cents || 0) / 100).toFixed(2)} / ${tierRateUnits(viewing.spec.mode).service.replace('元/', '')}` : ''}
             </div>)
             : <div style={{ paddingLeft: 16, color: '#666' }}>电价 ¥{((p.electric_cents || 0) / 100).toFixed(2)}/度</div>}
         </div>)}

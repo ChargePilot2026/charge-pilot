@@ -284,9 +284,8 @@ func findTier(tiers []Tier, watts uint32) (Tier, bool) {
 	return Tier{}, false
 }
 
-// tierCentsPerKWh 把某一档存下来的费率换算成等价的每 kWh 分数。适用哪种换算
-// 是存在 spec 里的商业决策，不是藏在算式里的假设。它只用于按片计电量；
-// 峰值功率计费直接用存下来的那个数字。
+// tierCentsPerKWh 读取每 kWh 的分数。非 TierPerKWh 分支只保留已发布旧规则和
+// 订单快照的历史收费结果，不再用于创建、复制或发布新模板。
 func tierCentsPerKWh(tier Tier, basis TierPriceBasis) int64 {
 	if basis == TierPerKWh {
 		return tier.ElectricCents

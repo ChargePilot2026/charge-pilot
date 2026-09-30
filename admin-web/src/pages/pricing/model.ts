@@ -43,12 +43,12 @@ export const DEVICE_MODES: ChargeMode[] = ['device_duration', 'device_energy', '
 
 export const MODE_META: Record<ChargeMode, { label: string; hint: string; group: string }> = {
   server_realtime_power: {
-    label: '服务端计费 · 实时功率', group: '服务端计费',
-    hint: '按每一分钟的实时功率落入的档位定价，档位单价作用于该段电量。适合错峰与功率阶梯定价。',
+    label: '服务端计费 · 实时功率分档电价', group: '服务端计费',
+    hint: '按实时功率选择档位，再用该档电价（元/度）乘对应电量。功率变化时随之换档，各时段分别结算。',
   },
   server_max_power: {
     label: '服务端计费 · 最大功率', group: '服务端计费',
-    hint: '整场按出现过的最高功率所在档位计费，档位单价为元/小时，短暂冲高也按峰值收。',
+    hint: '按整场最高功率选择档位，使用充电开始时段的单价（元/小时）乘整场充电时长。短暂冲高也会改变整场档位。',
   },
   server_energy: {
     label: '服务端计费 · 电量', group: '服务端计费',
@@ -69,7 +69,11 @@ export const MODE_META: Record<ChargeMode, { label: string; hint: string; group:
 };
 
 export const MODE_OPTIONS = [
-  { label: '服务端计费（平台按实际用量结算）', options: SERVER_MODES.map(m => ({ value: m, label: MODE_META[m].label.replace('服务端计费 · ', '') })) },
+  { label: '服务端计费（平台按实际用量结算）', options: SERVER_MODES.map(m => ({ value: m, label: ({
+    server_realtime_power: '按实时功率分档，按电量收费（元/度）',
+    server_max_power: '按最高功率分档，按时长收费（元/小时）',
+    server_energy: '统一电价，按电量收费（元/度）',
+  } as Partial<Record<ChargeMode, string>>)[m]! })) },
   { label: '设备计费（支付时收款，设备自行执行）', options: DEVICE_MODES.map(m => ({ value: m, label: MODE_META[m].label.replace('设备计费 · ', '') })) },
 ];
 
@@ -79,6 +83,11 @@ export const basisOf = (mode: ChargeMode): ServerBasis =>
     : mode === 'server_max_power' ? 'max_power'
       : mode === 'server_energy' ? 'energy' : (undefined as unknown as ServerBasis);
 export const usesLadder = (mode: ChargeMode) => mode === 'server_realtime_power' || mode === 'server_max_power';
+// 与计费引擎一致：实时功率的档位服务费乘电量，最大功率的档位服务费乘小时数。
+export const tierRateUnits = (mode: ChargeMode) => ({
+  electric: mode === 'server_max_power' ? '元/小时' : '元/度',
+  service: mode === 'server_max_power' ? '元/小时' : '元/度',
+});
 export const modeLabel = (mode?: string) => (mode && MODE_META[mode as ChargeMode] ? MODE_META[mode as ChargeMode].label : (mode || '—'));
 
 // 走功率阶梯计价的服务费读的是各档位单价，所以在没有阶梯可读的电价模板上这个选项
@@ -86,7 +95,7 @@ export const modeLabel = (mode?: string) => (mode && MODE_META[mode as ChargeMod
 export const SERVICE_OPTIONS: { value: ServiceBasis; label: string; unit: string }[] = [
   { value: 'none', label: '不收服务费', unit: '' },
   { value: 'energy', label: '按电量（元/度）', unit: '元/度' },
-  { value: 'minute_power', label: '按功率档位（取各档位服务费单价）', unit: '元/小时' },
+  { value: 'minute_power', label: '按功率档位', unit: '' },
   { value: 'minute', label: '按充电时长（元/分钟）', unit: '元/分钟' },
   { value: 'session', label: '按场次（元/次）', unit: '元/次' },
 ];
@@ -119,6 +128,13 @@ export const describeDisplay = (display?: Display): string => {
 export const yuan = (cents?: number | null) => `¥${((cents || 0) / 100).toFixed(2)}`;
 export const toCents = (value?: number | null) => Math.round(Number(value || 0) * 100);
 export const fromCents = (cents?: number | null) => (cents || 0) / 100;
+export const isLegacyPowerPricing = (spec?: Spec) => spec?.mode === 'server_realtime_power'
+  && !!spec.electric && spec.tier_price_basis !== 'per_kwh';
+
+// 旧规则和订单快照的历史算法是先乘瓦数、除以 1000 并截到整数分，再乘电量。
+// 编辑转换沿用它的实际等效电价，不能拿错误的“元/小时”文字推导一个新金额。
+export const effectiveTierElectricCents = (spec: Spec, tier: Tier) => isLegacyPowerPricing(spec)
+  ? Math.trunc(tier.electric_cents * tier.max_watts / 1000) : tier.electric_cents;
 export const minuteToClock = (minute: number) => {
   const m = Math.max(0, Math.min(1440, Math.round(minute || 0)));
   return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
@@ -131,6 +147,27 @@ export const clockToMinute = (value: string): number | undefined => {
 
 export type TierForm = { max_watts: number; electric_yuan: number; service_yuan: number };
 export type PeriodForm = { end_minute: number; electric_yuan: number; tiers: TierForm[] };
+
+export function convertLegacyPowerForm(form: SpecForm): SpecForm {
+  if (form.mode !== 'server_realtime_power' || form.tier_price_basis === 'per_kwh') return form;
+  if (form.tier_price_basis !== 'per_hour_at_ceiling') throw new RangeError('旧版计费口径无法识别，请新建模板并重新定价');
+  const periods = form.periods.map((period, pi) => {
+    let previous = -1;
+    const tiers = period.tiers.map((tier, ti) => {
+      const label = `第 ${pi + 1} 段第 ${ti + 1} 档`;
+      if (!Number.isInteger(tier.max_watts) || tier.max_watts <= previous || tier.max_watts > 9990
+        || tier.electric_yuan == null || !Number.isFinite(tier.electric_yuan) || tier.electric_yuan < 0 || tier.electric_yuan > 10000) {
+        throw new RangeError(`${label}的旧版功率上限或金额无效，请新建模板并重新定价`);
+      }
+      previous = tier.max_watts;
+      const cents = Math.trunc(toCents(tier.electric_yuan) * tier.max_watts / 1000);
+      if (cents > 1000000) throw new RangeError(`${label}的等效电价超过 10000 元/度，无法等价转换，请新建模板并重新定价`);
+      return { ...tier, electric_yuan: fromCents(cents) };
+    });
+    return { ...period, tiers };
+  });
+  return { ...form, periods, tier_price_basis: 'per_kwh' };
+}
 
 export type SpecForm = {
   mode: ChargeMode;
@@ -160,7 +197,7 @@ const tierForm = (tier: Tier): TierForm => ({
 });
 
 export function blankTier(): TierForm {
-  return { max_watts: 0, electric_yuan: 0, service_yuan: 0 };
+  return { max_watts: 9990, electric_yuan: 0, service_yuan: 0 };
 }
 
 export function blankPeriod(): PeriodForm {
@@ -175,7 +212,7 @@ export function defaultSpecForm(mode: ChargeMode): SpecForm {
   return {
     mode,
     periods: [blankPeriod()],
-    tier_price_basis: 'per_hour_at_ceiling',
+    tier_price_basis: 'per_kwh',
     service_basis: 'none',
     service_kwh_yuan: 0,
     service_minute_yuan: 0,
@@ -208,6 +245,7 @@ export function specToForm(spec?: Spec): SpecForm {
     form.periods = [blankPeriod()];
   }
   if (spec.tier_price_basis) form.tier_price_basis = spec.tier_price_basis;
+  else if (isLegacyPowerPricing(spec)) form.tier_price_basis = 'per_hour_at_ceiling';
   if (spec.service?.basis) form.service_basis = spec.service.basis;
   form.service_kwh_yuan = fromCents(spec.service?.cents_per_kwh);
   form.service_minute_yuan = fromCents(spec.service?.cents_per_minute);
@@ -236,6 +274,9 @@ export function specToForm(spec?: Spec): SpecForm {
 }
 
 export function formToSpec(form: SpecForm): Spec {
+  if (form.mode === 'server_realtime_power' && form.tier_price_basis !== 'per_kwh') {
+    throw new RangeError('请先将旧版电价转换为元/度，再保存模板');
+  }
   const spec: Spec = { mode: form.mode };
   if (isServerBilled(form.mode)) {
     const basis = basisOf(form.mode);
@@ -252,7 +293,7 @@ export function formToSpec(form: SpecForm): Spec {
           })),
         }),
     };
-    if (form.mode === 'server_realtime_power') spec.tier_price_basis = form.tier_price_basis;
+    if (form.mode === 'server_realtime_power') spec.tier_price_basis = 'per_kwh';
     if (form.service_basis !== 'none') {
       const service: NonNullable<Spec['service']> = { basis: form.service_basis };
       if (form.service_basis === 'energy') service.cents_per_kwh = toCents(form.service_kwh_yuan);
@@ -419,7 +460,7 @@ export function validateSpecForm(form: SpecForm): string[] {
       const last = Number(periods[periods.length - 1].end_minute);
       if (last !== 1440) errors.push(`最后一段结束时间必须是 24:00，当前为 ${minuteToClock(last)}，否则一天中有时段没有费率`);
     }
-    if (form.mode === 'server_realtime_power' && !form.tier_price_basis) errors.push('请选择档位单价的换算口径');
+    if (form.mode === 'server_realtime_power' && form.tier_price_basis !== 'per_kwh') errors.push('请先将旧版电价转换为元/度，再保存模板');
     if (form.service_basis === 'minute_power' && basisOf(form.mode) === 'energy') {
       errors.push('按功率档位收取服务费需要功率档位，当前电量计费没有档位，请改用其它服务费口径');
     }
@@ -457,8 +498,9 @@ export function describeSpec(spec?: Spec): string {
     } else {
       const first = electric.periods[0];
       const rungs = first?.tiers?.length || 0;
-      const unit = spec.mode === 'server_max_power' || spec.tier_price_basis === 'per_kwh' ? '' : '（元/小时）';
+      const unit = `（${tierRateUnits(spec.mode).electric}）`;
       parts.push(`${electric.periods.length} 个时段 × ${rungs} 档功率${unit}，最高 ${first?.tiers?.[rungs - 1]?.max_watts ?? 0} 瓦`);
+      if (isLegacyPowerPricing(spec)) parts.push('旧版电价，编辑转换后可再次应用');
     }
   }
   if (spec.service && spec.service.basis !== 'none') {

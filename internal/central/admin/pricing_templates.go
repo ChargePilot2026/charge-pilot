@@ -52,7 +52,7 @@ type pricingTemplateInput struct {
 // 参数错误挡下，而不是写到一半才以数据库错误的形式冒出来。
 func validTemplate(in pricingTemplateInput) bool {
 	return validText(in.Name, 64) && len([]rune(in.Remark)) <= 255 &&
-		pricing.ValidateSpec(in.Spec) == nil
+		pricing.ValidateTemplateSpec(in.Spec) == nil
 }
 
 // registerPricingTemplates 注册计费模板的六个后台接口，
@@ -170,7 +170,11 @@ func (a ResourceAPI) createPricingTemplate(c *gin.Context) {
 		return
 	}
 	if !validTemplate(in) {
-		httpapi.BadRequest(c, "计费模板参数无效：请检查计费口径是否可执行、套餐参数是否完整")
+		if errors.Is(pricing.ValidateTemplateSpec(in.Spec), pricing.ErrLegacyPricing) {
+			httpapi.BadRequest(c, pricing.ErrLegacyPricing.Error())
+		} else {
+			httpapi.BadRequest(c, "计费模板参数无效：请检查名称、时段、档位及费率")
+		}
 		return
 	}
 	display := pricing.DefaultDisplay()
@@ -214,7 +218,11 @@ func (a ResourceAPI) updatePricingTemplate(c *gin.Context) {
 		return
 	}
 	if !validTemplate(in) {
-		httpapi.BadRequest(c, "计费模板参数无效：请检查计费口径是否可执行、套餐参数是否完整")
+		if errors.Is(pricing.ValidateTemplateSpec(in.Spec), pricing.ErrLegacyPricing) {
+			httpapi.BadRequest(c, pricing.ErrLegacyPricing.Error())
+		} else {
+			httpapi.BadRequest(c, "计费模板参数无效：请检查名称、时段、档位及费率")
+		}
 		return
 	}
 	if in.ExpectedVersion == 0 {
@@ -281,6 +289,19 @@ func (a ResourceAPI) copyPricingTemplate(c *gin.Context) {
 		if err := tx.Table("pricing_template").Where("id=? AND deleted_at IS NULL", id).Take(&source).Error; err != nil {
 			return err
 		}
+		var spec pricing.Spec
+		if json.Unmarshal(source.SpecJSON, &spec) != nil {
+			httpapi.Write(c, 409, 1009, "计费模板口径已失效，请重新编辑后再复制", nil)
+			return errAlreadyReported
+		}
+		if err := pricing.ValidateTemplateSpec(spec); err != nil {
+			if errors.Is(err, pricing.ErrLegacyPricing) {
+				httpapi.Write(c, 409, 1009, pricing.ErrLegacyPricing.Error(), nil)
+			} else {
+				httpapi.Write(c, 409, 1009, "计费模板口径已失效，请重新编辑后再复制", nil)
+			}
+			return errAlreadyReported
+		}
 		row := map[string]any{
 			"name": strings.TrimSpace(in.Name), "remark": source.Remark,
 			"spec_json": string(source.SpecJSON), "display_json": string(source.DisplayJSON),
@@ -296,7 +317,9 @@ func (a ResourceAPI) copyPricingTemplate(c *gin.Context) {
 			map[string]any{"source": id}, row, c.ClientIP(), httpapi.RequestID(c))
 	})
 	if err != nil {
-		resourceFailure(c, err)
+		if !errors.Is(err, errAlreadyReported) {
+			resourceFailure(c, err)
+		}
 		return
 	}
 	httpapi.OK(c, gin.H{"id": newID, "version": 1})
@@ -473,6 +496,10 @@ func (a ResourceAPI) applyPricingTemplate(c *gin.Context) {
 		var spec pricing.Spec
 		if json.Unmarshal(tmpl.SpecJSON, &spec) != nil || pricing.ValidateSpec(spec) != nil {
 			httpapi.Write(c, 409, 1009, "计费模板口径已失效，请重新编辑后再应用", nil)
+			return errAlreadyReported
+		}
+		if errors.Is(pricing.ValidateTemplateSpec(spec), pricing.ErrLegacyPricing) {
+			httpapi.Write(c, 409, 1009, pricing.ErrLegacyPricing.Error(), nil)
 			return errAlreadyReported
 		}
 		var station Station

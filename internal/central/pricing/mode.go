@@ -112,14 +112,13 @@ func (b ServiceBasis) Valid() bool {
 	}
 }
 
-// TierPriceBasis 记录功率档的每小时费率是怎么变成钱的。行业惯例用每小时的分数
-// 报梯度电价，而计量报的是电量，所以这个换算是存下来的商业决策，而不是埋在
-// 算式里的假设。
+// TierPriceBasis 区分实时功率的电量单价与历史换算快照。
+// 新模板只允许 TierPerKWh；其它旧值仅用于兼容已发布规则和历史订单。
 type TierPriceBasis string
 
 const (
-	// TierPerHourAtCeiling 按 费率 ×（该档上界，单位 kW）换算，
-	// 得到等价的每 kWh 分数。
+	// TierPerHourAtCeiling 是旧版错误标为“元/小时”的填写值。历史执行时
+	// 先乘上限瓦数、除以 1000 并截到整数分，再乘电量；不可作为新时长计费。
 	TierPerHourAtCeiling TierPriceBasis = "per_hour_at_ceiling"
 	// TierPerKWh 把存下来的数字直接当作每 kWh 的分数来读。
 	TierPerKWh TierPriceBasis = "per_kwh"

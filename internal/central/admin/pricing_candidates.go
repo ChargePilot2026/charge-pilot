@@ -116,6 +116,9 @@ func (a ResourceAPI) pricingTemplateCandidates(c *gin.Context) {
 		if reason == "" && (json.Unmarshal(row.Spec, &spec) != nil || pricing.ValidateSpec(spec) != nil) {
 			reason = "计费口径已失效，请重新编辑"
 		}
+		if reason == "" && pricing.ValidateTemplateSpec(spec) != nil {
+			reason = pricing.ErrLegacyPricing.Error()
+		}
 		if reason == "" {
 			if blocked := checkMetering(spec.Mode, targets); len(blocked) > 0 {
 				reason = blocked[0] + "（共 " + strconv.Itoa(len(blocked)) + " 台设备）"
