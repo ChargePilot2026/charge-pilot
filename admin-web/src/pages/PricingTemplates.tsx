@@ -510,19 +510,32 @@ export default function PricingTemplates() {
       </Space> }]} />
 
       <Divider orientation="left" plain>用户界面展示</Divider>
-      <Space direction="vertical">
-        <Form.Item name={['display', 'show_energy']} label="显示充电电量" valuePropName="checked"><Switch /></Form.Item>
-        <Form.Item name={['display', 'show_power']} label="展示充电功率" valuePropName="checked"><Switch /></Form.Item>
-        <Form.Item name={['display', 'show_tariff']} label="显示时段计费详情" valuePropName="checked"><Switch /></Form.Item>
-        <Form.Item name={['display', 'show_method']} label="显示计费方式" valuePropName="checked"><Switch /></Form.Item>
-        <Form.Item name={['display', 'show_rule']} label="展示规则说明" valuePropName="checked"><Switch /></Form.Item>
-        <Form.Item name={['display', 'show_fee_split']} label="订单详情显示电费与服务费" valuePropName="checked"><Switch /></Form.Item>
-        {showFeeSplit && <Form.Item name={['display', 'fee_split_inline']} label="费用直接显示在支付金额后" valuePropName="checked">
-          <Switch checkedChildren="直接显示" unCheckedChildren="隐藏展示" />
-        </Form.Item>}
-        <Form.Item name={['display', 'show_fee_on_end']} label="结束充电推送显示费用" valuePropName="checked"><Switch /></Form.Item>
-        <Form.Item name={['display', 'hide_unit']} label="隐藏单位" valuePropName="checked"><Switch /></Form.Item>
-      </Space>
+      <div className="pricing-display-grid">
+        <section className="pricing-display-group" aria-label="充电信息展示">
+          <h4>充电信息</h4>
+          {([
+            ['show_energy', '显示充电电量'], ['show_power', '展示充电功率'],
+            ['show_tariff', '显示时段计费详情'], ['show_method', '显示计费方式'], ['show_rule', '展示规则说明'],
+          ] as const).map(([name, label]) => <Form.Item key={name} className="pricing-display-option" layout="horizontal" name={['display', name]} label={label} colon={false} valuePropName="checked">
+            <Switch aria-label={label} />
+          </Form.Item>)}
+        </section>
+        <section className="pricing-display-group" aria-label="费用与格式展示">
+          <h4>费用与格式</h4>
+          <Form.Item className="pricing-display-option" layout="horizontal" name={['display', 'show_fee_split']} label="订单详情显示电费与服务费" colon={false} valuePropName="checked">
+            <Switch aria-label="订单详情显示电费与服务费" />
+          </Form.Item>
+          {showFeeSplit && <Form.Item className="pricing-display-option pricing-display-dependent" layout="horizontal" name={['display', 'fee_split_inline']} label="费用直接显示在支付金额后" colon={false} valuePropName="checked">
+            <Switch aria-label="费用直接显示在支付金额后" />
+          </Form.Item>}
+          <Form.Item className="pricing-display-option" layout="horizontal" name={['display', 'show_fee_on_end']} label="结束充电推送显示费用" colon={false} valuePropName="checked">
+            <Switch aria-label="结束充电推送显示费用" />
+          </Form.Item>
+          <Form.Item className="pricing-display-option" layout="horizontal" name={['display', 'hide_unit']} label="隐藏单位" colon={false} valuePropName="checked">
+            <Switch aria-label="隐藏单位" />
+          </Form.Item>
+        </section>
+      </div>
     </Form>
   );
 

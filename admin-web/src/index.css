@@ -27,6 +27,16 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 .pricing-period-confirm > div:first-child { margin-bottom: 8px; }
 .pricing-period-confirm .pricing-period-hint { margin: 8px 0 0; }
 .pricing-time-error { margin-top: 4px; color: #ff4d4f; font-size: 12px; }
+.pricing-display-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
+.pricing-display-group { min-width: 0; }
+.pricing-display-group h4 { margin: 0 0 8px; color: #666; font-size: 13px; font-weight: 500; }
+.pricing-display-option.ant-form-item { margin-bottom: 0; padding: 10px 0; border-bottom: 1px solid #f0f0f0; }
+.pricing-display-option .ant-form-item-row { flex-wrap: nowrap; align-items: center; gap: 12px; }
+.pricing-display-grid .pricing-display-group .pricing-display-option.ant-form-item .ant-form-item-row > .ant-form-item-label { flex: 1 1 auto; min-width: 0; width: auto; max-width: none; padding: 0; text-align: left; white-space: normal; }
+.pricing-display-option .ant-form-item-label > label { height: auto; white-space: normal; line-height: 1.5; }
+.pricing-display-grid .pricing-display-group .pricing-display-option.ant-form-item .ant-form-item-row > .ant-form-item-control { flex: 0 0 auto; min-width: 0; width: auto; max-width: none; }
+.pricing-display-dependent.ant-form-item { padding-left: 16px; }
+.pricing-display-dependent .ant-form-item-label > label { color: #666; font-size: 12px; }
 @media (max-width: 900px) {
   .pricing-period-row, .pricing-period-row-energy { grid-template-columns: 60px minmax(110px, 1fr) minmax(150px, 1fr); }
   .pricing-period-duration { grid-column: 2; }
@@ -36,4 +46,5 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
   .pricing-period-row, .pricing-period-row-energy { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
   .pricing-period-number { grid-column: 1 / -1; padding-top: 0; }
   .pricing-period-duration { grid-column: 1; }
+  .pricing-display-grid { grid-template-columns: minmax(0, 1fr); gap: 16px; }
 }
