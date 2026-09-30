@@ -3,6 +3,7 @@ package charge
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -21,6 +22,15 @@ func (scanSession) Exists(context.Context, string) (bool, error) { return true, 
 type scanUser struct{}
 
 func (scanUser) Active(context.Context, uint64) (bool, error) { return true, nil }
+
+type scanOperation string
+
+func (s scanOperation) DeviceStatus(context.Context, string) (string, error) {
+	if s == "error" {
+		return "", errors.New("storage unavailable")
+	}
+	return string(s), nil
+}
 
 func TestScanIsPublicAndReturnsOnlyGatewayReadResult(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -44,7 +54,7 @@ func TestScanIsPublicAndReturnsOnlyGatewayReadResult(t *testing.T) {
 	}
 	gin.SetMode(gin.TestMode)
 	router := httpapi.NewRouter()
-	ScanAPI{Auth: identity.SessionAuthenticator{JWT: jwt, Sessions: scanSession{}, Users: scanUser{}}, GatewayURL: backend.URL, ServiceToken: "service-token"}.Register(router)
+	ScanAPI{Operations: scanOperation("enabled"), Auth: identity.SessionAuthenticator{JWT: jwt, Sessions: scanSession{}, Users: scanUser{}}, GatewayURL: backend.URL, ServiceToken: "service-token"}.Register(router)
 	for _, route := range []string{"/api/v1/user/scan/resolve", "/api/v1/user/scan/port"} {
 		body := `{"code":"board:1"}`
 		if route == "/api/v1/user/scan/port" {
@@ -65,6 +75,53 @@ func TestScanIsPublicAndReturnsOnlyGatewayReadResult(t *testing.T) {
 		if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(`"available":true`)) {
 			t.Fatalf("%s status=%d body=%s", route, response.Code, response.Body.String())
 		}
+	}
+}
+
+func TestScanShowsOperationalStateAndFailsClosed(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"code":0,"data":{"kind":"device","device_id":"board","ports":[{"port_id":"board:1","device_id":"board","port_no":1,"port_status":"idle","online":true,"available":true},{"port_id":"board:2","device_id":"board","port_no":2,"port_status":"charging","online":true,"available":false}]}}`))
+	}))
+	defer backend.Close()
+	for _, status := range []string{"enabled", "disabled", "fault", "retired", "error"} {
+		router := httpapi.NewRouter()
+		ScanAPI{GatewayURL: backend.URL, ServiceToken: "service", Operations: scanOperation(status)}.Register(router)
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest("POST", "/api/v1/user/scan/resolve", bytes.NewBufferString(`{"code":"board"}`))
+		router.ServeHTTP(response, request)
+		if status == "error" {
+			if response.Code != 503 {
+				t.Fatalf("operation outage: %d", response.Code)
+			}
+			continue
+		}
+		if response.Code != 200 || !bytes.Contains(response.Body.Bytes(), []byte(`"device_status":"`+status+`"`)) {
+			t.Fatalf("%s: %s", status, response.Body.String())
+		}
+		if status != "enabled" && bytes.Contains(response.Body.Bytes(), []byte(`"available":true`)) {
+			t.Fatalf("disabled device selectable: %s", response.Body.String())
+		}
+		if !bytes.Contains(response.Body.Bytes(), []byte(`"port_status":"charging"`)) {
+			t.Fatal("operational state erased physical charging state")
+		}
+	}
+	_, status := (ScanAPI{GatewayURL: backend.URL, ServiceToken: "service"}).lookup(context.Background(), "board")
+	if status != 503 {
+		t.Fatal("missing operation guard allowed discovery")
+	}
+}
+
+func TestDisabledDeviceCannotReadOffers(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"code":0,"data":{"kind":"port","device_id":"board","port":{"port_id":"board:1","device_id":"board","port_no":1,"port_status":"idle","online":true,"available":true}}}`))
+	}))
+	defer backend.Close()
+	router := httpapi.NewRouter()
+	PaymentStartAPI{Scan: ScanAPI{GatewayURL: backend.URL, ServiceToken: "service", Operations: scanOperation("disabled")}}.Register(router)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest("POST", "/api/v1/user/scan/offers", bytes.NewBufferString(`{"port_id":"board:1"}`)))
+	if response.Code != 409 {
+		t.Fatalf("disabled offers: %d %s", response.Code, response.Body.String())
 	}
 }
 

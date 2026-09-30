@@ -1,16 +1,19 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { Button, Input, Popover, type InputRef } from 'antd';
 import { ClockCircleOutlined } from '@ant-design/icons';
-import { clockToMinute, minuteToClock, validatePeriodEndMinute, type PeriodForm } from './model';
+import { clockToMinute, minuteToClock, validatePeriodEndMinute } from './model';
 
 type PeriodTimeInputProps = {
   value?: number;
   onChange?: (value: number) => void;
-  periods: PeriodForm[];
+  periods: readonly { end_minute: number }[];
   index: number;
   fixed?: boolean;
   readOnly?: boolean;
   disabled?: boolean;
+  status?: 'error' | 'warning';
+  initialDraft?: string;
+  onDraftChange?: (text: string) => void;
   onValidityChange?: (error: string | undefined) => void;
   id?: string;
   'aria-describedby'?: string;
@@ -21,21 +24,23 @@ type PeriodTimeInputProps = {
 // The form keeps integer minutes; unfinished or invalid text stays local so that
 // typing cannot silently replace a saved boundary with an invalid numeric value.
 export default function PeriodTimeInput({
-  value, onChange, periods, index, fixed = false, readOnly = false, disabled = false,
+  value, onChange, periods, index, fixed = false, readOnly = false, disabled = false, status, initialDraft, onDraftChange,
   onValidityChange, id, 'aria-describedby': describedBy, 'aria-labelledby': labelledBy,
   'aria-label': label,
 }: PeriodTimeInputProps) {
   const generatedId = useId();
   const errorId = `${id || generatedId}-time-error`;
-  const [draft, setDraft] = useState(() => value === undefined ? '' : minuteToClock(value));
+  const [draft, setDraft] = useState(() => initialDraft ?? (value === undefined ? '' : minuteToClock(value)));
   const [pickerOpen, setPickerOpen] = useState(false);
   const inputRef = useRef<InputRef>(null);
   const previousValue = useRef(value);
   const lastEmittedValue = useRef<number>();
   const onChangeRef = useRef(onChange);
   const onValidityChangeRef = useRef(onValidityChange);
+  const onDraftChangeRef = useRef(onDraftChange);
   onChangeRef.current = onChange;
   onValidityChangeRef.current = onValidityChange;
+  onDraftChangeRef.current = onDraftChange;
 
   const parsed = clockToMinute(draft);
   const error = validatePeriodEndMinute(periods, index, fixed ? value : parsed);
@@ -51,7 +56,9 @@ export default function PeriodTimeInput({
       // External form resets and list changes should replace the local draft.
       if (lastEmittedValue.current !== value || fixed) {
         lastEmittedValue.current = undefined;
-        setDraft(value === undefined ? '' : minuteToClock(value));
+        const text = value === undefined ? '' : minuteToClock(value);
+        setDraft(text);
+        onDraftChangeRef.current?.(text);
         return;
       }
     }
@@ -74,6 +81,7 @@ export default function PeriodTimeInput({
 
   const updateDraft = (text: string) => {
     setDraft(text);
+    onDraftChange?.(text);
     const minute = clockToMinute(text);
     if (minute !== undefined && !validatePeriodEndMinute(periods, index, minute)) {
       lastEmittedValue.current = minute;
@@ -110,11 +118,11 @@ export default function PeriodTimeInput({
         maxLength={5}
         readOnly={fixed || readOnly}
         disabled={disabled}
-        status={error ? 'error' : undefined}
+        status={error ? 'error' : status}
         aria-label={inputLabel}
         aria-labelledby={labelledBy}
         aria-describedby={description}
-        aria-invalid={!!error}
+        aria-invalid={!!error || status === 'error'}
         addonAfter={canEdit ? (
           <Popover
             trigger="click"

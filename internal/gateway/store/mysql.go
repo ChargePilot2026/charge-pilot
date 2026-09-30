@@ -117,7 +117,7 @@ func (s MySQLSink) Record(ctx context.Context, event protocol.Event) error {
 		}
 		if event.Type == protocol.Heartbeat {
 			if err := tx.Model(&deviceRow{}).Where("device_id = ? AND status = 'enabled' AND deleted_at IS NULL", event.DeviceID).
-				Update("last_seen_at", event.ReceivedAt.UTC()).Error; err != nil {
+				Updates(map[string]any{"last_seen_at": event.ReceivedAt.UTC(), "last_heartbeat_at": gorm.Expr("GREATEST(COALESCE(last_heartbeat_at, ?), ?)", event.ReceivedAt.UTC(), event.ReceivedAt.UTC())}).Error; err != nil {
 				return fmt.Errorf("touch device heartbeat: %w", err)
 			}
 		}

@@ -645,3 +645,9 @@ TCP 状态帧与告警帧会先写入 gateway 自有 `event_outbox`，再由发�
 charged_wh 是本订单实际累计整数 Wh，charged_seconds 为实际持续秒数，ended_at 为实际停止时间。不能传设备终身累计电量。确认再次校验连接会话、设备、端口与命令；读数不可在重放时改变。未确认时后台持续重发同一 STOP UUID，断线重连可继续，不提前释放端口。
 
 确认后调用 user 的 end-result，持久化成功才同事务释放 gateway 端口、记录结果和 charge_ended outbox。gateway 自有发布器可靠发送结束事件。事件包含订单/用户/设备身份、实测 Wh/时长/结束时间；正式计费仍需接入规则快照，不表示已完成收费或退款。
+
+### `GET /api/v1/internal/device-summaries`
+
+需要 `X-Service-Token`。查询参数 `device_id` 可重复，1–100 台。返回 `data.items[]`，每项包含 `device_id`、`vendor_name`、`last_heartbeat_at`。仅查询未删除设备及未删除厂商，不修改任何状态。
+
+`device.last_heartbeat_at` 仅由收到的心跳更新，保留最大的接收时间；注册不会修改此字段。为空表示尚无心跳记录，不能拿注册时间代替。数据库迁移 `gateway_db/0012` 从历史心跳事件回填。

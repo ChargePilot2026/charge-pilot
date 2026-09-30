@@ -139,7 +139,7 @@ func run(ctx context.Context) error {
 	charge.EndResultAPI{Store: charge.EndResultStore{DB: userORM}, ServiceToken: cfg.ServiceToken}.Register(router)
 	charge.StopAuthorization{DB: userORM, ServiceToken: cfg.ServiceToken}.Register(router)
 	charge.UserStopAPI{JWT: jwt, Sessions: identity.Sessions{Redis: cache}, Users: identity.UserStore{DB: userORM}, GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken}.Register(router)
-	charge.ScanAPI{Auth: identity.SessionAuthenticator{JWT: jwt, Sessions: identity.Sessions{Redis: cache}, Users: identity.UserStore{DB: userORM}}, GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken}.Register(router)
+	charge.ScanAPI{Operations: charge.DeviceOperationStore{DB: adminORM}, Auth: identity.SessionAuthenticator{JWT: jwt, Sessions: identity.Sessions{Redis: cache}, Users: identity.UserStore{DB: userORM}}, GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken}.Register(router)
 	var prepay charge.PrepayProvider
 	var refundProvider payment.RefundProvider
 	switch cfg.PaymentMode {
@@ -174,9 +174,9 @@ func run(ctx context.Context) error {
 	charge.DebtAPI{Auth: identity.SessionAuthenticator{JWT: jwt, Sessions: identity.Sessions{Redis: cache}, Users: identity.UserStore{DB: userORM}},
 		Debts: charge.DebtStore{DB: userORM}, Provider: prepay}.Register(router)
 	charge.PaymentStartAPI{Auth: identity.SessionAuthenticator{JWT: jwt, Sessions: identity.Sessions{Redis: cache}, Users: identity.UserStore{DB: userORM}},
-		Scan: charge.ScanAPI{GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken}, Pricing: pricing.Store{DB: adminORM},
+		Scan: charge.ScanAPI{Operations: charge.DeviceOperationStore{DB: adminORM}, GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken}, Pricing: pricing.Store{DB: adminORM},
 		Intents: charge.PaymentIntentStore{DB: userORM}, Provider: prepay}.Register(router)
-	charge.CardAPI{Auth: identity.SessionAuthenticator{JWT: jwt, Sessions: identity.Sessions{Redis: cache}, Users: identity.UserStore{DB: userORM}}, Store: charge.CardStore{DB: userORM}, Pricing: pricing.Store{DB: adminORM}, Scan: charge.ScanAPI{GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken}, ServiceToken: cfg.ServiceToken}.Register(router)
+	charge.CardAPI{Auth: identity.SessionAuthenticator{JWT: jwt, Sessions: identity.Sessions{Redis: cache}, Users: identity.UserStore{DB: userORM}}, Store: charge.CardStore{DB: userORM}, Pricing: pricing.Store{DB: adminORM}, Scan: charge.ScanAPI{Operations: charge.DeviceOperationStore{DB: adminORM}, GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken}, ServiceToken: cfg.ServiceToken}.Register(router)
 	server := &http.Server{Addr: cfg.HTTPAddr, Handler: router, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 90 * time.Second}
 	go func() {
 		<-ctx.Done()

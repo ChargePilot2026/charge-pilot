@@ -119,6 +119,10 @@ func (a CardAPI) swipe(c *gin.Context) {
 		httpapi.Write(c, 409, 2009, "设备离线或端口无效", nil)
 		return
 	}
+	if port.DeviceStatus != "enabled" {
+		httpapi.Write(c, 409, 2009, "设备已暂停服务，不接受新的刷卡启动或加时", nil)
+		return
+	}
 	var d struct{ ExecutionCapabilities []byte }
 	if err := a.Pricing.DB.WithContext(c.Request.Context()).Table("device_meta").Where("station_id=? AND device_id=? AND deleted_at IS NULL", port.StationID, port.DeviceID).Take(&d).Error; err != nil {
 		httpapi.Write(c, 503, 5001, "设备能力暂不可读取", nil)

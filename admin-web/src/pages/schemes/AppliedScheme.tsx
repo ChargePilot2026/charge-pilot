@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import { Alert, Button, Card, Drawer, Popconfirm, Select, Space, Table, Tag, Typography, message } from 'antd';
+import { Alert, Button, Card, Drawer, Popconfirm, Select, Space, Tag, Typography, message } from 'antd';
 import { adminSession, apiGet, apiPost } from '../../api/client';
-import { Scheme, Template, modes, money } from './model';
+import { Scheme, Template } from './model';
 import SchemeEditor from './SchemeEditor';
 import DeviceCapabilities from './DeviceCapabilities';
+import SchemeDetails from './SchemeDetails';
 type Effective = { scheme: Scheme | null; version: number; inherited: boolean; permissions?: string[] };
 export default function AppliedScheme({ station, deviceId, onDeviceChange }: { station: { id: number; name: string }; deviceId: string | null; onDeviceChange: (id: string | null) => void }) {
   const [effective, setEffective] = useState<Effective>();
@@ -47,9 +48,11 @@ export default function AppliedScheme({ station, deviceId, onDeviceChange }: { s
     {error && <Alert type="error" showIcon message={error} />}
     {deviceId && <DeviceCapabilities station={station.id} device={deviceId} editable={permissions.includes('device.metering')} />}
     {effective && <Card title={deviceId ? '设备生效方案' : '站点生效方案'} extra={<Tag>{effective.inherited ? '继承站点' : deviceId ? '设备独立配置' : '站点默认'}</Tag>}>
-      {effective.scheme ? <><Typography.Title level={5}>{effective.scheme.name}</Typography.Title><Typography.Paragraph>{effective.scheme.remark}</Typography.Paragraph><Table rowKey="id" pagination={false} dataSource={effective.scheme.packages} columns={[{ title: '入口', render: (_, p) => modes[p.mode] }, { title: '套餐', dataIndex: 'name' }, { title: '支付价格', render: (_, p) => money(p.price_cents) }, { title: '权益', render: (_, p) => p.mode === 'duration' ? `${p.minutes}分钟` : p.mode === 'energy' ? `${p.kwh}度` : `最长${effective.scheme!.policy.max_minutes / 60}小时，余额用尽停止` }]} /></> : <Typography.Text>尚未应用完整充电方案</Typography.Text>}
-      {permissions.includes('pricing.rule.create') && <Space wrap style={{ marginTop: 16 }}><Select aria-label="选择完整方案模板" style={{ width: 300 }} value={selected} onChange={setSelected} options={templates.map(t => ({ value: t.id, label: `${t.scheme.name} · v${t.version}` }))} placeholder="选择完整方案模板" /><Button type="primary" disabled={!selected || busy} loading={busy} onClick={() => void apply().catch(() => {})}>复制并应用整套方案</Button>{effective.scheme && <Button disabled={busy} onClick={() => setEditing(structuredClone(effective.scheme!))}>{deviceId ? '编辑设备独立方案' : '编辑站点方案'}</Button>}</Space>}
-      {deviceId && !effective.inherited && effective.scheme && permissions.includes('pricing.rule.update') && <Popconfirm title="清除设备独立方案并恢复整套站点方案？" onConfirm={async () => { setBusy(true); try { assertSession();await apiPost(`/api/v1/admin/stations/${station.id}/charging-scheme/inherit`, { device_id: deviceId, expected_version: effective.version }); await load(); } catch (e: any) { setError(e.message); } finally { setBusy(false); } }}><Button disabled={busy}>恢复继承站点</Button></Popconfirm>}
+      {(permissions.includes('pricing.rule.create') || (deviceId && !effective.inherited && effective.scheme && permissions.includes('pricing.rule.update'))) && <Space wrap style={{ display: 'flex', marginBottom: 16 }}>
+        {permissions.includes('pricing.rule.create') && <><Select aria-label="选择完整方案模板" style={{ width: 300 }} value={selected} onChange={setSelected} options={templates.map(t => ({ value: t.id, label: `${t.scheme.name} · v${t.version}` }))} placeholder="选择完整方案模板" /><Button type="primary" disabled={!selected || busy} loading={busy} onClick={() => void apply().catch(() => {})}>复制并应用整套方案</Button>{effective.scheme && <Button disabled={busy} onClick={() => setEditing(structuredClone(effective.scheme!))}>{deviceId ? '编辑设备独立方案' : '编辑站点方案'}</Button>}</>}
+        {deviceId && !effective.inherited && effective.scheme && permissions.includes('pricing.rule.update') && <Popconfirm title="清除设备独立方案并恢复整套站点方案？" onConfirm={async () => { setBusy(true); try { assertSession();await apiPost(`/api/v1/admin/stations/${station.id}/charging-scheme/inherit`, { device_id: deviceId, expected_version: effective.version }); await load(); } catch (e: any) { setError(e.message); } finally { setBusy(false); } }}><Button disabled={busy}>恢复继承站点</Button></Popconfirm>}
+      </Space>}
+      {effective.scheme ? <SchemeDetails scheme={effective.scheme} /> : <Typography.Text>尚未应用完整充电方案</Typography.Text>}
     </Card>}
     <Drawer title={deviceId ? '设备独立方案' : '编辑站点生效方案'} width={1100} open={!!editing} onClose={() => { if (!busy) setEditing(undefined); }} closable={!busy} maskClosable={!busy} destroyOnHidden>{editing && <SchemeEditor value={editing} saving={busy} onSave={apply} />}</Drawer>
   </Space>;

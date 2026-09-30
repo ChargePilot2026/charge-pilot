@@ -45,8 +45,20 @@ func (a PaymentStartAPI) offers(c *gin.Context) {
 		return
 	}
 	port, status := a.Scan.lookup(c.Request.Context(), body.PortID)
-	if status != http.StatusOK || port.Kind != "port" || port.Port == nil {
+	if status != http.StatusOK {
+		if status == http.StatusNotFound {
+			httpapi.Write(c, http.StatusNotFound, 1004, "端口不存在", nil)
+		} else {
+			httpapi.Write(c, http.StatusServiceUnavailable, 5003, "设备信息暂不可读取，请稍后重试", nil)
+		}
+		return
+	}
+	if port.Kind != "port" || port.Port == nil {
 		httpapi.Write(c, http.StatusNotFound, 1004, "端口不存在", nil)
+		return
+	}
+	if port.DeviceStatus != "enabled" {
+		httpapi.Write(c, http.StatusConflict, 2001, "设备已暂停服务，请选择其他设备", nil)
 		return
 	}
 	rule, err := a.Pricing.ActiveDeviceRule(c.Request.Context(), port.StationID, port.DeviceID)
@@ -107,6 +119,10 @@ func (a PaymentStartAPI) start(c *gin.Context) {
 	}
 	if status != http.StatusOK {
 		httpapi.Write(c, http.StatusServiceUnavailable, 5003, "gateway unavailable", nil)
+		return
+	}
+	if port.DeviceStatus != "enabled" {
+		httpapi.Write(c, http.StatusConflict, 2001, "设备已暂停服务，请选择其他设备", nil)
 		return
 	}
 	if port.Kind != "port" || port.Port == nil || !port.Port.Available || port.StationID == 0 {

@@ -263,8 +263,8 @@ func seed(ctx context.Context, userDB, adminDB *sql.DB) {
 
 func seedStation(ctx context.Context, adminDB *sql.DB) (int64, error) {
 	result, err := adminDB.ExecContext(ctx, `
-		INSERT INTO station (name, address, longitude, latitude, open_hours, contact_phone, status)
-		VALUES (?, ?, 116.48100000, 39.99600000, '00:00-24:00', '010-88880000', 'active')`,
+		INSERT INTO station (name, address, longitude, latitude, contact_phone, status)
+		VALUES (?, ?, 116.48100000, 39.99600000, '010-88880000', 'active')`,
 		demoStationName, demoStationAddr)
 	if err != nil {
 		return 0, err

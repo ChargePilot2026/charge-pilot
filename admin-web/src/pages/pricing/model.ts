@@ -329,7 +329,7 @@ const copyPeriod = (period: PeriodForm): PeriodForm => ({
 });
 
 // 修改分界只影响相邻两段的覆盖范围；保留其它分界与费率，禁止产生空时段。
-export function validatePeriodEndMinute(periods: PeriodForm[], at: number, end: number | undefined): string | undefined {
+export function validatePeriodEndMinute(periods: readonly { end_minute: number }[], at: number, end: number | undefined): string | undefined {
   if (!Number.isInteger(at) || at < 0 || at >= periods.length) return '时段不存在';
   if (end === undefined || !Number.isInteger(end) || end < 1 || end > 1440) {
     return '请输入有效时间（HH:mm），范围为 00:01–24:00';

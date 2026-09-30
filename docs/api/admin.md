@@ -148,7 +148,7 @@ admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故�
 | GET | `/api/v1/admin/stations` | 角色 | 站点列表(分页 + 区域筛选) |
 | POST | `/api/v1/admin/stations` | 角色 | 新建站点(填名称 / 地址 / 经纬度) |
 | GET | `/api/v1/admin/stations/{station_id}` | 角色 | 站点详情(含设备列表摘要) |
-| PUT | `/api/v1/admin/stations/{station_id}` | 角色 | 更新站点(改名 / 改经纬度 / 改营业时间) |
+| PUT | `/api/v1/admin/stations/{station_id}` | 角色 | 更新站点(改名 / 改地址 / 改经纬度 / 改联系电话或状态) |
 | DELETE | `/api/v1/admin/stations/{station_id}` | 角色 | 软删站点(若有在线设备禁止删) |
 | GET | `/api/v1/admin/stations/{station_id}/devices` | 角色 | 站点下设备列表(含实时状态快照) |
 | GET | `/api/v1/admin/devices` | 角色 | 全量设备列表(按站点 / 状态 / 厂商筛选) |
@@ -717,7 +717,6 @@ admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故�
   "address": "北京市朝阳区建国路 93 号 B2 层",
   "latitude": 39.9087,
   "longitude": 116.4602,
-  "business_hours": "00:00-24:00",
   "contact_phone": "4001234567",
   "station_type": "indoor_paid",   // "indoor_paid" 室内付费 / "outdoor_free" 室外免费 / "residential" 住宅
   "pricing_rule_id": 5,
@@ -726,7 +725,7 @@ admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故�
 ```
 
 **业务逻辑**:
-1. 校验参数(经纬度范围 / 营业时间格式 / `pricing_rule_id` 存在 / `split_template_id` 存在)
+1. 校验参数(经纬度范围 / `pricing_rule_id` 存在 / `split_template_id` 存在)。站点全年无休，不接受营业时间字段。
 2. **站点名唯一性**:本期不强制(同名不同地点允许),靠地址区分
 3. INSERT `station` + 写 `audit_log`
 4. **缓存失效**:`DEL station:summary:$station_id`(user 服务缓存)
@@ -1615,3 +1614,9 @@ user 服务在单库事务中锁定模板，校验用户有效、模板处于发
 通过审核重新核实可用余额、充值有效期和已占用退款额度，原路拆单、预留余额、执行事件与审核回执同事务提交；拒绝保存 rejected 状态及意见，不预留资金或发起支付。相同操作人、决定及意见重放返回原回执，改变已完成审核返回 409。admin 保存审计，跨服务失败可使用相同请求重试。审核不解除钱包冻结。
 
 `POST /api/v1/admin/billing/wallet-risks/{request_id}/release` 请求 `{ "comment": "核实依据" }`，要求有效 `customer_finance` 账号及 `finance.wallet_risk.release` 权限。仅允许解除与该申请明确关联且仍处于 `frozen` 的 `wallet_refund_frequency` 冻结；必须先完成审核。解冻回执、冻结状态变化及 admin 审计持久化，余额和退款预留不变；重复相同操作返回原回执，改变意见返回 409。该操作不会解除用户冻结或其他风控原因造成的冻结。
+
+## 设备运营状态与列表实时信息（本次实现）
+
+设备列表及详情返回 `vendor_name`、`last_heartbeat_at`、`runtime_available`。厂商名称及最后心跳来自网关；中台先按站点和厂商数据范围筛选设备，再对当前页最多 100 台设备批量调用内部摘要接口。`runtime_available=false` 表示暂不可读取，不能当作从未在线。
+
+`PUT /api/v1/admin/devices/{device_id}/status` 需要 `device.operate`，请求仅接受 `{"status":"enabled"}` 或 `{"status":"disabled"}`。在同一事务内写设备运营状态与审计。故障、退役设备不通过此接口恢复。禁用不关闭网关连接、不主动停止已有充电订单；阻止新下单、新的刷卡启动与加时，已有支付单继续按冻结的订单流程完成启动、结束和退款，避免已支付订单因运营暂停而无法履约。

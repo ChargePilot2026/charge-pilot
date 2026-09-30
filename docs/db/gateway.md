@@ -553,3 +553,5 @@ PARTITION BY RANGE (TO_DAYS(bucket_month)) (
 ---
 
 **gateway_db 全部 8 张表设计完成**
+
+本次新增 `device.last_heartbeat_at DATETIME(3) NULL`（迁移 `0012_device_heartbeat.sql`），只记录已接收的真实心跳。`last_seen_at` 仍用于网关连接新鲜度，可能由注册更新；后台最后在线时间显示 `last_heartbeat_at`，不混用两者。

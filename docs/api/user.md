@@ -1134,8 +1134,7 @@ Wechatpay-Nonce: ...
         "latitude": "39.910000",
         "distance_meters": 250,
         "total_ports": 10,
-        "available_ports": 7,        // 实时空闲数(从 telemetry 推断,可能略有延迟)
-        "business_hours": "00:00-24:00"
+        "available_ports": 7         // 实时空闲数(从 telemetry 推断,可能略有延迟)
       }
     ]
   }
@@ -1177,7 +1176,6 @@ Wechatpay-Nonce: ...
     "address": "北京市朝阳区...",
     "longitude": "116.480000",
     "latitude": "39.910000",
-    "business_hours": "00:00-24:00",
     "contact_phone": "010-12345678",
     "ports": [
       {
@@ -1631,3 +1629,7 @@ GET /user/wallet/balance 的 data 包含 available_cents、frozen_cents、status
 - `GET /api/v1/internal/coupons/stats?coupon_id=123`：返回总额度、已发、可用、已用、已过期数量和核销率；未清理但已过期的未使用记录计入已过期。
 
 活动事件 `coupon_grant_required_stream` 使用 `event_id` 作为同一事务的幂等键；无效 payload、模板读取失败或额度耗尽都会返回错误供消费框架重试/DLQ，不再吞掉错误或按默认 30 天发券。扫码支付优惠券抵扣和核销仍未接通，`POST /api/v1/user/coupon/preview` 只预览、不消耗优惠券。
+
+### 设备运营状态
+
+扫码 `/user/scan/resolve` 的设备层及各端口返回 `device_status`；`/user/scan/port` 同样返回该字段。状态来自 `admin_db.device_meta.status`，与网关端口状态及 `online` 独立。非 `enabled` 设备仍显示，但所有端口 `available=false`，小程序显示暂停服务提示，不加载套餐或允许支付。运营状态读取失败返回 503，不默认允许充电。新刷卡启动与加时同样读取运营状态；已有支付单继续按原流程处理，停止已有订单不受此限制。

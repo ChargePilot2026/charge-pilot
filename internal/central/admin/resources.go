@@ -69,6 +69,7 @@ func (a ResourceAPI) Register(r *gin.Engine) {
 	r.PUT("/api/v1/admin/stations/:id/split-template", a.Auth.Require("station.update"), a.Auth.Require("finance.split_template.create"), a.bindStationSplitTemplate)
 	r.GET("/api/v1/admin/devices", a.Auth.Require("device.read"), a.devices)
 	r.GET("/api/v1/admin/devices/:id", a.Auth.Require("device.read"), a.device)
+	r.PUT("/api/v1/admin/devices/:id/status", a.Auth.Require("device.operate"), a.setDeviceStatus)
 	r.GET("/api/v1/admin/orders", a.Auth.Require("order.read"), a.orders)
 	r.GET("/api/v1/admin/orders/:id", a.Auth.Require("order.read"), a.order)
 	r.GET("/api/v1/admin/orders/:id/timeline", a.Auth.Require("order.read"), a.timeline)

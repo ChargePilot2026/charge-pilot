@@ -19,20 +19,22 @@ import (
 var userScanCodePattern = regexp.MustCompile(`^[A-Za-z0-9_:-]{1,64}$`)
 
 type ScanPort struct {
-	PortID    string `json:"port_id"`
-	DeviceID  string `json:"device_id"`
-	PortNo    uint8  `json:"port_no"`
-	Status    string `json:"port_status"`
-	Online    bool   `json:"online"`
-	Available bool   `json:"available"`
+	PortID       string `json:"port_id"`
+	DeviceID     string `json:"device_id"`
+	PortNo       uint8  `json:"port_no"`
+	Status       string `json:"port_status"`
+	Online       bool   `json:"online"`
+	Available    bool   `json:"available"`
+	DeviceStatus string `json:"device_status"`
 }
 
 type ScanResult struct {
-	Kind      string     `json:"kind"`
-	DeviceID  string     `json:"device_id"`
-	StationID uint64     `json:"station_id"`
-	Port      *ScanPort  `json:"port,omitempty"`
-	Ports     []ScanPort `json:"ports,omitempty"`
+	Kind         string     `json:"kind"`
+	DeviceID     string     `json:"device_id"`
+	StationID    uint64     `json:"station_id"`
+	DeviceStatus string     `json:"device_status"`
+	Port         *ScanPort  `json:"port,omitempty"`
+	Ports        []ScanPort `json:"ports,omitempty"`
 }
 
 type ScanAPI struct {
@@ -40,6 +42,7 @@ type ScanAPI struct {
 	GatewayURL   string
 	ServiceToken string
 	Client       *http.Client
+	Operations   DeviceOperationReader
 }
 
 func (a ScanAPI) Register(router *gin.Engine) {
@@ -151,5 +154,13 @@ func (a ScanAPI) lookup(ctx context.Context, code string) (ScanResult, int) {
 	if json.NewDecoder(io.LimitReader(response.Body, 64<<10)).Decode(&envelope) != nil || envelope.Code != 0 || envelope.Data.DeviceID == "" {
 		return ScanResult{}, http.StatusServiceUnavailable
 	}
+	if a.Operations == nil {
+		return ScanResult{}, http.StatusServiceUnavailable
+	}
+	status, err := a.Operations.DeviceStatus(ctx, envelope.Data.DeviceID)
+	if err != nil {
+		return ScanResult{}, http.StatusServiceUnavailable
+	}
+	applyDeviceStatus(&envelope.Data, status)
 	return envelope.Data, http.StatusOK
 }

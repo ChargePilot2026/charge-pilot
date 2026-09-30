@@ -32,7 +32,6 @@ type Station struct {
 	Longitude       float64 `json:"longitude"`                                         // 经度，有效范围 [-180,180]，站点地图定位用。
 	Latitude        float64 `json:"latitude"`                                          // 纬度，有效范围 [-90,90]。
 	Status          string  `json:"status"`                                            // 站点状态：active 营业中、disabled 停用、construction 建设中。
-	OpenHours       *string `json:"open_hours"`                                        // 营业时间自由文本，可空，最长 64 字符。
 	ContactPhone    *string `json:"contact_phone"`                                     // 对外联系电话，可空，最长 32 字符。
 	SplitTemplateID *uint64 `json:"split_template_id" gorm:"column:split_template_id"` // 已绑定的分账模板 ID，可空表示未绑定；只能在独立的绑定接口里改，不随站点编辑变更。
 }
@@ -53,14 +52,13 @@ type StationInput struct {
 	Longitude       *float64 `json:"longitude"`         // 经度，必填指针；缺失、非数字或超出 [-180,180] 判为无效。
 	Latitude        *float64 `json:"latitude"`          // 纬度，必填指针；缺失、非数字或超出 [-90,90] 判为无效。
 	Status          string   `json:"status"`            // 站点状态，必填：active / disabled / construction 三选一。
-	OpenHours       *string  `json:"open_hours"`        // 营业时间，可空，最长 64 字符。
 	ContactPhone    *string  `json:"contact_phone"`     // 联系电话，可空，最长 32 字符。
 	SplitTemplateID *uint64  `json:"split_template_id"` // 分账模板 ID，可空；指向 0 视为无效，新建时还会校验模板可用，编辑时携带该字段直接拒绝。
 }
 
 // valid 校验站点写入参数：名称必填且不超过 128 字符，经纬度必填、不能为 NaN 且落在
 // 合法区间内，状态必须是 active/disabled/construction 之一，分账模板 ID 不得为 0，
-// 三个可空文本字段各有长度上限。任一不满足即返回 false。
+// 地址和联系电话两个可空文本字段各有长度上限。站点全年无休，不配置营业时间。
 func (input StationInput) valid() bool {
 	if strings.TrimSpace(input.Name) == "" || utf8.RuneCountInString(input.Name) > 128 || input.Longitude == nil || input.Latitude == nil || math.IsNaN(*input.Longitude) || math.IsNaN(*input.Latitude) || math.Abs(*input.Longitude) > 180 || math.Abs(*input.Latitude) > 90 || input.Status == "" || !oneOf(input.Status, "active disabled construction") {
 		return false
@@ -68,7 +66,7 @@ func (input StationInput) valid() bool {
 	if input.SplitTemplateID != nil && *input.SplitTemplateID == 0 {
 		return false
 	}
-	for value, max := range map[*string]int{input.Address: 255, input.OpenHours: 64, input.ContactPhone: 32} {
+	for value, max := range map[*string]int{input.Address: 255, input.ContactPhone: 32} {
 		if value != nil && utf8.RuneCountInString(*value) > max {
 			return false
 		}
@@ -169,7 +167,7 @@ func (a ResourceAPI) saveStation(c *gin.Context, create bool) {
 		httpapi.BadRequest(c, "站点参数无效：请检查名称、经纬度和状态")
 		return
 	}
-	row := Station{ID: id, Name: strings.TrimSpace(input.Name), Address: input.Address, Longitude: *input.Longitude, Latitude: *input.Latitude, Status: input.Status, OpenHours: input.OpenHours, ContactPhone: input.ContactPhone, SplitTemplateID: input.SplitTemplateID}
+	row := Station{ID: id, Name: strings.TrimSpace(input.Name), Address: input.Address, Longitude: *input.Longitude, Latitude: *input.Latitude, Status: input.Status, ContactPhone: input.ContactPhone, SplitTemplateID: input.SplitTemplateID}
 	p := c.MustGet("admin_profile").(Profile)
 	err := a.Store.AdminDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
 		if create {
@@ -188,7 +186,7 @@ func (a ResourceAPI) saveStation(c *gin.Context, create bool) {
 			return err
 		}
 		row.SplitTemplateID = before.SplitTemplateID
-		if err := tx.Model(&Station{}).Where("id = ?", id).Updates(map[string]any{"name": row.Name, "address": row.Address, "longitude": row.Longitude, "latitude": row.Latitude, "status": row.Status, "open_hours": row.OpenHours, "contact_phone": row.ContactPhone}).Error; err != nil {
+		if err := tx.Model(&Station{}).Where("id = ?", id).Updates(map[string]any{"name": row.Name, "address": row.Address, "longitude": row.Longitude, "latitude": row.Latitude, "status": row.Status, "contact_phone": row.ContactPhone}).Error; err != nil {
 			return err
 		}
 		return resourceAudit(tx, p, "update", "station", id, before, row, c.ClientIP(), httpapi.RequestID(c))

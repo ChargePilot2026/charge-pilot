@@ -516,7 +516,7 @@
 
 - 站点 = 多个设备的容器(同一物理地点)
 - 经纬度用于"找桩 / 地图"展示
-- 营业时间用于显示"该站点当前是否营业"
+- 充电站全年无休，不配置营业时间；运营、停用和建设状态仍由站点状态控制。
 - **软删除**:站点停用软删(关联设备不删,只是 `station_id` 不再指向有效站点)
 
 ### 字段定义
@@ -528,8 +528,6 @@
 | `address` | `VARCHAR(256)` | NOT NULL | — | 详细地址 |
 | `longitude` | `DECIMAL(10,6)` | NOT NULL | — | 经度 |
 | `latitude` | `DECIMAL(10,6)` | NOT NULL | — | 纬度 |
-| `business_hours_start` | `TIME` | NULL | NULL | 营业开始时间(NULL = 24 小时) |
-| `business_hours_end` | `TIME` | NULL | NULL | 营业结束时间 |
 | `contact_phone` | `VARCHAR(32)` | NULL | NULL | 站点联系电话 |
 | `total_ports` | `INT UNSIGNED` | NOT NULL | `0` | 总端口数(冗余自 device_meta,加速展示) |
 | `operator_name` | `VARCHAR(64)` | NULL | NULL | 现场负责人(物业 / 第三方) |
@@ -553,7 +551,6 @@
 
 ### 约束
 
-- `business_hours_end > business_hours_start`(同一天内;跨夜由应用层校验)
 - `total_ports` 必须等于该站点下 `device_meta` 启用设备的端口数之和(应用层校验)
 
 ### 关系
@@ -564,7 +561,7 @@
 
 ### 业务规则
 
-- **创建**:客户运营在 PC 后台"站点管理" → 填名称 / 地址 / 经纬度 / 营业时间 → INSERT
+- **创建**:客户运营在 PC 后台"站点管理" → 填名称 / 地址 / 经纬度 / 联系电话 → INSERT
 - **找桩查询**:小程序"找桩"页 → user 服务查 `status='enabled' AND deleted_at IS NULL` 的站点 → 按距离排序展示
 - **删除 / 停用**:`UPDATE status='disabled', deleted_at=NOW(), deleted_by=$操作人.id`(软删);关联设备仍存在,但 `device_meta.station_id` 保留(便于追溯历史订单)
 - **总端口数同步**:worker 每日扫表 → 计算 `device_meta WHERE station_id=本.id AND deleted_at IS NULL` 的端口总数 → UPDATE `station.total_ports`

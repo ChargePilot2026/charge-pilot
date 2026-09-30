@@ -537,7 +537,6 @@ func (a UserAccountAPI) nearbyStations(c *gin.Context) {
 		Longitude  string   `gorm:"column:longitude"`
 		Latitude   string   `gorm:"column:latitude"`
 		Status     string   `gorm:"column:status"`
-		OpenHours  *string  `gorm:"column:open_hours"`
 		Phone      *string  `gorm:"column:contact_phone"`
 		DistanceKM *float64 `gorm:"column:distance_km"`
 	}
@@ -547,7 +546,7 @@ func (a UserAccountAPI) nearbyStations(c *gin.Context) {
 	err := a.AdminDB.WithContext(ctx).Raw(`
 		SELECT id, name, address,
 		       CAST(longitude AS CHAR) AS longitude, CAST(latitude AS CHAR) AS latitude,
-		       status, open_hours, contact_phone,
+		       status, contact_phone,
 		       ROUND(6371 * ACOS(LEAST(1, COS(RADIANS(?)) * COS(RADIANS(latitude)) * COS(RADIANS(longitude) - RADIANS(?))
 		         + SIN(RADIANS(?)) * SIN(RADIANS(latitude)))), 3) AS distance_km
 		FROM station
@@ -567,7 +566,7 @@ func (a UserAccountAPI) nearbyStations(c *gin.Context) {
 		items = append(items, gin.H{
 			"id": row.ID, "name": row.Name, "address": row.Address,
 			"longitude": row.Longitude, "latitude": row.Latitude, "status": row.Status,
-			"open_hours": row.OpenHours, "contact_phone": row.Phone, "distance_km": row.DistanceKM,
+			"contact_phone": row.Phone, "distance_km": row.DistanceKM,
 		})
 	}
 	httpapi.OK(c, gin.H{"items": items, "page": page, "page_size": pageSize})
@@ -586,11 +585,10 @@ func (a UserAccountAPI) stationDetail(c *gin.Context) {
 		Longitude string  `gorm:"column:longitude"`
 		Latitude  string  `gorm:"column:latitude"`
 		Status    string  `gorm:"column:status"`
-		OpenHours *string `gorm:"column:open_hours"`
 		Phone     *string `gorm:"column:contact_phone"`
 	}
 	err = a.AdminDB.WithContext(c.Request.Context()).Table("station").
-		Select("id, name, address, CAST(longitude AS CHAR) AS longitude, CAST(latitude AS CHAR) AS latitude, status, open_hours, contact_phone").
+		Select("id, name, address, CAST(longitude AS CHAR) AS longitude, CAST(latitude AS CHAR) AS latitude, status, contact_phone").
 		Where("id = ? AND deleted_at IS NULL", id).Take(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		httpapi.Write(c, 404, 1004, "站点不存在", nil)
@@ -607,7 +605,7 @@ func (a UserAccountAPI) stationDetail(c *gin.Context) {
 	httpapi.OK(c, gin.H{
 		"id": row.ID, "name": row.Name, "address": row.Address,
 		"longitude": row.Longitude, "latitude": row.Latitude, "status": row.Status,
-		"open_hours": row.OpenHours, "contact_phone": row.Phone,
+		"contact_phone": row.Phone,
 	})
 }
 

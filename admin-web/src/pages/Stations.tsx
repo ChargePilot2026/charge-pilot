@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Table, Typography, Space, Button, Drawer, Modal, Form, Input, InputNumber, Select, Tag, message } from 'antd';
 import { PlusOutlined, ReloadOutlined } from '@ant-design/icons';
-import { apiGet, apiPost, http } from '../api/client';
+import { apiGet, apiPost } from '../api/client';
 import { LoadError } from '../components/LoadError';
 import StationWorkspace, { stationStatuses, type StationRecord as Station } from './stations/StationWorkspace';
 
@@ -14,7 +14,6 @@ export default function StationsPage() {
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
   const [form] = Form.useForm();
-  const [editing, setEditing] = useState<Station | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [permissions,setPermissions] = useState<string[]>([]);
@@ -24,7 +23,6 @@ export default function StationsPage() {
   const [keyword,setKeyword]=useState('');
   const [status,setStatus]=useState('');
   const [workspace, setWorkspace] = useState<Station | null>(null);
-  const [workspaceRevision, setWorkspaceRevision] = useState(0);
   const [initialDeviceID, setInitialDeviceID] = useState<string | null>(null);
   const linkedStationID = searchParams.get('station_id');
   const linkedDeviceID = searchParams.get('device_id');
@@ -67,9 +65,9 @@ export default function StationsPage() {
     finally { if(current === generation.current)setLoading(false); }
   };
   useEffect(() => { load(); return () => { generation.current++; }; }, [query]);
-  const edit = (station:Station | null) => {
-    setEditing(station); form.resetFields();
-    form.setFieldsValue(station ? {...station,address:station.address || '',open_hours:station.open_hours || '',contact_phone:station.contact_phone || ''} : {status:'active'});
+  const create = () => {
+    form.resetFields();
+    form.setFieldsValue({status:'active'});
     setOpen(true);
   };
   const onSave = async () => {
@@ -77,14 +75,9 @@ export default function StationsPage() {
     try {
       const values = await form.validateFields();
       setSaving(true);
-      if(editing) { const {code,...update}=values; await http.put('/api/v1/admin/stations/'+editing.id,update); }
-      else await apiPost('/api/v1/admin/stations',values);
-      message.success(editing ? '已保存' : '已创建'); setOpen(false);
-      if (editing) {
-        setWorkspace(current => current?.id === editing.id ? { ...editing, ...values } : current);
-        setWorkspaceRevision(value => value + 1);
-        await load();
-      } else setQuery({...query,page:1});
+      await apiPost('/api/v1/admin/stations',values);
+      message.success('已创建'); setOpen(false);
+      setQuery({...query,page:1});
     } catch(e:any) { if(!e?.errorFields)message.error(e?.response?.data?.message || e.message || '保存失败'); }
     finally {setSaving(false);}
   };
@@ -94,7 +87,7 @@ export default function StationsPage() {
       <Space style={{ marginBottom: 12 }}>
         <Title level={3} style={{ margin: 0 }}>站点</Title>
         <Button icon={<ReloadOutlined />} onClick={load}>刷新</Button>
-        <Button type="primary" icon={<PlusOutlined />} disabled={!permissions.includes('station.create')} onClick={() => edit(null)}>新建</Button>
+        <Button type="primary" icon={<PlusOutlined />} disabled={!permissions.includes('station.create')} onClick={create}>新建</Button>
       </Space>
       <Space wrap style={{display:'flex',marginBottom:12}}>
         <Input aria-label="站点关键词" placeholder="搜索名称或地址" maxLength={128} value={keyword} onChange={e=>setKeyword(e.target.value)} onPressEnter={()=>setQuery({...query,page:1,keyword,status})} allowClear />
@@ -112,26 +105,21 @@ export default function StationsPage() {
         columns={[
           { title: '名称', dataIndex: 'name', render: (name: string, station: Station) => <Button type="link" style={{ paddingInline: 0 }} onClick={() => showWorkspace(station)}>{name}</Button> },
           { title: '地址', dataIndex: 'address' },
-          { title: '营业时间', dataIndex: 'open_hours', render: (value?: string) => value || '—' },
           { title: '联系电话', dataIndex: 'contact_phone', render: (value?: string) => value || '—' },
           { title: '状态', dataIndex: 'status', width: 100, render:(value:string)=><Tag color={stationStatuses[value]?.color}>{stationStatuses[value]?.label || value}</Tag> },
-          { title:'操作',key:'actions',width:180,render:(_:unknown,station:Station)=><Space>
-            <Button type="link" onClick={() => showWorkspace(station)}>工作区</Button>
-            {permissions.includes('station.update') && <Button type="link" onClick={()=>edit(station)}>编辑</Button>}
-          </Space> },
+          { title:'操作',key:'actions',width:100,render:(_:unknown,station:Station)=><Button type="link" onClick={() => showWorkspace(station)}>管理</Button> },
         ]}
       />
-      <Drawer title={workspace ? `${workspace.name} · 站点工作区` : '站点工作区'} open={!!workspace}
+      <Drawer title={workspace ? `${workspace.name} · 站点管理` : '站点管理'} open={!!workspace}
         width="min(1120px, 100vw)" destroyOnClose onClose={closeWorkspace}>
-        {workspace && <StationWorkspace key={workspace.id} station={workspace} permissions={permissions} revision={workspaceRevision} initialDeviceId={initialDeviceID} onEdit={edit} />}
+        {workspace && <StationWorkspace key={workspace.id} station={workspace} permissions={permissions} initialDeviceId={initialDeviceID} onSaved={updated => { setWorkspace(current => current?.id === updated.id ? updated : current); void load(); }} />}
       </Drawer>
-      <Modal title={editing ? "编辑站点" : "新建站点"} open={open} confirmLoading={saving} closable={!saving} maskClosable={!saving} onCancel={() => {if(!saving)setOpen(false);}} onOk={onSave} okText="保存" cancelText="取消">
+      <Modal title="新建站点" open={open} confirmLoading={saving} closable={!saving} maskClosable={!saving} onCancel={() => {if(!saving)setOpen(false);}} onOk={onSave} okText="保存" cancelText="取消">
         <Form form={form} layout="vertical">
           <Form.Item name="name" label="名称" rules={[{ required: true, whitespace:true }]}><Input maxLength={128} /></Form.Item>
           <Form.Item name="address" label="地址"><Input maxLength={255} /></Form.Item>
           <Form.Item name="longitude" label="经度" rules={[{ required: true }]}><InputNumber min={-180} max={180} precision={8} style={{width:"100%"}} /></Form.Item>
           <Form.Item name="latitude" label="纬度" rules={[{ required: true }]}><InputNumber min={-90} max={90} precision={8} style={{width:"100%"}} /></Form.Item>
-          <Form.Item name="open_hours" label="营业时间"><Input maxLength={64} /></Form.Item>
           <Form.Item name="contact_phone" label="联系电话"><Input maxLength={32} /></Form.Item>
           <Form.Item name="status" label="状态" rules={[{required:true}]}><Select options={[{value:'active',label:'运营中'},{value:'disabled',label:'已停用'},{value:'construction',label:'建设中'}]} /></Form.Item>
         </Form>
