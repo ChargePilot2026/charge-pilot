@@ -7,6 +7,7 @@ import DashboardPage from './pages/Dashboard';
 import OrdersPage from './pages/Orders';
 import ChargeUsersPage from './pages/ChargeUsers';
 import DevicesPage from './pages/Devices';
+import VendorsPage from './pages/Vendors';
 import StationsPage from './pages/Stations';
 import UsersPage from './pages/Users';
 import AlertsPage from './pages/Alerts';
@@ -45,6 +46,7 @@ export default function App() {
         <Route path="orders" element={<OrdersPage />} />
         <Route path="charge-users" element={<ChargeUsersPage />} />
         <Route path="devices" element={<DevicesPage />} />
+        <Route path="vendors" element={<VendorsPage />} />
         <Route path="stations" element={<StationsPage />} />
         <Route path="pricing-templates" element={<ConfigPage title="计费模板"><PricingTemplates /></ConfigPage>} />
         <Route path="package-templates" element={<ConfigPage title="套餐模板"><PackageTemplates /></ConfigPage>} />

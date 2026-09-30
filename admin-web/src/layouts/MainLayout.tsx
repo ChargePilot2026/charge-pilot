@@ -38,6 +38,7 @@ const sections: NavSection[] = [
     { key: '/exports', label: '数据导出', permission: 'finance.read' },
   ] },
   { key: 'device-ops', icon: <AlertOutlined />, label: '设备运维', children: [
+    { key: '/vendors', label: '厂商', permission: 'vendor.read' },
     { key: '/alerts', label: '告警', permission: 'alert.read' },
     { key: '/alert-rules', label: '告警配置', permission: 'alert.read' },
     { key: '/ota', label: 'OTA', permission: 'ota.read' },

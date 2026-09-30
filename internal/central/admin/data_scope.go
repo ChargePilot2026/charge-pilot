@@ -183,14 +183,27 @@ func (a ResourceAPI) validateScope(ctx context.Context, scopeType string, ids []
 	if len(ids) == 0 || len(ids) > 500 {
 		return errScopeConflict
 	}
-	table := "station"
+	for _, id := range ids {
+		if id == 0 {
+			return errScopeConflict
+		}
+	}
 	if scopeType == "vendor" {
-		table = "vendor"
-	} else if scopeType != "station" {
+		var page Page[vendorRow]
+		query := vendorQuery(PageQuery{Page: 1, PageSize: 1}, DataScope{VendorIDs: ids})
+		if err := a.requestVendor(ctx, "GET", "", query, nil, &page, ""); err != nil {
+			return err
+		}
+		if int(page.Total) != len(ids) {
+			return errScopeConflict
+		}
+		return nil
+	}
+	if scopeType != "station" {
 		return errScopeConflict
 	}
 	var found int64
-	if err := a.Store.AdminDB.WithContext(ctx).Table(table).Where("id IN ? AND deleted_at IS NULL", ids).Count(&found).Error; err != nil {
+	if err := a.Store.AdminDB.WithContext(ctx).Table("station").Where("id IN ? AND deleted_at IS NULL", ids).Count(&found).Error; err != nil {
 		return err
 	}
 	if int(found) != len(ids) {

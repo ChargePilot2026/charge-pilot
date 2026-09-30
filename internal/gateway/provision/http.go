@@ -29,7 +29,10 @@ type API struct {
 	ServiceToken string
 }
 
-func (a API) Register(r *gin.Engine) { r.POST("/api/v1/internal/devices/provision", a.provision) }
+func (a API) Register(r *gin.Engine) {
+	r.POST("/api/v1/internal/devices/provision", a.provision)
+	a.registerVendors(r)
+}
 
 var errConflict = errors.New("device provisioning conflict")
 
@@ -63,7 +66,9 @@ func (a API) provision(c *gin.Context) {
 				Status       string
 				AdapterClass string
 			}
-			if err := tx.Table("vendor").Where("id=? AND deleted_at IS NULL", d.VendorID).Take(&vendor).Error; err != nil {
+			// Serialize vendor edits with provisioning, so protocol changes cannot
+			// pass their device check while this transaction is creating a device.
+			if err := tx.Table("vendor").Clauses(clause.Locking{Strength: "SHARE"}).Where("id=? AND deleted_at IS NULL", d.VendorID).Take(&vendor).Error; err != nil {
 				return err
 			}
 			if vendor.Status != "enabled" {

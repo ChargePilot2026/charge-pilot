@@ -6,7 +6,7 @@
 
 - Bearer 管理员会话；每次请求从数据库检查有效账号、角色及操作权限。菜单过滤仅改善界面，不能替代服务端授权。
 - JSON 响应采用 `code/message/data/request_id/trace_id`。非法参数 400、失效会话 401、无权 403、缺失记录 404、状态/重复冲突 409、依赖故障 503。不会把未知接口伪装为成功空列表。
-- 分页资源使用 `page`、`page_size`（1–100），返回 `items,total,page,page_size`；站点、设备包含按钮权限。其他简单配置列表当前仅返回 `items`，尚未全面分页。
+- 分页资源使用 `page`、`page_size`（1–100），返回 `items,total,page,page_size`；站点、设备、厂商包含按钮权限。其他简单配置列表当前仅返回 `items`，尚未全面分页。
 - 金额均为整数分；写接口限制请求大小、拒绝未知字段，操作人取自会话。数据库事务内写审计：admin 配置写 admin.audit_log，用户/退款/发票操作写 user.audit_log。
 - central 按逻辑模块连接 admin/user/billing 各自 schema，不拼跨 schema SQL。设备预建档通过 gateway 内部 HTTP，不直连 gateway 库。
 
@@ -18,6 +18,7 @@
 | --- | --- | --- |
 | 站点 | GET/POST `/stations`；GET/PUT `/stations/{id}` | 新建、编辑、分页、keyword/status 筛选；代码保留唯一性、经纬度校验；当前页面无删除按钮，Go 未实现删除 |
 | 设备 | GET `/devices`、`/devices/{id}` | keyword/status/station_id/vendor_id 筛选；显示管理状态，不代表在线遥测 |
+| 厂商 | GET/POST `/vendors`；GET/PUT `/vendors/{id}`；GET `/vendor-options` | 设备运维中的厂商管理：分页、编码/名称搜索、状态筛选、新建、编辑和启停；设备新建从可选厂商接口读取已启用厂商；不提供删除 |
 | 导入 | GET/POST `/device-imports`；POST `/device-imports/{import_id}/retry` | CSV 预览后提交 JSON，每批 1–100；gateway 幂等建档，再落 admin 元数据；失败保留批次供显式重试 |
 | 订单 | GET `/orders`、`/orders/{id}`、`/orders/{id}/timeline` | 分页及订单号、设备、站点、状态、时间筛选；从已有订单、计费和事件记录读取，不生成虚构计费 |
 | 充电用户 | GET `/charge-users`、`/charge-users/{id}` | 后台第一个以"人"而非以"单"为入口的视图：列表给昵称、完整手机号、状态、订单数、累计消费、钱包余额与最后登录，档案再给最近 20 笔订单及券/报障计数。只读，不含建号与解冻。手机号按完整号码精确搜索，输入后四位查不出来（库中只有密文与不可逆哈希） |
@@ -36,6 +37,31 @@
 | 反馈 | GET `/feedback`；POST `/feedback/{id}/reply` | action=reply 携带 reply_content；action=close 关闭；有状态检查与审计，尚无用户推送 |
 | 报修 | GET `/device-fault-reports`、`/{id}/history`；POST `/{id}/dispatch`、`/{id}/resolve` | 派单/改派需有效 fault.resolve 账号；仅当前指派人可修复/关闭，修复备注必填，历史持久化 |
 | 设置 | GET/PUT `/whitelabel`；GET `/settings/charge-rules` | 白标配置保存；规则页支持版本发布与停用；正式结束订单计费及模拟差额退款已接线，见 go-charge-lifecycle.md |
+
+## 厂商管理（2026-09-30）
+
+厂商页面位于“设备运维 → 厂商”，前端路径为 `/vendors`；列表可复制厂商 ID，供 CSV 导入填写 `vendor_id`。厂商数据由 gateway 的 `vendor` 表保存；central 通过内部服务接口读取和修改，后台不复制厂商表，也不直连 gateway 数据库。
+
+- `GET /vendors`、`GET /vendors/{id}`：需要 `vendor.read`。列表支持 `page`（1–1000000）、`page_size`（1–100，默认 20）、`keyword`（编码或名称，最多 128 字符）和 `status`（`enabled`/`disabled`，留空不筛选）。列表返回 `items,total,page,page_size,permissions`；详情返回单个厂商。
+- `POST /vendors`：需要 `vendor.create`，且账号没有配置厂商范围限制。创建须提供下面的全部五个字段。
+- `PUT /vendors/{id}`：需要 `vendor.update`，同样提交完整五字段。编码不可修改；名称及状态可修改。适配器或连接协议变更只允许无关联设备的厂商，且新组合必须为当前支持的 `dc589`/`tcp`。保留原组合时允许编辑既有旧协议厂商的名称或状态。
+- `GET /vendor-options`：需要 `device.import`，不要求 `vendor.read`。支持相同的分页和关键词查询，服务端始终限定 `status=enabled`，返回相同分页结构；用于设备新建的厂商搜索选择。当前设备新建仅允许选择 DC589/TCP 厂商，旧协议厂商会标明“暂不支持该协议”。
+
+| 写入字段 | 约束 |
+| --- | --- |
+| `vendor_code` | 必填，1–64 位字母、数字、下划线或短横线；有效厂商之间编码不重复，创建后不可修改 |
+| `vendor_name` | 必填，去除首尾空白后为 1–128 个字符，不能含控制字符 |
+| `adapter_class` | 必填；新建只接受 `dc589`，界面显示为 DC589 协议 |
+| `protocol` | 必填；新建只接受 `tcp`，界面固定显示 TCP 连接 |
+| `status` | 必填，`enabled` 或 `disabled`；界面新建时默认已启用 |
+
+厂商响应 DTO 包含 `id,vendor_code,vendor_name,adapter_class,protocol,status,enabled_at,created_at,updated_at`；`enabled_at` 可为 `null`。不返回适配器私有 `config_json`。列表、详情、修改及可选厂商查询都执行当前账号的厂商数据范围：配置了厂商 ID 范围时，仅可访问范围内厂商，范围外详情或修改返回 404；客户端提供的 `ids` 不作为授权依据。此类账号的列表权限中会移除 `vendor.create`，直接创建也会返回 403。没有厂商范围项时，厂商维度不受限。
+
+启用后，厂商可用于设备新建和设备注册；停用后，该厂商的新设备开通及注册会被拒绝。停用保留厂商与历史设备记录，不执行删除，也不会通过此接口断开已有连接或停止正在进行的充电。启停使用同一 PUT 接口修改 `status`；成功创建或修改后，中台记录厂商审计快照。
+
+缺失或范围外厂商返回 404，编码重复或修改不可变配置返回 409，非法字段返回 400，依赖故障返回 503。网关内部认证故障也映射为 503，不会使后台会话被误判为失效。
+
+部署时先执行 gateway 的 `0010_vendor_live_code` 与 admin 的 `0047_vendor_permissions` 迁移，再重启 gateway 和 central 并更新前端。`0010` 为未删除厂商建立编码唯一索引；若旧数据含重复的有效编码，迁移会停止，须核对厂商及设备关联后重新执行，不会自动删除或改写记录。
 
 ## 金额与重试边界
 

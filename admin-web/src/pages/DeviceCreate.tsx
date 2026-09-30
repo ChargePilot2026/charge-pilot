@@ -2,6 +2,7 @@ import { Alert, Button, Collapse, Form, Input, InputNumber, Modal, Select, Space
 import { PlusOutlined } from '@ant-design/icons';
 import { useEffect, useRef, useState } from 'react';
 import { apiGet, apiPost } from '../api/client';
+import { listVendors, type Vendor } from '../api/vendors';
 import { LoadError } from '../components/LoadError';
 import { MODE_OPTIONS, type ChargeMode } from './pricing/model';
 
@@ -17,6 +18,7 @@ type DeviceForm = {
   reports_segmented_power: boolean;
 };
 type CreateJob = { import_id: string; status: string; last_error?: string | null };
+const supportsVendor = (vendor: Vendor | undefined) => vendor?.adapter_class === 'dc589' && vendor.protocol === 'tcp';
 
 // 手动新建复用导入的开通流程，只有网关设备、端口与后台元数据均确认后才算成功。
 export default function DeviceCreate({ onComplete, canReadStations }: {
@@ -27,19 +29,52 @@ export default function DeviceCreate({ onComplete, canReadStations }: {
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [vendors, setVendors] = useState<Vendor[]>([]);
+  const [vendorsLoading, setVendorsLoading] = useState(false);
+  const [vendorsError, setVendorsError] = useState('');
   const [stations, setStations] = useState<StationChoice[]>([]);
   const [stationsLoading, setStationsLoading] = useState(false);
   const [stationsError, setStationsError] = useState('');
   const stationGeneration = useRef(0);
   const stationKeyword = useRef('');
   const stationSearchTimer = useRef<ReturnType<typeof setTimeout>>();
+  const vendorGeneration = useRef(0);
+  const vendorKeyword = useRef('');
+  const vendorSearchTimer = useRef<ReturnType<typeof setTimeout>>();
   const submitting = useRef(false);
   const request = useRef<{ signature: string; id: string }>();
+  const vendorID = Form.useWatch('vendor_id', form);
+  const selectedVendor = vendors.find(vendor => vendor.id === vendorID);
+  const maxPorts = selectedVendor?.adapter_class === 'dc589' ? 20 : 255;
 
   useEffect(() => () => {
     stationGeneration.current++;
     clearTimeout(stationSearchTimer.current);
+    vendorGeneration.current++;
+    clearTimeout(vendorSearchTimer.current);
   }, []);
+
+  const searchVendors = async (keyword: string) => {
+    clearTimeout(vendorSearchTimer.current);
+    const current = ++vendorGeneration.current;
+    vendorKeyword.current = keyword;
+    setVendorsLoading(true); setVendorsError('');
+    try {
+      const result = await listVendors({ keyword: keyword || undefined, status: 'enabled', page: 1, page_size: 50 }, true);
+      if (current !== vendorGeneration.current) return;
+      const selected = form.getFieldValue('vendor_id');
+      setVendors(previous => {
+        const selectedChoice = previous.find(vendor => vendor.id === selected);
+        const items = (result.items || []).filter(vendor => vendor.status === 'enabled');
+        return selectedChoice && !items.some(vendor => vendor.id === selected)
+          ? [selectedChoice, ...items] : items;
+      });
+    } catch (cause: unknown) {
+      if (current === vendorGeneration.current) setVendorsError(cause instanceof Error ? cause.message : '厂商读取失败');
+    } finally {
+      if (current === vendorGeneration.current) setVendorsLoading(false);
+    }
+  };
 
   const searchStations = async (keyword: string) => {
     clearTimeout(stationSearchTimer.current);
@@ -73,9 +108,11 @@ export default function DeviceCreate({ onComplete, canReadStations }: {
     form.setFieldsValue({ port_count: 2, charge_mode: 'device_duration', reports_energy: false, reports_segmented_power: false });
     request.current = undefined;
     setError('');
+    setVendorsError(''); setVendors([]);
     setStationsError('');
     setStations([]);
     setOpen(true);
+    void searchVendors('');
     if (canReadStations) void searchStations('');
   };
 
@@ -133,10 +170,26 @@ export default function DeviceCreate({ onComplete, canReadStations }: {
           rules={[{ required: true, message: '请填写设备编号' }, { pattern: /^[A-Za-z0-9_-]{8,32}$/, message: '设备编号须为 8–32 位字母、数字、下划线或短横线' }]}>
           <Input maxLength={32} placeholder="如：CP000001" />
         </Form.Item>
-        <Form.Item name="vendor_id" label="厂商 ID" extra="填写已启用厂商的 ID。"
-          rules={[{ required: true, message: '请填写厂商 ID' }, positiveID]}>
-          <InputNumber min={1} max={Number.MAX_SAFE_INTEGER} precision={0} placeholder="厂商 ID" style={{ width: '100%' }} />
+        <Form.Item name="vendor_id" label="厂商" extra="仅可选择已启用且支持 DC589 协议的厂商。"
+          rules={[{ required: true, message: '请选择厂商' }, positiveID, {
+            validator: (_: unknown, value: number | undefined) => {
+              if (value === undefined) return Promise.resolve();
+              const vendor = vendors.find(choice => choice.id === value);
+              if (!vendor || vendor.status !== 'enabled') return Promise.reject(new Error('请选择已启用的厂商'));
+              return supportsVendor(vendor) ? Promise.resolve() : Promise.reject(new Error('暂不支持该协议，请选择 DC589 协议厂商'));
+            },
+          }]}>
+          <Select showSearch allowClear filterOption={false} loading={vendorsLoading} placeholder="搜索厂商编码或名称"
+            options={vendors.map(vendor => ({ value: vendor.id, disabled: !supportsVendor(vendor),
+              label: `${vendor.vendor_name} · ${vendor.vendor_code}${supportsVendor(vendor) ? '' : ' · 暂不支持该协议'}` }))}
+            onSearch={keyword => {
+              clearTimeout(vendorSearchTimer.current);
+              vendorGeneration.current++;
+              vendorSearchTimer.current = setTimeout(() => { void searchVendors(keyword); }, 250);
+            }}
+            notFoundContent={vendorsLoading ? <Spin size="small" /> : vendorsError ? '厂商加载失败，请重试' : '没有匹配的已启用厂商，请先在厂商管理中新建'} />
         </Form.Item>
+        {vendorsError && <LoadError title="厂商选项加载失败" detail={vendorsError} onRetry={() => void searchVendors(vendorKeyword.current)} />}
         <Form.Item name="station_id" label="所属站点" extra={canReadStations ? '仅可选择运营中的站点。' : '填写运营中站点的 ID。'}
           rules={[{ required: true, message: '请选择或填写所属站点' }, positiveID]}>
           {canReadStations ? <Select showSearch allowClear filterOption={false} loading={stationsLoading}
@@ -151,9 +204,9 @@ export default function DeviceCreate({ onComplete, canReadStations }: {
             : <InputNumber min={1} max={Number.MAX_SAFE_INTEGER} precision={0} placeholder="站点 ID" style={{ width: '100%' }} />}
         </Form.Item>
         {stationsError && <LoadError title="站点选项加载失败" detail={stationsError} onRetry={() => void searchStations(stationKeyword.current)} />}
-        <Form.Item name="port_count" label="充电端口数" extra="1–255 个；dc589 设备最多 20 个。"
-          rules={[{ required: true, message: '请填写端口数' }, { type: 'integer', min: 1, max: 255, message: '端口数须为 1–255 的整数' }]}>
-          <InputNumber min={1} max={255} precision={0} style={{ width: '100%' }} />
+        <Form.Item name="port_count" label="充电端口数" extra={maxPorts === 20 ? 'DC589 设备支持 1–20 个端口。' : '1–255 个；DC589 设备最多 20 个。'} dependencies={['vendor_id']}
+          rules={[{ required: true, message: '请填写端口数' }, { type: 'integer', min: 1, max: maxPorts, message: `端口数须为 1–${maxPorts} 的整数` }]}>
+          <InputNumber min={1} max={maxPorts} precision={0} style={{ width: '100%' }} />
         </Form.Item>
         <Form.Item name="model" label="型号（选填）" rules={[{ max: 128, message: '型号最多 128 个字符' }]}>
           <Input maxLength={128} placeholder="设备型号" />

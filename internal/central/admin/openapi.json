@@ -1336,6 +1336,549 @@
         ]
       }
     },
+    "/api/v1/admin/vendors": {
+      "get": {
+        "summary": "厂商列表",
+        "tags": [
+          "厂商"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "vendor.read",
+        "description": "厂商数据由 gateway 保存；按当前账号厂商 ID 范围过滤，客户端 ids 不参与授权。配置了厂商范围的账号不能创建厂商，列表 permissions 会移除 vendor.create。",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000000,
+              "default": 1
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          },
+          {
+            "name": "keyword",
+            "in": "query",
+            "required": false,
+            "description": "按厂商编码或名称搜索，首尾空白会去除。",
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "description": "留空或省略时不按状态筛选。",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "",
+                "enabled",
+                "disabled"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功，data 为厂商分页及当前操作权限",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VendorPageResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数无效、未知字段或不支持的协议配置",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录或会话失效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "当前实时权限不足；创建还要求无厂商范围限制",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "厂商不存在或不在账号数据范围内",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "厂商依赖服务不可用；内部认证故障也返回此状态",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "新建厂商",
+        "tags": [
+          "厂商"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "vendor.create",
+        "description": "仅无厂商范围限制的账号可创建。全部五字段必填；当前只支持 dc589 适配器和 TCP。有效厂商编码唯一，成功后写后台审计。",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VendorCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功，data 为已创建的厂商",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VendorResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数无效、未知字段或不支持的协议配置",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录或会话失效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "当前实时权限不足；创建还要求无厂商范围限制",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "厂商不存在或不在账号数据范围内",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "厂商依赖服务不可用；内部认证故障也返回此状态",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "厂商编码重复，或试图修改不可变编码、已有设备厂商的协议配置",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/vendors/{id}": {
+      "get": {
+        "summary": "厂商详情",
+        "tags": [
+          "厂商"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "vendor.read",
+        "description": "厂商数据由 gateway 保存；按当前账号厂商 ID 范围过滤，客户端 ids 不参与授权。配置了厂商范围的账号不能创建厂商，列表 permissions 会移除 vendor.create。",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "厂商 ID；超出账号厂商数据范围按不存在返回。",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功，data 为厂商详情",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VendorResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数无效、未知字段或不支持的协议配置",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录或会话失效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "当前实时权限不足；创建还要求无厂商范围限制",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "厂商不存在或不在账号数据范围内",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "厂商依赖服务不可用；内部认证故障也返回此状态",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "summary": "编辑或启停厂商",
+        "tags": [
+          "厂商"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "vendor.update",
+        "description": "全部五字段必填，编码保持不变。适配器或连接协议改变时须无关联设备且新组合为 dc589/tcp；不改变原组合时允许保留旧协议配置。status=disabled 拒绝新设备开通及注册，保留历史记录；此接口不主动断开既有连接或停止充电。成功后记录变更前后审计快照。",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "厂商 ID；超出账号厂商数据范围按不存在返回。",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VendorUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功，data 为更新后的厂商",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VendorResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数无效、未知字段或不支持的协议配置",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录或会话失效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "当前实时权限不足；创建还要求无厂商范围限制",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "厂商不存在或不在账号数据范围内",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "厂商依赖服务不可用；内部认证故障也返回此状态",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "厂商编码重复，或试图修改不可变编码、已有设备厂商的协议配置",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/vendor-options": {
+      "get": {
+        "summary": "设备新建的可选厂商",
+        "tags": [
+          "厂商"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "device.import",
+        "description": "不要求 vendor.read；按当前账号厂商范围返回已启用厂商，支持分页和编码/名称搜索。返回厂商分页 DTO，不公开适配器私有配置。",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000000,
+              "default": 1
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          },
+          {
+            "name": "keyword",
+            "in": "query",
+            "required": false,
+            "description": "按厂商编码或名称搜索，首尾空白会去除。",
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "description": "服务端始终强制为 enabled；传入 disabled 或空值也只返回已启用厂商。",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "",
+                "enabled",
+                "disabled"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功，data 为账号范围内已启用厂商的分页",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VendorPageResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数无效、未知字段或不支持的协议配置",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录或会话失效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "当前实时权限不足；创建还要求无厂商范围限制",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "厂商不存在或不在账号数据范围内",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "厂商依赖服务不可用；内部认证故障也返回此状态",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/admin/orders": {
       "get": {
         "summary": "GET /api/v1/admin/orders",
@@ -3484,6 +4027,260 @@
           "request_id",
           "trace_id"
         ]
+      },
+      "VendorCreateRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "vendor_code",
+          "vendor_name",
+          "adapter_class",
+          "protocol",
+          "status"
+        ],
+        "properties": {
+          "vendor_code": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_-]{1,64}$",
+            "description": "有效厂商编码唯一，创建后不可修改。"
+          },
+          "vendor_name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "服务端去除首尾空白后校验长度，不允许控制字符。"
+          },
+          "adapter_class": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "enum": [
+              "dc589"
+            ]
+          },
+          "protocol": {
+            "type": "string",
+            "enum": [
+              "tcp"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "enabled",
+              "disabled"
+            ]
+          }
+        }
+      },
+      "VendorUpdateRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "vendor_code",
+          "vendor_name",
+          "adapter_class",
+          "protocol",
+          "status"
+        ],
+        "properties": {
+          "vendor_code": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_-]{1,64}$",
+            "description": "有效厂商编码唯一，创建后不可修改。"
+          },
+          "vendor_name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "服务端去除首尾空白后校验长度，不允许控制字符。"
+          },
+          "adapter_class": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "protocol": {
+            "type": "string",
+            "enum": [
+              "tcp",
+              "mqtt",
+              "hybrid"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "enabled",
+              "disabled"
+            ]
+          }
+        }
+      },
+      "Vendor": {
+        "type": "object",
+        "required": [
+          "id",
+          "vendor_code",
+          "vendor_name",
+          "adapter_class",
+          "protocol",
+          "status",
+          "enabled_at",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1
+          },
+          "vendor_code": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "vendor_name": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "adapter_class": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "protocol": {
+            "type": "string",
+            "enum": [
+              "tcp",
+              "mqtt",
+              "hybrid"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "enabled",
+              "disabled"
+            ]
+          },
+          "enabled_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "description": "厂商公开 DTO；不包含适配器私有 config_json。"
+      },
+      "VendorPage": {
+        "type": "object",
+        "required": [
+          "items",
+          "total",
+          "page",
+          "page_size"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Vendor"
+            }
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000000
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "由当前后台会话生成；受厂商范围限制时移除 vendor.create。"
+          }
+        }
+      },
+      "VendorResponse": {
+        "type": "object",
+        "required": [
+          "code",
+          "message",
+          "data",
+          "request_id",
+          "trace_id"
+        ],
+        "properties": {
+          "code": {
+            "type": "integer",
+            "enum": [
+              0
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/Vendor"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "trace_id": {
+            "type": "string"
+          }
+        }
+      },
+      "VendorPageResponse": {
+        "type": "object",
+        "required": [
+          "code",
+          "message",
+          "data",
+          "request_id",
+          "trace_id"
+        ],
+        "properties": {
+          "code": {
+            "type": "integer",
+            "enum": [
+              0
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/VendorPage"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "trace_id": {
+            "type": "string"
+          }
+        }
       }
     }
   }
