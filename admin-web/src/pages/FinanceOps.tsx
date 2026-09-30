@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { Alert, App, Button, DatePicker, Descriptions, Form, Input, Modal, Select, Space, Table, Tag, Typography } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
 import { adminSession, apiGet, apiPost } from '../api/client';
+import { LoadError } from '../components/LoadError';
 
 const { Text, Paragraph } = Typography;
 
@@ -123,8 +124,8 @@ export function Settlements() {
         <Button icon={<ReloadOutlined />} onClick={() => void load()} loading={loading}>刷新</Button>
         <SelectStatus value={status} onChange={(v) => { setStatus(v); setPage(1); }}
           options={Object.entries(settlementStatus).map(([value, meta]) => ({ value, label: meta.label }))} />
-        {error && <Text type="danger">{error}</Text>}
-      </Space>
+        </Space>
+      {error && <LoadError title="分账记录加载失败" detail={error} onRetry={() => void load()} />}
       {rows.length === 0 && !loading ? (
         <Alert type="info" showIcon message="暂无分账记录" description="订单计费完成后会按站点分账模板自动生成分账明细。" />
       ) : (
@@ -257,8 +258,8 @@ export function Withdrawals() {
         <Button icon={<ReloadOutlined />} onClick={() => void load()} loading={loading}>刷新</Button>
         <SelectStatus value={status} onChange={(v) => { setStatus(v); setPage(1); }}
           options={Object.entries(withdrawStatus).map(([value, meta]) => ({ value, label: meta.label }))} />
-        {error && <Text type="danger">{error}</Text>}
-      </Space>
+        </Space>
+      {error && <LoadError title="提现记录加载失败" detail={error} onRetry={() => void load()} />}
       {rows.length === 0 && !loading ? (
         <Alert type="info" showIcon message="暂无提现申请" description="分账状态为已打款的参与方才有可提现余额。" />
       ) : (
@@ -286,7 +287,7 @@ export function Withdrawals() {
         />
       )}
       <Modal title="发起提现申请" open={creating} onCancel={() => setCreating(false)} onOk={() => void submitCreate()}
-        confirmLoading={saving} okText="提交申请" cancelText="取消" destroyOnClose>
+        confirmLoading={saving} okText="提交申请" cancelText="取消" destroyOnHidden>
         <Paragraph type="secondary">只能提现已结算（已打款）的分账金额，服务端会再次校验余额。</Paragraph>
         <Form form={createForm} layout="vertical">
           <Form.Item name="party_id" label="参与方 ID" rules={[{ required: true, message: '请填写参与方 ID' }]}>
@@ -302,7 +303,7 @@ export function Withdrawals() {
         footer={[
           <Button key="reject" danger onClick={() => void decide(false)} loading={saving}>拒绝</Button>,
           <Button key="approve" type="primary" onClick={() => void decide(true)} loading={saving}>通过</Button>,
-        ]} destroyOnClose>
+        ]} destroyOnHidden>
         {deciding && <Descriptions size="small" column={1} style={{ marginBottom: 12 }} items={[
           { key: 'a', label: '参与方', children: deciding.party_code },
           { key: 'b', label: '金额', children: money(deciding.amount_cents) },
@@ -400,8 +401,8 @@ export function Reconciliation() {
       </Cardless>
       <Space style={{ marginBottom: 12 }}>
         <Button icon={<ReloadOutlined />} onClick={() => void load()} loading={loading}>刷新</Button>
-        {error && <Text type="danger">{error}</Text>}
-      </Space>
+        </Space>
+      {error && <LoadError title="对账记录加载失败" detail={error} onRetry={() => void load()} />}
       <Table<Reconcile>
         rowKey="id" loading={loading} dataSource={rows} scroll={{ x: 1000 }} pagination={false}
         columns={[

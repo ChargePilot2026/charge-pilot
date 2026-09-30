@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import dayjs from 'dayjs';
 import axios from 'axios';
 import { ApiEnvelope, apiGet } from '../api/client';
+import { LoadError } from '../components/LoadError';
 
 interface ChargeUser {
   id: number;
@@ -71,6 +72,8 @@ export default function ChargeUsersPage() {
   const [detail, setDetail] = useState<ChargeUserDetail | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  // 档案的重试：selected 固定时上面的 effect 不会再跑，光置同一个值等于没点。
+  const [detailReload, setDetailReload] = useState(0);
   const generation = useRef(0);
 
   useEffect(() => {
@@ -89,7 +92,7 @@ export default function ChargeUsersPage() {
       .then(setDetail)
       .catch(e => setDetailError(axios.isAxiosError<ApiEnvelope>(e) ? e.message : '加载失败，请稍后重试'))
       .finally(() => setDetailLoading(false));
-  }, [selected]);
+  }, [selected, detailReload]);
 
   return <div className="page-container">
     <Space style={{ marginBottom: 16 }}>
@@ -115,8 +118,7 @@ export default function ChargeUsersPage() {
     <Typography.Paragraph type="secondary">
       手机号按完整号码精确查询：库中只存密文与不可逆哈希，没有可用于模糊匹配的明文，输入后四位之类的片段查不出来。
     </Typography.Paragraph>
-    {error && <Alert type="error" showIcon message="充电用户加载失败" description={error} style={{ marginBottom: 16 }}
-      action={<Button onClick={() => setReload(value => value + 1)}>重试</Button>} />}
+    {error && <LoadError title="充电用户加载失败" detail={error} onRetry={() => setReload(value => value + 1)} />}
     <Table<ChargeUser> rowKey="id" loading={loading} dataSource={page?.items || []} scroll={{ x: 1200 }}
       locale={{ emptyText: error ? '暂时无法获取充电用户' : '当前条件下没有充电用户' }}
       pagination={{ current: pagination.page, pageSize: pagination.page_size, total: page?.total || 0,
@@ -146,8 +148,7 @@ export default function ChargeUsersPage() {
       ]} />
     <Drawer title={detail ? name(detail) : '充电用户档案'} open={selected != null} onClose={() => setSelected(null)} width="min(760px, 100vw)">
       {detailLoading && <Spin />}
-      {detailError && <Alert type="error" showIcon message="档案加载失败" description={detailError}
-        action={<Button onClick={() => setSelected(value => value)}>重试</Button>} />}
+      {detailError && <LoadError title="档案加载失败" detail={detailError} onRetry={() => setDetailReload(v => v + 1)} />}
       {detail && <Space direction="vertical" size="large" style={{ width: '100%' }}>
         <Descriptions title="账号" bordered column={2} items={[
           { key: 'id', label: '用户 ID', children: detail.id },

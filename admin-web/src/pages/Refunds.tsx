@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Alert, Button, Input, Modal, Select, Table } from 'antd';
 import { apiGet, apiPost } from '../api/client';
+import { LoadError } from '../components/LoadError';
 
 interface Refund {
   id: string; refund_no: string; user_id: string; payment_order_id: string;
@@ -52,7 +53,7 @@ export default function Refunds() {
       <Select aria-label="退款状态" style={{ width: 160 }} value={query.status} options={[{ value: '', label: '全部状态' }, ...Object.entries(labels).map(([value, label]) => ({ value, label }))]} onChange={status => setQuery(q => ({ ...q, page: 1, status }))} />
       <Button loading={loading} onClick={() => setReload(v => v + 1)}>刷新</Button>
     </div>
-    {error && <Alert type="error" showIcon message={error} style={{ marginBottom: 16 }} action={<Button onClick={() => setReload(v => v + 1)}>重试</Button>} />}
+    {error && <LoadError title="退款记录加载失败" detail={error} onRetry={() => setReload(v => v + 1)} />}
     <Table<Refund> rowKey="id" dataSource={items} loading={loading} scroll={{ x: 1920 }}
       pagination={{ current: query.page, pageSize: query.page_size, total, showSizeChanger: true, pageSizeOptions: [20, 50, 100], onChange: (page, page_size) => setQuery(q => ({ ...q, page, page_size })) }}
       columns={[

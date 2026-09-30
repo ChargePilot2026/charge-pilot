@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Table, Typography, Space, Button, Modal, Form, Input, InputNumber, Select, message } from 'antd';
 import { PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import { apiGet, apiPost, http } from '../api/client';
+import { LoadError } from '../components/LoadError';
 
 const { Title } = Typography;
 
@@ -64,7 +65,7 @@ export default function StationsPage() {
         <Button onClick={()=>setQuery({...query,page:1,keyword,status})}>查询</Button>
         <Button onClick={()=>{setKeyword('');setStatus('');setQuery({...query,page:1,keyword:'',status:''});}}>重置</Button>
       </Space>
-      {error && <div role="alert" style={{color:"#cf1322",marginBottom:12}}>{error}</div>}
+      {error && <LoadError title="站点列表加载失败" detail={error} onRetry={() => void load()} />}
       <Table
         rowKey="id"
         loading={loading}

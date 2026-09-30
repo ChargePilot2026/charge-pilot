@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Alert, Button, Descriptions, Divider, Form, Input, InputNumber, Modal, Select, Space, Switch, Table, Tabs, Tag, Tooltip, message } from 'antd';
 import { apiGet, apiPost, apiPut } from '../api/client';
 import { fromCents, modeLabel, toCents, type Spec, type Station, type Template } from './pricing/model';
+import { LoadError } from '../components/LoadError';
 
 // Everything about one station: what it charges, what each pile runs, and whether
 // the last switch actually landed. The three tabs answer three different
@@ -113,6 +114,9 @@ export default function StationPricing() {
   const [assignTemplate, setAssignTemplate] = useState<number | null>(null);
   const [assignError, setAssignError] = useState('');
   const [detail, setDetail] = useState<{ task: SwitchTask; items: SwitchItem[] } | null>(null);
+  const [taskTarget, setTaskTarget] = useState<SwitchTask | null>(null);
+  const [taskError, setTaskError] = useState<string | null>(null);
+  const [stationsError, setStationsError] = useState<string | null>(null);
 
   const [policyForm] = Form.useForm();
   const [assignForm] = Form.useForm();
@@ -130,8 +134,9 @@ export default function StationPricing() {
     try {
       const result = await apiGet<{ items: Station[] }>('/api/v1/admin/stations', { status: 'active', keyword: keyword || undefined, page: 1, page_size: 100 });
       setStations(result.items || []);
+      setStationsError(null);
     } catch (e: any) {
-      message.error(e.message);
+      setStations([]); setStationsError(e?.message || '运营中站点列表读取失败');
     } finally {
       setStationsLoading(false);
     }
@@ -273,11 +278,14 @@ export default function StationPricing() {
     },
   });
 
+  // 明细取不到时把弹窗留在屏上并显示 LoadError，运营可以原地重试；这里只读，
+  // 不用担心误操作。
   const openTask = async (task: SwitchTask) => {
+    setTaskTarget(task); setDetail(null); setTaskError(null);
     try {
       setDetail(await apiGet<{ task: SwitchTask; items: SwitchItem[] }>(`/api/v1/admin/settings/switch-tasks/${task.id}`));
     } catch (e: any) {
-      message.error(e.message);
+      setTaskError(e?.message || '切换任务明细读取失败');
     }
   };
 
@@ -289,7 +297,8 @@ export default function StationPricing() {
         options={stations.map(s => ({ value: s.id, label: s.name }))} />
       <Button onClick={() => void load()} loading={loading}>刷新</Button>
     </Space>
-    {error && <div role="alert" style={{ color: '#cf1322', marginBottom: 12 }}>{error}</div>}
+    {error && <LoadError title="站点计费配置加载失败" detail={error} onRetry={() => void load()} />}
+    {stationsError && <LoadError title="运营中站点列表加载失败" detail={stationsError} onRetry={() => void searchStations('')} />}
     <Tabs items={[
       {
         key: 'policy', label: '站点策略',
@@ -397,7 +406,7 @@ export default function StationPricing() {
     ]} />
 
     <Modal title="编辑站点策略" open={policyOpen} width={720} onCancel={() => setPolicyOpen(false)}
-      onOk={() => void savePolicy()} confirmLoading={saving} okText="保存" destroyOnClose>
+      onOk={() => void savePolicy()} confirmLoading={saving} okText="保存" destroyOnHidden>
       {policyError && <Alert type="error" showIcon message={policyError} style={{ marginBottom: 12 }} />}
       <Form form={policyForm} name="station_policy" layout="vertical">
         <Form.Item name="force_recharge" label="强制先充值" valuePropName="checked" extra="开启后余额不足时用户必须先充值才能开单。">
@@ -454,9 +463,13 @@ export default function StationPricing() {
       </Space>
     </Modal>
 
-    <Modal title={detail ? `切换任务 ${detail.task.task_no}` : '切换任务'} open={!!detail} width={1000}
-      onCancel={() => setDetail(null)} footer={<Button onClick={() => setDetail(null)}>关闭</Button>}>
-      {detail && <>
+    <Modal title={detail ? `切换任务 ${detail.task.task_no}` : taskTarget ? `切换任务 ${taskTarget.task_no}` : '切换任务'} open={!!taskTarget} width={1000}
+      onCancel={() => { setTaskTarget(null); setDetail(null); }}
+      footer={<Button onClick={() => { setTaskTarget(null); setDetail(null); }}>关闭</Button>}>
+      {taskError ? (
+        <LoadError title="切换任务明细加载失败" detail={taskError}
+          onRetry={() => { if (taskTarget) void openTask(taskTarget); }} />
+      ) : detail && <>
         <Descriptions size="small" column={2} bordered items={[
           { key: 'no', label: '任务号', children: detail.task.task_no },
           { key: 'status', label: '状态', children: <Tag color={TASK_STATUS[detail.task.status]?.color || 'default'}>{TASK_STATUS[detail.task.status]?.label || detail.task.status}</Tag> },

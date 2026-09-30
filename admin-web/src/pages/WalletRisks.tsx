@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Input, Modal, Select, Space, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { apiGet, apiPost } from '../api/client';
+import { LoadError } from '../components/LoadError';
 
 interface RiskReview {
   actor_id: string;
@@ -193,7 +194,7 @@ export default function WalletRisks() {
       style={{ marginBottom: 12 }}
     />
     {notice && <Alert type="success" message={notice} closable onClose={() => setNotice('')} style={{ marginBottom: 12 }} />}
-    {error && <Alert type="error" message={error} style={{ marginBottom: 12 }} />}
+    {error && <LoadError title="钱包风控记录加载失败" detail={error} onRetry={() => setReload(v => v + 1)} />}
     <Space style={{ marginBottom: 12 }}>
       <Select<QueueStatus>
         aria-label="风控记录状态"

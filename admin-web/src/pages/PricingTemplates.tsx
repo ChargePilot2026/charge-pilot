@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { Alert, Button, Collapse, Descriptions, Divider, Form, Input, InputNumber, Modal, Select, Space, Steps, Switch, Table, Tag, message } from 'antd';
+import { Alert, Button, Collapse, Descriptions, Divider, Form, Input, InputNumber, Modal, Select, Space, Spin, Steps, Switch, Table, Tag, message } from 'antd';
 import { apiGet, apiPost, apiPut } from '../api/client';
+import { LoadError } from '../components/LoadError';
 import {
   DEFAULT_DISPLAY, MODE_META, MODE_OPTIONS, SERVICE_OPTIONS, blankPeriod, describeDisplay, describeSpec, defaultSpecForm,
   formToSpec, insertPeriod, insertTier, isServerBilled, minuteToClock, modeLabel, removePeriod, removeTier,
@@ -33,6 +34,10 @@ export default function PricingTemplates() {
   const [localErrors, setLocalErrors] = useState<string[]>([]);
 
   const [viewing, setViewing] = useState<Template | null>(null);
+  const [viewError, setViewError] = useState<string | null>(null);
+  const [viewLoading, setViewLoading] = useState(false);
+  const [listError, setListError] = useState<string | null>(null);
+  const [stationsError, setStationsError] = useState<string | null>(null);
   const [applying, setApplying] = useState<Template | null>(null);
   const [stations, setStations] = useState<Station[]>([]);
   const [stationsLoading, setStationsLoading] = useState(false);
@@ -64,8 +69,9 @@ export default function PricingTemplates() {
       const result = await apiGet<{ items: Template[]; permissions: string[] }>('/api/v1/admin/settings/pricing-templates');
       setTemplates(result.items || []);
       setPermissions(result.permissions || []);
+      setListError(null);
     } catch (e: any) {
-      message.error(e.message);
+      setTemplates([]); setPermissions([]); setListError(e?.message || '计费模板列表读取失败');
     } finally {
       setLoading(false);
     }
@@ -80,8 +86,11 @@ export default function PricingTemplates() {
     try {
       const result = await apiGet<{ items: Station[] }>('/api/v1/admin/stations', { status: 'active', keyword: keyword || undefined, page: 1, page_size: 50 });
       setStations(result.items || []);
+      setStationsError(null);
     } catch (e: any) {
-      message.error(e.message);
+      // 站点下拉读不到时不能只把列表留空：弹窗里那行「没有匹配的运营中站点」会把
+      // 接口故障说成「确实没有站点」，于是运营以为选不中、放弃应用模板。
+      setStations([]); setStationsError(e?.message || '运营中站点列表读取失败');
     } finally {
       setStationsLoading(false);
     }
@@ -99,7 +108,9 @@ export default function PricingTemplates() {
         setEditing(detail);
         form.setFieldsValue({ ...specToForm(detail.spec), name: detail.name, remark: detail.remark, display: detail.display || DEFAULT_DISPLAY });
       } catch (e: any) {
-        message.error(e.message);
+        // 向导是多步表单，详情没到手时不开弹窗——空壳向导一旦被误提交会覆盖模板。
+        // 这是「打开编辑」这个动作没做成，用 toast 提示，不占用整块版面。
+        message.error(`编辑计费模板加载失败：${e?.message || '未知原因'}`);
         return;
       }
     } else {
@@ -110,11 +121,16 @@ export default function PricingTemplates() {
     setOpen(true);
   };
 
+  // 先用列表行把弹窗打开（标题里有名字），详情取不到时弹窗里显示 LoadError，
+  // 运营可以直接在原地重试，不必关掉再点一次。
   const view = async (source: Template) => {
+    setViewing(source); setViewError(null); setViewLoading(true);
     try {
       setViewing(await apiGet<Template>(`/api/v1/admin/settings/pricing-templates/${source.id}`));
     } catch (e: any) {
-      message.error(e.message);
+      setViewError(e?.message || '计费模板详情读取失败');
+    } finally {
+      setViewLoading(false);
     }
   };
 
@@ -456,6 +472,7 @@ export default function PricingTemplates() {
     </Space>
     <Alert type="info" showIcon style={{ marginBottom: 12 }}
       message="模板只描述计费口径与用户端展示；套餐在「套餐模板池」单独维护。模板需要「应用到站点/设备」后才生效，修改模板不会改变已应用站点的现行计费。" />
+    {listError && <LoadError title="计费模板列表加载失败" detail={listError} onRetry={() => void load()} />}
     <Table rowKey="id" dataSource={templates} loading={loading} scroll={{ x: 1000 }} columns={[
       { title: '名称', render: (_: unknown, r: Template) => <>{r.name}<div style={{ color: '#999' }}>v{r.version}{r.remark ? ` · ${r.remark}` : ''}</div></> },
       { title: '计费方式', render: (_: unknown, r: Template) => <Tag color={r.spec && isServerBilled(r.spec.mode) ? 'blue' : 'purple'}>{modeLabel(r.spec?.mode)}</Tag> },
@@ -494,7 +511,7 @@ export default function PricingTemplates() {
           await save();
         }}>{step === 1 ? '保存' : '下一步'}</Button>,
       ]}
-      destroyOnClose
+      destroyOnHidden
     >
       {formError && <Alert type="error" showIcon message={formError} style={{ marginBottom: 12 }}
         description={localErrors.length ? <ul style={{ margin: 0, paddingLeft: 18 }}>{localErrors.map(e => <li key={e}>{e}</li>)}</ul> : undefined} />}
@@ -507,7 +524,10 @@ export default function PricingTemplates() {
 
     <Modal title={viewing ? `计费模板详情 · ${viewing.name}` : '计费模板详情'} open={!!viewing} width={860}
       onCancel={() => setViewing(null)} footer={<Button onClick={() => setViewing(null)}>关闭</Button>}>
-      {viewing && <>
+      {viewError ? (
+        <LoadError title="计费模板详情加载失败" detail={viewError}
+          onRetry={() => { if (viewing) void view(viewing); }} />
+      ) : viewLoading ? <Spin /> : viewing && <>
         <Descriptions size="small" column={2} bordered items={[
           { key: 'name', label: '名称', children: viewing.name },
           { key: 'status', label: '状态', children: viewing.status === 'active' ? '可应用' : '已停用' },
@@ -538,6 +558,7 @@ export default function PricingTemplates() {
       onCancel={() => setApplying(null)} onOk={() => void apply()} confirmLoading={saving} okText="应用"
       okButtonProps={{ disabled: !selectedStation }}>
       {applyError && <Alert type="error" showIcon message={applyError} style={{ marginBottom: 12 }} />}
+      {stationsError && <LoadError title="运营中站点列表加载失败" detail={stationsError} onRetry={() => void searchStations('')} />}
       <Alert type="warning" showIcon style={{ marginBottom: 12 }}
         message="应用后该范围立即按此模板计费并生成新版本。本次只发布计费规则，不会产生任何套餐；套餐请到「套餐模板池」单独上架。" />
       <Space direction="vertical" style={{ width: '100%' }}>
@@ -566,7 +587,7 @@ export default function PricingTemplates() {
           })()}
         </div>
       )}
-      {stations.length === 0 && !stationsLoading && <div style={{ marginTop: 8, color: '#999' }}>没有匹配的运营中站点</div>}
+      {stations.length === 0 && !stationsLoading && !stationsError && <div style={{ marginTop: 8, color: '#999' }}>没有匹配的运营中站点</div>}
     </Modal>
   </>;
 }

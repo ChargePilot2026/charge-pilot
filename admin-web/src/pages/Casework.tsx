@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { Button, Form, Image, Input, Modal, Select, Space, Table, Tabs, Tag, Typography, message } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
 import { apiGet, apiPost } from '../api/client';
+import { formatTime } from '../utils/time';
+import { LoadError } from '../components/LoadError';
 
 const { Title, Text } = Typography;
 const feedbackEndpoint = '/api/v1/admin/feedback';
@@ -76,6 +78,10 @@ export default function CaseworkPage() {
   const [history, setHistory] = useState<FaultEvent[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [admins, setAdmins] = useState<AdminUser[]>([]);
+  const [feedbackError, setFeedbackError] = useState<string | null>(null);
+  const [faultError, setFaultError] = useState<string | null>(null);
+  const [adminsError, setAdminsError] = useState<string | null>(null);
+  const [historyError, setHistoryError] = useState<string | null>(null);
   const [form] = Form.useForm();
   const [dispatchForm] = Form.useForm();
   const [resolveForm] = Form.useForm();
@@ -89,7 +95,8 @@ export default function CaseworkPage() {
       const result = await apiGet<ListResult<Feedback>>(feedbackEndpoint, { page: feedbackPage, page_size: 50, ...(feedbackStatusFilter ? { status: feedbackStatusFilter } : {}) });
       setFeedback(Array.isArray(result?.items) ? result.items : []);
       setFeedbackTotal(result?.total || 0);
-    } catch (error: any) { setFeedback([]); setFeedbackTotal(0); message.error(error?.message || '反馈队列读取失败'); }
+      setFeedbackError(null);
+    } catch (error: any) { setFeedback([]); setFeedbackTotal(0); setFeedbackError(error?.message || '反馈队列读取失败'); }
     finally { setFeedbackLoading(false); }
   };
 
@@ -99,7 +106,8 @@ export default function CaseworkPage() {
       const result = await apiGet<ListResult<Fault>>(faultsEndpoint, { page: faultPage, page_size: 50, ...(faultStatusFilter ? { status: faultStatusFilter } : {}) });
       setFaults(Array.isArray(result?.items) ? result.items : []);
       setFaultTotal(result?.total || 0);
-    } catch (error: any) { setFaults([]); setFaultTotal(0); message.error(error?.message || '报修队列读取失败'); }
+      setFaultError(null);
+    } catch (error: any) { setFaults([]); setFaultTotal(0); setFaultError(error?.message || '报修队列读取失败'); }
     finally { setFaultLoading(false); }
   };
 
@@ -127,14 +135,23 @@ export default function CaseworkPage() {
     },
   });
 
+  // 指派下拉的候选来自管理员列表，和报修数据不是一个接口，所以单独一个错误态：
+  // 读不到人时如果只把下拉留空，客服会以为「没有可指派的人」而直接放弃派单。
+  const loadAdmins = async () => {
+    try {
+      const result = await apiGet<{ items: AdminUser[] }>('/api/v1/admin/users');
+      setAdmins((result.items || []).filter((user) => user.status === 'active'));
+      setAdminsError(null);
+    } catch (error: any) {
+      setAdmins([]); setAdminsError(error?.message || '巡检人员列表读取失败');
+    }
+  };
+
   const openDispatch = async (item: Fault) => {
     setAssigning(item);
     dispatchForm.resetFields();
     dispatchForm.setFieldsValue({ assigned_to: item.assigned_to ? Number(item.assigned_to) : undefined });
-    try {
-      const result = await apiGet<{ items: AdminUser[] }>('/api/v1/admin/users');
-      setAdmins((result.items || []).filter((user) => user.status === 'active'));
-    } catch (error: any) { message.error(error?.message || '巡检人员列表读取失败'); }
+    await loadAdmins();
   };
 
   const submitDispatch = async () => {
@@ -166,16 +183,16 @@ export default function CaseworkPage() {
   };
 
   const openFaultHistory = async (fault: Fault) => {
-    setHistoryFault(fault); setHistory([]); setHistoryLoading(true);
+    setHistoryFault(fault); setHistory([]); setHistoryError(null); setHistoryLoading(true);
     try {
       const result = await apiGet<ListResult<FaultEvent>>(`${faultsEndpoint}/${fault.id}/history`, { page: 1, page_size: 100 });
       setHistory(Array.isArray(result?.items) ? result.items : []);
-    } catch (error: any) { message.error(error?.message || '处理记录读取失败'); }
+    } catch (error: any) { setHistoryError(error?.message || '处理记录读取失败'); }
     finally { setHistoryLoading(false); }
   };
 
   const feedbackColumns = [
-    { title: '提交时间', dataIndex: 'created_at', width: 190 },
+    { title: '提交时间', dataIndex: 'created_at', width: 190, render: formatTime },
     { title: '用户 / 订单', render: (_: unknown, row: Feedback) => <><div>用户 {row.user_id}</div><Text type="secondary">订单 {row.order_id || '—'}</Text></> },
     { title: '类型 / 评分', render: (_: unknown, row: Feedback) => <>{category[row.category] || row.category}{row.rating ? ` · ${row.rating} 星` : ''}</> },
     { title: '内容', dataIndex: 'content', render: (content: string | null, row: Feedback) => <><div style={{ maxWidth: 300, whiteSpace: 'pre-wrap' }}>{content || '—'}</div>{row.images?.length ? imageLinks(row.images) : null}{row.reply_content && <Text type="secondary">客服回复：{row.reply_content}</Text>}</> },
@@ -184,7 +201,7 @@ export default function CaseworkPage() {
   ];
 
   const faultColumns = [
-    { title: '提交时间', dataIndex: 'created_at', width: 190 },
+    { title: '提交时间', dataIndex: 'created_at', width: 190, render: formatTime },
     { title: '设备 / 用户', render: (_: unknown, row: Fault) => <><div>{row.device_id}</div><Text type="secondary">用户 {row.user_id || '巡检/监控'}</Text></> },
     { title: '故障', render: (_: unknown, row: Fault) => <><div>{faultType[row.fault_type] || row.fault_type}</div><Text type="secondary">{row.report_source}</Text></> },
     { title: '说明 / 图片', dataIndex: 'description', render: (content: string | null, row: Fault) => <><div style={{ maxWidth: 300, whiteSpace: 'pre-wrap' }}>{content || '—'}</div>{row.images?.length ? imageLinks(row.images) : null}</> },
@@ -196,20 +213,23 @@ export default function CaseworkPage() {
   return <div className="page-container">
     <Space style={{ marginBottom: 12 }}><Title level={3} style={{ margin: 0 }}>反馈与报修</Title></Space>
     <Tabs items={[
-      { key: 'feedback', label: '评价与投诉', children: <><Space style={{ marginBottom: 12 }}><Select allowClear placeholder="全部状态" style={{ width: 150 }} value={feedbackStatusFilter} onChange={(value) => { setFeedbackPage(1); setFeedbackStatusFilter(value); }} options={Object.entries(feedbackStatus).map(([value, label]) => ({ value, label }))} /><Button icon={<ReloadOutlined />} onClick={() => void loadFeedback()} loading={feedbackLoading}>刷新</Button></Space><Table rowKey="id" loading={feedbackLoading} dataSource={feedback} columns={feedbackColumns} scroll={{ x: 1100 }} pagination={{ current: feedbackPage, pageSize: 50, total: feedbackTotal, onChange: setFeedbackPage, showTotal: (total) => `共 ${total} 条` }} /></> },
-      { key: 'faults', label: '设备报修', children: <><Space style={{ marginBottom: 12 }}><Select allowClear placeholder="全部状态" style={{ width: 150 }} value={faultStatusFilter} onChange={(value) => { setFaultPage(1); setFaultStatusFilter(value); }} options={Object.entries(faultStatus).map(([value, label]) => ({ value, label }))} /><Button icon={<ReloadOutlined />} onClick={() => void loadFaults()} loading={faultLoading}>刷新</Button></Space><Table rowKey="id" loading={faultLoading} dataSource={faults} columns={faultColumns} scroll={{ x: 1200 }} pagination={{ current: faultPage, pageSize: 50, total: faultTotal, onChange: setFaultPage, showTotal: (total) => `共 ${total} 条` }} /></> },
+      { key: 'feedback', label: '评价与投诉', children: <><Space style={{ marginBottom: 12 }}><Select allowClear placeholder="全部状态" style={{ width: 150 }} value={feedbackStatusFilter} onChange={(value) => { setFeedbackPage(1); setFeedbackStatusFilter(value); }} options={Object.entries(feedbackStatus).map(([value, label]) => ({ value, label }))} /><Button icon={<ReloadOutlined />} onClick={() => void loadFeedback()} loading={feedbackLoading}>刷新</Button></Space>{feedbackError && <LoadError title="评价与投诉加载失败" detail={feedbackError} onRetry={() => void loadFeedback()} />}<Table rowKey="id" loading={feedbackLoading} dataSource={feedback} columns={feedbackColumns} scroll={{ x: 1100 }} pagination={{ current: feedbackPage, pageSize: 50, total: feedbackTotal, onChange: setFeedbackPage, showTotal: (total) => `共 ${total} 条` }} /></> },
+      { key: 'faults', label: '设备报修', children: <><Space style={{ marginBottom: 12 }}><Select allowClear placeholder="全部状态" style={{ width: 150 }} value={faultStatusFilter} onChange={(value) => { setFaultPage(1); setFaultStatusFilter(value); }} options={Object.entries(faultStatus).map(([value, label]) => ({ value, label }))} /><Button icon={<ReloadOutlined />} onClick={() => void loadFaults()} loading={faultLoading}>刷新</Button></Space>{faultError && <LoadError title="设备报修加载失败" detail={faultError} onRetry={() => void loadFaults()} />}<Table rowKey="id" loading={faultLoading} dataSource={faults} columns={faultColumns} scroll={{ x: 1200 }} pagination={{ current: faultPage, pageSize: 50, total: faultTotal, onChange: setFaultPage, showTotal: (total) => `共 ${total} 条` }} /></> },
     ]} />
-    <Modal title="回复用户反馈" open={!!replying} onCancel={() => setReplying(null)} onOk={() => void submitReply()} confirmLoading={saving} destroyOnClose>
+    <Modal title="回复用户反馈" open={!!replying} onCancel={() => setReplying(null)} onOk={() => void submitReply()} confirmLoading={saving} destroyOnHidden>
       {replying && <><Text type="secondary">用户 {replying.user_id} · {category[replying.category] || replying.category}</Text><p style={{ whiteSpace: 'pre-wrap' }}>{replying.content || '未填写文字'}</p>{replying.images?.length ? imageLinks(replying.images) : null}<Form form={form} layout="vertical" style={{ marginTop: 16 }}><Form.Item name="reply_content" label="回复内容" rules={[{ required: true, whitespace: true, max: 2000 }]}><Input.TextArea rows={5} maxLength={2000} showCount /></Form.Item></Form></>}
     </Modal>
-    <Modal title="指派巡检人员" open={!!assigning} onCancel={() => setAssigning(null)} onOk={() => void submitDispatch()} confirmLoading={saving} destroyOnClose>
-      {assigning && <><Text type="secondary">设备 {assigning.device_id} · {faultType[assigning.fault_type] || assigning.fault_type}</Text><Form form={dispatchForm} layout="vertical" style={{ marginTop: 16 }}><Form.Item name="assigned_to" label="指派账号" rules={[{ required: true }]}><Select showSearch optionFilterProp="label" options={admins.map((user) => ({ value: user.id, label: `${user.display_name || user.username} · ${user.username}` }))} /></Form.Item><Form.Item name="note" label="处理备注（报修人可见）" rules={[{ max: 2000 }]}><Input.TextArea rows={3} maxLength={2000} showCount /></Form.Item></Form></>}
+    <Modal title="指派巡检人员" open={!!assigning} onCancel={() => setAssigning(null)} onOk={() => void submitDispatch()} confirmLoading={saving} destroyOnHidden>
+      {assigning && <><Text type="secondary">设备 {assigning.device_id} · {faultType[assigning.fault_type] || assigning.fault_type}</Text><Form form={dispatchForm} layout="vertical" style={{ marginTop: 16 }}>{adminsError && <LoadError title="巡检人员列表加载失败" detail={adminsError} onRetry={() => void loadAdmins()} />}<Form.Item name="assigned_to" label="指派账号" rules={[{ required: true }]}><Select showSearch optionFilterProp="label" options={admins.map((user) => ({ value: user.id, label: `${user.display_name || user.username} · ${user.username}` }))} /></Form.Item><Form.Item name="note" label="处理备注（报修人可见）" rules={[{ max: 2000 }]}><Input.TextArea rows={3} maxLength={2000} showCount /></Form.Item></Form></>}
     </Modal>
-    <Modal title={resolving?.status === 'fixed' ? '记录现场修复' : '关闭报修'} open={!!resolving} onCancel={() => setResolving(null)} onOk={() => void submitResolution()} confirmLoading={saving} destroyOnClose>
+    <Modal title={resolving?.status === 'fixed' ? '记录现场修复' : '关闭报修'} open={!!resolving} onCancel={() => setResolving(null)} onOk={() => void submitResolution()} confirmLoading={saving} destroyOnHidden>
       {resolving && <><Text type="secondary">设备 {resolving.fault.device_id} · 处理备注会显示给报修人</Text><Form form={resolveForm} layout="vertical" style={{ marginTop: 16 }}><Form.Item name="note" label={resolving.status === 'fixed' ? '修复说明' : '关闭说明'} rules={[{ required: resolving.status === 'fixed', whitespace: true, max: 2000 }]}><Input.TextArea rows={4} maxLength={2000} showCount /></Form.Item></Form></>}
     </Modal>
     <Modal title={`报修 ${historyFault?.id || ''} 的处理记录`} open={!!historyFault} onCancel={() => setHistoryFault(null)} footer={null} width={720}>
-      {historyLoading ? <Typography.Text>正在读取…</Typography.Text> : history.length ? <Space direction="vertical" style={{ width: '100%' }}>{history.map((event) => <div key={event.event_id} style={{ borderLeft: '2px solid #d9d9d9', padding: '2px 0 12px 12px' }}><Typography.Text strong>{faultEventLabel[event.event_type] || event.event_type}</Typography.Text><div><Text type="secondary">{new Date(event.created_at).toLocaleString()} · 状态 {faultStatus[event.from_status || ''] || event.from_status || '—'} → {faultStatus[event.to_status || ''] || event.to_status || '—'}</Text></div><div><Text type="secondary">操作人 {event.actor_id || '—'} · 指派 {event.assigned_to || '—'}</Text></div>{event.note && <div style={{ whiteSpace: 'pre-wrap', marginTop: 4 }}>{event.note}</div>}</div>)}</Space> : <Typography.Text type="secondary">暂无处理记录</Typography.Text>}
+      {historyError ? (
+        <LoadError title="处理记录加载失败" detail={historyError}
+          onRetry={() => { if (historyFault) void openFaultHistory(historyFault); }} />
+      ) : historyLoading ? <Typography.Text>正在读取…</Typography.Text> : history.length ? <Space direction="vertical" style={{ width: '100%' }}>{history.map((event) => <div key={event.event_id} style={{ borderLeft: '2px solid #d9d9d9', padding: '2px 0 12px 12px' }}><Typography.Text strong>{faultEventLabel[event.event_type] || event.event_type}</Typography.Text><div><Text type="secondary">{new Date(event.created_at).toLocaleString()} · 状态 {faultStatus[event.from_status || ''] || event.from_status || '—'} → {faultStatus[event.to_status || ''] || event.to_status || '—'}</Text></div><div><Text type="secondary">操作人 {event.actor_id || '—'} · 指派 {event.assigned_to || '—'}</Text></div>{event.note && <div style={{ whiteSpace: 'pre-wrap', marginTop: 4 }}>{event.note}</div>}</div>)}</Space> : <Typography.Text type="secondary">暂无处理记录</Typography.Text>}
     </Modal>
   </div>;
 }

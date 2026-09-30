@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Table, Typography, Space, Button, Modal, Form, Input, DatePicker, Select, message } from 'antd';
 import { PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import { apiGet, apiPost } from '../api/client';
+import { LoadError } from '../components/LoadError';
 
 const { Title } = Typography;
 
@@ -11,12 +12,18 @@ export default function AnnouncementsPage() {
   const [data, setData] = useState<Announcement[]>([]);
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [form] = Form.useForm();
 
+  // 读失败不能吞成空列表：公告页一片空白，运营会以为没发过公告。
   const load = async () => {
     setLoading(true);
-    try { setData((await apiGet<{ items: Announcement[] }>('/api/v1/admin/announcements')).items || []); }
-    catch { setData([]); } finally { setLoading(false); }
+    try {
+      setData((await apiGet<{ items: Announcement[] }>('/api/v1/admin/announcements')).items || []);
+      setLoadError(null);
+    } catch (e: any) {
+      setData([]); setLoadError(e?.message || '公告列表读取失败');
+    } finally { setLoading(false); }
   };
 
   useEffect(() => { load(); }, []);
@@ -42,6 +49,7 @@ export default function AnnouncementsPage() {
         <Button icon={<ReloadOutlined />} onClick={load}>刷新</Button>
         <Button type="primary" icon={<PlusOutlined />} onClick={() => setOpen(true)}>新建</Button>
       </Space>
+      {loadError && <LoadError title="公告列表加载失败" detail={loadError} onRetry={load} />}
       <Table rowKey="id" loading={loading} dataSource={data}
         columns={[
           { title: '标题', dataIndex: 'title' },

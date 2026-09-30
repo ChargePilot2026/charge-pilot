@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Alert, Button, Card, Col, Progress, Row, Space, Spin, Statistic, Table, Typography } from 'antd';
 import { ReloadOutlined, ThunderboltOutlined, DollarOutlined, UserOutlined, AlertOutlined } from '@ant-design/icons';
 import { apiGet } from '../api/client';
+import { LoadError } from '../components/LoadError';
 
 const { Title, Paragraph, Text } = Typography;
 
@@ -41,7 +42,7 @@ export default function DashboardPage() {
     <Paragraph type="secondary">
       充电中订单和结算指标来自用户订单数据；结算金额按已结束订单汇总，未扣除后续退款。{updated ? ` 更新于 ${updated}` : ''}
     </Paragraph>
-    {error && <Alert style={{ marginBottom: 16 }} type="error" showIcon message="仪表盘读取失败" description={error} action={<Button size="small" onClick={() => void load()}>重试</Button>} />}
+    {error && <LoadError title="仪表盘读取失败" detail={error} onRetry={() => void load()} />}
     {loading && !metrics ? <Card><Spin /></Card> : <>
       <Row gutter={[16, 16]}>
         <Col xs={24} sm={12} xl={6}><Card><Statistic title="充电中订单" value={metrics ? metrics.charging_orders : '—'} prefix={<ThunderboltOutlined />} suffix="单" /></Card></Col>

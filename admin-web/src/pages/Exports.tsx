@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from 'react';
 import { Alert, App, Button, Form, Modal, Select, Space, Table, Tag, Typography } from 'antd';
 import { DownloadOutlined, ReloadOutlined } from '@ant-design/icons';
 import { apiGet, apiPost } from '../api/client';
+import { formatTime } from '../utils/time';
+import { LoadError } from '../components/LoadError';
 
 const { Title, Text, Paragraph } = Typography;
 const endpoint = '/api/v1/admin/exports';
@@ -119,7 +121,7 @@ export default function ExportsPage() {
         <Title level={3} style={{ margin: 0 }}>数据导出</Title>
         <Button icon={<ReloadOutlined />} onClick={() => void load()} loading={loading}>刷新</Button>
         <Button type="primary" disabled={!canCreate || allowed.length === 0} onClick={() => setCreating(true)}>创建导出</Button>
-        {error && <Text type="danger">{error}</Text>}
+        {error && <LoadError title="导出记录加载失败" detail={error} onRetry={() => void load()} />}
       </Space>
       {!canCreate ? (
         <Alert type="info" showIcon message="当前账号可查看导出记录，但无导出权限" description="创建与下载需要 export.create，导出属于批量数据出域操作，仅授予客户管理员。请联系客户管理员开通。" />
@@ -136,7 +138,7 @@ export default function ExportsPage() {
           { title: '行数', dataIndex: 'row_count', width: 90 },
           { title: '状态', dataIndex: 'status', width: 100, render: (v: string) => <Tag color={statusMeta[v]?.color}>{statusMeta[v]?.label || v}</Tag> },
           { title: '错误', dataIndex: 'error_msg', ellipsis: true, render: (v: string | null) => v || '—' },
-          { title: '过期时间', dataIndex: 'expires_at', width: 180, render: (v: string | null) => v || '—' },
+          { title: '过期时间', dataIndex: 'expires_at', width: 180, render: formatTime },
           {
             title: '操作', width: 120, render: (_, row) => (
               row.status === 'completed' && canCreate
@@ -162,7 +164,7 @@ function ModalLazy(props: {
   maxRows: number;
 }) {
   return (
-    <Modal title="创建导出任务" open={props.open} onCancel={props.onCancel} onOk={props.onOk} confirmLoading={props.saving} okText="开始导出" cancelText="取消" destroyOnClose>
+    <Modal title="创建导出任务" open={props.open} onCancel={props.onCancel} onOk={props.onOk} confirmLoading={props.saving} okText="开始导出" cancelText="取消" destroyOnHidden>
       <Form form={props.form} layout="vertical" preserve={false}>
         <Form.Item name="resource" label="导出资源" rules={[{ required: true, message: '请选择资源' }]}>
           <Select options={props.options.map((v) => ({ value: v, label: resourceLabel[v] || v }))} />

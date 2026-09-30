@@ -3,6 +3,7 @@ import { ReloadOutlined } from '@ant-design/icons';
 import { useEffect, useRef, useState } from 'react';
 import { apiGet } from '../api/client';
 import DeviceImport from './DeviceImport';
+import { LoadError } from '../components/LoadError';
 
 interface Device {
   id: number; device_id: string; station_id?: number; station_name?: string;
@@ -45,7 +46,7 @@ export default function DevicesPage() {
       <Button onClick={search}>查询</Button>
       <Button onClick={()=>{setKeyword('');setStatus('');setQuery({...query,page:1,keyword:'',status:''});}}>重置</Button>
     </Space></div>
-    {error && <div role="alert" style={{color:'#cf1322',marginBottom:12}}>{error}</div>}
+    {error && <LoadError title="设备列表加载失败" detail={error} onRetry={() => void load()} />}
     <Table<Device> rowKey="id" loading={loading} dataSource={data}
       pagination={{current:query.page,pageSize:query.page_size,total,showSizeChanger:true,pageSizeOptions:[10,20,50,100],showTotal:n=>`共 ${n} 台设备`,onChange:(page,page_size)=>setQuery({...query,page:page_size===query.page_size?page:1,page_size})}}
       columns={[

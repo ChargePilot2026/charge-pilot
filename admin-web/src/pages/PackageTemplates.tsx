@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Alert, Button, Form, Input, InputNumber, Modal, Select, Space, Switch, Table, Tag, message } from 'antd';
 import { apiGet, apiPost, apiPut } from '../api/client';
 import { fromCents, toCents, type Station } from './pricing/model';
+import { LoadError } from '../components/LoadError';
 
 // A package template is a prepaid cap a charging user can pick. It is deliberately not
 // part of a pricing template: the cap settles on its own price, so it stays
@@ -43,6 +44,8 @@ export default function PackageTemplates() {
   const [targetStation, setTargetStation] = useState<number | null>(null);
   const [targetDevice, setTargetDevice] = useState('');
   const [applyError, setApplyError] = useState('');
+  const [listError, setListError] = useState<string | null>(null);
+  const [stationsError, setStationsError] = useState<string | null>(null);
 
   const [form] = Form.useForm();
   const kind = Form.useWatch<string>('kind', form) || 'amount';
@@ -53,8 +56,9 @@ export default function PackageTemplates() {
       const result = await apiGet<{ items: PackageTemplate[]; permissions: string[] }>('/api/v1/admin/settings/package-templates');
       setItems(result.items || []);
       setPermissions(result.permissions || []);
+      setListError(null);
     } catch (e: any) {
-      message.error(e.message);
+      setItems([]); setPermissions([]); setListError(e?.message || '套餐模板列表读取失败');
     } finally {
       setLoading(false);
     }
@@ -69,8 +73,11 @@ export default function PackageTemplates() {
     try {
       const result = await apiGet<{ items: Station[] }>('/api/v1/admin/stations', { status: 'active', keyword: keyword || undefined, page: 1, page_size: 50 });
       setStations(result.items || []);
+      setStationsError(null);
     } catch (e: any) {
-      message.error(e.message);
+      // 读不到站点时不能落到「没有匹配的运营中站点」那句空态上：那会把接口故障
+      // 说成确实没有站点，运营于是以为套餐上不了架。
+      setStations([]); setStationsError(e?.message || '运营中站点列表读取失败');
     } finally {
       setStationsLoading(false);
     }
@@ -187,6 +194,7 @@ export default function PackageTemplates() {
     </Space>
     <Alert type="info" showIcon style={{ marginBottom: 12 }}
       message="套餐按自己的价格结算，与费率无关：按金额是预付封顶，按时长按现行费率结算。应用会复制成一条在售记录，之后修改模板不会影响已上架的套餐。" />
+    {listError && <LoadError title="套餐模板列表加载失败" detail={listError} onRetry={() => void load()} />}
     <Table rowKey="id" dataSource={items} loading={loading} scroll={{ x: 1000 }} pagination={false} columns={[
       { title: '名称', render: (_: unknown, r: PackageTemplate) => <>{r.name}<div style={{ color: '#999' }}>v{r.version}</div></> },
       { title: '排序', dataIndex: 'sort_order', width: 90, render: (v?: number) => (typeof v === 'number' ? v : <span style={{ color: '#999' }}>—</span>) },
@@ -210,7 +218,7 @@ export default function PackageTemplates() {
     ]} />
 
     <Modal title={editing ? `编辑套餐模板 · ${editing.name}` : '新建套餐模板'} open={open} width={720}
-      onCancel={() => setOpen(false)} onOk={() => void save()} confirmLoading={saving} okText="保存" destroyOnClose>
+      onCancel={() => setOpen(false)} onOk={() => void save()} confirmLoading={saving} okText="保存" destroyOnHidden>
       {formError && <Alert type="error" showIcon message={formError} style={{ marginBottom: 12 }} />}
       <Form form={form} name="package_template" layout="vertical">
         <Form.Item name="name" label="套餐名称" rules={[{ required: true, whitespace: true, max: 64 }]}>
@@ -252,6 +260,7 @@ export default function PackageTemplates() {
       onCancel={() => setApplying(null)} onOk={() => void apply()} confirmLoading={saving} okText="上架"
       okButtonProps={{ disabled: !targetStation }}>
       {applyError && <Alert type="error" showIcon message={applyError} style={{ marginBottom: 12 }} />}
+      {stationsError && <LoadError title="运营中站点列表加载失败" detail={stationsError} onRetry={() => void searchStations('')} />}
       <Alert type="warning" showIcon style={{ marginBottom: 12 }}
         message="上架会把当前模板复制成一条在售记录。同一个套餐不能在同一个范围重复上架；站点与具体设备可以各上架一份。" />
       <Space direction="vertical" style={{ width: '100%' }}>
@@ -262,7 +271,7 @@ export default function PackageTemplates() {
         <Input aria-label="设备编号" placeholder="设备编号（留空表示上架为站点默认套餐）" maxLength={64}
           value={targetDevice} onChange={e => setTargetDevice(e.target.value)} />
       </Space>
-      {stations.length === 0 && !stationsLoading && <div style={{ marginTop: 8, color: '#999' }}>没有匹配的运营中站点</div>}
+      {stations.length === 0 && !stationsLoading && !stationsError && <div style={{ marginTop: 8, color: '#999' }}>没有匹配的运营中站点</div>}
     </Modal>
   </>;
 }

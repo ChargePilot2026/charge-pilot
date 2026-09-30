@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Table, Typography, Tag, Space, Button, Input, Select, DatePicker, Drawer, Descriptions } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
 import { apiGet } from '../api/client';
+import { LoadError } from '../components/LoadError';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -77,7 +78,7 @@ export default function AuditLogsPage() {
             .map(v => ({ value: v, label: v }))} allowClear />
         <DatePicker.RangePicker onChange={v => { setRange(v as any); setPage(1); }} />
       </Space>
-      {error && <Text type="danger">{error}</Text>}
+      {error && <LoadError title="审计日志加载失败" detail={error} onRetry={() => void load()} />}
       <Paragraph type="secondary">
         记录只追加不可修改。退款、提现、钱包放款、发票复核等资金操作与账号权限变更均在此留痕，可按操作前后快照核对。
       </Paragraph>

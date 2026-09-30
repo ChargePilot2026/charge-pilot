@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Alert, App, Button, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Table, Tag, Typography } from 'antd';
 import { PlusOutlined, ReloadOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { apiDelete, apiGet, apiPost } from '../api/client';
+import { LoadError } from '../components/LoadError';
 
 const { Text, Paragraph } = Typography;
 const packagesEndpoint = '/api/v1/admin/ota/packages';
@@ -112,8 +113,8 @@ export function OtaPackages() {
       <Space style={{ marginBottom: 12 }} wrap>
         <Button type="primary" icon={<PlusOutlined />} onClick={() => setOpen(true)}>登记固件</Button>
         <Button icon={<ReloadOutlined />} onClick={() => void load()} loading={loading}>刷新</Button>
-        {error && <Text type="danger">{error}</Text>}
-      </Space>
+        </Space>
+      {error && <LoadError title="固件包加载失败" detail={error} onRetry={() => void load()} />}
       {rows.length === 0 && !loading ? (
         <Alert type="info" showIcon message="暂无固件包" description="登记并发布固件后即可创建 OTA 升级计划。" />
       ) : (
@@ -135,7 +136,7 @@ export function OtaPackages() {
         />
       )}
       <Modal title="登记固件包" open={open} onCancel={() => setOpen(false)} onOk={() => void submit()}
-        confirmLoading={saving} okText="保存" cancelText="取消" width={560} destroyOnClose>
+        confirmLoading={saving} okText="保存" cancelText="取消" width={560} destroyOnHidden>
         <Form form={form} layout="vertical" initialValues={{ publish: true }}>
           <Form.Item name="code" label="固件编码" rules={[{ required: true, message: '请填写编码' }, { max: 64 }]}>
             <Input maxLength={64} placeholder="例如 DC589-CONTROLLER" />
@@ -247,8 +248,8 @@ export function OtaSchedules() {
       <Space style={{ marginBottom: 12 }} wrap>
         <Button type="primary" icon={<PlusOutlined />} onClick={() => setOpen(true)}>新建计划</Button>
         <Button icon={<ReloadOutlined />} onClick={() => void load()} loading={loading}>刷新</Button>
-        {error && <Text type="danger">{error}</Text>}
-      </Space>
+        </Space>
+      {error && <LoadError title="升级计划加载失败" detail={error} onRetry={() => void load()} />}
       {rows.length === 0 && !loading ? (
         <Alert type="info" showIcon message="暂无升级计划" description="选择一个已发布的固件包即可创建计划。" />
       ) : (
@@ -282,7 +283,7 @@ export function OtaSchedules() {
         />
       )}
       <Modal title="新建升级计划" open={open} onCancel={() => setOpen(false)} onOk={() => void submit()}
-        confirmLoading={saving} okText="创建" cancelText="取消" destroyOnClose>
+        confirmLoading={saving} okText="创建" cancelText="取消" destroyOnHidden>
         <Form form={form} layout="vertical" initialValues={{ rollout_strategy: 'canary', batch_size: 5 }}>
           <Form.Item name="package_id" label="固件包" rules={[{ required: true, message: '请选择固件包' }]}>
             <Select options={packages.map((p) => ({ value: p.id, label: `${p.code} ${p.version}` }))} />

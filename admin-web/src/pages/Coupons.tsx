@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Tabs, Table, Typography, Tag, Space, Button, Modal, Form, Input, InputNumber, Select, DatePicker, message } from 'antd';
 import { PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import { apiGet, apiPost, apiPut } from '../api/client';
+import { LoadError } from '../components/LoadError';
 
 const { Title } = Typography;
 
@@ -16,14 +17,19 @@ export default function CouponsPage() {
   const [grantCoupon, setGrantCoupon] = useState<Coupon | null>(null);
   const [editCoupon, setEditCoupon] = useState<Coupon | null>(null);
   const [couponStats, setCouponStats] = useState<any>(null);
+  const [statsError, setStatsError] = useState<string | null>(null);
+  // 记住正在看哪张券的统计，否则失败后没有可重试的目标。
+  const [statsTarget, setStatsTarget] = useState<Coupon | null>(null);
   const [form] = Form.useForm();
   const [grantForm] = Form.useForm();
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [editForm] = Form.useForm();
 
   const load = async () => {
     setLoading(true);
+    setLoadError(null);
     try { setData((await apiGet<{ items: Coupon[] }>('/api/v1/admin/coupons')).items || []); }
-    catch (error: any) { message.error(error?.message || '优惠券读取失败'); } finally { setLoading(false); }
+    catch (error: any) { setLoadError(error?.message || '优惠券读取失败'); } finally { setLoading(false); }
   };
 
   useEffect(() => { load(); }, []);
@@ -61,8 +67,10 @@ export default function CouponsPage() {
   };
 
   const showStats = async (coupon: Coupon) => {
+    setStatsError(null);
+    setStatsTarget(coupon);
     try { setCouponStats(await apiGet(`/api/v1/admin/coupons/${coupon.id}/stats`)); }
-    catch (error: any) { message.error(error?.message || '统计读取失败'); }
+    catch (error: any) { setStatsError(error?.message || '统计读取失败'); }
   };
 
   return (
@@ -75,6 +83,7 @@ export default function CouponsPage() {
         <Button icon={<ReloadOutlined />} onClick={load}>刷新</Button>
         <Button type="primary" icon={<PlusOutlined />} onClick={() => setOpen(true)}>新建</Button>
       </Space>
+      {loadError && <LoadError title="优惠券列表加载失败" detail={loadError} onRetry={() => void load()} />}
       <Table rowKey="id" loading={loading} dataSource={data}
         columns={[
           { title: '名称', dataIndex: 'name' },
@@ -126,7 +135,8 @@ export default function CouponsPage() {
           <Form.Item name="status" label="状态" rules={[{ required: true }]}><Select options={[{ value: 'active', label: '启用' }, { value: 'disabled', label: '停用' }]} /></Form.Item>
         </Form>
       </Modal>
-      <Modal title="优惠券发放统计" open={couponStats !== null} onCancel={() => setCouponStats(null)} footer={null}>
+      <Modal title="优惠券发放统计" open={couponStats !== null || statsError !== null} onCancel={() => { setCouponStats(null); setStatsError(null); setStatsTarget(null); }} footer={null}>
+        {statsError && <LoadError title="发放统计加载失败" detail={statsError} onRetry={() => statsTarget && void showStats(statsTarget)} />}
         {couponStats && <Space direction="vertical">
           <Typography.Text>总额度：{couponStats.total_quota || '不限'}</Typography.Text>
           <Typography.Text>已发放：{couponStats.granted_count}</Typography.Text>
@@ -152,6 +162,7 @@ const triggerLabel: Record<string, string> = {
 // campaign window and its budget can be changed while the system is running.
 function ActivityRules({ coupons, reloadCoupons }: { coupons: Coupon[]; reloadCoupons: () => void }) {
   const [rows, setRows] = useState<any[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -160,8 +171,9 @@ function ActivityRules({ coupons, reloadCoupons }: { coupons: Coupon[]; reloadCo
 
   const load = useCallback(async () => {
     setLoading(true);
+    setLoadError(null);
     try { setRows((await apiGet<{ items: any[] }>('/api/v1/admin/coupon-activities')).items || []); }
-    catch (e: any) { message.error(e?.message || '活动规则读取失败'); } finally { setLoading(false); }
+    catch (e: any) { setLoadError(e?.message || '活动规则读取失败'); } finally { setLoading(false); }
   }, []);
 
   useEffect(() => { void load(); }, [load]);
@@ -207,6 +219,7 @@ function ActivityRules({ coupons, reloadCoupons }: { coupons: Coupon[]; reloadCo
       <Typography.Text type="secondary">
         规则在触发事实发生的同一事务内评估。满减未达门槛、活动过期、预算耗尽都不会发放，也不会影响支付或订单本身。
       </Typography.Text>
+      {loadError && <LoadError title="活动规则加载失败" detail={loadError} onRetry={() => void load()} />}
       <Table rowKey="id" loading={loading} dataSource={rows} scroll={{ x: 1000 }}
         columns={[
           { title: '名称', dataIndex: 'name' },
