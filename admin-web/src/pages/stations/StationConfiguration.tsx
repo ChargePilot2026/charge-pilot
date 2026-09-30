@@ -286,7 +286,7 @@ export default function StationConfiguration({ station, deviceId, onDeviceChange
   if (loadError) return <LoadError title="站点计费与套餐加载失败" detail={loadError} onRetry={() => void load()} />;
   if (!configuration) return null;
   if (targetDevice && !device) return <Space direction="vertical" style={{ width: '100%' }}>
-    <Alert type="error" showIcon message="该设备不在当前站点中，请重新选择设备。" />
+    <Alert type="error" showIcon message="该设备不在当前站点中，请返回站点默认，再从设备列表打开配置。" />
     <Button onClick={() => chooseDevice(null)}>返回站点默认</Button>
   </Space>;
 
@@ -294,14 +294,10 @@ export default function StationConfiguration({ station, deviceId, onDeviceChange
     <Space wrap>
       <Typography.Text strong>{targetDevice ? `设备 ${targetDevice} 的计费与套餐` : `${station.name} · 站点默认配置`}</Typography.Text>
       {targetDevice && <Button onClick={() => chooseDevice(null)} disabled={busy}>返回站点默认</Button>}
-      {(onDeviceChange || deviceId === undefined) && <Select aria-label="配置范围" style={{ width: 280 }} value={targetDevice || ''} disabled={busy}
-        showSearch optionFilterProp="label" onChange={value => chooseDevice(value || null)} options={[
-          { value: '', label: '站点默认' }, ...rows.map(row => ({ value: row.device_id, label: `设备 ${row.device_id}${row.model ? ` · ${row.model}` : ''}` })),
-        ]} />}
       <Button onClick={() => void load()} disabled={busy}>刷新配置</Button>
     </Space>
     {station.status !== 'active' && <Alert type="info" showIcon message="本站点当前未运营，现有配置暂不用于充电；暂不能发布计费或上架套餐。" />}
-    {!targetDevice && !configuration.can_manage_default && <Alert type="info" showIcon message="当前账号可查看站点默认配置，请选择设备管理其独立计费与套餐。" />}
+    {!targetDevice && !configuration.can_manage_default && <Alert type="info" showIcon message="当前账号可查看站点默认配置；可从设备行的「计费与套餐」进入独立配置。" />}
     <Card size="small" title={targetDevice ? '当前设备计费' : '站点默认计费'} extra={canCreate && <Button type="primary" onClick={openPricing} disabled={!canPublish || busy}>选择计费模板</Button>}>
       {currentSpec?.mode ? <Space direction="vertical" style={{ width: '100%' }}>
         <Space wrap><Typography.Text strong>{currentName || modeLabel(currentSpec.mode)}</Typography.Text>
