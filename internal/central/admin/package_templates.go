@@ -11,16 +11,14 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// 套餐模板是充电用户可以选的预付封顶。它刻意不属于计费模板：封顶按
-// 自己的价格结算，所以不管当前在跑哪份费率都仍然有效，一份费率也可以
-// 配好几套不同的套餐。把套餐应用到某个站点或设备时，它会被复制成一条
-// charge_offer，小程序读的就是这个。
+// 套餐模板提供金额消费上限或固定售价的充电时长。
+// 上架复制条款到 charge_offer，模板更新不改变在售记录或购买快照。
 
 // packageTemplateInput 是套餐模板新增与更新共用的请求体。
 type packageTemplateInput struct {
 	Name            string `json:"name"`             // 套餐名称，必填，最多 64 字符
-	Kind            string `json:"kind"`             // 套餐种类：amount 按金额封顶、package 按时长封顶
-	PriceCents      int64  `json:"price_cents"`      // 金额上限（分）：kind=amount 时 1–1000000 且必填，kind=package 时必须为 0
+	Kind            string `json:"kind"`             // 套餐种类：amount 按金额封顶、package 固定时长套餐
+	PriceCents      int64  `json:"price_cents"`      // 消费上限或套餐售价（分）：两种类型均为 1–1000000
 	DurationMinutes uint16 `json:"duration_minutes"` // 时长上限（分钟）：kind=package 时 1–600 且必填，kind=amount 时必须为 0
 	MinChargeCents  int64  `json:"min_charge_cents"` // 最低消费（分），0–1000000
 	ShowRemark      bool   `json:"show_remark"`      // 是否在小程序上展示套餐说明
@@ -30,10 +28,7 @@ type packageTemplateInput struct {
 	ExpectedVersion uint32 `json:"expected_version"` // 乐观锁：更新时必填且要等于当前版本号；新增时必须为 0
 }
 
-// validPackageTemplate 校验套餐模板，并让「能卖」和「能算钱」保持同一套词：
-// 状态只能取 active/disabled，金额类必须填金额且不填时长，时长类必须填时长且不填金额上限。
-// 一份没有时长的「时长类」，或一个没有正数封顶的金额类，是能卖出去、
-// 却算不出钱来的。
+// validPackageTemplate 校验金额方案的消费上限及固定时长套餐的售价和时长。
 // validPackageTemplate 不校验 ExpectedVersion，那是更新时的乐观锁，由调用方单独判。
 func validPackageTemplate(in packageTemplateInput) bool {
 	if !validText(in.Name, 64) || in.Status != "active" && in.Status != "disabled" {
@@ -46,9 +41,7 @@ func validPackageTemplate(in packageTemplateInput) bool {
 	case "amount":
 		return in.PriceCents > 0 && in.PriceCents <= 1000000 && in.DurationMinutes == 0
 	case "package":
-		// 时长类套餐由费率来结算，所以它自己不带封顶。给它加一个，
-		// 就会悄悄把一个还在继续充电的用户给封顶掉。
-		return in.PriceCents == 0 && in.DurationMinutes > 0 && in.DurationMinutes <= 600
+		return in.PriceCents > 0 && in.PriceCents <= 1000000 && in.DurationMinutes > 0 && in.DurationMinutes <= 600 && in.MinChargeCents == 0
 	default:
 		return false
 	}
@@ -107,7 +100,7 @@ func (a ResourceAPI) createPackageTemplate(c *gin.Context) {
 		return
 	}
 	if !validPackageTemplate(in) || in.ExpectedVersion != 0 {
-		httpapi.BadRequest(c, "套餐模板参数无效：按金额须填金额，按时长须填时长且不填金额")
+		httpapi.BadRequest(c, "套餐模板参数无效：金额方案须填写消费上限；固定时长套餐须填写售价和 1–600 分钟时长，不另设最低消费")
 		return
 	}
 	actor := c.MustGet("admin_profile").(Profile)
@@ -144,7 +137,7 @@ func (a ResourceAPI) updatePackageTemplate(c *gin.Context) {
 		return
 	}
 	if !validPackageTemplate(in) || in.ExpectedVersion == 0 {
-		httpapi.BadRequest(c, "套餐模板参数无效：按金额须填金额，按时长须填时长且不填金额")
+		httpapi.BadRequest(c, "套餐模板参数无效：金额方案须填写消费上限；固定时长套餐须填写售价和 1–600 分钟时长，不另设最低消费")
 		return
 	}
 	actor := c.MustGet("admin_profile").(Profile)
@@ -212,7 +205,7 @@ type applyPackageInput struct {
 // applyPackageTemplate 把套餐上架到某个站点或某台设备。同一个套餐可以既整站在售、
 // 又单独挂在某台设备上，只有「这个完全一样的目标上已经在售」才算重复。
 // 三种已有情况分别处理：已在售则原样返回那条 offer（重试不该被当成冲突），
-// 已下架则把同一条 offer 重新上架（不新建第二行，避免同一目标出现两条用户只能看见一条的记录），
+// 已下架则以模板当前条款更新同一条 offer 并重新上架，
 // 从未上架才新建。响应里的 replayed / relisted 说明这次走的是哪条路径。
 func (a ResourceAPI) applyPackageTemplate(c *gin.Context) {
 	id, ok := pathID(c)
@@ -261,6 +254,11 @@ func (a ResourceAPI) applyPackageTemplate(c *gin.Context) {
 			httpapi.Write(c, 409, 1009, "套餐模板已停用，请先启用后再应用", nil)
 			return errAlreadyReported
 		}
+		if !validPackageTemplate(packageTemplateInput{Name: pkg.Name, Kind: pkg.Kind, PriceCents: pkg.PriceCents,
+			DurationMinutes: pkg.DurationMinutes, MinChargeCents: pkg.MinChargeCents, Status: pkg.Status}) {
+			httpapi.Write(c, 409, 1009, "套餐售价或时长无效，请编辑模板补充后再上架", nil)
+			return errAlreadyReported
+		}
 		var station Station
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id=? AND status='active' AND deleted_at IS NULL", in.StationID).Take(&station).Error; err != nil {
 			return err
@@ -287,10 +285,14 @@ func (a ResourceAPI) applyPackageTemplate(c *gin.Context) {
 		// existing 是这个精确目标上已有的那条 offer：ID 与状态，状态决定是重放、
 		// 重新上架还是新建。查不到记录时 found.Error 是 gorm.ErrRecordNotFound，按新建处理。
 		existing := struct {
-			ID     uint64 // 已有 offer 的 id
-			Status string // active 在售 / disabled 已下架
+			ID              uint64
+			Status          string
+			Name            string
+			Mode            string
+			PriceCents      int64
+			DurationMinutes uint16
 		}{}
-		query := tx.Table("charge_offer").Select("id, status").
+		query := tx.Table("charge_offer").Select("id,status,name,mode,price_cents,duration_minutes").
 			Where("package_template_id=? AND station_id=? AND deleted_at IS NULL", id, in.StationID)
 		if in.DeviceID == "" {
 			query = query.Where("device_id IS NULL")
@@ -309,16 +311,21 @@ func (a ResourceAPI) applyPackageTemplate(c *gin.Context) {
 			return nil
 		}
 		if found.Error == nil {
-			// 已下架，而运营现在要把它放回去。把同一条 offer 重新上架，
+			// 已下架，而运营现在要把它放回去。以模板当前售价与时长更新同一条 offer 并重新上架，
 			// 而不是给同一个套餐的同一个目标再建第二行——那会留下两行
 			// 只有一个区别：充电用户能看见的是哪一条。
 			if err := tx.Table("charge_offer").Where("id=?", existing.ID).
-				Updates(map[string]any{"status": "active", "version": gorm.Expr("version+1")}).Error; err != nil {
+				Updates(map[string]any{"status": "active", "version": gorm.Expr("version+1"),
+					"name": pkg.Name, "mode": pkg.Kind, "price_cents": pkg.PriceCents, "duration_minutes": pkg.DurationMinutes,
+					"min_charge_cents": pkg.MinChargeCents, "show_remark": pkg.ShowRemark, "card_default": pkg.CardDefault}).Error; err != nil {
 				return err
 			}
 			offerID, relisted = existing.ID, true
 			return resourceAudit(tx, actor, "pricing.package_template.relist", "charge_offer", existing.ID,
-				map[string]any{"status": "disabled"}, map[string]any{"status": "active"},
+				map[string]any{"status": existing.Status, "name": existing.Name, "mode": existing.Mode,
+					"price_cents": existing.PriceCents, "duration_minutes": existing.DurationMinutes},
+				map[string]any{"status": "active", "name": pkg.Name, "mode": pkg.Kind,
+					"price_cents": pkg.PriceCents, "duration_minutes": pkg.DurationMinutes},
 				c.ClientIP(), httpapi.RequestID(c))
 		}
 		// code 是随行写进去的，事后补不上：这一列是 NOT NULL 且没有

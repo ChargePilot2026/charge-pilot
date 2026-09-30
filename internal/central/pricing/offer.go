@@ -21,7 +21,7 @@ type Offer struct {
 var ErrOfferUnavailable = errors.New("charging offer unavailable")
 
 func (o Offer) Valid() bool {
-	return o.ID != 0 && o.StationID != 0 && o.Name != "" && o.PriceCents >= 0 && o.PriceCents <= 1000000 &&
+	return o.ID != 0 && o.StationID != 0 && o.Name != "" && o.PriceCents > 0 && o.PriceCents <= 1000000 &&
 		(o.Mode == "amount" && o.DurationMinutes == 0 || o.Mode == "package" && o.DurationMinutes > 0 && o.DurationMinutes <= 600)
 }
 
@@ -36,7 +36,7 @@ func (s Store) ActiveOffers(ctx context.Context, stationID uint64, deviceID stri
 	// 丢掉它的历史——而后台列表一直都有这个过滤。充电用户这一侧的读取如果
 	// 忽略这一列，就会继续在卖一个运营方以为已经没了的东西。
 	query := s.DB.WithContext(ctx).Table("charge_offer").
-		Where("station_id=? AND status='active' AND deleted_at IS NULL", stationID)
+		Where("station_id=? AND status='active' AND deleted_at IS NULL AND (mode <> 'package' OR price_cents > 0)", stationID)
 	if deviceID != "" {
 		query = query.Where("device_id = ? OR device_id IS NULL", deviceID)
 		// 整站套餐如果这台设备自己也在单卖，就以设备自己那份为准。两条都列出来
@@ -45,17 +45,24 @@ func (s Store) ActiveOffers(ctx context.Context, stationID uint64, deviceID stri
 		query = query.Where(`device_id = ? OR package_template_id NOT IN (
 			SELECT package_template_id FROM charge_offer
 			WHERE station_id = ? AND device_id = ? AND status = 'active' AND deleted_at IS NULL
+            AND (mode <> 'package' OR price_cents > 0)
 		)`, deviceID, stationID, deviceID)
 	}
 	if err := query.Order("device_id IS NULL ASC, mode, price_cents, id").Find(&rows).Error; err != nil {
 		return nil, err
 	}
+	available := make([]Offer, 0, len(rows))
 	for _, row := range rows {
+		// 旧编辑器曾发布无售价的时长套餐；保留后台可修复，用户端不再售卖。
+		if row.Mode == "package" && row.PriceCents <= 0 {
+			continue
+		}
 		if !row.Valid() {
 			return nil, ErrOfferUnavailable
 		}
+		available = append(available, row)
 	}
-	return rows, nil
+	return available, nil
 }
 
 func (s Store) ActiveOffer(ctx context.Context, stationID uint64, deviceID string, id uint64) (Offer, error) {

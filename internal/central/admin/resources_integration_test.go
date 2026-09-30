@@ -660,6 +660,39 @@ func TestAdminPagesIntegration(t *testing.T) {
 		t.Fatalf("expected exactly one active offer at the target, found %d", onSale)
 	}
 
+	// 时长模板必须有售价，上架和下单读取同一份金额。重新上架更新已下架的副本。
+	packagePath := "settings/package-templates/" + fmt.Sprintf("%v", packageID)
+	pkg["kind"], pkg["duration_minutes"], pkg["price_cents"], pkg["expected_version"] = "package", 120, 0, 1
+	call(adminToken, "PUT", packagePath, pkg, 400)
+	// 模拟旧编辑器留下的零售价时长模板，不能直接重新发布。
+	if err := adb.Table("pricing_package_template").Where("id=?", packageID).
+		Updates(map[string]any{"kind": "package", "price_cents": 0, "duration_minutes": 120}).Error; err != nil {
+		t.Fatal(err)
+	}
+	call(adminToken, "POST", packagePath+"/apply", gin.H{"station_id": sid}, 409)
+	pkg["price_cents"] = 500
+	call(adminToken, "PUT", packagePath, pkg, 200)
+	// 修改模板不改变仍在售的旧记录。
+	var sale struct {
+		Mode            string
+		PriceCents      int64
+		DurationMinutes uint16
+	}
+	if err := adb.Table("charge_offer").Where("id=?", offerID).Take(&sale).Error; err != nil {
+		t.Fatal(err)
+	}
+	if sale.Mode != "amount" || sale.DurationMinutes != 0 {
+		t.Fatalf("template update changed active offer: %+v", sale)
+	}
+	call(adminToken, "POST", "settings/charge-offers/"+offerID+"/disable", nil, 200)
+	call(adminToken, "POST", packagePath+"/apply", gin.H{"station_id": sid}, 200)
+	if err := adb.Table("charge_offer").Where("id=?", offerID).Take(&sale).Error; err != nil {
+		t.Fatal(err)
+	}
+	if sale.Mode != "package" || sale.PriceCents != 500 || sale.DurationMinutes != 120 {
+		t.Fatalf("duration package price was lost: %+v", sale)
+	}
+
 	// 设备矩阵、切换日志和计量申报都能从定价页面点进去，而在此之前它们一
 	// 个测试都没有。接连五个缺陷查下来，根子都在「没有任何测试执行过的路
 	// 由」上，所以本文件现在守的规矩是：定价页面能走得到的每一条路由都在

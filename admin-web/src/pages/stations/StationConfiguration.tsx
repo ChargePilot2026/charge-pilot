@@ -39,7 +39,7 @@ export interface StationConfigurationProps {
 }
 
 const isStationOffer = (offer: Offer) => !offer.device_id;
-const offerKind = (kind: string) => kind === 'amount' ? '按金额封顶' : kind === 'package' ? '按时长套餐' : kind;
+const offerKind = (kind: string) => kind === 'amount' ? '金额方案' : kind === 'package' ? '固定时长套餐' : kind;
 const money = (cents: number) => `¥${fromCents(cents).toFixed(2)}`;
 const errorText = (error: unknown, fallback: string) => error instanceof Error ? error.message : fallback;
 
@@ -48,8 +48,8 @@ function offerTerms(offer: Offer | PackageTemplate) {
   return <Descriptions size="small" column={{ xs: 1, sm: 2 }} bordered items={[
     { key: 'name', label: '套餐', children: offer.name },
     { key: 'kind', label: '类型', children: offerKind(kind) },
-    { key: 'value', label: kind === 'package' ? '时长' : '封顶金额', children: kind === 'package' ? `${offer.duration_minutes} 分钟` : money(offer.price_cents) },
-    { key: 'minimum', label: '最低消费', children: money(offer.min_charge_cents) },
+    { key: 'value', label: kind === 'package' ? '套餐售价 / 时长' : '消费上限', children: kind === 'package' ? `${money(offer.price_cents)} / ${offer.duration_minutes} 分钟` : money(offer.price_cents) },
+    ...(kind === 'package' ? [] : [{ key: 'minimum', label: '最低消费', children: money(offer.min_charge_cents) }]),
     { key: 'card', label: '刷卡默认', children: offer.card_default ? '是' : '否' },
     { key: 'remark', label: '显示套餐说明', children: offer.show_remark ? '是' : '否' },
   ]} />;
@@ -156,7 +156,7 @@ export default function StationConfiguration({ station, deviceId, onDeviceChange
   const selectedCandidate = candidates.find(candidate => candidate.id === selectedTemplate);
   const selectedPackageTemplate = packages.find(template => template.id === selectedPackage);
   const existingPackage = exactOffers.find(offer => offer.package_template_id === selectedPackage);
-  const packagePreview = existingPackage?.status === 'disabled' ? existingPackage : selectedPackageTemplate;
+  const packagePreview = selectedPackageTemplate;
 
   const chooseDevice = (id: string | null) => { setLocalDevice(id); onDeviceChange?.(id); };
   const refreshAfterWrite = async (expectedContext: string) => {
@@ -236,7 +236,7 @@ export default function StationConfiguration({ station, deviceId, onDeviceChange
     try {
       const result = await apiPost<{ replayed?: boolean; relisted?: boolean }>(`/api/v1/admin/settings/package-templates/${selectedPackageTemplate.id}/apply`, { ...body, request_id: requestId });
       if (context.current !== expectedContext) return;
-      message.success(result.relisted ? '原套餐已重新上架' : result.replayed ? '该套餐已在售' : '套餐已上架');
+      message.success(result.relisted ? '套餐已按模板当前条款重新上架' : result.replayed ? '该套餐已在售' : '套餐已上架');
       setPackageOpen(false); await refreshAfterWrite(expectedContext);
     } catch (error) {
       if (context.current === expectedContext) setPackageError(errorText(error, '套餐上架失败'));
@@ -374,9 +374,9 @@ export default function StationConfiguration({ station, deviceId, onDeviceChange
           disabled={busy || !ready} onChange={value => { setSelectedPackage(value); setPackageError(''); }} options={packages.map(template => {
             const alreadyActive = exactOffers.some(offer => offer.package_template_id === template.id && offer.status === 'active');
             const oldOffer = exactOffers.some(offer => offer.package_template_id === template.id && offer.status === 'disabled');
-            return { value: template.id, disabled: alreadyActive, label: `${template.name}${alreadyActive ? '（当前范围已在售）' : oldOffer ? '（可恢复原套餐）' : ''}` };
+            return { value: template.id, disabled: alreadyActive || template.price_cents <= 0, label: `${template.name} · ${money(template.price_cents)}${template.kind === 'package' ? ` / ${template.duration_minutes} 分钟` : ''}${template.price_cents <= 0 ? '（请先补充售价）' : alreadyActive ? '（当前范围已在售）' : oldOffer ? '（按模板当前条款重新上架）' : ''}` };
           })} />
-        {existingPackage?.status === 'disabled' && <Alert type="warning" showIcon message="此范围已有下架记录。本次恢复原套餐条款；模板后来修改的值不会覆盖它。下方展示原记录的实际条款。" />}
+        {existingPackage?.status === 'disabled' && <Alert type="warning" showIcon message="此范围已有下架记录。本次按下方模板当前售价与时长重新上架；历史订单的购买条款保持原样。" />}
         {packagePreview && offerTerms(packagePreview)}
       </Space>
     </Modal>

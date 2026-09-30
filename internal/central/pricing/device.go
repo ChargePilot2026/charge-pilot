@@ -122,14 +122,32 @@ func SettleSession(spec Spec, meter ActualMeter, paid *Offer, actual *SessionAct
 	if actual != nil {
 		settlement.StopReason = string(actual.StopReason)
 	}
+	// 固定时长套餐按购买快照的售价结算，与站点费率和功率无关。
+	// 延迟停机也不超收；提前停止延续未使用时长退款规则。
+	if paid != nil && paid.Mode == "package" {
+		if !paid.Valid() {
+			return Settlement{}, ErrInvalidPricing
+		}
+		used := int64(meter.ChargedSeconds)
+		if !spec.Mode.ServerBilled() && actual != nil {
+			used = int64(actual.UsedSeconds)
+		}
+		limit := int64(paid.DurationMinutes) * 60
+		amount := paid.PriceCents
+		if used < limit {
+			amount = amount * used / limit
+		}
+		// 套餐总价不含单独约定的电费拆分，与支付报价一致记入套餐服务费。
+		settlement.ServiceCents, settlement.TotalCents = amount, amount
+		settlement.Estimated = actual == nil || !actual.Reported
+		return settlement, nil
+	}
 	if spec.Mode.ServerBilled() {
 		fee, err := PriceActual(Rule{ID: 1, Version: 1, Spec: spec}, meter)
 		if err != nil {
 			return Settlement{}, err
 		}
-		// 买下的套餐只允许把账单往下压，绝不允许往上抬；否则套餐就变成了附加费。
-		// 封顶型套餐（amount）是把总额直接截断到购买价，固定时长套餐（package）
-		// 则按实际用掉的时长占整段时长的比例折算。
+		// 金额方案按现行费率计算，消费上限只压低账单，不增加费用。
 		total := fee.TotalCents
 		if paid != nil {
 			if !paid.Valid() {
@@ -139,14 +157,6 @@ func SettleSession(spec Spec, meter ActualMeter, paid *Offer, actual *SessionAct
 			case "amount":
 				if total > paid.PriceCents {
 					total = paid.PriceCents
-				}
-			case "package":
-				limit := int64(paid.DurationMinutes) * 60
-				used := int64(meter.ChargedSeconds)
-				if used < limit {
-					if limit > 0 {
-						total = total * used / limit
-					}
 				}
 			}
 		}
@@ -168,15 +178,6 @@ func SettleSession(spec Spec, meter ActualMeter, paid *Offer, actual *SessionAct
 		return Settlement{}, ErrNoPaidAmount
 	}
 	amount := paid.PriceCents
-	if paid.Mode == "package" && actual != nil && paid.DurationMinutes > 0 {
-		// 套餐是按一整段时长买的，提前退不应该把整段时长都收走。这是退款问题
-		// 而不是定价问题，所以它只会把金额往下压。
-		limit := int64(paid.DurationMinutes) * 60
-		used := int64(actual.UsedSeconds)
-		if used < limit {
-			amount = amount * used / limit
-		}
-	}
 	settlement.TotalCents = amount
 	settlement.Estimated = actual == nil || !actual.Reported
 	if actual != nil && spec.Mode == ModeDevicePower && actual.SpentCents > 0 {

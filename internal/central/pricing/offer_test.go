@@ -137,3 +137,32 @@ func TestDeviceOfferOverridesTheStationWideOne(t *testing.T) {
 		}
 	}
 }
+
+func TestUnpricedDurationOffersAreNotSoldOrMaskValidStationOffers(t *testing.T) {
+	store, done := offerTestStore(t)
+	defer done()
+	if err := store.DB.Exec("INSERT INTO station(id,name,status,longitude,latitude) VALUES(9803,'售价校验站点','active',116.4,39.9)").Error; err != nil {
+		t.Fatal(err)
+	}
+	defer store.DB.Exec("DELETE FROM station WHERE id=9803")
+	defer store.DB.Exec("DELETE FROM charge_offer WHERE station_id=9803")
+	for _, row := range []struct {
+		device any
+		price  int64
+	}{{nil, 500}, {"PRICEDEVICE1", 0}} {
+		if err := store.DB.Exec("INSERT INTO charge_offer(station_id,device_id,name,mode,price_cents,duration_minutes,status,version,package_template_id) VALUES(9803,?,'2小时5元','package',?,120,'active',1,7300)", row.device, row.price).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	offers, err := store.ActiveOffers(t.Context(), 9803, "PRICEDEVICE1")
+	if err != nil || len(offers) != 1 || offers[0].PriceCents != 500 || offers[0].DeviceID != "" {
+		t.Fatalf("offers=%+v err=%v", offers, err)
+	}
+	var invalid Offer
+	if err := store.DB.Table("charge_offer").Where("station_id=9803 AND price_cents=0").Take(&invalid).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ActiveOffer(t.Context(), 9803, "PRICEDEVICE1", invalid.ID); !errors.Is(err, ErrOfferUnavailable) {
+		t.Fatalf("unpriced offer selectable: %v", err)
+	}
+}

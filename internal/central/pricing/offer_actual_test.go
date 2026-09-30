@@ -21,7 +21,7 @@ func TestConfiguredOfferSettlement(t *testing.T) {
 	}{
 		// 固定时长套餐只为用掉的那一段时长收费，所以提前结束的充电
 		// 会把剩下的部分退回去。
-		{"package half used", Offer{ID: 1, StationID: 2, Name: "套餐", Mode: "package", PriceCents: 600, DurationMinutes: 60}, 100},
+		{"package half used", Offer{ID: 1, StationID: 2, Name: "套餐", Mode: "package", PriceCents: 600, DurationMinutes: 60}, 300},
 		{"amount cap", Offer{ID: 2, StationID: 2, Name: "金额", Mode: "amount", PriceCents: 100}, 100},
 	}
 	for _, tc := range tests {
@@ -40,5 +40,38 @@ func TestConfiguredOfferSettlement(t *testing.T) {
 	got, err := PriceOfferActual(rule, &tests[0].offer, zero)
 	if err != nil || got.TotalCents != 0 {
 		t.Fatalf("an unused package must be fully refunded: fee=%+v err=%v", got, err)
+	}
+}
+
+// 固定售价不能随着站点费率、用电量或服务端/设备执行方式改变。
+func TestFixedDurationOfferUsesItsPriceAndRefundsUnusedTime(t *testing.T) {
+	offer := Offer{ID: 1, StationID: 2, Name: "2小时5元", Mode: "package", PriceCents: 500, DurationMinutes: 120}
+	for _, mode := range []ChargeMode{ModeServerEnergy, ModeServerRealtimePower, ModeServerMaxPower, ModeDeviceDuration} {
+		spec := Spec{Mode: mode}
+		if mode.ServerBilled() {
+			spec = realtimeSpec()
+			spec.Mode = mode
+			spec.Electric.Basis = mode.BasisFor()
+			if mode == ModeServerEnergy {
+				spec.Electric.Periods[0] = Period{EndMinute: 1440, ElectricCents: 999999}
+			}
+		}
+		for _, tc := range []struct {
+			seconds uint32
+			want    int64
+		}{{0, 0}, {1, 0}, {3600, 250}, {7200, 500}, {7500, 500}} {
+			// 缺少分时计量也不阻止固定售价结算。
+			meter := ActualMeter{ChargedSeconds: tc.seconds}
+			actual := &SessionActual{UsedSeconds: tc.seconds, Reported: true}
+			got, err := SettleSession(spec, meter, &offer, actual)
+			if err != nil || got.TotalCents != tc.want || got.ElectricCents+got.ServiceCents != tc.want {
+				t.Fatalf("mode=%s seconds=%d got=%+v err=%v want=%d", mode, tc.seconds, got, err, tc.want)
+			}
+		}
+	}
+	invalid := offer
+	invalid.PriceCents = 0
+	if _, err := SettleSession(Spec{Mode: ModeDeviceDuration}, ActualMeter{}, &invalid, nil); err == nil {
+		t.Fatal("unpriced duration package accepted")
 	}
 }

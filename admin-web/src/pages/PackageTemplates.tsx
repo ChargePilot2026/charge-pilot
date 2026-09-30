@@ -4,12 +4,8 @@ import { apiGet, apiPost, apiPut } from '../api/client';
 import { fromCents, toCents, type Station } from './pricing/model';
 import { LoadError } from '../components/LoadError';
 
-// 套餐模板是充电用户可以挑的预付封顶。它刻意不并进电价模板：封顶金额自己结算，所以无论
-// 当前跑的是哪套电价它都有效，而一套电价可以配多组不同的套餐。套用某个套餐模板时会把
-// 它复制成一条 charge_offer，小程序读的就是那个。
-//
-// 两种类型互斥，表单直接说明这一点，而不是留一个「按时长套餐必须填空的金额字段」：
-// 金额封顶是充电用户实付的封顶，按时长套餐则由电价来结算。
+// 金额方案按实际费率消费并封顶；固定时长套餐按配置的售价购买指定时长。
+// 上架复制售价与时长，修改模板不改写在售记录或订单快照。
 
 type PackageTemplate = {
   id: number; name: string; kind: 'amount' | 'package';
@@ -23,7 +19,7 @@ type FormValues = {
   min_charge_yuan?: number; show_remark: boolean; card_default: boolean; sort_order: number; status: string;
 };
 
-const kindLabel = (kind: string) => (kind === 'amount' ? '按金额封顶' : '按时长套餐');
+const kindLabel = (kind: string) => (kind === 'amount' ? '金额方案' : '固定时长套餐');
 
 export default function PackageTemplates() {
   const [items, setItems] = useState<PackageTemplate[]>([]);
@@ -103,14 +99,12 @@ export default function PackageTemplates() {
       return;
     }
     const isAmount = values.kind === 'amount';
-    // 类型决定这两个数里哪一个存在：金额封顶要一个大于 0 的金额且不填时长，按时长套餐
-    // 要一个时长且自身不带封顶金额。
-    if (isAmount && !(Number(values.price_yuan) > 0)) {
-      setFormError('按金额封顶必须填写大于 0 的金额，且时长为 0。');
+    if (!(Number(values.price_yuan) > 0)) {
+      setFormError(isAmount ? '请填写大于 0 的消费上限。' : '请填写大于 0 的套餐售价。');
       return;
     }
-    if (!isAmount && !(Number(values.duration_minutes) > 0)) {
-      setFormError('按时长套餐必须填写大于 0 的时长（1–600 分钟），且不填金额。');
+    if (!isAmount && (!Number.isInteger(values.duration_minutes) || Number(values.duration_minutes) < 1 || Number(values.duration_minutes) > 600)) {
+      setFormError('请填写 1–600 分钟的整数充电时长。');
       return;
     }
     setSaving(true);
@@ -119,9 +113,9 @@ export default function PackageTemplates() {
       const body = {
         name: values.name,
         kind: values.kind,
-        price_cents: isAmount ? toCents(values.price_yuan) : 0,
+        price_cents: toCents(values.price_yuan),
         duration_minutes: isAmount ? 0 : Number(values.duration_minutes),
-        min_charge_cents: toCents(values.min_charge_yuan),
+        min_charge_cents: isAmount ? toCents(values.min_charge_yuan) : 0,
         show_remark: !!values.show_remark,
         card_default: !!values.card_default,
         sort_order: Number(values.sort_order) || 0,
@@ -189,24 +183,24 @@ export default function PackageTemplates() {
       {canCreate && <Button type="primary" onClick={() => openEditor()}>新建套餐模板</Button>}
     </Space>
     <Alert type="info" showIcon style={{ marginBottom: 12 }}
-      message="套餐按自己的价格结算，与费率无关：按金额是预付封顶，按时长按现行费率结算。应用会复制成一条在售记录，之后修改模板不会影响已上架的套餐。" />
+      message="金额方案按现行费率消费，达到上限后停止；固定时长套餐按配置售价支付，到时停止，提前结束按未使用时长退款。应用会复制成一条在售记录，之后修改模板不会影响已上架的套餐。" />
     {listError && <LoadError title="套餐模板列表加载失败" detail={listError} onRetry={() => void load()} />}
     <Table rowKey="id" dataSource={items} loading={loading} scroll={{ x: 1000 }} pagination={false} columns={[
       { title: '名称', render: (_: unknown, r: PackageTemplate) => <>{r.name}<div style={{ color: '#999' }}>v{r.version}</div></> },
       { title: '排序', dataIndex: 'sort_order', width: 90, render: (v?: number) => (typeof v === 'number' ? v : <span style={{ color: '#999' }}>—</span>) },
       { title: '类型', dataIndex: 'kind', render: (k: string) => <Tag color={k === 'amount' ? 'blue' : 'green'}>{kindLabel(k)}</Tag> },
-      { title: '金额', render: (_: unknown, r: PackageTemplate) => (r.price_cents ? `¥${fromCents(r.price_cents).toFixed(2)}` : '—') },
+      { title: '消费上限 / 套餐售价', render: (_: unknown, r: PackageTemplate) => (r.price_cents ? `¥${fromCents(r.price_cents).toFixed(2)}` : '—') },
       { title: '时长', render: (_: unknown, r: PackageTemplate) => (r.duration_minutes ? `${r.duration_minutes} 分钟` : '—') },
       { title: '最低消费', render: (_: unknown, r: PackageTemplate) => (r.min_charge_cents ? `¥${fromCents(r.min_charge_cents).toFixed(2)}` : '—') },
       { title: '标记', render: (_: unknown, r: PackageTemplate) => <Space size={4}>
         {r.show_remark && <Tag>显示说明</Tag>}
         {r.card_default && <Tag color="gold">刷卡默认</Tag>}
       </Space> },
-      { title: '状态', dataIndex: 'status', render: (s: string) => <Tag color={s === 'active' ? 'green' : 'default'}>{s === 'active' ? '可上架' : '已停用'}</Tag> },
+      { title: '状态', render: (_: unknown, r: PackageTemplate) => <Tag color={r.status !== 'active' ? 'default' : r.price_cents <= 0 ? 'orange' : 'green'}>{r.status !== 'active' ? '已停用' : r.price_cents <= 0 ? '待补充售价' : '可上架'}</Tag> },
       { title: '已上架', dataIndex: 'applied_targets', render: (v?: string) => v || <span style={{ color: '#999' }}>未上架</span> },
       {
         title: '操作', render: (_: unknown, r: PackageTemplate) => <Space>
-          {canCreate && r.status === 'active' && <Button type="link" onClick={() => void openApply(r)}>上架</Button>}
+          {canCreate && r.status === 'active' && <Button type="link" disabled={r.price_cents <= 0} onClick={() => void openApply(r)}>上架</Button>}
           {canUpdate && <Button type="link" onClick={() => openEditor(r)}>编辑</Button>}
           {canUpdate && r.status === 'active' && <Button type="link" danger onClick={() => disable(r)}>停用</Button>}
         </Space>,
@@ -218,26 +212,31 @@ export default function PackageTemplates() {
       {formError && <Alert type="error" showIcon message={formError} style={{ marginBottom: 12 }} />}
       <Form form={form} name="package_template" layout="vertical">
         <Form.Item name="name" label="套餐名称" rules={[{ required: true, whitespace: true, max: 64 }]}>
-          <Input maxLength={64} placeholder="如：10 元封顶" style={{ width: 280 }} />
+          <Input maxLength={64} placeholder={kind === 'amount' ? '如：10 元消费上限' : '如：2 小时 / 5 元'} style={{ width: 280 }} />
         </Form.Item>
         <Form.Item name="kind" label="套餐类型" rules={[{ required: true }]}
-          extra="按金额：用户预付一个封顶金额，充完或用完为止。按时长：用户买时长，费用按现行费率结算。">
+          extra="金额方案填写消费上限；固定时长套餐同时填写售价和时长，用户按售价付款。">
           <Select style={{ width: 280 }} options={[
-            { value: 'amount', label: '按金额封顶（填金额，不填时长）' },
-            { value: 'package', label: '按时长套餐（填时长，不填金额）' },
+            { value: 'amount', label: '金额方案（按实际费率消费）' },
+            { value: 'package', label: '固定时长套餐（售价＋时长）' },
           ]} />
         </Form.Item>
-        {kind === 'amount'
-          ? <Form.Item name="price_yuan" label="封顶金额（元）" rules={[{ required: true }]} extra="须大于 0，最多 10000 元。">
-            <InputNumber min={0.01} max={10000} step={1} precision={2} addonBefore="¥" style={{ width: 200 }} />
+        <Form.Item name="price_yuan" label={kind === 'amount' ? '消费上限（元）' : '套餐售价（元）'}
+          rules={[{ required: true, message: kind === 'amount' ? '请填写消费上限' : '请填写套餐售价' }]}
+          extra={kind === 'amount' ? '用户预付此金额，按实际费率消费，剩余金额按结算结果退款。' : '用户选择本套餐时支付此价格，不再按站点费率重复收费。'}>
+          <InputNumber min={0.01} max={10000} step={0.5} precision={2} addonBefore="¥" style={{ width: 200 }} />
+        </Form.Item>
+        {kind === 'package' && <>
+          {editing && editing.price_cents <= 0 && <Alert type="warning" showIcon style={{ marginBottom: 12 }} message="此旧套餐缺少售价，请补充后保存。已上架的旧记录需下架后重新上架。" />}
+          <Form.Item name="duration_minutes" label="充电时长（分钟）" rules={[{ required: true, message: '请填写充电时长' }]}
+            extra="1–600 分钟，到时停止；提前结束按未使用时长退款。例如：120 分钟售价 5 元，充满收 5 元，用 60 分钟收 2.50 元。">
+            <InputNumber min={1} max={600} step={30} precision={0} addonAfter="分钟" style={{ width: 200 }} />
           </Form.Item>
-          : <Form.Item name="duration_minutes" label="时长（分钟）" rules={[{ required: true }]} extra="须为 1–600 分钟；套餐不设封顶金额，费用按站点现行费率结算。">
-            <InputNumber min={1} max={600} step={30} addonAfter="分钟" style={{ width: 200 }} />
-          </Form.Item>}
+        </>}
         <Space align="start" wrap>
-          <Form.Item name="min_charge_yuan" label="最低消费（元）" extra="低于该金额按该金额收，0 表示不设门槛。">
+          {kind === 'amount' && <Form.Item name="min_charge_yuan" label="最低消费（元）" extra="低于该金额按该金额收，0 表示不设门槛。">
             <InputNumber min={0} max={10000} step={0.5} precision={2} addonBefore="¥" style={{ width: 180 }} />
-          </Form.Item>
+          </Form.Item>}
           <Form.Item name="sort_order" label="排序" extra="越小越靠前。">
             <InputNumber min={0} max={10000} style={{ width: 140 }} />
           </Form.Item>

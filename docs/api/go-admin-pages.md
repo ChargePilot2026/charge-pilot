@@ -83,6 +83,12 @@
 
 `TestAdminPagesIntegration` 覆盖已注册页面列表、鉴权、分页/输入、站点、导入、优惠券、配置、反馈、报修、退款双签/拒绝/重试、发票审核和钱包风控。使用 `scripts/test-integration.sh -race` 在隔离 MySQL/Redis 上运行，避免默认跳过数据库测试。实际点击情况见 [页面验收记录](../testing/admin-pages-2026-09-29.md)。
 
+## 套餐售价与结算（2026-09-30）
+
+金额方案设置消费上限，按当前计费规则消费。固定时长套餐同时配置售价与 1–600 分钟的充电时长，例如 120 分钟售价 5 元：用户选择后预付 5 元，到时停止；充满收 5 元，提前结束按实际使用秒数占购买时长的比例收费，剩余退款，延迟停机不超过售价。该售价包含本次充电费用，不再按站点电费或服务费重复计价，不另设最低消费；套餐合价与支付报价一致记入服务费，不凭空拆分电费。
+
+上架复制模板售价与时长；修改模板不影响在售记录和订单购买快照，下架后重新上架使用模板最新售价。旧的零售价时长模板必须由运营补价后才能上架；无售价的旧在售记录不再提供给用户选择，也不能直接提交 ID 启动，不会自动填入一个未经运营确认的价格。
+
 ## 站点工作区与计费发布（2026-09-30）
 
 进入站点工作区时直接显示站点默认计费与通用套餐，不提供配置范围下拉框。设备独立配置从“设备例外配置”或“设备”页签中对应设备行的“计费与套餐”进入；设备配置保留“返回站点默认”入口。
@@ -94,7 +100,7 @@
 - `GET /settings/pricing-template-candidates?station_id={id}&preserve_device_overrides=true` 返回模板候选及不可用原因。固定设备范围可传 `device_id`；能力不满足、模板停用或口径失效的选项不可选择。
 - `POST /settings/pricing-templates/{id}/apply` 需要 `pricing.rule.create`，请求包含 `station_id,device_id,request_id,expected_version`；设备为空串表示站点默认。`request_id` 为 UUID，同一次意图重试复用；`expected_version` 必须是相应规则链最新版本，不能用当前有效版本代替。`preserve_device_overrides:true` 只在整站发布时跳过当前有效独立规则设备：计量校验、设备模式更新与下发任务采用同一批继承设备。省略该字段保持旧应用语义。
 - `POST /settings/device-pricing/reset` 需要 `pricing.rule.update`，请求包含 `station_id,device_id,keep_device_offers:true`。恢复计费继承保留该设备套餐；默认规则不存在、口径失效或设备能力不兼容时返回 409，事务内不产生部分改动。省略 `keep_device_offers` 保持旧行为，设备独立规则与套餐会一起停用。
-- `POST /settings/package-templates/{id}/apply` 需要 `pricing.rule.create`，以 `station_id` 和可选 `device_id` 固定上架范围，接受可选 UUID `request_id`。精确目标已在售时返回 `replayed:true`；已下架时恢复原套餐副本并返回 `relisted:true`，不会复制模板后来修改的价格。工作区在确认中展示原副本条款。
+- `POST /settings/package-templates/{id}/apply` 需要 `pricing.rule.create`，以 `station_id` 和可选 `device_id` 固定上架范围，接受可选 UUID `request_id`。精确目标已在售时返回 `replayed:true`；已下架时更新原在售记录为模板当前条款并返回 `relisted:true`。工作区在确认中展示本次上架的模板售价与时长，历史订单快照不变。
 - `POST /settings/charge-offers/{id}/disable` 需要 `pricing.rule.update`，仅下架所选副本。工作区明确通用/设备独立范围；用户已有支付订单继续使用其原条款。
 
 站点与设备查询、配置读取及上述操作均检查实时权限和数据范围。厂商受限账号只能访问对应厂商的设备及设备专属套餐，不能修改全站默认配置；`can_manage_default:false` 用于禁用全站操作。设备新建/导入及重试也检查每台设备的站点与厂商范围，越界请求在调用 gateway 前拒绝。`station_id` 过滤要求单个正整数，空值、重复参数或非数字返回 400，不能退化为无过滤查询。
