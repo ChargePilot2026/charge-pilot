@@ -201,6 +201,11 @@ func seed(ctx context.Context, userDB, adminDB *sql.DB) {
 
 	now := time.Now().UTC()
 	totalUsers, totalOrders := 0, 0
+	ruleID, err := seedStationScheme(ctx, adminDB, stationID)
+	if err != nil {
+		fail(fmt.Errorf("写入完整方案: %w", err))
+	}
+
 	for _, u := range demoUsers() {
 		firstSeen := now.AddDate(0, 0, -u.daysAgo)
 		phoneEnc, phoneHash := []byte(nil), any(nil)
@@ -234,7 +239,7 @@ func seed(ctx context.Context, userDB, adminDB *sql.DB) {
 		orderCount := 0
 		for _, o := range u.orders {
 			created := now.AddDate(0, 0, -o.daysAgo)
-			if err := seedOrder(ctx, userDB, userID, u, o, created, deviceID, stationID); err != nil {
+			if err := seedOrder(ctx, userDB, userID, u, o, created, deviceID, stationID, ruleID); err != nil {
 				fail(fmt.Errorf("写入示例订单: %w", err))
 			}
 			orderCount++
@@ -269,10 +274,7 @@ func seedStation(ctx context.Context, adminDB *sql.DB) (int64, error) {
 
 // seedDevice 建示例设备。
 //
-// reports_energy 必须为 true：示例订单全部是按电量计的（charged_kwh 有值），
-// 而计费模板下发时会校验设备是否具备该模式的计量能力——按电量计费的模板
-// 会被设备能力门控挡下，理由是"未声明电量上报能力，无法按电量计费"。设备
-// 不报电量、订单却按电量计，示例数据集就自相矛盾，连一套正常计费模板都配不上。
+// Execution capabilities are deliberately unverified until hardware testing.
 func seedDevice(ctx context.Context, adminDB *sql.DB, stationID int64) (string, error) {
 	if _, err := adminDB.ExecContext(ctx, `
 		INSERT INTO device_meta (device_id, station_id, model, serial_no, status, charge_mode, reports_energy, install_at)
@@ -284,7 +286,7 @@ func seedDevice(ctx context.Context, adminDB *sql.DB, stationID int64) (string, 
 }
 
 func seedOrder(ctx context.Context, userDB *sql.DB, userID int64, u demoUser, o demoOrder, created time.Time,
-	deviceID string, stationID int64) error {
+	deviceID string, stationID, ruleID int64) error {
 
 	var total any
 	if o.cents > 0 {
@@ -292,9 +294,9 @@ func seedOrder(ctx context.Context, userDB *sql.DB, userID int64, u demoUser, o 
 	}
 	var electric, service any
 	if o.cents > 0 {
-		// 电费占七成、服务费占三成，合计等于 total_cents，避免账单页面对不上。
-		electric = o.cents * 7 / 10
-		service = o.cents - o.cents*7/10
+		// Historical demo orders use fixed duration packages: the package fee is service.
+		electric = 0
+		service = o.cents
 	}
 	// charge_order 是按 created_month 做 RANGE 分区的，created_month 是分区键且
 	// 没有默认值，必须显式写入；写成订单创建时间的月初。
@@ -323,23 +325,7 @@ func seedOrder(ctx context.Context, userDB *sql.DB, userID int64, u demoUser, o 
 	}
 	orderID, _ := result.LastInsertId()
 
-	// charge_payment_intent 是订单与站点之间的唯一桥梁：charge_order 本身不存
-	// station_id，后台查订单所属站点全靠这张表。不写它，订单档案里的站点会是空。
-	//
-	// payment_order_id 上有唯一键，示例数据不真的建 payment_order 行，所以按订单
-	// 主键取一个互不相同的合成值——都填 0 会直接违反 uk_payment_order。
-	_, err = userDB.ExecContext(ctx, `
-		INSERT INTO charge_payment_intent
-		  (intent_id, client_request_id, merchant_order_no, payment_order_id, user_id, openid, device_id,
-		   port_no, port_code, station_id, pricing_rule_id, pricing_rule_version, pricing_snapshot,
-		   estimated_kwh, estimated_minutes, electric_cents, service_cents, total_cents, discount_cents,
-		   charge_mode, charge_quantity, status, expires_at, paid_at, created_at, charge_order_id)
-		VALUES (UUID(), UUID(), ?, ?, ?, ?, ?, 1, ?, ?, 0, 0, JSON_OBJECT('source', 'devseed'),
-		        ?, 60, ?, ?, ?, 0, 0, 1, ?, ?, ?, ?, ?)`,
-		fmt.Sprintf("DEMO-MERCHANT-%d", orderID), orderID, userID, u.openid, deviceID,
-		fmt.Sprintf("%s-01", deviceID), stationID, o.kwh, orZero(electric), orZero(service), orZero(total),
-		intentStatus(o.status), created.Add(15*time.Minute), created, created, orderID)
-	return err
+	return seedOrderContract(ctx, userDB, orderID, userID, u, o, created, deviceID, stationID, ruleID, orderNo)
 }
 
 // orderHasEndedAt 报告这个状态的订单是否应当带结束时刻。
@@ -371,6 +357,9 @@ func remove(ctx context.Context, userDB, adminDB *sql.DB) {
 		query string
 		arg   any
 	}{
+		{"DELETE FROM charge_fee_receipt WHERE charge_order_id IN (SELECT id FROM charge_order WHERE order_no LIKE ?)", "DEMO-%"},
+		{"DELETE FROM charge_order_pricing WHERE charge_order_id IN (SELECT id FROM charge_order WHERE order_no LIKE ?)", "DEMO-%"},
+		{"DELETE FROM payment_order WHERE order_no LIKE ?", "DEMO-MERCHANT-%"},
 		{"DELETE FROM charge_payment_intent WHERE openid LIKE ?", demoPrefix + "%"},
 		{"DELETE FROM device_fault_report WHERE device_id = ?", demoDeviceID},
 		{"DELETE FROM charge_order WHERE order_no LIKE ?", "DEMO-%"},
@@ -386,6 +375,12 @@ func remove(ctx context.Context, userDB, adminDB *sql.DB) {
 	}
 	if err := tx.Commit(); err != nil {
 		fail(fmt.Errorf("提交清理事务: %w", err))
+	}
+	if _, err := adminDB.ExecContext(ctx, "DELETE FROM pricing_rule WHERE station_id IN (SELECT id FROM station WHERE name=?)", demoStationName); err != nil {
+		fail(err)
+	}
+	if _, err := adminDB.ExecContext(ctx, "DELETE FROM pricing_template WHERE name=?", demoScheme().Name); err != nil {
+		fail(err)
 	}
 	if _, err := adminDB.ExecContext(ctx, "DELETE FROM device_meta WHERE device_id = ?", demoDeviceID); err != nil {
 		fail(fmt.Errorf("清理示例设备: %w", err))

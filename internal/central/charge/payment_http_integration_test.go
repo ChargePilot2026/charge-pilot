@@ -47,18 +47,20 @@ func TestSimulationHTTPPaymentCreatesChargeOnlyAfterCallback(t *testing.T) {
 	}
 	stationID, _ := station.LastInsertId()
 	defer adminDB.ExecContext(ctx, "DELETE FROM station WHERE id = ?", stationID)
-	rule, err := adminDB.ExecContext(ctx, "INSERT INTO pricing_rule (name,station_id,spec_json) VALUES (?,?,?)", "Payment Test", stationID, `{"mode":"server_energy","electric":{"basis":"energy","periods":[{"end_minute":1440,"electric_cents":100}]},"service":{"basis":"energy","cents_per_kwh":40}}`)
+	scheme := pricing.Scheme{Name: "Payment Test", Packages: []pricing.Package{{ID: 1, Name: "60 minute package", Mode: "duration", PriceCents: 600, Minutes: 60}}}.Normalized()
+	specJSON, _ := json.Marshal(scheme.SpecFor(scheme.Packages[0]))
+	rule, err := adminDB.ExecContext(ctx, "INSERT INTO pricing_rule (name,station_id,spec_json) VALUES (?,?,?)", scheme.Name, stationID, string(specJSON))
 	if err != nil {
 		t.Fatal(err)
 	}
 	ruleID, _ := rule.LastInsertId()
-	defer adminDB.ExecContext(ctx, "DELETE FROM pricing_rule WHERE id = ?", ruleID)
-	offer, err := adminDB.ExecContext(ctx, "INSERT INTO charge_offer (station_id,name,mode,price_cents,duration_minutes) VALUES (?,?,'package',600,60)", stationID, "60 minute package")
-	if err != nil {
+	defer adminDB.ExecContext(ctx, "DELETE FROM pricing_rule WHERE id=?", ruleID)
+	offerID := ruleID*100 + 1
+	capabilities, _ := json.Marshal(pricing.Capabilities{StopPolicyVerified: true, Duration: true, MaxMinutes: 600})
+	if _, err := adminDB.ExecContext(ctx, "INSERT INTO device_meta(device_id,station_id,status,execution_capabilities) VALUES('http-pay-device',?,'enabled',?)", stationID, string(capabilities)); err != nil {
 		t.Fatal(err)
 	}
-	offerID, _ := offer.LastInsertId()
-	defer adminDB.ExecContext(ctx, "DELETE FROM charge_offer WHERE id = ?", offerID)
+	defer adminDB.ExecContext(ctx, "DELETE FROM device_meta WHERE device_id='http-pay-device'")
 	user, err := userDB.ExecContext(ctx, "INSERT INTO user (openid) VALUES (?)", "http-pay-"+uuid.NewString())
 	if err != nil {
 		t.Fatal(err)
@@ -140,7 +142,7 @@ func TestSimulationHTTPPaymentCreatesChargeOnlyAfterCallback(t *testing.T) {
 		t.Fatalf("start response=%s err=%v", response.Body.String(), err)
 	}
 	intentID, merchantNo = envelope.Data.IntentID, envelope.Data.MerchantOrderNo
-	if _, err := adminDB.ExecContext(ctx, "UPDATE charge_offer SET price_cents=800,status='disabled',version=version+1 WHERE id=?", offerID); err != nil {
+	if _, err := adminDB.ExecContext(ctx, "UPDATE pricing_rule SET status='disabled',version=version+1 WHERE id=?", ruleID); err != nil {
 		t.Fatal(err)
 	}
 	retry := httptest.NewRequest(http.MethodPost, "/api/v1/user/scan/start", bytes.NewReader(requestBody))

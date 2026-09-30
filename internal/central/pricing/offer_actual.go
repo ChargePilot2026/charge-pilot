@@ -16,16 +16,12 @@ func PriceOfferActual(rule Rule, offer *Offer, meter ActualMeter) (ActualFee, er
 	}, nil
 }
 
-// ActualFromMeter 从计量记录里推出设备上报了什么。
-//
-// 计量是平台自己的视角，所以这是一个推断出来的 actual，而不是从充电板回读
-// 到的。它之所以仍以 actual 的身份传进去，正是为了让这次结算被标记为
-// estimated——两者是不同的主张，而这个区别必须一路留到收据上。
+// ActualFromMeter retains the actual duration and energy reported by the device.
 func ActualFromMeter(meter ActualMeter) *SessionActual {
 	actual := &SessionActual{
 		UsedSeconds: meter.ChargedSeconds,
 		UsedMilliWh: uint64(meter.ChargedWh) * 1000,
-		Reported:    false,
+		Reported:    true,
 	}
 	for _, segment := range meter.Segments {
 		if uint32(segment.PeakW) > actual.PeakWatts {

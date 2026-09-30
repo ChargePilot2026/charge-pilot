@@ -296,7 +296,7 @@ func TestAdminPagesIntegration(t *testing.T) {
 		t.Fatalf("expired export file remains: %v", err)
 	}
 	call(adminToken, "GET", fmt.Sprintf("exports/%d/download", pdfTaskID), nil, 410)
-	for _, path := range []string{"stations", "devices", "orders", "users", "roles", "alerts", "announcements", "customer-service", "webhooks", "ota/packages", "ota/schedules", "settings/charge-rules", "whitelabel", "coupons", "feedback", "device-fault-reports", "billing/meter-reviews", "billing/settlements", "billing/invoices", "billing/refunds", "billing/wallet-risks", "device-imports"} {
+	for _, path := range []string{"stations", "devices", "orders", "users", "roles", "alerts", "announcements", "customer-service", "webhooks", "ota/packages", "ota/schedules", "settings/charging-schemes", "whitelabel", "coupons", "feedback", "device-fault-reports", "billing/meter-reviews", "billing/settlements", "billing/invoices", "billing/refunds", "billing/wallet-risks", "device-imports"} {
 		call(adminToken, "GET", path, nil, 200)
 		call("", "GET", path, nil, 401)
 	}
@@ -350,182 +350,24 @@ func TestAdminPagesIntegration(t *testing.T) {
 	call(adminToken, "GET", "stations?keyword=更新&page_size=1", nil, 200)
 	call(adminToken, "GET", "stations?page_size=101", nil, 400)
 
-	// 一个定价模板把费率、它的那些套餐以及展示开关一并装在同一个对象里
-	// 整体保存，应用到站点时同样是整体复制一份过去用。
-	spec := gin.H{
-		"mode":               "server_energy",
-		"electric":           gin.H{"basis": "energy", "periods": []gin.H{{"end_minute": 1440, "electric_cents": 50}}},
-		"service":            gin.H{"basis": "energy", "cents_per_kwh": 20},
-		"min_electric_cents": 10,
+	// A scheme is copied as one complete publication; editing its template does not change the applied copy.
+	scheme := gin.H{"name": "集成计费模板", "amount": gin.H{"algorithm": "server_energy", "periods": []gin.H{{"end_minute": 1440, "electric_cents": 50, "service_cents": 20}}}, "packages": []gin.H{{"id": 1, "name": "3元", "mode": "amount", "price_cents": 300}}}
+	schemeTemplate := data(call(adminToken, "POST", "settings/charging-schemes", gin.H{"scheme": scheme}, 200))
+	apply := gin.H{"request_id": "190291e8-22d3-48a3-9dcc-fd2718aa6831", "station_id": sid, "template_id": schemeTemplate["id"], "template_version": 1, "expected_version": 0}
+	call(adminToken, "POST", "settings/charging-schemes/apply", apply, 200)
+	replay := data(call(adminToken, "POST", "settings/charging-schemes/apply", apply, 200))
+	if replay["replayed"] != true {
+		t.Fatal(replay)
 	}
-	tmpl := gin.H{
-		"name": "集成计费模板", "remark": "集成用例",
-		"spec":    spec,
-		"display": gin.H{"show_energy": true, "show_power": true, "show_fee_split": true},
+	scheme["name"] = "改价后的模板"
+	scheme["packages"] = []gin.H{{"id": 1, "name": "4元", "mode": "amount", "price_cents": 400}}
+	call(adminToken, "PUT", fmt.Sprintf("settings/charging-schemes/%v", schemeTemplate["id"]), gin.H{"scheme": scheme, "expected_version": 1}, 200)
+	effective := data(call(adminToken, "GET", fmt.Sprintf("stations/%v/charging-scheme", sid), nil, 200))
+	frozen := effective["scheme"].(map[string]any)
+	if frozen["name"] != "集成计费模板" {
+		t.Fatal(effective)
 	}
-	pricingTemplateID := fmt.Sprintf("%.0f", data(call(adminToken, "POST", "settings/pricing-templates", tmpl, 200))["id"].(float64))
-	// 新写入和新发布只收元/度；存量模板可读，转换前不能再扩散旧口径。
-	legacySpecJSON := `{"mode":"server_realtime_power","tier_price_basis":"per_hour_at_ceiling","electric":{"basis":"realtime_power","periods":[{"end_minute":1440,"tiers":[{"max_watts":200,"electric_cents":100}]}]}}`
-	exec(adb, "INSERT INTO pricing_template(name,spec_json,display_json,status,version) VALUES(?,?,?,'active',1)", "旧版单位测试模板", legacySpecJSON, `{}`)
-	var legacyTemplateID uint64
-	if err := adb.Table("pricing_template").Select("id").Where("name=?", "旧版单位测试模板").Scan(&legacyTemplateID).Error; err != nil {
-		t.Fatal(err)
-	}
-	legacyPath := fmt.Sprintf("settings/pricing-templates/%d", legacyTemplateID)
-	legacyDetail := data(call(adminToken, "GET", legacyPath, nil, 200))
-	if legacyDetail["spec"].(map[string]any)["tier_price_basis"] != "per_hour_at_ceiling" {
-		t.Fatal("legacy template read was silently rewritten")
-	}
-	var legacySpecMap map[string]any
-	if err := json.Unmarshal([]byte(legacySpecJSON), &legacySpecMap); err != nil {
-		t.Fatal(err)
-	}
-	legacyInput := gin.H{"name": "旧版单位测试模板", "spec": legacySpecMap, "expected_version": 1}
-	call(adminToken, "POST", "settings/pricing-templates", legacyInput, 400)
-	call(adminToken, "PUT", legacyPath, legacyInput, 400)
-	call(adminToken, "POST", legacyPath+"/copy", gin.H{"name": "旧版单位测试副本"}, 409)
-	call(adminToken, "POST", legacyPath+"/apply", gin.H{"request_id": "aa000000-0000-4000-8000-000000000080", "station_id": sid, "expected_version": 0}, 409)
-	candidates := data(call(adminToken, "GET", fmt.Sprintf("settings/pricing-template-candidates?station_id=%.0f", sid), nil, 200))["items"].([]any)
-	for _, item := range candidates {
-		row := item.(map[string]any)
-		if row["id"].(float64) == float64(legacyTemplateID) && !strings.Contains(row["unavailable_reason"].(string), "旧版电价") {
-			t.Fatal("legacy candidate was selectable")
-		}
-	}
-	// 按旧引擎实际结果 100 分 × 200 / 1000 = 20 分/度转换，保留原收费水平。
-	legacySpecMap["tier_price_basis"] = "per_kwh"
-	legacySpecMap["electric"].(map[string]any)["periods"].([]any)[0].(map[string]any)["tiers"].([]any)[0].(map[string]any)["electric_cents"] = 20
-	call(adminToken, "PUT", legacyPath, legacyInput, 200)
-	call(adminToken, "POST", legacyPath+"/copy", gin.H{"name": "旧版单位测试副本"}, 200)
-	if data(call(adminToken, "GET", legacyPath, nil, 200))["version"].(float64) != 2 {
-		t.Fatal("legacy conversion lost optimistic versioning")
-	}
-	call(fin1, "POST", "settings/pricing-templates", tmpl, 403)
-	// 一串没能延伸到午夜之前的时段，会让夜里的电价落空；这种模板在入口
-	// 处就被拒掉，而不是先存进去、留一个窟窿在那里面。
-	call(adminToken, "POST", "settings/pricing-templates", gin.H{"name": "坏时段", "spec": gin.H{
-		"mode":     "server_energy",
-		"electric": gin.H{"basis": "energy", "periods": []gin.H{{"end_minute": 720, "electric_cents": 50}}}}}, 400)
-	// 一条一档都没有的功率阶梯，同样是没有办法定价的。
-	call(adminToken, "POST", "settings/pricing-templates", gin.H{"name": "空档位", "spec": gin.H{
-		"mode":     "server_realtime_power",
-		"electric": gin.H{"basis": "realtime_power", "periods": []gin.H{{"end_minute": 1440}}}}}, 400)
-	// 设备计费的模板身上若还带着电价，看起来就像配好了价，可这条路上根
-	// 本来就没有任何地方会去读它。
-	call(adminToken, "POST", "settings/pricing-templates", gin.H{"name": "设备计费带费率", "spec": gin.H{
-		"mode":     "device_duration",
-		"electric": gin.H{"basis": "energy", "periods": []gin.H{{"end_minute": 1440, "electric_cents": 50}}}}}, 400)
-	// 模式与它自己的计费基准对不上，这样的费率表是没有谁会认的。
-	call(adminToken, "POST", "settings/pricing-templates", gin.H{"name": "模式与费率不符", "spec": gin.H{
-		"mode":     "server_max_power",
-		"electric": gin.H{"basis": "energy", "periods": []gin.H{{"end_minute": 1440, "electric_cents": 50}}}}}, 400)
-	call(adminToken, "POST", "settings/pricing-templates/"+pricingTemplateID+"/apply", gin.H{"request_id": "aa000000-0000-4000-8000-000000000000", "station_id": 0, "expected_version": 0}, 400)
-	call(adminToken, "POST", "settings/pricing-templates/999999999999/apply", gin.H{"request_id": "aa000000-0000-4000-8000-0000000000ff", "station_id": sid, "expected_version": 0}, 404)
-
-	applyPath := "settings/pricing-templates/" + pricingTemplateID + "/apply"
-	apply := gin.H{"request_id": "aa000000-0000-4000-8000-000000000001", "station_id": sid, "expected_version": 0}
-	firstRule := data(call(adminToken, "POST", applyPath, apply, 200))
-	replayRule := data(call(adminToken, "POST", applyPath, apply, 200))
-	if firstRule["id"] != replayRule["id"] || replayRule["replayed"] != true {
-		t.Fatal("apply replay must preserve rule")
-	}
-	// 套餐自成一个独立的池子，所以应用一份费率根本不会上架任何一条售卖记录。
-	// 上架本身是另一件独立而且明确的动作；把这两件事混为一谈的结果，才让
-	// 一个运
-	// 个运营卖出了一个按早已不再运行的那份费率来定价的套餐出去。
-	var offers int64
-	adb.Table("charge_offer").Where("station_id=? AND status='active' AND deleted_at IS NULL", sid).Count(&offers)
-	if offers != 0 {
-		t.Fatalf("applying a tariff must not publish any package, got %d offers", offers)
-	}
-	// 一个站点挂两个套餐，正是残留的 UNIQUE(station_id) 会打破的那种场景，
-	// 所以上面那次计数就是针对它的那个回归护栏。
-	// 只要该模板的某条规则在站点上还处于生效，同一个模板就不能再被应用，站
-	// 点必须先把它停用掉才行。
-	apply["request_id"] = "aa000000-0000-4000-8000-000000000002"
-	call(adminToken, "POST", applyPath, apply, 409)
-	call(fin1, "POST", applyPath, apply, 403)
-	call(adminToken, "POST", applyPath, gin.H{"request_id": "aa000000-0000-4000-8000-000000000003", "station_id": sid, "expected_version": 9}, 409)
-
-	// 编辑这个模板，不能波及到站点当前正在据以计费的那一条规则本身去。
-	edited := gin.H{"name": "改价后的模板", "spec": gin.H{
-		"mode":     "server_energy",
-		"electric": gin.H{"basis": "energy", "periods": []gin.H{{"end_minute": 1440, "electric_cents": 99}}},
-		"service":  gin.H{"basis": "energy", "cents_per_kwh": 20}, "min_electric_cents": 10},
-		"expected_version": 1}
-	call(adminToken, "PUT", "settings/pricing-templates/"+pricingTemplateID, edited, 200)
-	var appliedSpec string
-	adb.Table("pricing_rule").Where("id=?", firstRule["id"]).Pluck("spec_json", &appliedSpec)
-	var snapshot struct {
-		Electric struct {
-			Periods []struct {
-				ElectricCents int64 `json:"electric_cents"`
-			} `json:"periods"`
-		} `json:"electric"`
-	}
-	if err := json.Unmarshal([]byte(appliedSpec), &snapshot); err != nil || len(snapshot.Electric.Periods) != 1 || snapshot.Electric.Periods[0].ElectricCents != 50 {
-		t.Fatalf("applied rule changed to %s when the template was edited; it is a snapshot", appliedSpec)
-	}
-
-	// 复制会让原件继续运行下去，同时新建出一个彼此独立的模板出来，两者互不
-	// 影响。
-	copied := fmt.Sprintf("%.0f", data(call(adminToken, "POST", "settings/pricing-templates/"+pricingTemplateID+"/copy", gin.H{"name": "模板副本"}, 200))["id"].(float64))
-	if copied == pricingTemplateID {
-		t.Fatal("copy must create a new template")
-	}
-	detail := data(call(adminToken, "GET", "settings/pricing-templates/"+copied, nil, 200))
-	if detail["name"] != "模板副本" {
-		t.Fatal("copy must be readable under its new name")
-	}
-
-	// 在站点把那条规则停用之后，这个模板就可以再次被应用，站点也随之进
-	// 入下一个版本里面去。
-	call(adminToken, "POST", fmt.Sprintf("settings/charge-rules/%.0f/disable", firstRule["id"]), nil, 200)
-	call(adminToken, "POST", fmt.Sprintf("settings/charge-rules/%.0f/disable", firstRule["id"]), nil, 200)
-	apply["request_id"] = "aa000000-0000-4000-8000-000000000004"
-	apply["expected_version"] = 1
-	secondRule := data(call(adminToken, "POST", applyPath, apply, 200))
-	if secondRule["version"] != float64(2) {
-		t.Fatal("rule version not allocated")
-	}
-	var oldStatus string
-	adb.Table("pricing_rule").Where("id=?", firstRule["id"]).Pluck("status", &oldStatus)
-	if oldStatus != "disabled" {
-		t.Fatal("prior rule still active")
-	}
-
-	// 两个运营各自拿着各自不同的模板，对着同一个站点版本去应用，不可能
-	// 两个都赢的。
-	otherID := fmt.Sprintf("%.0f", data(call(adminToken, "POST", "settings/pricing-templates", gin.H{
-		"name": "并发模板", "spec": gin.H{"mode": "server_energy",
-			"electric": gin.H{"basis": "energy", "periods": []gin.H{{"end_minute": 1440, "electric_cents": 30}}}}}, 200))["id"].(float64))
-	otherPath := "settings/pricing-templates/" + otherID + "/apply"
-	codes := make(chan int, 2)
-	for _, requestID := range []string{"aa000000-0000-4000-8000-000000000005", "aa000000-0000-4000-8000-000000000006"} {
-		body := gin.H{"request_id": requestID, "station_id": sid, "expected_version": 2}
-		payload, _ := json.Marshal(body)
-		go func(payload []byte) {
-			req := httptest.NewRequest("POST", "/api/v1/admin/"+otherPath, strings.NewReader(string(payload)))
-			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("Authorization", "Bearer "+adminToken)
-			rec := httptest.NewRecorder()
-			router.ServeHTTP(rec, req)
-			codes <- rec.Code
-		}(payload)
-	}
-	code1, code2 := <-codes, <-codes
-	if !((code1 == 200 && code2 == 409) || (code1 == 409 && code2 == 200)) {
-		t.Fatalf("concurrent apply statuses %d,%d", code1, code2)
-	}
-	var activeRules int64
-	adb.Table("pricing_rule").Where("station_id=? AND status='active'", sid).Count(&activeRules)
-	if activeRules != 1 {
-		t.Fatalf("active rules %d", activeRules)
-	}
-	exec(adb, "INSERT INTO pricing_rule(name,station_id,spec_json) VALUES('legacy unbound',NULL,'{}')")
-	var unboundID uint64
-	adb.Table("pricing_rule").Where("name='legacy unbound'").Pluck("id", &unboundID)
-	call(adminToken, "POST", fmt.Sprintf("settings/charge-rules/%d/disable", unboundID), nil, 200)
+	call(adminToken, "PUT", fmt.Sprintf("settings/charging-schemes/%v", schemeTemplate["id"]), gin.H{"scheme": scheme, "expected_version": 1}, 409)
 	seat := gin.H{"agent_wechat": "pages_seat", "agent_name": "测试客服", "path": "https://example.com/support", "priority": 5, "enabled": true}
 	seatID := data(call(adminToken, "POST", "customer-service", seat, 200))["id"]
 	seat["priority"] = 8
@@ -593,128 +435,11 @@ func TestAdminPagesIntegration(t *testing.T) {
 	// 来一半，并且报错信息里还会点名指出是哪一块板子。
 	call(adminToken, "POST", "device-imports", gin.H{"import_id": "33333333-3333-4333-8333-333333333334", "devices": []gin.H{{"device_id": "PAGESDEV02", "vendor_id": vid, "station_id": sid, "port_count": 2}}}, 409)
 	call(adminToken, "GET", "devices?keyword=PAGESDEV01", nil, 200)
-	// 退款策略是每种支付方式各两个独立字段，而这次写入在此之前拒绝了每
-	// 一个请求：路由注册成 "/station-policies/:station_id"，可 pathID 读的是
-	// c.Param("id")，于是参数到手里是空的，处理器对任何请求都回了 "ID 必
-	// 须为正整数"。从来就没有人调用过它，所以它也从来没有失败过。
-	policy := gin.H{"force_recharge": true, "min_balance_cents": 1000,
-		"scan_refund_path": "balance", "scan_refund_rule": "time_limited",
-		"card_refund_path": "original", "card_refund_rule": "time_limited_prorated",
-		"timeout_start_refund": true, "verify_phone_before_charge": false, "expected_version": 0}
-	call(adminToken, "PUT", "settings/station-policies/"+fmt.Sprintf("%v", sid), policy, 200)
-	saved, _ := data(call(adminToken, "GET", "settings/station-policies", nil, 200))["items"].([]any)
-	found := false
-	for _, row := range saved {
-		item := row.(map[string]any)
-		if fmt.Sprintf("%v", item["station_id"]) != fmt.Sprintf("%v", sid) {
-			continue
-		}
-		found = true
-		// 这两个维度是作为两个字段回来的，不是合成一个字符串。单个枚举没法同
-		// 时回答「什么时候」和「退到哪里」，这正是那次迁移要把它们拆开的原因。
-		if item["scan_refund_path"] != "balance" || item["scan_refund_rule"] != "time_limited" {
-			t.Fatalf("refund path and rule were not kept apart on read: %v", item)
-		}
+	call(adminToken, "GET", "settings/device-capabilities?station_id="+fmt.Sprintf("%v", sid), nil, 200)
+	call(adminToken, "GET", fmt.Sprintf("stations/%v/charging-scheme?device_id=PAGESDEV01", sid), nil, 200)
+	for _, retired := range []string{"settings/pricing-templates", "settings/package-templates", "settings/charge-rules", "settings/device-pricing", "settings/station-policies", "settings/switch-tasks"} {
+		call(adminToken, "GET", retired, nil, 404)
 	}
-	if !found {
-		t.Fatal("the policy was accepted but is not in the list it is read from")
-	}
-
-	// 一个被下了架的套餐，必须还能够重新上架。
-	//
-	// 拦重复应用的那道检查把已停用的售卖记录也算成「还在卖」，于是一个把
-	// 套餐下了架的运营，就再也把它放不回去：同一个请求永远会被 "该套餐已
-	// 在此处上架" 拒掉，而且会一直这样被拒下去，不留任何例外。下架只要点
-	// 一下，上来却没有路。
-	pkg := gin.H{"name": "上下架套餐", "kind": "amount", "price_cents": 500,
-		"duration_minutes": 0, "sort_order": 1, "status": "active"}
-	packageID := data(call(adminToken, "POST", "settings/package-templates", pkg, 200))["id"]
-	applied := data(call(adminToken, "POST",
-		"settings/package-templates/"+fmt.Sprintf("%v", packageID)+"/apply",
-		gin.H{"station_id": sid}, 200))
-	offerID := fmt.Sprintf("%v", applied["offer_id"])
-	// 同一个请求的重发就是重试，不是冲突：除非重复的那一次自己说明出来，
-	// 否则调用方分不清拿回来的是一条重复单，还是一次失败。
-	retry := data(call(adminToken, "POST",
-		"settings/package-templates/"+fmt.Sprintf("%v", packageID)+"/apply",
-		gin.H{"station_id": sid}, 200))
-	if retry["replayed"] != true {
-		t.Fatalf("a repeated apply did not report itself as a replay: %v", retry)
-	}
-	call(adminToken, "POST", "settings/charge-offers/"+offerID+"/disable", nil, 200)
-	relisted := data(call(adminToken, "POST",
-		"settings/package-templates/"+fmt.Sprintf("%v", packageID)+"/apply",
-		gin.H{"station_id": sid}, 200))
-	if relisted["relisted"] != true {
-		t.Fatalf("putting a withdrawn package back on sale was not treated as a re-list: %v", relisted)
-	}
-	// 是一行，不是两行：多出来的那一行与原来那一行的区别，只在于充电用
-	// 户最终能看到哪一条。
-	var onSale int64
-	if err := adb.Table("charge_offer").
-		Where("station_id=? AND package_template_id=? AND status='active' AND deleted_at IS NULL", sid, packageID).
-		Count(&onSale).Error; err != nil {
-		t.Fatal(err)
-	}
-	if onSale != 1 {
-		t.Fatalf("expected exactly one active offer at the target, found %d", onSale)
-	}
-
-	// 时长模板必须有售价，上架和下单读取同一份金额。重新上架更新已下架的副本。
-	packagePath := "settings/package-templates/" + fmt.Sprintf("%v", packageID)
-	pkg["kind"], pkg["duration_minutes"], pkg["price_cents"], pkg["expected_version"] = "package", 120, 0, 1
-	call(adminToken, "PUT", packagePath, pkg, 400)
-	// 模拟旧编辑器留下的零售价时长模板，不能直接重新发布。
-	if err := adb.Table("pricing_package_template").Where("id=?", packageID).
-		Updates(map[string]any{"kind": "package", "price_cents": 0, "duration_minutes": 120}).Error; err != nil {
-		t.Fatal(err)
-	}
-	call(adminToken, "POST", packagePath+"/apply", gin.H{"station_id": sid}, 409)
-	pkg["price_cents"] = 500
-	call(adminToken, "PUT", packagePath, pkg, 200)
-	// 修改模板不改变仍在售的旧记录。
-	var sale struct {
-		Mode            string
-		PriceCents      int64
-		DurationMinutes uint16
-	}
-	if err := adb.Table("charge_offer").Where("id=?", offerID).Take(&sale).Error; err != nil {
-		t.Fatal(err)
-	}
-	if sale.Mode != "amount" || sale.DurationMinutes != 0 {
-		t.Fatalf("template update changed active offer: %+v", sale)
-	}
-	call(adminToken, "POST", "settings/charge-offers/"+offerID+"/disable", nil, 200)
-	call(adminToken, "POST", packagePath+"/apply", gin.H{"station_id": sid}, 200)
-	if err := adb.Table("charge_offer").Where("id=?", offerID).Take(&sale).Error; err != nil {
-		t.Fatal(err)
-	}
-	if sale.Mode != "package" || sale.PriceCents != 500 || sale.DurationMinutes != 120 {
-		t.Fatalf("duration package price was lost: %+v", sale)
-	}
-
-	// 设备矩阵、切换日志和计量申报都能从定价页面点进去，而在此之前它们一
-	// 个测试都没有。接连五个缺陷查下来，根子都在「没有任何测试执行过的路
-	// 由」上，所以本文件现在守的规矩是：定价页面能走得到的每一条路由都在
-	// 这里调一遍——并且把它写下去的东西读回来核对一遍，而不是只看有没有
-	// 回 200 这个状态码就算通过了。
-	matrix := data(call(adminToken, "GET",
-		"settings/device-pricing?station_id="+fmt.Sprintf("%v", sid), nil, 200))
-	rows, _ := matrix["items"].([]any)
-	if len(rows) == 0 {
-		t.Fatal("the matrix returned no rows for a station that has a published rule")
-	}
-	row := rows[0].(map[string]any)
-	if row["spec_json"] == nil {
-		t.Fatal("the matrix has no spec_json, so it cannot answer what a device is charging")
-	}
-	call(adminToken, "GET", "settings/switch-tasks", nil, 200)
-	call(adminToken, "GET", "settings/pricing-template-candidates?station_id="+fmt.Sprintf("%v", sid), nil, 200)
-	// 不属于该站点的设备，会按名字被拒掉，而不是悄悄把那个 id 上碰巧放着
-	// 的东西给重置掉它自己。
-	call(adminToken, "POST", "settings/device-pricing/reset",
-		gin.H{"station_id": sid, "device_id": "NOSUCHDEVICE01"}, 404)
-
 	// 每一个读接口都要走一遍，而不是只走那些自以为会受影响的那些接口。
 	//
 	// Go 代码里写了、数据库却不接受的列或表达式，既不是编译错误，也不是
@@ -723,12 +448,8 @@ func TestAdminPagesIntegration(t *testing.T) {
 	// 根就没被调用过：IF() 只接三个参数，而列表查询却传了四个进去，于是套
 	// 餐模板页在这段时间里全程都在返回 503，一直都是这样。
 	for _, path := range []string{
-		"settings/pricing-templates",
-		"settings/package-templates",
-		"settings/station-policies",
-		"settings/switch-tasks",
-		"settings/pricing-template-candidates",
-		"settings/device-pricing?station_id=" + fmt.Sprintf("%v", sid),
+		"settings/charging-schemes",
+		"settings/device-capabilities?station_id=" + fmt.Sprintf("%v", sid),
 		"stations?page=1&page_size=5",
 		"devices?page=1&page_size=5",
 		"orders?page=1&page_size=5",

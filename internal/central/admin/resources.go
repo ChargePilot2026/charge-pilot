@@ -40,14 +40,9 @@ type ResourceAPI struct {
 // 再补站点、设备、订单这三组直接定义在本文件里的接口。
 func (a ResourceAPI) Register(r *gin.Engine) {
 	a.registerOperations(r)
-	a.registerPricing(r)
-	a.registerPricingTemplates(r)
-	a.registerPricingCandidates(r)
-	a.registerChargeOffers(r)
-	a.registerPackageTemplates(r)
-	a.registerDevicePricing(r)
+	a.registerChargingSchemes(r)
+	a.registerOnlineCards(r)
 	a.registerDeviceMetering(r)
-	a.registerSwitchTasks(r)
 	a.registerCoupons(r)
 	a.registerActivityRules(r)
 	a.registerChargeUsers(r)

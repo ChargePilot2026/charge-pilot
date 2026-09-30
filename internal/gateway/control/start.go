@@ -31,7 +31,7 @@ func (s StartService) Start(ctx context.Context, orderNo string) (store.StartRes
 	if reservation.Status != "pending" {
 		return reservation, nil
 	}
-	if _, err := dc589.BuildStart(dc589.StartCommand{Session: reservation.Wire.SessionID, Port: reservation.Wire.Port, OrderBCD: reservation.Wire.OrderBCD, Mode: dc589.ChargeMode(reservation.Wire.Mode), Quantity: reservation.Wire.Quantity}); err != nil {
+	if _, err := dc589.BuildStart(dc589.StartCommand{Session: reservation.Wire.SessionID, Port: reservation.Wire.Port, OrderBCD: reservation.Wire.OrderBCD, Mode: dc589.ChargeMode(reservation.Wire.Mode), Quantity: reservation.Wire.Quantity, ConsumerType: reservation.Wire.ConsumerType, CardNumber: reservation.Wire.CardNumber, CardBalanceUnits: reservation.Wire.CardBalanceUnits}); err != nil {
 		return store.StartReservation{}, err
 	}
 	if !s.Devices.Connected(paid.DeviceID) {

@@ -185,13 +185,10 @@ func TestCostRealtimePowerRungBoundaryIsInclusiveBelow(t *testing.T) {
 	}
 }
 
-func TestTwoLinesPriceIndependently(t *testing.T) {
-	// 电费按电量、服务费按小时：一种真实且常见的搭配，
-	// 单一口径的模型根本表达不出来。
+func TestIntegratedEnergyRatesPriceIndependently(t *testing.T) {
 	spec := Spec{
 		Mode:     ModeServerEnergy,
-		Electric: &ElectricLine{Basis: BasisEnergy, Periods: []Period{{EndMinute: 1440, ElectricCents: 100}}},
-		Service:  &ServiceLine{Basis: ServiceMinute, CentsPerMinute: 10},
+		Electric: &ElectricLine{Basis: BasisEnergy, Periods: []Period{{EndMinute: 1440, ElectricCents: 100, ServiceCents: 600}}},
 	}
 	fee, err := Cost(spec, hourUsage(1000, 500))
 	if err != nil {
@@ -202,26 +199,11 @@ func TestTwoLinesPriceIndependently(t *testing.T) {
 	}
 }
 
-func TestChannelMultiplierAppliesToElectricityOnly(t *testing.T) {
-	// 已发布的费率卡只对电费暴露一个卡倍率，此外什么都没有。把它也作用到
-	// 服务费那一行，等于给一张从未这么报价过的发票打上一个折扣。
-	spec := Spec{
-		Mode:       ModeServerEnergy,
-		Electric:   &ElectricLine{Basis: BasisEnergy, Periods: []Period{{EndMinute: 1440, ElectricCents: 100}}},
-		Service:    &ServiceLine{Basis: ServiceMinute, CentsPerMinute: 10},
-		Multiplier: &ChannelMultiplier{CardBP: 5000},
-	}
-	usage := hourUsage(1000, 500)
-	usage.Channel = ChannelCard
-	fee, err := Cost(spec, usage)
-	if err != nil {
-		t.Fatalf("Cost: %v", err)
-	}
-	if fee.ElectricCents != 50 {
-		t.Fatalf("electric = %d, want 50 after a half-rate card multiplier", fee.ElectricCents)
-	}
-	if fee.ServiceCents != 600 {
-		t.Fatalf("service = %d, want 600 untouched by the card multiplier", fee.ServiceCents)
+func TestSchemeRejectsUnconfirmedCoefficientOrder(t *testing.T) {
+	s := exampleScheme(ModeServerEnergy, []Period{{EndMinute: 1440, ElectricCents: 100}}, 300)
+	s.Policy.ChannelBP = 5000
+	if s.Validate() == nil {
+		t.Fatal("unconfirmed channel coefficients must be rejected")
 	}
 }
 
@@ -239,7 +221,7 @@ func TestUnsegmentedMeterAcrossAnEnergyTariffChangeGoesToReview(t *testing.T) {
 		t.Fatalf("an unsegmented meter across an energy tariff change must go to review, got %v", err)
 	}
 	// 同一次充电，只要把各时段电量实测出来就正常结算。
-	meter.Segments = []MeterSegment{{StartedAt: start, EndedAt: start.Add(time.Hour), EnergyWh: 1000, PeakW: 500}}
+	meter.Segments = []MeterSegment{{StartedAt: start, EndedAt: start.Add(30 * time.Minute), EnergyWh: 400}, {StartedAt: start.Add(30 * time.Minute), EndedAt: start.Add(time.Hour), EnergyWh: 600}}
 	if _, err := PriceActual(Rule{ID: 1, Version: 1, Spec: spec}, meter); err != nil {
 		t.Fatalf("a measured session must settle: %v", err)
 	}
@@ -295,7 +277,7 @@ func TestSettleDeviceBilledTakesItsMoneyFromWhatWasPaid(t *testing.T) {
 	// 充电用户付了 100 分，账单就是 100 分。计价引擎里没有任何东西有发言权，
 	// 哪怕算出来的数正好不一样。
 	spec := Spec{Mode: ModeDeviceDuration}
-	offer := Offer{ID: 1, StationID: 1, Name: "1元60分钟", Mode: "package", PriceCents: 100, DurationMinutes: 60}
+	offer := Offer{ID: 1, StationID: 1, Name: "1元60分钟", Mode: "duration", PriceCents: 100, DurationMinutes: 60}
 	meter := ActualMeter{StartedAt: time.Now(), EndedAt: time.Now().Add(time.Hour), ChargedWh: 5000, ChargedSeconds: 3600}
 	settlement, err := SettleSession(spec, meter, &offer, &SessionActual{UsedSeconds: 3600, Reported: true, StopReason: StopExhaustedTime})
 	if err != nil {
@@ -389,13 +371,13 @@ func TestFirmwareLimitsAreEnforced(t *testing.T) {
 	// 充电板把刷卡充电存在一个以分钟计的无符号 16 位字段里，
 	// 超过这个值它会直接拒绝，而不是截断。
 	spec := energySpec()
-	spec.CardMaxMinutes = 1000
+	spec.CardMaxMinutes = 4321
 	if err := ValidateSpec(spec); err == nil {
 		t.Fatal("a card session longer than the firmware field must be rejected")
 	}
-	spec.CardMaxMinutes = 999
+	spec.CardMaxMinutes = 4320
 	if err := ValidateSpec(spec); err != nil {
-		t.Fatalf("999 minutes must be accepted: %v", err)
+		t.Fatalf("72-hour scheme ceiling must be accepted before device capability checking: %v", err)
 	}
 }
 

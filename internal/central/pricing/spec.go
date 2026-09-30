@@ -26,16 +26,16 @@ const maxRateCents = 1000000
 type Tier struct {
 	// MaxWatts 是含端点的上界。第一档下限为 0，各档上界必须严格递增。
 	MaxWatts int `json:"max_watts"`
-	// ElectricCents 在实时功率口径下为每 kWh 的分，在最大功率口径下为每小时的分。
-	// 旧版实时功率快照仍由 TierPriceBasis 标记原计算行为。
+	// ElectricCents 在两种功率算法中均为每小时的分。
 	ElectricCents int64 `json:"electric_cents"`
-	// ServiceCents 只有服务费口径为 ServiceMinutePower 时才会被读取。
+	// ServiceCents 是同一档位的每小时服务费。
 	ServiceCents int64 `json:"service_cents,omitempty"`
 }
 
 // Period 是一天中的一个分时段。一天被存成一条「结束分钟」的链，而不是一组独立的
 // 起止时间对，理由与阶梯只存上界相同：链装不下空档，而一对起止时间太容易漏。
 type Period struct {
+	ServiceCents int64 `json:"service_cents,omitempty"`
 	// EndMinute 是从零点起的分钟数，取值 1..1440。数值必须严格递增，且最后一个
 	// 必须正好是 1440，这样一整天才被完整覆盖，既没有空档也没有重叠。
 	EndMinute int `json:"end_minute"`
@@ -108,7 +108,8 @@ type TimeCharge struct {
 // Spec 是一份自包含的、完整的充电计价描述。预估与结算都把同一个结构喂给 Cost，
 // 两者因此不可能各算各的而对不上。
 type Spec struct {
-	Mode ChargeMode `json:"mode"`
+	Scheme *Scheme    `json:"scheme,omitempty"`
+	Mode   ChargeMode `json:"mode"`
 	// Electric 只在服务端计费模式下被读取。设备计费模式把它留成零值，
 	// ValidateSpec 会拒绝任何试图设置它的电价表——设备计费电价表上的费率
 	// 是一个永远用不到的费率，而总有一天会有人相信它是生效的。
@@ -147,9 +148,10 @@ type Spec struct {
 // Sample 是一段始终落在同一费率时段内的连续用电。无法保证这一点的调用方必须在
 // 调用 Cost 之前先切分。
 type Sample struct {
-	Start    time.Time
-	End      time.Time
-	EnergyWh uint64
+	PowerKnown bool
+	Start      time.Time
+	End        time.Time
+	EnergyWh   uint64
 	// PowerW 是这段用电的功率。0 表示「用电量与时长反推」，
 	// 预估只能这么做。
 	PowerW uint32
@@ -180,11 +182,12 @@ func (u Usage) minutes() int64 {
 // Fee 是计价结果。Basis 原样带回，调用方据此渲染正确的单位，而不必自己
 // 再推导一遍。
 type Fee struct {
-	Basis         ServerBasis `json:"basis"`
-	ElectricCents int64       `json:"electric_cents"`
-	ServiceCents  int64       `json:"service_cents"`
-	TotalCents    int64       `json:"total_cents"`
-	BillableWh    uint64      `json:"billable_wh"`
+	Fragments     []FeeFragment `json:"fragments,omitempty"`
+	Basis         ServerBasis   `json:"basis"`
+	ElectricCents int64         `json:"electric_cents"`
+	ServiceCents  int64         `json:"service_cents"`
+	TotalCents    int64         `json:"total_cents"`
+	BillableWh    uint64        `json:"billable_wh"`
 }
 
 // ValidateSpec 由发布与计价共用：编辑器接受的电价表，必须永远也是结算链路
@@ -215,13 +218,13 @@ func ValidateSpec(spec Spec) error {
 			}
 		}
 	}
-	if spec.CardMaxMinutes > 999 {
+	if spec.CardMaxMinutes > 4320 {
 		// 固件里的刷卡充电是一个以分钟计的无符号 16 位字段，超过这个值会被
 		// 充电板直接拒绝，而不是被静默截断。
 		return ErrInvalidPricing
 	}
 	if spec.TimeCharge != nil {
-		if spec.TimeCharge.MaxMinutes > 999 || spec.TimeCharge.FloatSeconds > 10800 || spec.TimeCharge.FloatPowerDeciWatts > 500 {
+		if spec.TimeCharge.MaxMinutes > 4320 || spec.TimeCharge.FloatSeconds > 10800 || spec.TimeCharge.FloatPowerDeciWatts > 500 {
 			return ErrInvalidPricing
 		}
 	}
@@ -263,11 +266,14 @@ func ValidateSpec(spec Spec) error {
 // ValidateTemplateSpec 校验新写入或新发布的模板。结算仍用 ValidateSpec，
 // 避免把旧订单的冻结价格拒掉或按新算法重算。
 func ValidateTemplateSpec(spec Spec) error {
+	if spec.Scheme != nil {
+		return spec.Scheme.Validate()
+	}
 	if err := ValidateSpec(spec); err != nil {
 		return err
 	}
-	if spec.Mode == ModeServerRealtimePower && spec.TierPriceBasis != TierPerKWh {
-		return ErrLegacyPricing
+	if spec.Service != nil || spec.SpendCapCents != 0 || spec.TierPriceBasis != "" || spec.LossRateBP != 0 || spec.Multiplier != nil {
+		return ErrInvalidPricing
 	}
 	return nil
 }
@@ -300,6 +306,9 @@ func compilePeriods(periods []Period) ([1440]Period, error) {
 // 存在由电量口径决定：电量只有唯一电价，功率口径只有唯一阶梯，而一个同时带
 // 两者的时段就是一份运营方解释不了的电价表。
 func validateTiers(basis ServerBasis, period Period) error {
+	if period.ServiceCents < 0 || period.ServiceCents > maxRateCents {
+		return ErrInvalidPricing
+	}
 	if period.ElectricCents < 0 || period.ElectricCents > maxRateCents {
 		return ErrInvalidPricing
 	}
@@ -371,7 +380,7 @@ func specIsUniformOver(spec Spec, start, end time.Time) bool {
 // 只会带其中之一：只比阶梯的话，每一份电量电价表都会因为两边阶梯都为空而显得
 // 均匀。跨过电价变更点的充电就会靠「各时段电量大致均分」这句猜测结算。
 func sameRate(a, b Period) bool {
-	if a.ElectricCents != b.ElectricCents || len(a.Tiers) != len(b.Tiers) {
+	if a.ElectricCents != b.ElectricCents || a.ServiceCents != b.ServiceCents || len(a.Tiers) != len(b.Tiers) {
 		return false
 	}
 	for i := range a.Tiers {

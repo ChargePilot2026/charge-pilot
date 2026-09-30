@@ -66,7 +66,7 @@ func (c ControlInstruction) Valid() bool {
 	case ModeDeviceDuration:
 		// 余额与阶梯必须缺席：按时长计费的充电是按时间走的，带着余额就等于
 		// 给后面某个环节留了一次再定价的机会。
-		return c.Minutes > 0 && c.Minutes <= 999 && c.BalanceCents == 0 && len(c.TierCentsPerHour) == 0
+		return c.Minutes > 0 && c.Minutes <= 4320 && c.BalanceCents == 0 && len(c.TierCentsPerHour) == 0
 	case ModeDeviceEnergy:
 		return c.EnergyMilliWh > 0 && c.BalanceCents == 0 && len(c.TierCentsPerHour) == 0
 	case ModeDevicePower:
@@ -115,6 +115,20 @@ type Settlement struct {
 // 金额就是实际付出的钱，别的什么都不看——重新算一遍等于给一张已经结清的
 // 账单再造一个数字。
 func SettleSession(spec Spec, meter ActualMeter, paid *Offer, actual *SessionActual) (Settlement, error) {
+	if meter.ReviewRequired {
+		return Settlement{}, ErrMeterReview
+	}
+	if spec.Scheme != nil && paid != nil {
+		p, ok := spec.Scheme.Package(paid.PackageID)
+		count := int64(paid.PurchaseCount)
+		if count == 0 {
+			count = 1
+		}
+		if !ok || p.PriceCents*count != paid.PriceCents || p.Mode != paid.Mode || p.Mode == "duration" && uint32(p.Minutes)*uint32(count) != uint32(paid.DurationMinutes) {
+			return Settlement{}, ErrInvalidPricing
+		}
+		spec = spec.Scheme.SpecFor(p)
+	}
 	if ValidateSpec(spec) != nil {
 		return Settlement{}, ErrInvalidPricing
 	}
@@ -122,9 +136,12 @@ func SettleSession(spec Spec, meter ActualMeter, paid *Offer, actual *SessionAct
 	if actual != nil {
 		settlement.StopReason = string(actual.StopReason)
 	}
+	if paid != nil && paid.ServerDuration {
+		settlement.Executor = "server"
+	}
 	// 固定时长套餐按购买快照的售价结算，与站点费率和功率无关。
 	// 延迟停机也不超收；提前停止延续未使用时长退款规则。
-	if paid != nil && paid.Mode == "package" {
+	if paid != nil && paid.Mode == "duration" {
 		if !paid.Valid() {
 			return Settlement{}, ErrInvalidPricing
 		}
@@ -132,7 +149,8 @@ func SettleSession(spec Spec, meter ActualMeter, paid *Offer, actual *SessionAct
 		if !spec.Mode.ServerBilled() && actual != nil {
 			used = int64(actual.UsedSeconds)
 		}
-		limit := int64(paid.DurationMinutes) * 60
+		used /= 60
+		limit := int64(paid.DurationMinutes)
 		amount := paid.PriceCents
 		if used < limit {
 			amount = amount * used / limit
@@ -140,6 +158,22 @@ func SettleSession(spec Spec, meter ActualMeter, paid *Offer, actual *SessionAct
 		// 套餐总价不含单独约定的电费拆分，与支付报价一致记入套餐服务费。
 		settlement.ServiceCents, settlement.TotalCents = amount, amount
 		settlement.Estimated = actual == nil || !actual.Reported
+		return settlement, nil
+	}
+	if paid != nil && paid.Mode == "energy" {
+		if !paid.Valid() || spec.Scheme == nil || spec.Scheme.Energy == nil {
+			return Settlement{}, ErrInvalidPricing
+		}
+		wh := uint64(meter.ChargedWh)
+		rate := spec.Scheme.Energy
+		amount := int64(wh) * (rate.ElectricCents + rate.ServiceCents) / 1000
+		if amount > paid.PriceCents {
+			amount = paid.PriceCents
+		}
+		electric := amount * rate.ElectricCents / (rate.ElectricCents + rate.ServiceCents)
+		settlement.ElectricCents = electric
+		settlement.ServiceCents = amount - electric
+		settlement.TotalCents = amount
 		return settlement, nil
 	}
 	if spec.Mode.ServerBilled() {
@@ -234,6 +268,9 @@ func DecideStop(spec Spec, usage Usage, elapsed time.Duration) (StopPlan, error)
 		// 设备计费的充电在设备自己的额度用完时结束。插手进去就是去和充电板抢
 		// 一次平台并不付费的充电的控制权。
 		return StopPlan{Reason: "设备计费由设备到量自行停止"}, nil
+	}
+	if spec.TimeCharge != nil && spec.TimeCharge.MaxMinutes > 0 && elapsed >= time.Duration(spec.TimeCharge.MaxMinutes)*time.Minute {
+		return StopPlan{ShouldStop: true, Reason: "达到最长时长"}, nil
 	}
 	fee, err := Cost(spec, usage)
 	if err != nil {

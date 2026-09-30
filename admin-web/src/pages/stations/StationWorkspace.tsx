@@ -4,8 +4,7 @@ import { ReloadOutlined } from '@ant-design/icons';
 import { apiGet } from '../../api/client';
 import { LoadError } from '../../components/LoadError';
 import DevicesPage from '../Devices';
-import StationOperations from './StationOperations';
-import StationConfiguration from './StationConfiguration';
+import AppliedScheme from '../schemes/AppliedScheme';
 
 export interface StationRecord {
   id: number; name: string; address?: string; longitude: number; latitude: number;
@@ -54,16 +53,12 @@ export default function StationWorkspace({ station, permissions, revision = 0, i
   const configureDevice = (id: string) => { setDeviceID(id); setTab('pricing'); };
   const tabs = [
     ...(permissions.includes('pricing.read') ? [{
-      key: 'pricing', label: '计费与套餐',
-      children: <StationConfiguration station={detail} deviceId={deviceID} onDeviceChange={setDeviceID} />,
+      key: 'pricing', label: '充电方案',
+      children: <AppliedScheme station={detail} deviceId={deviceID} onDeviceChange={setDeviceID} />,
     }] : []),
     ...(permissions.includes('device.read') ? [{
       key: 'devices', label: '设备',
       children: <DevicesPage station={detail} embedded onConfigure={configureDevice} />,
-    }] : []),
-    ...(permissions.includes('pricing.read') ? [{
-      key: 'policy', label: '站点策略与下发记录',
-      children: <StationOperations station={detail} />,
     }] : []),
   ];
 

@@ -30,12 +30,16 @@ const (
 	// 之所以记录它们，是因为"某个设置被拒绝"是关于一台充电桩
 	// 唯一一条运维从别处看不到的信息——板子会带着它原有的值继续跑，
 	// 会话本身看起来完全正常。
-	ConfigResult EventType = "config_result"
-	Telemetry    EventType = "telemetry"
-	TimeSync     EventType = "time_sync"
+	ConfigResult     EventType = "config_result"
+	Telemetry        EventType = "telemetry"
+	TimeSync         EventType = "time_sync"
+	CardSwipe        EventType = "card_swipe"
+	CardBalanceQuery EventType = "card_balance_query"
 )
 
 type Event struct {
+	EventID        string
+	CardNumber     uint32
 	Protocol       string
 	DeviceID       string
 	Type           EventType

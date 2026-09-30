@@ -19,7 +19,7 @@ Page({
   try{
    const s=await chargingApp.request('GET','/user/charge/ongoing/snapshot',{order_id:this._orderId});
    if(this._gone || generation!==this._generation)return;
-   this.setData({snapshot:{...s,statusLabel:formatOrder(s).statusLabel,powerText:display(s.current_power_w ?? s.power_w),voltageText:display(s.voltage_v),temperatureText:display(s.temperature_c),energyText:display(s.charged_kwh),durationText:s.elapsed_seconds==null ? '暂无数据' : Math.floor(s.elapsed_seconds/60)+' 分 '+s.elapsed_seconds%60+' 秒',feeText:s.current_fee_cents==null ? '待结算' : '¥'+(s.current_fee_cents/100).toFixed(2)}});
+   this.setData({snapshot:{...s,display:s.display||{},statusLabel:formatOrder(s).statusLabel,powerText:display(s.current_power_w ?? s.power_w),voltageText:display(s.voltage_v),temperatureText:display(s.temperature_c),energyText:display(s.charged_kwh),durationText:(s.elapsed_seconds??s.charged_seconds)==null ? '暂无数据' : Math.floor((s.elapsed_seconds??s.charged_seconds)/60)+' 分 '+(s.elapsed_seconds??s.charged_seconds)%60+' 秒',feeText:(s.current_fee_cents??s.total_cents)==null ? '待结算' : '¥'+((s.current_fee_cents??s.total_cents)/100).toFixed(2)}});
    if(s.poll_continue){const delay=Math.min(30000,Math.max(3000,Number(s.next_poll_after_ms)||5000));this._timer=setTimeout(()=>this.load(),delay);}
   }catch(e){if(!this._gone && generation===this._generation)this.setData({error:e.message || '充电状态读取失败',snapshot:null,needsLogin:!chargingApp.globalData.token});}
   finally{if(!this._gone && generation===this._generation)this.setData({loading:false});}

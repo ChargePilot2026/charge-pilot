@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"reflect"
 	"time"
 
 	"github.com/ChargePilot2026/charge-pilot/internal/central/billing"
@@ -33,6 +34,9 @@ func readBillingSource(db *gorm.DB, id uint64) (billing.Source, error) {
 	source, err := readOriginalBillingSource(db, id)
 	if err != nil {
 		return source, err
+	}
+	if source.FinalFee != nil {
+		return source, nil
 	}
 	var review MeterReview
 	result := db.Where("charge_order_id=? AND status='approved'", id).Order("id DESC").Limit(1).Find(&review)
@@ -80,10 +84,75 @@ func readOriginalBillingSource(db *gorm.DB, id uint64) (billing.Source, error) {
 		Offer *pricing.Offer `json:"offer"`
 	}
 	var meter EndMeter
-	if json.Unmarshal(snapshot.PricingSnapshot, &contract) != nil || json.Unmarshal(end.MeterJSON, &meter) != nil || !meter.EndedAt.Equal(order.EndedAt.Time) {
+	if json.Unmarshal(snapshot.PricingSnapshot, &contract) != nil || contract.Rule.Spec.Scheme == nil || contract.Offer == nil || json.Unmarshal(end.MeterJSON, &meter) != nil || !meter.EndedAt.Equal(order.EndedAt.Time) {
 		return billing.Source{}, billing.ErrConflict
 	}
-	return billing.Source{ChargeOrderID: id, OrderNo: order.OrderNo, UserID: order.UserID, Rule: contract.Rule, Offer: contract.Offer, Meter: pricing.ActualMeter{StartedAt: order.StartedAt.Time, EndedAt: meter.EndedAt, ChargedWh: meter.ChargedWh, ChargedSeconds: meter.ChargedSeconds, Segments: meter.Segments}}, nil
+	source := billing.Source{ChargeOrderID: id, OrderNo: order.OrderNo, UserID: order.UserID, Rule: contract.Rule, Offer: contract.Offer, Meter: pricing.ActualMeter{StartedAt: order.StartedAt.Time, EndedAt: meter.EndedAt, ChargedWh: meter.ChargedWh, ChargedSeconds: meter.ChargedSeconds, Segments: meter.Segments}}
+	var card CardCharge
+	if err := db.Where("charge_order_id=?", id).Find(&card).Error; err != nil {
+		return source, err
+	}
+	if card.ChargeOrderID != 0 && source.Offer != nil {
+		base := *source.Offer
+		if !base.Valid() || !base.ServerDuration || card.PaidCents <= 0 || card.PaidCents%base.PriceCents != 0 || card.PaidCents/base.PriceCents > 65535 || card.PurchasedMinutes > card.MaxMinutes {
+			return source, billing.ErrConflict
+		}
+		base.PurchaseCount = uint16(card.PaidCents / base.PriceCents)
+		base.PriceCents = card.PaidCents
+		base.DurationMinutes = card.PurchasedMinutes
+		source.Offer = &base
+		var pending int64
+		if err := db.Model(&CardOperation{}).Where("charge_order_id=? AND status='confirming'", id).Count(&pending).Error; err != nil {
+			return source, err
+		}
+		if pending > 0 {
+			return source, ErrCardOperation
+		}
+	}
+	var cutoff struct {
+		CutoffAt      time.Time
+		Reason        string
+		ElectricCents *int64
+		ServiceCents  *int64
+	}
+	if err := db.Table("charge_billing_cutoff").Where("charge_order_id=?", id).Find(&cutoff).Error; err != nil {
+		return source, err
+	}
+	if contract.Offer != nil && contract.Offer.Mode == "amount" && contract.Rule.Spec.TimeCharge != nil {
+		limit := order.StartedAt.Time.Add(time.Duration(contract.Rule.Spec.TimeCharge.MaxMinutes) * time.Minute)
+		if cutoff.CutoffAt.IsZero() || limit.Before(cutoff.CutoffAt) {
+			cutoff.CutoffAt = limit
+		}
+	}
+	if !cutoff.CutoffAt.IsZero() && cutoff.CutoffAt.Before(source.Meter.EndedAt) {
+		clipped, err := pricing.CutoffMeter(contract.Rule.Spec, source.Meter, cutoff.CutoffAt)
+		if err != nil {
+			source.Meter.ReviewRequired = true
+		} else {
+			source.Meter = clipped
+		}
+	}
+	if cutoff.Reason == "budget_exhausted" && cutoff.ElectricCents != nil && cutoff.ServiceCents != nil && source.Offer != nil && source.Offer.Mode == "amount" {
+		e, s := *cutoff.ElectricCents, *cutoff.ServiceCents
+		if e < 0 || s < 0 || e+s != source.Offer.PriceCents {
+			return source, billing.ErrConflict
+		}
+		source.FinalFee = &pricing.Fee{ElectricCents: e, ServiceCents: s, TotalCents: e + s}
+		source.ReviewID = "budget:" + cutoff.CutoffAt.UTC().Format(time.RFC3339Nano)
+	}
+	var manual struct {
+		RequestID     string
+		ElectricCents int64
+		ServiceCents  int64
+	}
+	if err := db.Table("charge_manual_settlement").Where("charge_order_id=?", id).Find(&manual).Error; err != nil {
+		return source, err
+	}
+	if manual.RequestID != "" {
+		source.FinalFee = &pricing.Fee{ElectricCents: manual.ElectricCents, ServiceCents: manual.ServiceCents, TotalCents: manual.ElectricCents + manual.ServiceCents}
+		source.ReviewID = manual.RequestID
+	}
+	return source, nil
 }
 func (s BillingOrders) Apply(ctx context.Context, result billing.Result) error {
 	encoded, err := json.Marshal(result)
@@ -98,6 +167,18 @@ func (s BillingOrders) Apply(ctx context.Context, result billing.Result) error {
 		return billing.ErrConflict
 	}
 	return s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var wallet walletRow
+		var paymentMethod string
+		if err := tx.Table("payment_order").Where("id=?", reference.PaymentOrderID.Int64).Pluck("pay_method", &paymentMethod).Error; err != nil {
+			return err
+		}
+		if paymentMethod == "balance" {
+			var err error
+			wallet, err = lockWallet(tx, result.Source.UserID)
+			if err != nil {
+				return err
+			}
+		}
 		var payment PaymentOrderRecord
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id=? AND deleted_at IS NULL", reference.PaymentOrderID.Int64).Take(&payment).Error; err != nil {
 			return err
@@ -106,7 +187,7 @@ func (s BillingOrders) Apply(ctx context.Context, result billing.Result) error {
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id=? AND deleted_at IS NULL", reference.ID).Take(&order).Error; err != nil {
 			return err
 		}
-		if !order.PaymentOrderID.Valid || uint64(order.PaymentOrderID.Int64) != payment.ID || payment.PayMethod != "wechat" || (payment.Status != "paid" && payment.Status != "partial_refunded" && payment.Status != "refunded") || payment.PaidCents != payment.TotalCents || payment.BizID != order.ID || payment.BizType != "charge" || payment.UserID != order.UserID || payment.PaidCents <= 0 || payment.RefundedCents < 0 || payment.RefundedCents > payment.PaidCents {
+		if !order.PaymentOrderID.Valid || uint64(order.PaymentOrderID.Int64) != payment.ID || (payment.PayMethod != "wechat" && payment.PayMethod != "balance") || (payment.Status != "paid" && payment.Status != "partial_refunded" && payment.Status != "refunded") || payment.PaidCents != payment.TotalCents || payment.BizID != order.ID || payment.BizType != "charge" || payment.UserID != order.UserID || payment.PaidCents <= 0 || payment.RefundedCents < 0 || payment.RefundedCents > payment.PaidCents {
 			return billing.ErrConflict
 		}
 		source, err := readBillingSource(tx, order.ID)
@@ -118,8 +199,8 @@ func (s BillingOrders) Apply(ctx context.Context, result billing.Result) error {
 		if string(original) != string(provided) {
 			return billing.ErrConflict
 		}
-		fee, err := pricing.PriceOfferActual(source.Rule, source.Offer, source.Meter)
-		if err != nil || fee != result.ActualFee || result.CalculationNo != fmt.Sprintf("FEE%020d", order.ID) {
+		fee, err := billing.PriceSource(source)
+		if err != nil || !reflect.DeepEqual(fee, result.ActualFee) || result.CalculationNo != fmt.Sprintf("FEE%020d", order.ID) {
 			return billing.ErrConflict
 		}
 		var existing struct{ ResultJSON []byte }
@@ -138,10 +219,10 @@ func (s BillingOrders) Apply(ctx context.Context, result billing.Result) error {
 			}
 			return tx.Table("charge_billing_job").Where("charge_order_id=?", order.ID).Updates(map[string]any{"status": "done", "last_error": nil}).Error
 		}
-		shortfall := result.TotalCents - payment.PaidCents
-		if shortfall < 0 {
-			shortfall = 0
+		if result.TotalCents > payment.PaidCents-payment.RefundedCents {
+			return billing.ErrConflict
 		}
+		shortfall := int64(0)
 		if err := tx.Table("charge_fee_receipt").Create(map[string]any{"charge_order_id": order.ID, "calculation_no": result.CalculationNo, "result_json": string(encoded), "shortfall_cents": shortfall}).Error; err != nil {
 			return err
 		}
@@ -159,46 +240,57 @@ func (s BillingOrders) Apply(ctx context.Context, result billing.Result) error {
 		}
 		surplus := payment.PaidCents - result.TotalCents - payment.RefundedCents - reserved
 		if surplus > 0 {
-			refund := RefundRecord{RefundNo: fmt.Sprintf("FEE-R%020d", order.ID), PaymentOrderID: payment.ID, UserID: order.UserID, BizType: "charge", BizID: order.ID, RefundCents: surplus, Reason: sql.NullString{String: "实际计费后的预付差额", Valid: true}, Status: "pending", ExecutionPolicy: "automatic", CreatedMonth: utcDate()}
-			if err := tx.Create(&refund).Error; err != nil {
-				return err
-			}
-			if err := tx.Model(&ChargeOrderRecord{}).Where("id=? AND status='completed'", order.ID).Update("status", "refunding").Error; err != nil {
-				return err
-			}
-			eventID := uuid.NewSHA1(uuid.NameSpaceURL, []byte("billing-refund:"+result.CalculationNo)).String()
-			payload, _ := json.Marshal(map[string]any{"event_id": eventID, "refund_no": refund.RefundNo, "charge_order_id": order.ID, "refund_cents": surplus})
-			if err := tx.Create(&EventOutboxRecord{EventID: eventID, Stream: "refund_required_stream", EnvelopeJSON: payload}).Error; err != nil {
-				return err
+			if payment.PayMethod == "balance" {
+				if err := walletRefund(tx, order, &wallet, surplus, fmt.Sprintf("CARD-R%020d", order.ID), "刷卡累计付款未使用部分退款"); err != nil {
+					return err
+				}
+				if err := tx.Model(&ChargeOrderRecord{}).Where("id=?", order.ID).Update("status", "refunded").Error; err != nil {
+					return err
+				}
+			} else {
+				refund := RefundRecord{RefundNo: fmt.Sprintf("FEE-R%020d", order.ID), PaymentOrderID: payment.ID, UserID: order.UserID, BizType: "charge", BizID: order.ID, RefundCents: surplus, Reason: sql.NullString{String: "实际计费后的预付差额", Valid: true}, Status: "pending", ExecutionPolicy: "automatic", CreatedMonth: utcDate()}
+				if err := tx.Create(&refund).Error; err != nil {
+					return err
+				}
+				if err := tx.Model(&ChargeOrderRecord{}).Where("id=? AND status='completed'", order.ID).Update("status", "refunding").Error; err != nil {
+					return err
+				}
+				eventID := uuid.NewSHA1(uuid.NameSpaceURL, []byte("billing-refund:"+result.CalculationNo)).String()
+				payload, _ := json.Marshal(map[string]any{"event_id": eventID, "refund_no": refund.RefundNo, "charge_order_id": order.ID, "refund_cents": surplus})
+				if err := tx.Create(&EventOutboxRecord{EventID: eventID, Stream: "refund_required_stream", EnvelopeJSON: payload}).Error; err != nil {
+					return err
+				}
 			}
 		}
 		eventID := uuid.NewSHA1(uuid.NameSpaceURL, []byte("billing-complete:"+result.CalculationNo)).String()
 		if err := tx.Create(&ChargeEventLogRecord{ChargeOrderID: order.ID, EventID: eventID, Event: "fee_calculated", Actor: "billing", Detail: fmt.Sprintf("electric=%d service=%d total=%d shortfall=%d", result.ElectricCents, result.ServiceCents, result.TotalCents, shortfall), OccurredAt: time.Now().UTC()}).Error; err != nil {
 			return err
 		}
-		// 差额在同一个事务里变成可追收的欠款，
-		// 所以计费金额与应付金额永远不会互相矛盾。
-		// charge_order_id 上的唯一键让重放成为空操作，也就不用出现空的 SET 子句。
-		if shortfall > 0 {
-			debtNo := fmt.Sprintf("DEBT%020d", order.ID)
-			insert := tx.Table("charge_debt").Create(map[string]any{
-				"debt_no": debtNo, "charge_order_id": order.ID, "payment_order_id": payment.ID,
-				"user_id": order.UserID, "debt_cents": shortfall, "paid_cents": 0, "status": "unpaid",
-			})
-			if insert.Error != nil && isDuplicate(insert.Error) {
-				// 欠款在此前某次尝试时已经存在；
-				// 这正是重放计费任务的预期结果。
-				insert = nil
-			}
-			if insert != nil {
-				return insert.Error
-			}
+		payload, err := json.Marshal(settlementNotice(eventID, order, source.Rule.Spec.Display, result.ActualFee, payment.PaidCents-result.TotalCents))
+		if err != nil {
+			return err
+		}
+		if err := tx.Create(&EventOutboxRecord{EventID: eventID, Stream: "charge_settled_stream", EnvelopeJSON: payload}).Error; err != nil {
+			return err
 		}
 		return tx.Table("charge_billing_job").Where("charge_order_id=?", order.ID).Updates(map[string]any{"status": "done", "last_error": nil}).Error
 	})
 }
 
 var _ billing.Orders = BillingOrders{}
+
+// Notification consumers receive final amounts only after durable settlement.
+// Visibility comes from the frozen order, never the current station template.
+func settlementNotice(eventID string, order ChargeOrderRecord, display pricing.Display, fee pricing.Fee, refund int64) map[string]any {
+	data := map[string]any{"event_id": eventID, "charge_order_id": order.ID, "order_no": order.OrderNo, "user_id": order.UserID, "status": "settled", "display": display}
+	if display.ShowFeeOnEnd {
+		data["total_cents"], data["refund_cents"] = fee.TotalCents, refund
+		if display.ShowFeeSplit {
+			data["electric_cents"], data["service_cents"] = fee.ElectricCents, fee.ServiceCents
+		}
+	}
+	return data
+}
 
 // applyOrderCampaigns 发放这笔订单挣到的门槛券或节日券。
 //

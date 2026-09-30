@@ -11,7 +11,7 @@ function page(name,app,wx={}){
  const p={...definition,data:structuredClone(definition.data)};p.setData=value=>Object.assign(p.data,value);p.onLoad({code:'DEV00001%3A1'});return p;
 }
 const port=(n,status='idle')=>({port_id:`DEV00001:${n}`,port_code:`DEV00001:${n}`,device_id:'DEV00001',port_no:n,port_status:status,online:true,available:status==='idle'});
-const offer={id:7,station_id:1,code:'P60',name:'60 分钟套餐',mode:'package',price_cents:600,duration_minutes:60};
+const offer={id:7,station_id:1,code:'P60',name:'60 分钟套餐',mode:'duration',price_cents:600,duration_minutes:60};
 const checkout=()=>({merchant_order_no:'PAY_TEST',payable_cents:600,expires_at:new Date(Date.now()+60000).toISOString(),payment_params:{timeStamp:'1234567890',nonceStr:'nonce',package:'prepay_id=test',signType:'RSA',paySign:'signed'}});
 function app(token='t'){
  const calls=[];const result={globalData:{token},_generation:0,calls,login:async()=>{result.globalData.token='t';result._generation++;},request:async(method,url,body,auth)=>{

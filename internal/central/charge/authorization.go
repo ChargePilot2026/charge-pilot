@@ -4,7 +4,9 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"errors"
+	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol/dc589"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/httpapi"
@@ -45,8 +47,8 @@ func (a StartAuthorization) handle(c *gin.Context) {
 		Where(`c.order_no = ? AND c.status = 'paid' AND c.deleted_at IS NULL
 			AND p.status = 'paid' AND p.paid_cents >= p.total_cents
 			AND p.total_cents > 0 AND p.deleted_at IS NULL
-			AND ((c.charge_mode IN (0,4,10,12) AND c.charge_quantity BETWEEN 1 AND 600)
-			OR (c.charge_mode IN (1,11) AND c.charge_quantity BETWEEN 1 AND 65535))`, orderNo).
+			AND ((c.charge_mode IN (0,4) AND c.charge_quantity BETWEEN 1 AND 4320)
+			OR (c.charge_mode = 1 AND c.charge_quantity BETWEEN 1000 AND 65000))`, orderNo).
 		Take(&order)
 	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 		httpapi.Write(c, http.StatusConflict, 2000, "order is not fully paid", nil)
@@ -56,7 +58,23 @@ func (a StartAuthorization) handle(c *gin.Context) {
 		httpapi.Write(c, http.StatusServiceUnavailable, 5001, "order storage unavailable", nil)
 		return
 	}
-	httpapi.OK(c, gin.H{
+	consumer, cardNumber, balanceUnits := uint8(2), uint32(0), uint16(0)
+	var card CardCharge
+	if err := a.DB.WithContext(c.Request.Context()).Where("charge_order_id=?", order.ChargeOrderID).Find(&card).Error; err != nil {
+		httpapi.Write(c, 503, 5001, "刷卡执行快照暂不可读取", nil)
+		return
+	}
+	if card.ChargeOrderID != 0 {
+		n, err := strconv.ParseUint(card.CardNo, 10, 32)
+		if err != nil || n == 0 {
+			httpapi.Write(c, 409, 2000, "冻结卡号无效", nil)
+			return
+		}
+		consumer = 3
+		cardNumber = uint32(n)
+		balanceUnits = dc589.CardBalanceUnits(card.WalletAfterCents)
+	}
+	httpapi.OK(c, gin.H{"consumer_type": consumer, "card_number": cardNumber, "card_balance_units": balanceUnits,
 		"charge_order_id":  order.ChargeOrderID,
 		"order_no":         order.OrderNo,
 		"user_id":          order.UserID,

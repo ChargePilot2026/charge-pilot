@@ -14,6 +14,7 @@ import (
 	"github.com/ChargePilot2026/charge-pilot/internal/central/pricing"
 	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type AutoStopper struct {
@@ -64,8 +65,42 @@ func (s AutoStopper) Run(ctx context.Context) (int, error) {
 				continue
 			}
 			stop := false
-			if contract.Offer.Mode == "package" && !now.Before(order.StartedAt.Add(time.Duration(contract.Offer.DurationMinutes)*time.Minute)) {
+			var frozenFee *pricing.Fee
+			cutoff, reason := now, "automatic_stop"
+			if contract.Offer.Mode == "duration" {
+				var card struct{ PurchasedMinutes uint16 }
+				if err := s.UserDB.WithContext(ctx).Table("card_charge").Where("charge_order_id=?", order.ID).Find(&card).Error; err != nil {
+					return stopped, err
+				}
+				if card.PurchasedMinutes > 0 {
+					contract.Offer.DurationMinutes = card.PurchasedMinutes
+					if !now.Before(order.StartedAt.Add(time.Duration(card.PurchasedMinutes) * time.Minute)) {
+						shouldStop, err := s.freezeCardDeadline(ctx, order.ID, now)
+						if err != nil {
+							return stopped, err
+						}
+						if shouldStop {
+							if err := s.requestStop(ctx, order); err != nil {
+								return stopped, err
+							}
+							stopped++
+						}
+						continue
+					}
+				}
+			}
+			if contract.Offer.Mode == "duration" && !now.Before(order.StartedAt.Add(time.Duration(contract.Offer.DurationMinutes)*time.Minute)) {
 				stop = true
+				cutoff = order.StartedAt.Add(time.Duration(contract.Offer.DurationMinutes) * time.Minute)
+				reason = "duration_exhausted"
+			}
+			if contract.Offer.Mode == "amount" && contract.Rule.Spec.TimeCharge != nil && contract.Rule.Spec.TimeCharge.MaxMinutes > 0 {
+				limit := order.StartedAt.Add(time.Duration(contract.Rule.Spec.TimeCharge.MaxMinutes) * time.Minute)
+				if !now.Before(limit) {
+					stop = true
+					cutoff = limit
+					reason = "duration_limit"
+				}
 			}
 			if !stop {
 				var rows []workerDeviceEventRow
@@ -92,22 +127,28 @@ func (s AutoStopper) Run(ctx context.Context) (int, error) {
 					if latest, ok := latestMeter(samples, order.PortNo, now); ok {
 						fee, feeErr := pricing.PriceActual(contract.Rule, measuredMeter(order, latest, samples))
 						if feeErr == nil && fee.TotalCents >= contract.Offer.PriceCents {
+							capped, err := pricing.PriceOfferActual(contract.Rule, contract.Offer, measuredMeter(order, latest, samples))
+							if err != nil {
+								return stopped, err
+							}
+							frozenFee = &capped
 							stop = true
+							cutoff = latest.at
+							reason = "budget_exhausted"
 						}
 					}
 				}
-				// 消费上限是当时展示给充电用户的一个承诺，
-				// 而在服务端计费下桩上没有任何东西在盯着它：
-				// 设备跑的是平台在开始时下发的时长或电量额度，
-				// 它压根不知道自己在花钱。
-				// 所以上限在这里按结算将要用的同一份计量来强制执行。
-				// 规则本身放在定价引擎里，
-				// 这样轮询器、运维和测试套用的是同一个判定。
-				if !stop && spendCapReached(contract.Rule, samples, order, now) {
-					stop = true
-				}
+
 			}
 			if stop {
+				row := map[string]any{"charge_order_id": order.ID, "cutoff_at": cutoff, "reason": reason}
+				if frozenFee != nil {
+					row["electric_cents"] = frozenFee.ElectricCents
+					row["service_cents"] = frozenFee.ServiceCents
+				}
+				if err := s.UserDB.WithContext(ctx).Table("charge_billing_cutoff").Clauses(clause.OnConflict{DoUpdates: clause.Assignments(map[string]any{"charge_order_id": gorm.Expr("charge_order_id")})}).Create(row).Error; err != nil {
+					return stopped, err
+				}
 				if err := s.requestStop(ctx, order); err != nil {
 					return stopped, err
 				}

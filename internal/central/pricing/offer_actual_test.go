@@ -9,8 +9,7 @@ func TestConfiguredOfferSettlement(t *testing.T) {
 	start := time.Date(2026, 9, 29, 2, 0, 0, 0, time.UTC)
 	rule := Rule{ID: 1, StationID: 2, Version: 1, Spec: Spec{
 		Mode:     ModeServerEnergy,
-		Electric: &ElectricLine{Basis: BasisEnergy, Periods: []Period{{EndMinute: 1440, ElectricCents: 100}}},
-		Service:  &ServiceLine{Basis: ServiceEnergy, CentsPerKWh: 100},
+		Electric: &ElectricLine{Basis: BasisEnergy, Periods: []Period{{EndMinute: 1440, ElectricCents: 100, ServiceCents: 100}}},
 	}}
 	// 半小时 1kWh：100 分电费加 100 分服务费。
 	meter := ActualMeter{StartedAt: start, EndedAt: start.Add(30 * time.Minute), ChargedWh: 1000, ChargedSeconds: 1800}
@@ -21,7 +20,7 @@ func TestConfiguredOfferSettlement(t *testing.T) {
 	}{
 		// 固定时长套餐只为用掉的那一段时长收费，所以提前结束的充电
 		// 会把剩下的部分退回去。
-		{"package half used", Offer{ID: 1, StationID: 2, Name: "套餐", Mode: "package", PriceCents: 600, DurationMinutes: 60}, 300},
+		{"package half used", Offer{ID: 1, StationID: 2, Name: "套餐", Mode: "duration", PriceCents: 600, DurationMinutes: 60}, 300},
 		{"amount cap", Offer{ID: 2, StationID: 2, Name: "金额", Mode: "amount", PriceCents: 100}, 100},
 	}
 	for _, tc := range tests {
@@ -45,7 +44,7 @@ func TestConfiguredOfferSettlement(t *testing.T) {
 
 // 固定售价不能随着站点费率、用电量或服务端/设备执行方式改变。
 func TestFixedDurationOfferUsesItsPriceAndRefundsUnusedTime(t *testing.T) {
-	offer := Offer{ID: 1, StationID: 2, Name: "2小时5元", Mode: "package", PriceCents: 500, DurationMinutes: 120}
+	offer := Offer{ID: 1, StationID: 2, Name: "2小时5元", Mode: "duration", PriceCents: 500, DurationMinutes: 120}
 	for _, mode := range []ChargeMode{ModeServerEnergy, ModeServerRealtimePower, ModeServerMaxPower, ModeDeviceDuration} {
 		spec := Spec{Mode: mode}
 		if mode.ServerBilled() {

@@ -19,7 +19,8 @@
     "pages/profile/phone",
     "pages/announcement/list",
     "pages/cs/chat",
-    "pages/dev/fault"
+    "pages/dev/fault",
+    "pages/wallet/cards"
   ],
   "window": {
     "backgroundTextStyle": "light",
@@ -32,14 +33,24 @@
     "color": "#999",
     "selectedColor": "#1677ff",
     "list": [
-      { "pagePath": "pages/index/index", "text": "首页" },
-      { "pagePath": "pages/profile/profile", "text": "我的" }
+      {
+        "pagePath": "pages/index/index",
+        "text": "首页"
+      },
+      {
+        "pagePath": "pages/profile/profile",
+        "text": "我的"
+      }
     ]
   },
   "permission": {
-    "scope.userLocation": { "desc": "用于显示附近充电站点" }
+    "scope.userLocation": {
+      "desc": "用于显示附近充电站点"
+    }
   },
-  "requiredPrivateInfos": ["getLocation"],
+  "requiredPrivateInfos": [
+    "getLocation"
+  ],
   "lazyCodeLoading": "requiredComponents",
   "sitemapLocation": "sitemap.json"
 }

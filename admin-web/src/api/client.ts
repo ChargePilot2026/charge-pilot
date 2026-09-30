@@ -93,7 +93,7 @@ export async function apiPut<T>(path: string, body?: unknown): Promise<T> {
   return (r.data.data ?? null) as T;
 }
 
-export async function apiDelete<T>(path: string): Promise<T> {
-  const r = await http.delete<ApiEnvelope<T>>(path);
+export async function apiDelete<T>(path: string, body?: unknown): Promise<T> {
+  const r = await http.delete<ApiEnvelope<T>>(path, { data: body });
   return (r.data.data ?? null) as T;
 }

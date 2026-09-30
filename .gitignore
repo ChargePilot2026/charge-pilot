@@ -3,7 +3,9 @@ target/
 .env
 .env.dev
 node_modules/
+.tmp/
 admin-web/dist/
 
 # macOS
 .DS_Store
+.pnpm-store/

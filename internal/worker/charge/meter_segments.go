@@ -25,6 +25,7 @@ func measuredSegments(start time.Time, end protocol.Event, samples []protocol.Ev
 		return nil
 	}
 	cursor, previous := start, uint32(0)
+	var previousPower *uint32
 	segments := []pricing.MeterSegment{}
 	for _, event := range samples {
 		if event.Type != protocol.Heartbeat || event.DeviceID != end.DeviceID {
@@ -47,9 +48,25 @@ func measuredSegments(start time.Time, end protocol.Event, samples []protocol.Ev
 				if wh != previous {
 					return nil
 				}
+				power := (port.PowerDeciWatts + 5) / 10
+				previousPower = &power
 				continue
 			}
-			segments = append(segments, pricing.MeterSegment{StartedAt: cursor, EndedAt: at, EnergyWh: wh - previous})
+			segment := pricing.MeterSegment{StartedAt: cursor, EndedAt: at, EnergyWh: wh - previous}
+			power := (port.PowerDeciWatts + 5) / 10
+			// A previous reading may describe the interval only for a verified
+			// consecutive heartbeat gap of at most 60 seconds. Larger gaps stay
+			// explicitly missing instead of inferring power from energy.
+			if previousPower != nil && at.Sub(cursor) <= 60*time.Second {
+				v := *previousPower
+				segment.PowerW = &v
+				segment.PeakW = v
+				if power > segment.PeakW {
+					segment.PeakW = power
+				}
+			}
+			segments = append(segments, segment)
+			previousPower = &power
 			cursor, previous = at, wh
 		}
 	}
@@ -61,7 +78,13 @@ func measuredSegments(start time.Time, end protocol.Event, samples []protocol.Ev
 			return nil
 		}
 	} else {
-		segments = append(segments, pricing.MeterSegment{StartedAt: cursor, EndedAt: end.EndedAt, EnergyWh: end.EnergyMilliKWh - previous})
+		segment := pricing.MeterSegment{StartedAt: cursor, EndedAt: end.EndedAt, EnergyWh: end.EnergyMilliKWh - previous}
+		if previousPower != nil && end.EndedAt.Sub(cursor) <= 60*time.Second {
+			v := *previousPower
+			segment.PowerW = &v
+			segment.PeakW = v
+		}
+		segments = append(segments, segment)
 	}
 	return segments
 }

@@ -26,7 +26,7 @@ func TestStationRuleIsNeverADeviceRule(t *testing.T) {
 	if err := store.DB.Exec(
 		"INSERT INTO pricing_rule(name,station_id,device_id,version,status,spec_json,channel) "+
 			"VALUES('设备单独定价',?,'DEV-ONLY',1,'active',?,'default')",
-		stationID, `{"mode":"server_energy","electric":{"basis":"energy","periods":[{"end_minute":1440,"electric_cents":100}]}}`,
+		stationID, schemeRuleJSON(t, 100, 100),
 	).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +49,7 @@ func TestStationRuleIsNeverADeviceRule(t *testing.T) {
 	if err := store.DB.Exec(
 		"INSERT INTO pricing_rule(name,station_id,device_id,version,status,spec_json,channel) "+
 			"VALUES('整站默认',?,NULL,1,'active',?,'default')",
-		stationID, `{"mode":"server_energy","electric":{"basis":"energy","periods":[{"end_minute":1440,"electric_cents":30}]}}`,
+		stationID, schemeRuleJSON(t, 30, 100),
 	).Error; err != nil {
 		t.Fatal(err)
 	}

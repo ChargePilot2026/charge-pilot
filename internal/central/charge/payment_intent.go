@@ -118,17 +118,25 @@ func (s PaymentIntentStore) Reserve(ctx context.Context, input IntentInput) (Pay
 		// 所以它表达成平台计费：
 		// 由平台给这次会话定价并停机。
 		// 一起发过去的那个长 span 只是安全上界，不是停机规则；停机规则在计价包的服务端一侧，目前还没上线。
-		minutes, mode := uint16(10080), uint8(4)
-		if input.Offer.Mode == "package" {
+		if input.Rule.Spec.Scheme == nil {
+			return PaymentIntent{}, pricing.ErrInvalidPricing
+		}
+		p, ok := input.Rule.Spec.Scheme.Package(input.Offer.PackageID)
+		if !ok || input.Offer.ID != input.Rule.ID*100+p.ID || p.PriceCents != input.Offer.PriceCents || p.Mode != input.Offer.Mode {
+			return PaymentIntent{}, pricing.ErrInvalidPricing
+		}
+		input.Rule.Spec = input.Rule.Spec.Scheme.SpecFor(p)
+		minutes, mode := input.Rule.Spec.Scheme.Normalized().Policy.MaxMinutes, uint8(4)
+		quantity := minutes
+		if input.Offer.Mode == "duration" {
 			minutes, mode = input.Offer.DurationMinutes, 0
+			quantity = minutes
+		} else if input.Offer.Mode == "energy" {
+			minutes, mode, quantity = 0, 1, uint16(input.Offer.EnergyWh)
 		}
-		estimate = pricing.Estimate{EstimatedKWh: "0.000", EstimatedMinutes: minutes, ServiceCents: input.Offer.PriceCents, TotalCents: input.Offer.PriceCents, ChargeMode: mode, ChargeQuantity: minutes}
+		estimate = pricing.Estimate{Mode: input.Rule.Spec.Mode, EstimatedKWh: "0.000", EstimatedMinutes: minutes, PrepaidCents: input.Offer.PriceCents, TotalCents: input.Offer.PriceCents, ChargeMode: mode, ChargeQuantity: quantity}
 	} else {
-		var err error
-		estimate, err = pricing.EstimateCharge(input.Rule, input.Energy, input.Minutes, time.Now(), 0)
-		if err != nil {
-			return PaymentIntent{}, err
-		}
+		return PaymentIntent{}, pricing.ErrOfferUnavailable
 	}
 	// 减免额在任何东西被占用之前就算好，
 	// 这样一张被拒的券不会留下支付订单或端口占用。
@@ -158,6 +166,12 @@ func (s PaymentIntentStore) Reserve(ctx context.Context, input IntentInput) (Pay
 	var openid string
 	var paymentID uint64
 	err = s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lockCheckoutPort(tx, input.Port.Port.PortID); err != nil {
+			return err
+		}
+		if err := checkoutPortAvailable(tx, input.Port.Port.PortID); err != nil {
+			return err
+		}
 		var identity struct {
 			OpenID string `gorm:"column:openid"`
 		}

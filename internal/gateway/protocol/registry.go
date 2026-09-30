@@ -11,24 +11,30 @@ var ErrOffline = errors.New("device is not connected")
 type CommandKind string
 
 const (
-	CommandStart  CommandKind = "start"
-	CommandStop   CommandKind = "stop"
-	CommandReboot CommandKind = "reboot"
-	CommandOTA    CommandKind = "ota"
+	CommandStart       CommandKind = "start"
+	CommandStop        CommandKind = "stop"
+	CommandReboot      CommandKind = "reboot"
+	CommandOTA         CommandKind = "ota"
+	CommandCardDenied  CommandKind = "card_denied"
+	CommandCardBalance CommandKind = "card_balance"
 )
 
 // Command 刻意与厂商无关。领域层必须先把一条指令落库并鉴权，
 // 然后才能让当前那条连接去发送它。
 type Command struct {
-	Kind         CommandKind
-	SessionID    [6]byte
-	Port         uint8
-	OrderBCD     [8]byte
-	Mode         uint8
-	Quantity     uint16
-	RemoteMode   uint8
-	UseUpgradeID bool
-	UpgradeID    [8]byte
+	ConsumerType     uint8
+	CardNumber       uint32
+	CardBalanceUnits uint16
+	CardInvalid      bool
+	Kind             CommandKind
+	SessionID        [6]byte
+	Port             uint8
+	OrderBCD         [8]byte
+	Mode             uint8
+	Quantity         uint16
+	RemoteMode       uint8
+	UseUpgradeID     bool
+	UpgradeID        [8]byte
 }
 
 type Session interface {

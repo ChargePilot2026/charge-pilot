@@ -19,6 +19,30 @@ func (a ResourceAPI) registerMeterReviews(r *gin.Engine) {
 	r.GET("/api/v1/admin/billing/meter-reviews", a.Auth.Require("finance.read"), a.meterReviews)
 	r.POST("/api/v1/admin/billing/meter-reviews/:id/propose", a.Auth.Require("billing.meter.review"), a.proposeMeter)
 	r.POST("/api/v1/admin/billing/meter-reviews/:id/decide", a.Auth.Require("billing.meter.review"), a.decideMeter)
+	r.POST("/api/v1/admin/billing/meter-reviews/:id/resolve-amount", a.Auth.Require("billing.meter.review"), a.resolveMeterAmount)
+}
+
+func (a ResourceAPI) resolveMeterAmount(c *gin.Context) {
+	id, ok := pathID(c)
+	if !ok {
+		return
+	}
+	p, ok := a.financeActor(c, "billing.meter.review")
+	if !ok {
+		return
+	}
+	var in charge.ManualSettlement
+	if !decodeResource(c, &in) {
+		return
+	}
+	in.ChargeOrderID = id
+	in.ActorID = p.ID
+	in.Reason = strings.TrimSpace(in.Reason)
+	if err := (charge.BillingOrders{DB: a.Store.UserDB}).ResolveAmount(c.Request.Context(), in); err != nil {
+		meterFailure(c, err)
+		return
+	}
+	httpapi.OK(c, gin.H{"queued": true})
 }
 
 // meterReviews 分页返回人工定价兜底单（billing_db.manual_fee_review），状态只接受

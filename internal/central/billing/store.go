@@ -15,6 +15,8 @@ import (
 var ErrConflict = errors.New("billing source conflicts with persisted calculation")
 
 type Source struct {
+	FinalFee      *pricing.Fee        `json:"final_fee,omitempty"`
+	ReviewID      string              `json:"review_id,omitempty"`
 	ChargeOrderID uint64              `json:"charge_order_id"`
 	OrderNo       string              `json:"order_no"`
 	UserID        uint64              `json:"user_id"`
@@ -33,7 +35,7 @@ func (s Store) Calculate(ctx context.Context, source Source) (Result, error) {
 	if source.ChargeOrderID == 0 || source.OrderNo == "" || source.UserID == 0 || source.Rule.StationID == 0 {
 		return Result{}, ErrConflict
 	}
-	fee, err := pricing.PriceOfferActual(source.Rule, source.Offer, source.Meter)
+	fee, err := PriceSource(source)
 	if err != nil {
 		return Result{}, err
 	}
@@ -89,4 +91,17 @@ func (s Store) Calculate(ctx context.Context, source Source) (Result, error) {
 		return tx.Table("fee_delivery").Create(map[string]any{"charge_order_id": source.ChargeOrderID, "payload_json": string(resultJSON)}).Error
 	})
 	return out, err
+}
+
+// Manual fees are accepted only as a persisted, audited review in the source.
+// The charge service compares that source again before applying any money.
+func PriceSource(source Source) (pricing.Fee, error) {
+	if source.FinalFee != nil {
+		f := *source.FinalFee
+		if source.ReviewID == "" || source.Offer == nil || f.ElectricCents < 0 || f.ServiceCents < 0 || f.TotalCents != f.ElectricCents+f.ServiceCents || f.TotalCents > source.Offer.PriceCents {
+			return pricing.Fee{}, ErrConflict
+		}
+		return f, nil
+	}
+	return pricing.PriceOfferActual(source.Rule, source.Offer, source.Meter)
 }

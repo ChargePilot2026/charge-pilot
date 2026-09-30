@@ -129,6 +129,12 @@ func (a UserQueryAPI) snapshot(c *gin.Context) {
 		payload["shortfall_cents"] = shortfall
 	}
 	// 端口状态只是补充信息：网关抖一下不该让整个快照失败。
+	payload["poll_continue"] = order.Status == "paid" || order.Status == "charging"
+	payload["next_poll_after_ms"] = 5000
+	if err := a.schemeView(ctx, order, payload); err != nil {
+		httpapi.Write(c, 503, 5003, "订单方案及确认状态暂不可读取", nil)
+		return
+	}
 	var port struct {
 		Data any `json:"data"`
 	}
@@ -328,9 +334,9 @@ type historyRow struct {
 	EndedAt        *time.Time `json:"ended_at" gorm:"column:ended_at"`
 	ChargedKWh     *string    `json:"charged_kwh" gorm:"column:charged_kwh"`
 	ChargedSeconds *uint32    `json:"charged_seconds" gorm:"column:charged_seconds"`
-	ElectricCents  int64      `json:"electric_cents" gorm:"column:electric_cents"`
-	ServiceCents   int64      `json:"service_cents" gorm:"column:service_cents"`
-	TotalCents     int64      `json:"total_cents" gorm:"column:total_cents"`
+	ElectricCents  *int64     `json:"electric_cents" gorm:"column:electric_cents"`
+	ServiceCents   *int64     `json:"service_cents" gorm:"column:service_cents"`
+	TotalCents     *int64     `json:"total_cents" gorm:"column:total_cents"`
 	DiscountCents  int64      `json:"discount_cents" gorm:"column:discount_cents"`
 }
 
@@ -395,9 +401,9 @@ func (a UserQueryAPI) history(c *gin.Context) {
 		for i := range rows {
 			if receipt, present := byOrder[rows[i].OrderID]; present {
 				if electric, service, total, ok := receipt.Fees(); ok {
-					rows[i].ElectricCents = electric
-					rows[i].ServiceCents = service
-					rows[i].TotalCents = total
+					rows[i].ElectricCents = &electric
+					rows[i].ServiceCents = &service
+					rows[i].TotalCents = &total
 				}
 			}
 		}
@@ -451,5 +457,9 @@ func (a UserQueryAPI) detail(c *gin.Context) {
 		return
 	}
 	payload["refunds"] = refunds
+	if err := a.schemeView(ctx, order, payload); err != nil {
+		httpapi.Write(c, 503, 5003, "订单方案及确认状态暂不可读取", nil)
+		return
+	}
 	httpapi.OK(c, payload)
 }

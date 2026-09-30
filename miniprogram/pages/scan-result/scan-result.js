@@ -1,9 +1,10 @@
 const app=getApp();
+const {offerView}=require('../../utils/scheme');
 const {normalizeCode,portView}=require('../../utils/scan');
 const {paymentParams,newRequestId}=require('../../utils/payment');
 
 Page({
- data:{deviceId:'',ports:[],selected:null,offers:[],selectedOffer:null,loading:false,error:'',paying:false,paymentNotice:'',paymentNo:'',startAttempted:false,canRetryPayment:false,feeText:''},
+ data:{deviceId:'',ports:[],selected:null,offers:[],selectedOffer:null,loading:false,error:'',paying:false,paymentNotice:'',paymentNo:'',startAttempted:false,canRetryPayment:false,feeText:'',display:{},stopWhenFull:false},
  onLoad(query){try{this._code=decodeURIComponent(query.code || '');}catch(_){this._code='';}this._generation=0;this._gone=false;this._unloaded=false;},
  onShow(){this._gone=false;if(this._openHistoryOnShow){this._openHistoryOnShow=false;this.history();return;}if(this._paying || this.data.startAttempted)return;return this.load();},
  onHide(){this._gone=true;this._generation++;},
@@ -43,7 +44,7 @@ Page({
   const result=await app.request('POST','/user/scan/offers',{port_id:portID},false);
   if(this._gone || generation!==this._generation)return;
   if(!result || result.port_id!==portID || !Array.isArray(result.items))throw new Error('充电方案响应异常');
-  this.setData({offers:result.items.map(item=>({...item,priceText:'¥'+(item.price_cents/100).toFixed(2)}))});
+  this.setData({offers:result.items.map(offerView),display:result.display||{},stopWhenFull:!!result.stop_when_full});
  },
  selectOffer(event){
   if(this.data.startAttempted || this._paying)return;
@@ -68,7 +69,7 @@ Page({
    }
    if(this._gone || this._unloaded)return;
    const session=app._generation;
-   const confirmed=await new Promise(resolve=>wx.showModal({title:'确认充电方案',content:'端口 '+port.port_no+'，'+offer.name+'，支付 '+offer.priceText+'。',success:r=>resolve(r.confirm),fail:()=>resolve(false)}));
+   const confirmed=await new Promise(resolve=>wx.showModal({title:'确认充电方案',content:'端口 '+port.port_no+'，'+offer.name+'，支付 '+offer.priceText+'。'+offer.ruleText,success:r=>resolve(r.confirm),fail:()=>resolve(false)}));
    if(!confirmed || this._gone || this._unloaded)return;
    if(session!==app._generation || (this._checkout && this._checkoutGeneration!==session))throw new Error('登录账号已变化，请重新核实');
    if(!this._checkout){

@@ -53,6 +53,11 @@ func (s EndResultStore) Apply(ctx context.Context, result EndResult) (bool, erro
 	}
 	replayed := false
 	err = s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Match the card transaction lock order: session before order.
+		var cardSession CardCharge
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("charge_order_id=?", result.ChargeOrderID).Find(&cardSession).Error; err != nil {
+			return err
+		}
 		var order ChargeOrderRecord
 		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND order_no = ? AND deleted_at IS NULL", result.ChargeOrderID, result.OrderNo).Take(&order).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -85,6 +90,9 @@ func (s EndResultStore) Apply(ctx context.Context, result EndResult) (bool, erro
 			return ErrEndResultConflict
 		}
 		if err := tx.Create(&EndReceiptRecord{ChargeOrderID: result.ChargeOrderID, StopCommandID: result.StopCommandID, MeterJSON: meterJSON}).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&CardCharge{}).Where("charge_order_id=?", result.ChargeOrderID).Update("active_port", nil).Error; err != nil {
 			return err
 		}
 		kwh := decimal.NewFromInt(int64(result.Meter.ChargedWh)).Shift(-3).StringFixed(4)
@@ -157,7 +165,7 @@ func sameSegments(a, b []pricing.MeterSegment) bool {
 		return false
 	}
 	for i := range a {
-		if a[i].EnergyWh != b[i].EnergyWh || !a[i].StartedAt.Equal(b[i].StartedAt) || !a[i].EndedAt.Equal(b[i].EndedAt) {
+		if a[i].EnergyWh != b[i].EnergyWh || a[i].PeakW != b[i].PeakW || (a[i].PowerW == nil) != (b[i].PowerW == nil) || a[i].PowerW != nil && *a[i].PowerW != *b[i].PowerW || !a[i].StartedAt.Equal(b[i].StartedAt) || !a[i].EndedAt.Equal(b[i].EndedAt) {
 			return false
 		}
 	}

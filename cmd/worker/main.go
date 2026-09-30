@@ -97,6 +97,7 @@ func run(ctx context.Context) error {
 	startResults := charge.Synchronizer{GatewayDB: orms["gateway"], CentralURL: cfg.CentralInternalURL, GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken}
 	endResults := charge.EndSynchronizer{GatewayDB: orms["gateway"], CentralURL: cfg.CentralInternalURL, ServiceToken: cfg.ServiceToken}
 	paidStarts := charge.PaidStarter{UserDB: orms["user"], GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken}
+	cardEvents := charge.CardDispatcher{GatewayDB: orms["gateway"], CentralURL: cfg.CentralInternalURL, GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken}
 	autoStops := charge.AutoStopper{UserDB: orms["user"], GatewayDB: orms["gateway"], GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken}
 	billingJobs := billing.Dispatcher{CentralURL: cfg.CentralInternalURL, ServiceToken: cfg.ServiceToken}
 	refunds := refund.Dispatcher{CentralURL: cfg.CentralInternalURL, ServiceToken: cfg.ServiceToken}
@@ -188,6 +189,9 @@ func run(ctx context.Context) error {
 			}
 			return err
 		case <-ticker.C:
+			if _, err := cardEvents.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("card events: %v", err)
+			}
 			if _, err := paidStarts.DispatchBatch(ctx); err != nil && !errors.Is(err, context.Canceled) {
 				log.Printf("paid charge starts: %v", err)
 			}

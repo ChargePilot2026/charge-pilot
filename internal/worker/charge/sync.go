@@ -80,6 +80,12 @@ func (s Synchronizer) SyncBatch(ctx context.Context) (int, error) {
 			firstError = errors.New("inconsistent persisted start result")
 			continue
 		}
+		if result.ResultCode > 3 {
+			// A compensation STOP (254) proves the output is now off, not that
+			// START never happened. Keep the payment pending confirmation.
+			firstError = errors.New("startup outcome needs review; compensation is not a no-charge proof")
+			continue
+		}
 		if err := postStartResult(ctx, client, *base, s.ServiceToken, result); err != nil {
 			if errors.Is(err, ErrCentralConflict) && result.Success {
 				if compensateErr := s.compensate(ctx, client, result); compensateErr != nil && firstError == nil {

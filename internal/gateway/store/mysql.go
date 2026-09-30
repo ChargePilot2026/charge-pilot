@@ -58,6 +58,9 @@ func (s MySQLSink) Record(ctx context.Context, event protocol.Event) error {
 	if s.DB == nil {
 		return errors.New("gateway database is unavailable")
 	}
+	if (event.Type == protocol.CardSwipe || event.Type == protocol.CardBalanceQuery) && (uuid.Validate(event.EventID) != nil || event.Type == protocol.CardSwipe && event.CardNumber == 0) {
+		return errors.New("card event requires a durable UUID and card number")
+	}
 	data, err := json.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("marshal device event: %w", err)
@@ -90,6 +93,11 @@ func (s MySQLSink) Record(ctx context.Context, event protocol.Event) error {
 		})
 		if inserted.Error != nil {
 			return fmt.Errorf("persist device event: %w", inserted.Error)
+		}
+		if event.Type == protocol.CardSwipe || event.Type == protocol.CardBalanceQuery {
+			if err := tx.Table("card_event_delivery").Clauses(clause.OnConflict{DoNothing: true}).Create(map[string]any{"event_key": key}).Error; err != nil {
+				return err
+			}
 		}
 		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&deviceOutboxRow{EventID: key, Stream: "device_event_stream", EnvelopeJSON: envelope}).Error; err != nil {
 			return fmt.Errorf("queue device event: %w", err)
@@ -283,6 +291,9 @@ func requireOne(result *gorm.DB) error {
 }
 
 func eventKey(event protocol.Event) string {
+	if (event.Type == protocol.CardSwipe || event.Type == protocol.CardBalanceQuery) && uuid.Validate(event.EventID) == nil {
+		return event.EventID
+	}
 	if event.Type == protocol.Heartbeat || event.Type == protocol.Telemetry {
 		return uuid.NewString()
 	}

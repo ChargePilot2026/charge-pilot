@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ChargePilot2026/charge-pilot/internal/central/pricing"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/dbconn"
 	"github.com/google/uuid"
 )
@@ -42,8 +41,8 @@ func TestVerifiedPaymentCreatesOneChargeOrderAfterCallback(t *testing.T) {
 	input := IntentInput{UserID: uint64(userID), ClientRequestID: uuid.NewString(),
 		Port: ScanResult{Kind: "port", DeviceID: "paid-device", StationID: 9,
 			Port: &ScanPort{PortID: "paid-device:1", DeviceID: "paid-device", PortNo: 1, Online: true, Available: true}},
-		Energy: "1", Minutes: 60,
-		Rule: pricing.Rule{ID: 3, StationID: 9, Version: 1, Spec: pricing.Spec{Mode: pricing.ModeServerEnergy, Electric: &pricing.ElectricLine{Basis: pricing.BasisEnergy, Periods: []pricing.Period{{EndMinute: 1440, ElectricCents: 100}}}, Service: &pricing.ServiceLine{Basis: pricing.ServiceEnergy, CentsPerKWh: 40}}}}
+	}
+	input = completeIntent(input, 140)
 	intent, err := (PaymentIntentStore{DB: testGORMDB(t, db)}).Reserve(ctx, input)
 	if err != nil {
 		t.Fatal(err)
@@ -110,8 +109,8 @@ func TestLateVerifiedPaymentQueuesRefundWithoutChargeOrder(t *testing.T) {
 	input := IntentInput{UserID: uint64(userID), ClientRequestID: uuid.NewString(),
 		Port: ScanResult{Kind: "port", DeviceID: "late-device", StationID: 9,
 			Port: &ScanPort{PortID: "late-device:1", DeviceID: "late-device", PortNo: 1, Online: true, Available: true}},
-		Energy: "1", Minutes: 60,
-		Rule: pricing.Rule{ID: 3, StationID: 9, Version: 1, Spec: pricing.Spec{Mode: pricing.ModeServerEnergy, Electric: &pricing.ElectricLine{Basis: pricing.BasisEnergy, Periods: []pricing.Period{{EndMinute: 1440, ElectricCents: 100}}}, Service: &pricing.ServiceLine{Basis: pricing.ServiceEnergy, CentsPerKWh: 40}}}}
+	}
+	input = completeIntent(input, 140)
 	intent, err := (PaymentIntentStore{DB: testGORMDB(t, db)}).Reserve(ctx, input)
 	if err != nil {
 		t.Fatal(err)

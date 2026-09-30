@@ -86,9 +86,12 @@ func (s Store) ActiveDeviceRule(ctx context.Context, stationID uint64, deviceID 
 		return Rule{}, result.Error
 	}
 	var spec Spec
-	if json.Unmarshal(row.SpecJSON, &spec) != nil || ValidateSpec(spec) != nil {
+	if json.Unmarshal(row.SpecJSON, &spec) != nil || spec.Scheme == nil || spec.Scheme.Validate() != nil {
 		return Rule{}, ErrInvalidPricing
 	}
+	// The rule keeps the full scheme. The selected package supplies the execution
+	// view later, within the same frozen rule read.
+	spec = spec.Scheme.SpecFor(spec.Scheme.Packages[0])
 	device := row.DeviceID.String
 	return Rule{ID: row.ID, StationID: stationID, DeviceID: device, Version: row.Version, Spec: spec, Channel: row.Channel}, nil
 }

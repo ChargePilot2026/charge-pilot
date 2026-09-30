@@ -114,14 +114,17 @@ var NormalChargeModes = map[ChargeMode]bool{
 func (m ChargeMode) IsNormal() bool { return NormalChargeModes[m] }
 
 type StartCommand struct {
-	Session  [6]byte
-	Port     byte
-	OrderBCD [8]byte
-	Mode     ChargeMode
-	Quantity uint16 // 依 Mode 而定为分钟或 0.001 kWh
+	ConsumerType     uint8
+	CardNumber       uint32
+	CardBalanceUnits uint16
+	Session          [6]byte
+	Port             byte
+	OrderBCD         [8]byte
+	Mode             ChargeMode
+	Quantity         uint16 // 依 Mode 而定为分钟或 0.001 kWh
 }
 
-// BuildStart 使用文档规定的扫码消费类型（2），保留的卡类字段填零。
+// BuildStart 使用扫码消费类型（2）或在线卡类型（3），在线卡携带卡号和余额。
 // 业务层必须在调用它之前完成支付授权。
 //
 // 长时模式被直接拒绝。它们是厂商能力而不是产品选项，而这里是每一个
@@ -135,6 +138,19 @@ func BuildStart(command StartCommand) (Frame, error) {
 	copy(data[1:9], command.OrderBCD[:])
 	data[9] = byte(command.Mode)
 	data[10] = 2
+	if command.ConsumerType != 0 && command.ConsumerType != 2 && command.ConsumerType != 3 {
+		return Frame{}, ErrPayload
+	}
+	if command.ConsumerType == 3 {
+		if command.CardNumber == 0 {
+			return Frame{}, ErrPayload
+		}
+		data[10] = 3
+		binary.LittleEndian.PutUint32(data[13:17], command.CardNumber)
+		binary.LittleEndian.PutUint16(data[17:19], command.CardBalanceUnits)
+	} else if command.CardNumber != 0 || command.CardBalanceUnits != 0 {
+		return Frame{}, ErrPayload
+	}
 	binary.LittleEndian.PutUint16(data[11:13], command.Quantity)
 	return Frame{Command: StartCharge, Session: command.Session, Data: data}, nil
 }

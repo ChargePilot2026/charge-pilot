@@ -64,6 +64,11 @@ func (s BillingOrders) ProposeMeter(ctx context.Context, id, actor uint64, reque
 		}
 		original, _ := json.Marshal(source)
 		source.Meter.Segments = segments
+		// Missing cutoff evidence must be resolved by an audited final amount;
+		// adding physical end segments alone does not prove that boundary.
+		if source.Meter.ReviewRequired {
+			return pricing.ErrMeterReview
+		}
 		if _, err := pricing.PriceActual(source.Rule, source.Meter); err != nil {
 			return err
 		}

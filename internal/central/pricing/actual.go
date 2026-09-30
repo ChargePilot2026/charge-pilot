@@ -8,12 +8,15 @@ type MeterSegment struct {
 	StartedAt time.Time `json:"started_at"`
 	EndedAt   time.Time `json:"ended_at"`
 	EnergyWh  uint32    `json:"energy_wh"`
-	// PeakW 是该段内上报过的最高功率。正是它让功率档与峰值功率类电价表可以从
-	// 计量里算出来；它为零时，引擎改为用平均值反推。
+	// PeakW 是该段内可验证的峰值；缺失时不以电量反推功率。
 	PeakW uint32 `json:"peak_w,omitempty"`
+	// PowerW is a verified constant-power fragment; peak alone cannot price
+	// realtime power. Missing fragments are sent to review, never inferred from Wh.
+	PowerW *uint32 `json:"power_w,omitempty"`
 }
 
 type ActualMeter struct {
+	ReviewRequired bool           `json:"review_required,omitempty"`
 	StartedAt      time.Time      `json:"started_at"`
 	EndedAt        time.Time      `json:"ended_at"`
 	ChargedWh      uint32         `json:"charged_wh"`
@@ -32,9 +35,6 @@ func PriceActual(rule Rule, meter ActualMeter) (Fee, error) {
 	if err != nil {
 		return Fee{}, err
 	}
-	// dc589 报的是电量而不是分段功率，所以阶梯与峰值类电价表按分段平均值计价。
-	// 这是已记录在案的已知精度限制；另一个选择（把每一张功率档发票都送去复核）
-	// 会让这个口径变得不可用，而不只是变得不精确。
 	return Cost(rule.Spec, usage)
 }
 
@@ -45,6 +45,9 @@ func PriceActual(rule Rule, meter ActualMeter) (Fee, error) {
 // 来试算——用更宽松的读数去量封顶，就会得到一个在错误时刻触发的封顶，
 // 而在账单出错之前没有人会发现。
 func usageFromMeter(rule Rule, meter ActualMeter) (Usage, error) {
+	if meter.ReviewRequired {
+		return Usage{}, ErrMeterReview
+	}
 	if ValidateSpec(rule.Spec) != nil || rule.ID == 0 || rule.Version == 0 {
 		return Usage{}, ErrInvalidPricing
 	}
@@ -59,9 +62,8 @@ func usageFromMeter(rule Rule, meter ActualMeter) (Usage, error) {
 		return Usage{}, ErrMeterReview
 	}
 	usage := Usage{Start: meter.StartedAt, End: meter.EndedAt, EnergyWh: uint64(meter.ChargedWh), Channel: rule.Channel}
-	// 把没有分段的计量均摊开，只有在充电期间费率不变时才是精确的。在会变价的
-	// 电价表下它只是一句猜测，而猜测直接决定运营方被收多少，所以这时送复核
-	// 而不是照猜结算。正因如此，实测分段才值得采集。
+	// A total energy reading can price a uniform tariff exactly. Changing rates
+	// require measured boundary readings; never distribute energy by time.
 	if len(meter.Segments) == 0 && !specIsUniformOver(rule.Spec, meter.StartedAt, meter.EndedAt) {
 		return Usage{}, ErrMeterReview
 	}
@@ -73,8 +75,18 @@ func usageFromMeter(rule Rule, meter ActualMeter) (Usage, error) {
 		}
 		cursor = segment.EndedAt
 		totalWh += uint64(segment.EnergyWh)
+		power := segment.PeakW
+		if rule.Spec.Mode == ModeServerRealtimePower {
+			if segment.PowerW == nil {
+				return Usage{}, ErrMeterReview
+			}
+			power = *segment.PowerW
+		}
+		if rule.Spec.Mode == ModeServerMaxPower && power == 0 && segment.PowerW == nil && meter.ChargedWh > 0 {
+			return Usage{}, ErrMeterReview
+		}
 		usage.Samples = append(usage.Samples, Sample{Start: segment.StartedAt, End: segment.EndedAt,
-			EnergyWh: uint64(segment.EnergyWh), PowerW: segment.PeakW})
+			EnergyWh: uint64(segment.EnergyWh), PowerW: power, PowerKnown: segment.PowerW != nil})
 	}
 	if !cursor.Equal(meter.EndedAt) || totalWh != uint64(meter.ChargedWh) {
 		return Usage{}, ErrMeterReview

@@ -55,6 +55,7 @@ func run(ctx context.Context) error {
 	metrics.Register(router)
 	provision.API{DB: orm, ServiceToken: cfg.ServiceToken}.Register(router)
 	deviceConnections := &protocol.Registry{}
+	control.CardReplyAPI{Devices: deviceConnections, ServiceToken: cfg.ServiceToken}.Register(router)
 	control.StartAPI{Service: control.StartService{
 		Orders: control.CentralAuthorizer{BaseURL: cfg.CentralInternalURL, ServiceToken: cfg.ServiceToken},
 		Store:  sink, Devices: deviceConnections,

@@ -20,14 +20,17 @@ var ErrPortUnavailable = errors.New("device port is unavailable")
 var ErrOrderConflict = errors.New("charge command identity conflict")
 
 type PaidOrder struct {
-	ChargeOrderID  uint64 `json:"charge_order_id"`
-	PaymentOrderID uint64 `json:"payment_order_id"`
-	OrderNo        string `json:"order_no"`
-	UserID         uint64 `json:"user_id"`
-	DeviceID       string `json:"device_id"`
-	PortNo         uint8  `json:"port_no"`
-	ChargeMode     uint8  `json:"charge_mode"`
-	ChargeQuantity uint16 `json:"charge_quantity"`
+	ConsumerType     uint8  `json:"consumer_type"`
+	CardNumber       uint32 `json:"card_number"`
+	CardBalanceUnits uint16 `json:"card_balance_units"`
+	ChargeOrderID    uint64 `json:"charge_order_id"`
+	PaymentOrderID   uint64 `json:"payment_order_id"`
+	OrderNo          string `json:"order_no"`
+	UserID           uint64 `json:"user_id"`
+	DeviceID         string `json:"device_id"`
+	PortNo           uint8  `json:"port_no"`
+	ChargeMode       uint8  `json:"charge_mode"`
+	ChargeQuantity   uint16 `json:"charge_quantity"`
 }
 
 type StartReservation struct {
@@ -46,11 +49,17 @@ func (s MySQLSink) ReserveStart(ctx context.Context, paid PaidOrder) (StartReser
 	if s.DB == nil || paid.ChargeOrderID == 0 || paid.PaymentOrderID == 0 || paid.OrderNo == "" || paid.UserID == 0 || paid.DeviceID == "" || paid.PortNo == 0 || paid.ChargeQuantity == 0 {
 		return StartReservation{}, ErrOrderConflict
 	}
-	mode, quantity := paid.ChargeMode, paid.ChargeQuantity
-	if mode != 0 && mode != 1 && mode != 4 && mode != 10 && mode != 11 && mode != 12 {
+	if paid.ConsumerType == 0 {
+		paid.ConsumerType = 2
+	}
+	if paid.ConsumerType != 2 && paid.ConsumerType != 3 || paid.ConsumerType == 3 && paid.CardNumber == 0 || paid.ConsumerType == 2 && (paid.CardNumber != 0 || paid.CardBalanceUnits != 0) {
 		return StartReservation{}, ErrOrderConflict
 	}
-	if mode != 1 && mode != 11 && quantity > 600 {
+	mode, quantity := paid.ChargeMode, paid.ChargeQuantity
+	if mode != 0 && mode != 1 && mode != 4 {
+		return StartReservation{}, ErrOrderConflict
+	}
+	if mode != 1 && quantity > 4320 {
 		return StartReservation{}, ErrOrderConflict
 	}
 	orderBCD, err := numericOrderBCD(paid.ChargeOrderID)
@@ -99,13 +108,13 @@ func (s MySQLSink) ReserveStart(ctx context.Context, paid PaidOrder) (StartReser
 			UserID: paid.UserID, DeviceID: paid.DeviceID, PortNo: paid.PortNo, PortCode: port.PortCode,
 			PortID: sql.NullInt64{Int64: int64(port.ID), Valid: true}, OwnsPort: true, Status: "pending",
 			SessionID:     sql.NullString{String: hex.EncodeToString(startSession[:]), Valid: true},
-			StopSessionID: sql.NullString{String: hex.EncodeToString(stopSession[:]), Valid: true}, ChargeMode: mode, Quantity: quantity}
+			StopSessionID: sql.NullString{String: hex.EncodeToString(stopSession[:]), Valid: true}, ChargeMode: mode, Quantity: quantity, ConsumerType: paid.ConsumerType, CardNumber: paid.CardNumber, CardBalanceUnits: paid.CardBalanceUnits}
 		if err := tx.Create(&command).Error; err != nil {
 			return fmt.Errorf("insert charge command: %w", err)
 		}
 		reservation = StartReservation{CommandID: commandID, Status: "pending", OrderNo: paid.OrderNo,
 			DeviceID: paid.DeviceID, PortNo: paid.PortNo,
-			Wire:     protocol.Command{Kind: protocol.CommandStart, SessionID: startSession, Port: paid.PortNo, OrderBCD: orderBCD, Mode: mode, Quantity: quantity},
+			Wire:     protocol.Command{Kind: protocol.CommandStart, SessionID: startSession, Port: paid.PortNo, OrderBCD: orderBCD, Mode: mode, Quantity: quantity, ConsumerType: paid.ConsumerType, CardNumber: paid.CardNumber, CardBalanceUnits: paid.CardBalanceUnits},
 			StopWire: protocol.Command{Kind: protocol.CommandStop, SessionID: stopSession, Port: paid.PortNo}}
 		return nil
 	}, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
@@ -121,7 +130,7 @@ func (s MySQLSink) ReserveStart(ctx context.Context, paid PaidOrder) (StartReser
 }
 
 func reservationFromRow(row chargeCommandRow, paid PaidOrder, orderBCD [8]byte, mode uint8, quantity uint16) (StartReservation, error) {
-	if row.ChargeOrderID != paid.ChargeOrderID || row.PaymentOrderID != paid.PaymentOrderID || row.UserID != paid.UserID || row.DeviceID != paid.DeviceID || row.PortNo != paid.PortNo || row.ChargeMode != mode || row.Quantity != quantity {
+	if row.ChargeOrderID != paid.ChargeOrderID || row.PaymentOrderID != paid.PaymentOrderID || row.UserID != paid.UserID || row.DeviceID != paid.DeviceID || row.PortNo != paid.PortNo || row.ChargeMode != mode || row.Quantity != quantity || row.ConsumerType != paid.ConsumerType || row.CardNumber != paid.CardNumber || row.CardBalanceUnits != paid.CardBalanceUnits {
 		return StartReservation{}, ErrOrderConflict
 	}
 	var session [6]byte
@@ -144,7 +153,7 @@ func reservationFromRow(row chargeCommandRow, paid PaidOrder, orderBCD [8]byte, 
 	copy(stopSession[:], stopValue)
 	return StartReservation{CommandID: row.CommandID, Status: row.Status, OrderNo: paid.OrderNo,
 		DeviceID: paid.DeviceID, PortNo: paid.PortNo,
-		Wire:     protocol.Command{Kind: protocol.CommandStart, SessionID: session, Port: paid.PortNo, OrderBCD: orderBCD, Mode: mode, Quantity: quantity},
+		Wire:     protocol.Command{Kind: protocol.CommandStart, SessionID: session, Port: paid.PortNo, OrderBCD: orderBCD, Mode: mode, Quantity: quantity, ConsumerType: paid.ConsumerType, CardNumber: paid.CardNumber, CardBalanceUnits: paid.CardBalanceUnits},
 		StopWire: protocol.Command{Kind: protocol.CommandStop, SessionID: stopSession, Port: paid.PortNo}}, nil
 }
 

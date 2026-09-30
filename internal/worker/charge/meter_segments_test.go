@@ -17,7 +17,7 @@ func TestMeasuredSegmentsUseElapsedCumulativeMeter(t *testing.T) {
 	if len(segments) != 2 || segments[0].EnergyWh != 200 || segments[1].EnergyWh != 800 || !segments[0].EndedAt.Equal(start.Add(30*time.Minute)) {
 		t.Fatalf("measured segments %+v", segments)
 	}
-	rule := pricing.Rule{ID: 1, Version: 1, Spec: pricing.Spec{Mode: pricing.ModeServerEnergy, Electric: &pricing.ElectricLine{Basis: pricing.BasisEnergy, Periods: []pricing.Period{{EndMinute: 720, ElectricCents: 50}, {EndMinute: 1440, ElectricCents: 80}}}, Service: &pricing.ServiceLine{Basis: pricing.ServiceEnergy, CentsPerKWh: 25}}}
+	rule := pricing.Rule{ID: 1, Version: 1, Spec: pricing.Spec{Mode: pricing.ModeServerEnergy, Electric: &pricing.ElectricLine{Basis: pricing.BasisEnergy, Periods: []pricing.Period{{EndMinute: 720, ElectricCents: 50, ServiceCents: 25}, {EndMinute: 1440, ElectricCents: 80, ServiceCents: 25}}}}}
 	fee, err := pricing.PriceActual(rule, pricing.ActualMeter{StartedAt: start, EndedAt: end.EndedAt, ChargedWh: 1000, ChargedSeconds: 3600, Segments: segments})
 	if err != nil || fee.TotalCents != 99 {
 		t.Fatalf("measured tariff %+v %v", fee, err)

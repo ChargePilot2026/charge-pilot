@@ -123,11 +123,13 @@ func TestActualBillingPersistsAndRefundsOnce(t *testing.T) {
 		var id uint64
 		userDB.Table("charge_order").Where("order_no=?", name).Pluck("id", &id)
 		exec(userDB, "UPDATE payment_order SET biz_id=? WHERE id=?", id, pid)
-		rule := pricing.Rule{ID: 1, StationID: 1, Version: 1, Spec: pricing.Spec{Mode: pricing.ModeServerEnergy, Electric: &pricing.ElectricLine{Basis: pricing.BasisEnergy, Periods: []pricing.Period{{EndMinute: 1440, ElectricCents: 50}}}, Service: &pricing.ServiceLine{Basis: pricing.ServiceEnergy, CentsPerKWh: 25}}}
+		scheme := pricing.Scheme{Name: "结算方案", Amount: &pricing.AmountMode{Algorithm: pricing.ModeServerEnergy, Periods: []pricing.Period{{EndMinute: 1440, ElectricCents: 50, ServiceCents: 25}}}, Packages: []pricing.Package{{ID: 1, Name: "2.5元", Mode: "amount", PriceCents: 250}}}.Normalized()
 		if variable {
-			rule.Spec.Electric.Periods = []pricing.Period{{EndMinute: 720, ElectricCents: 50}, {EndMinute: 1440, ElectricCents: 100}}
+			scheme.Amount.Periods = []pricing.Period{{EndMinute: 720, ElectricCents: 50, ServiceCents: 25}, {EndMinute: 1440, ElectricCents: 100, ServiceCents: 25}}
 		}
-		snap, _ := json.Marshal(map[string]any{"rule": rule})
+		rule := pricing.Rule{ID: 1, StationID: 1, Version: 1, Spec: scheme.SpecFor(scheme.Packages[0])}
+		offer := scheme.Offers(rule)[0]
+		snap, _ := json.Marshal(map[string]any{"rule": rule, "offer": offer})
 		meter, _ := json.Marshal(EndMeter{ChargedWh: wh, ChargedSeconds: 3600, EndedAt: end})
 		exec(userDB, "INSERT INTO charge_order_pricing(charge_order_id,payment_intent_id,user_id,port_code,pricing_snapshot) VALUES(?,?,?,?,?)", id, uuid.NewString(), uid, name, string(snap))
 		exec(userDB, "INSERT INTO charge_end_receipt(charge_order_id,stop_command_id,meter_json) VALUES(?,?,?)", id, uuid.NewString(), string(meter))
@@ -185,7 +187,7 @@ func TestActualBillingPersistsAndRefundsOnce(t *testing.T) {
 	if err := sourceOrders.Apply(ctx, result); !errors.Is(err, billing.ErrConflict) {
 		t.Fatalf("tampered result accepted: %v", err)
 	}
-	source.Rule.Spec.Service.CentsPerKWh++
+	source.Rule.Spec.Electric.Periods[0].ServiceCents++
 	if _, err := store.Calculate(ctx, source); !errors.Is(err, billing.ErrConflict) {
 		t.Fatalf("modified snapshot accepted: %v", err)
 	}
@@ -290,7 +292,7 @@ func TestActualBillingPersistsAndRefundsOnce(t *testing.T) {
 	}
 	var shortfall int64
 	userDB.Table("charge_fee_receipt").Where("charge_order_id=?", debtID).Pluck("shortfall_cents", &shortfall)
-	if shortfall != 200 {
+	if shortfall != 0 {
 		t.Fatalf("shortfall %d", shortfall)
 	}
 	userDB.Model(&RefundRecord{}).Where("payment_order_id=?", debtPayment).Count(&count)

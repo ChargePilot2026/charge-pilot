@@ -10,7 +10,7 @@ function setup(app){
 const snap=status=>({order_id:1,order_no:'ORD:1',status,poll_continue:['paid','charging','pending_payment'].includes(status),next_poll_after_ms:5000,current_power_w:null,current_fee_cents:null,elapsed_seconds:null});
 test('charging page displays pending startup without fabricated telemetry and stops polling at completion',async()=>{
  let state='paid';const {p,timers,navigations}=setup({globalData:{token:'t'},request:async()=>snap(state)});
- await p.onShow();assert.equal(p.data.snapshot.statusLabel,'等待设备启动');assert.equal(p.data.snapshot.powerText,'暂无数据');assert.equal(timers.size,1);
+ await p.onShow();assert.equal(p.data.snapshot.statusLabel,'启动确认中');assert.equal(p.data.snapshot.powerText,'暂无数据');assert.equal(timers.size,1);
  state='completed';await p.load();assert.equal(timers.size,0);assert.equal(p.data.snapshot.statusLabel,'已完成');p.detail();assert.equal(navigations[0],'/pages/charge/detail?order_id=ORD%3A1');
 });
 test('hidden charging page rejects late responses and clears polling timers',async()=>{

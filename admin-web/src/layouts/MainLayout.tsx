@@ -25,6 +25,7 @@ const sections: NavSection[] = [
   ] },
   { key: 'users', icon: <GiftOutlined />, label: '用户运营', children: [
     { key: '/charge-users', label: '充电用户', permission: 'charge_user.read' },
+    { key: '/online-cards', label: '在线卡', permission: 'charge_user.read' },
     { key: '/coupons', label: '优惠券', permission: 'coupon.read' },
     { key: '/announcements', label: '公告', permission: 'announcement.read' },
   ] },

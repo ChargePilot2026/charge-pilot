@@ -7,10 +7,12 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/httpapi"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type StopAuthorization struct {
@@ -50,6 +52,10 @@ func (a StopAuthorization) handle(c *gin.Context) {
 	}
 	if !order.PortID.Valid || order.PortID.Int64 <= 0 {
 		httpapi.Write(c, http.StatusConflict, 2000, "port identity unavailable", nil)
+		return
+	}
+	if err := a.DB.WithContext(c.Request.Context()).Table("charge_billing_cutoff").Clauses(clause.OnConflict{DoUpdates: clause.Assignments(map[string]any{"charge_order_id": gorm.Expr("charge_order_id")})}).Create(map[string]any{"charge_order_id": order.ChargeOrderID, "cutoff_at": time.Now().UTC(), "reason": "stop_request"}).Error; err != nil {
+		httpapi.Write(c, 503, 5001, "计费截止暂时无法保存", nil)
 		return
 	}
 	httpapi.OK(c, gin.H{"charge_order_id": order.ChargeOrderID, "order_no": order.OrderNo,

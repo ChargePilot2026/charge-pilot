@@ -6,7 +6,6 @@ import (
 	"os"
 	"testing"
 
-	"github.com/ChargePilot2026/charge-pilot/internal/central/pricing"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/dbconn"
 	"github.com/google/uuid"
 )
@@ -37,8 +36,8 @@ func TestPaymentIntentHoldsPortWithoutCreatingChargeOrder(t *testing.T) {
 	input := IntentInput{UserID: uint64(userID), ClientRequestID: uuid.NewString(),
 		Port: ScanResult{Kind: "port", DeviceID: "intent-device", StationID: 9,
 			Port: &ScanPort{PortID: portCode, DeviceID: "intent-device", PortNo: 1, Online: true, Available: true}},
-		Energy: "1", Minutes: 60,
-		Rule: pricing.Rule{ID: 3, StationID: 9, Version: 1, Spec: pricing.Spec{Mode: pricing.ModeServerEnergy, Electric: &pricing.ElectricLine{Basis: pricing.BasisEnergy, Periods: []pricing.Period{{EndMinute: 1440, ElectricCents: 100}}}, Service: &pricing.ServiceLine{Basis: pricing.ServiceEnergy, CentsPerKWh: 40}}}}
+	}
+	input = completeIntent(input, 140)
 	store := PaymentIntentStore{DB: testGORMDB(t, db)}
 	first, err := store.Reserve(ctx, input)
 	if err != nil || first.PaymentOrderID == 0 || first.Estimate.TotalCents != 140 {

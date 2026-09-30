@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol"
+	"github.com/google/uuid"
 )
 
 // remoteAddrOf 取对端地址用于会话审计。保留 host 部分，IPv6 的 zone
@@ -149,6 +150,29 @@ func (a TCPAdapter) ServeConn(ctx context.Context, conn net.Conn, sink protocol.
 		audit.Inbound(len(frame.Data), clock())
 		event := protocol.Event{Protocol: a.Name(), DeviceID: deviceID, ReceivedAt: clock(), RawPayload: frame.Data, SessionID: frame.Session}
 		switch frame.Command {
+		case OnlineCardSwipe:
+			card, err := ParseCardSwipe(frame)
+			if err != nil {
+				return err
+			}
+			event.Type = protocol.CardSwipe
+			event.Port = card.Port
+			event.CardNumber = card.CardNumber
+			event.EventID = uuid.NewString()
+			if err := sink.Record(ctx, event); err != nil {
+				return err
+			}
+		case CardBalanceQuery:
+			card, err := ParseCardBalanceQuery(frame)
+			if err != nil {
+				return err
+			}
+			event.Type = protocol.CardBalanceQuery
+			event.CardNumber = card
+			event.EventID = uuid.NewString()
+			if err := sink.Record(ctx, event); err != nil {
+				return err
+			}
 		case 0xA8: // 设备对时请求；先记录再应答
 			if len(frame.Data) != 6 {
 				return ErrPayload
@@ -331,14 +355,18 @@ func (c *connection) Send(ctx context.Context, command protocol.Command) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if command.SessionID == ([6]byte{}) {
+	if command.SessionID == ([6]byte{}) && command.Kind != protocol.CommandCardDenied && command.Kind != protocol.CommandCardBalance {
 		return ErrPayload
 	}
 	var frame Frame
 	var err error
 	switch command.Kind {
+	case protocol.CommandCardDenied:
+		frame, err = BuildCardDenied(command.SessionID, command.CardNumber, command.CardInvalid, command.CardBalanceUnits)
+	case protocol.CommandCardBalance:
+		frame, err = BuildCardBalanceReply(command.SessionID, command.CardNumber, !command.CardInvalid, command.CardBalanceUnits)
 	case protocol.CommandStart:
-		frame, err = BuildStart(StartCommand{Session: command.SessionID, Port: command.Port, OrderBCD: command.OrderBCD, Mode: ChargeMode(command.Mode), Quantity: command.Quantity})
+		frame, err = BuildStart(StartCommand{Session: command.SessionID, Port: command.Port, OrderBCD: command.OrderBCD, Mode: ChargeMode(command.Mode), Quantity: command.Quantity, ConsumerType: command.ConsumerType, CardNumber: command.CardNumber, CardBalanceUnits: command.CardBalanceUnits})
 	case protocol.CommandStop:
 		frame, err = BuildStop(command.SessionID, command.Port)
 	case protocol.CommandReboot:

@@ -49,12 +49,16 @@ func (a PaymentStartAPI) offers(c *gin.Context) {
 		httpapi.Write(c, http.StatusNotFound, 1004, "端口不存在", nil)
 		return
 	}
-	rows, err := a.Pricing.ActiveOffers(c.Request.Context(), port.StationID, port.DeviceID)
+	rule, err := a.Pricing.ActiveDeviceRule(c.Request.Context(), port.StationID, port.DeviceID)
 	if err != nil {
 		httpapi.Write(c, http.StatusServiceUnavailable, 5003, "充电方案暂时无法读取", nil)
 		return
 	}
-	httpapi.OK(c, gin.H{"station_id": port.StationID, "port_id": body.PortID, "items": rows})
+	if err := a.Pricing.CheckDeviceScheme(c.Request.Context(), port.StationID, port.DeviceID, *rule.Spec.Scheme); err != nil {
+		httpapi.Write(c, 409, 2009, err.Error(), nil)
+		return
+	}
+	httpapi.OK(c, gin.H{"station_id": port.StationID, "port_id": body.PortID, "items": rule.Spec.Scheme.Offers(rule), "display": rule.Spec.Scheme.Display, "stop_when_full": rule.Spec.Scheme.Stop.StopWhenFull})
 }
 
 func (a PaymentStartAPI) start(c *gin.Context) {
@@ -118,13 +122,27 @@ func (a PaymentStartAPI) start(c *gin.Context) {
 		httpapi.Write(c, http.StatusServiceUnavailable, 5003, "pricing storage unavailable", nil)
 		return
 	}
-	selected, lookupErr := a.Pricing.ActiveOffer(c.Request.Context(), port.StationID, port.DeviceID, body.OfferID)
+	var selected pricing.Offer
+	lookupErr := pricing.ErrOfferUnavailable
+	if rule.Spec.Scheme != nil {
+		for _, offer := range rule.Spec.Scheme.Offers(rule) {
+			if offer.ID == body.OfferID {
+				selected = offer
+				lookupErr = nil
+				break
+			}
+		}
+	}
 	if errors.Is(lookupErr, pricing.ErrOfferUnavailable) {
 		httpapi.Write(c, http.StatusConflict, 2004, "充电方案已下架", nil)
 		return
 	}
 	if lookupErr != nil {
 		httpapi.Write(c, http.StatusServiceUnavailable, 5003, "充电方案暂时无法读取", nil)
+		return
+	}
+	if err := a.Pricing.CheckDeviceScheme(c.Request.Context(), port.StationID, port.DeviceID, *rule.Spec.Scheme); err != nil {
+		httpapi.Write(c, 409, 2009, err.Error(), nil)
 		return
 	}
 	intent, err := a.Intents.Reserve(c.Request.Context(), IntentInput{UserID: userID, ClientRequestID: body.ClientRequestID,
