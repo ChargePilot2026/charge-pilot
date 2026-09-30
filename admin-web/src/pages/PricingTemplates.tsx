@@ -497,7 +497,7 @@ export default function PricingTemplates() {
           </Space>
         </>}
         <Alert type="warning" showIcon style={{ marginTop: 8 }}
-          message="可售套餐不在这里配置：套餐按自己的价格结算，与费率无关，请到「套餐模板」维护后单独上架。" />
+          message="套餐按自己的价格结算，与费率无关，请在「模板 → 套餐模板」页签维护后单独上架。" />
       </>}
 
       <Collapse ghost style={{ marginTop: 8 }} items={[{ key: 'common', label: '刷卡与下单（点击展开）', children: <Space align="start" wrap>
@@ -545,7 +545,7 @@ export default function PricingTemplates() {
       {canCreate && <Button type="primary" onClick={() => void openEditor()}>新建计费模板</Button>}
     </Space>
     <Alert type="info" showIcon style={{ marginBottom: 12 }}
-      message="模板只描述计费口径与用户端展示；套餐在「套餐模板」单独维护。模板需要「应用到站点/设备」后才生效，修改模板不会改变已应用站点的现行计费。" />
+      message="计费模板描述计费口径与用户端展示；套餐在本页「套餐模板」页签维护。模板需要「应用到站点/设备」后才生效，修改模板不会改变已应用站点的现行计费。" />
     {listError && <LoadError title="计费模板列表加载失败" detail={listError} onRetry={() => void load()} />}
     <Table rowKey="id" dataSource={templates} loading={loading} scroll={{ x: 1000 }} columns={[
       { title: '名称', render: (_: unknown, r: Template) => <>{r.name}<div style={{ color: '#999' }}>v{r.version}{r.remark ? ` · ${r.remark}` : ''}</div></> },
@@ -634,7 +634,7 @@ export default function PricingTemplates() {
       {applyError && <Alert type="error" showIcon message={applyError} style={{ marginBottom: 12 }} />}
       {stationsError && <LoadError title="运营中站点列表加载失败" detail={stationsError} onRetry={() => void searchStations('')} />}
       <Alert type="warning" showIcon style={{ marginBottom: 12 }}
-        message="应用后该范围立即按此模板计费并生成新版本。本次只发布计费规则，不会产生任何套餐；套餐请到「套餐模板」单独上架。" />
+        message="应用后该范围按此模板计费并生成新版本；套餐可从「模板 → 套餐模板」页签或站点工作区单独上架。" />
       <Space direction="vertical" style={{ width: '100%' }}>
         <Select showSearch allowClear aria-label="选择站点" placeholder="输入站点名称或地址进行筛选"
           value={selectedStation ?? undefined} loading={stationsLoading} filterOption={false}

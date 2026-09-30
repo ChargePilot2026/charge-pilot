@@ -321,7 +321,7 @@ export default function StationConfiguration({ station, deviceId, onDeviceChange
     <Card size="small" title={targetDevice ? '该设备可选套餐' : '站点通用在售套餐'} extra={canCreate && <Button onClick={openPackage} disabled={!canPublish || busy}>添加套餐</Button>}>
       <Typography.Paragraph type="secondary">{targetDevice
         ? '设备独立套餐优先；同模板的站点套餐被覆盖，其他通用套餐继续可选。'
-        : '通用套餐供本站点设备使用；设备单独上架的同模板套餐优先。计费模板与套餐分别管理。'}</Typography.Paragraph>
+        : '通用套餐供本站点设备使用；设备单独上架的同模板套餐优先。计费模板与套餐模板在「模板」页面的不同页签维护。'}</Typography.Paragraph>
       <Table<Offer> rowKey="id" size="small" dataSource={activeOffers} pagination={false} scroll={{ x: 760 }} locale={{ emptyText: '暂无在售套餐' }} columns={[
         { title: '名称', dataIndex: 'name' },
         { title: '来源', render: (_: unknown, offer: Offer) => <Tag color={isStationOffer(offer) ? 'default' : 'blue'}>{isStationOffer(offer) ? '站点通用' : '设备独立'}</Tag> },

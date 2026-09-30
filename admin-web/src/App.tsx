@@ -1,6 +1,4 @@
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
-import { Typography } from 'antd';
-import type { ReactNode } from 'react';
 import LoginPage from './pages/Login';
 import MainLayout from './layouts/MainLayout';
 import DashboardPage from './pages/Dashboard';
@@ -22,12 +20,7 @@ import CaseworkPage from './pages/Casework';
 import AlertRulesPage from './pages/AlertRules';
 import ExportsPage from './pages/Exports';
 import AuditLogsPage from './pages/AuditLogs';
-import PricingTemplates from './pages/PricingTemplates';
-import PackageTemplates from './pages/PackageTemplates';
-
-function ConfigPage({ title, children }: { title: string; children: ReactNode }) {
-  return <div className="page-container"><Typography.Title level={3} style={{ marginTop: 0, marginBottom: 12 }}>{title}</Typography.Title>{children}</div>;
-}
+import TemplatesPage from './pages/Templates';
 
 function RequireAuth({ children }: { children: JSX.Element }) {
   const token = localStorage.getItem('cp_token');
@@ -47,8 +40,9 @@ export default function App() {
         <Route path="devices" element={<DevicesPage />} />
         <Route path="vendors" element={<VendorsPage />} />
         <Route path="stations" element={<StationsPage />} />
-        <Route path="pricing-templates" element={<ConfigPage title="计费模板"><PricingTemplates /></ConfigPage>} />
-        <Route path="package-templates" element={<ConfigPage title="套餐模板"><PackageTemplates /></ConfigPage>} />
+        <Route path="templates" element={<TemplatesPage />} />
+        <Route path="pricing-templates" element={<Navigate to="/templates?tab=pricing" replace />} />
+        <Route path="package-templates" element={<Navigate to="/templates?tab=packages" replace />} />
 
         <Route path="users" element={<UsersPage />} />
         <Route path="alerts" element={<AlertsPage />} />

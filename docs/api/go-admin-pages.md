@@ -38,6 +38,8 @@
 | 报修 | GET `/device-fault-reports`、`/{id}/history`；POST `/{id}/dispatch`、`/{id}/resolve` | 派单/改派需有效 fault.resolve 账号；仅当前指派人可修复/关闭，修复备注必填，历史持久化 |
 | 设置 | GET/PUT `/whitelabel`；GET `/settings/charge-rules` | 白标配置保存；规则页支持版本发布与停用；正式结束订单计费及模拟差额退款已接线，见 go-charge-lifecycle.md |
 
+计费模板与套餐模板统一位于“充电运营 → 模板”：`/templates` 页面包含“计费模板”和“套餐模板”两个页签，`tab=pricing` 或 `tab=packages` 记录当前页签，刷新和浏览器前进/后退可恢复。旧 `/pricing-templates`、`/package-templates` 地址跳转到对应页签；菜单需要 `pricing.read`，两类模板的接口和写入权限保持各自的校验。
+
 计费配置统一从“站点 → 工作区”进入：默认计费、套餐及设备独立配置位于“计费与套餐”，启动/退款策略及本站计费下发记录位于“站点策略与下发记录”。独立“站点计费”菜单与 `/station-pricing` 前端路由已移除，不再提供跨站点配置页面或全站点下发记录入口。进入站点需 `station.read`，工作区中的计费及策略页签另需 `pricing.read`，写操作仍按实时操作权限及数据范围校验。
 
 ## 厂商管理（2026-09-30）
