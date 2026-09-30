@@ -27,17 +27,17 @@ type ImportDevice struct {
 	StationID uint64  `json:"station_id"` // 所属站点 ID，必须非 0 且该站点处于 active
 	PortCount uint8   `json:"port_count"` // 充电端口数，必须非 0
 	Model     *string `json:"model"`      // 型号，可空；非空时最多 128 字
-	// The metering capability is carried on the import so a fleet can be
-	// classified in one go, which is the only practical way to backfill it:
-	// a device that was never classified is refused every tariff that needs a
-	// meter, so leaving these unset means leaving the whole fleet unpriceable.
+	// 计量能力放在导入里，是为了让一批设备一次就分类完，
+	// 而这也是回填这些字段唯一实际可行的办法：
+	// 从没被分类过的设备会被所有需要电表的计费方式拒绝，
+	// 所以这些字段空着不填，等于整批设备都不可计价。
 	ChargeMode            string `json:"charge_mode"`             // 计费方式，取值为计费引擎认可的六种模式之一；留空表示不覆盖
 	ReportsEnergy         bool   `json:"reports_energy"`          // 是否上报电量，引擎据此决定该设备能否用带电表的计费方式
 	ReportsSegmentedPower bool   `json:"reports_segmented_power"` // 是否上报分段功率，同上
 }
 
 // ImportJob 是一次批量导入任务在 device_import 表中的状态投影，也是导入列表接口的返回行。
-// 原始请求体只存库不外发（json:"-"），列表页因此看不到设备明细，只能看任务进展。
+// 原始请求体只存库不外发（json："-"），列表页因此看不到设备明细，只能看任务进展。
 type ImportJob struct {
 	ImportID    string  `json:"import_id"`  // 导入任务号，客户端生成的幂等键
 	Status      string  `json:"status"`     // 任务状态：pending 待执行 / completed 已完成 / failed 失败可重试
@@ -88,9 +88,9 @@ func (a ResourceAPI) createImport(c *gin.Context) {
 			return
 		}
 		if d.ChargeMode != "" && !validDeviceChargeMode(d.ChargeMode) {
-			// Checked here rather than at apply time. A fleet is imported once;
-			// finding out months later that one row carries a mode the engine
-			// cannot price would be a very expensive way to learn it.
+			// 在这里校验，而不是等到执行时才校验。一批设备只导入一次，
+			// 几个月后才发现其中某一行带着引擎算不出价的计费方式，
+			// 这种学法代价太高。
 			httpapi.BadRequest(c, "设备 "+d.DeviceID+" 的计费方式无效")
 			return
 		}
@@ -135,17 +135,17 @@ func (a ResourceAPI) createImport(c *gin.Context) {
 				return errConflict
 			}
 		}
-		// Only boards that are actually new are checked. A board already in this
-		// station is running whatever the station was charging when it arrived, and
-		// refusing to re-import it would block a routine correction for a
-		// condition that was true before the re-import and is unchanged by it.
+		// 只检查真正新到的板子。已经在本站点里的板子，
+		// 跑的就是它进场时站点在收的那个计费方式；
+		// 拒绝把它重新导入，等于为一个重新导入之前就已经成立、
+		// 而且这次导入也没改变的情况，挡住一次例行纠正。
 		arriving, err := newDevicesOnly(tx, in.Devices)
 		if err != nil {
 			return err
 		}
-		// Checked on the batch, so the whole import is refused rather than part
-		// of it: a fleet that is half priceable and half not is a fleet an
-		// operator has to reconcile by hand before anything can be billed.
+		// 按整批校验，所以要么整批导入被拒，要么整批放行：
+		// 一半能计价一半不能计价的设备队，
+		// 运营得先手工对账才能开始计费。
 		if err := checkImportAgainstStation(tx, arriving); err != nil {
 			var blocked *errMeteringBlocked
 			if errors.As(err, &blocked) {
@@ -159,10 +159,10 @@ func (a ResourceAPI) createImport(c *gin.Context) {
 		}
 		return resourceAudit(tx, p, "create", "device_import", 0, nil, in, c.ClientIP(), in.ImportID)
 	})
-	// The handler above has already written the refusal, so the generic failure
-	// path must not write a second body on top of it. Two JSON documents in one
-	// response is not a response any client can read, and the operator sees a
-	// generic database error instead of the reason their fleet was turned away.
+	// 上面的处理器已经把拒绝写进响应了，
+	// 所以通用失败路径不能再往上叠第二份 body：
+	// 一个响应里塞两份 JSON 文档，任何客户端都读不了，
+	// 运营看到的还会是笼统的数据库错误，而不是这批设备被拒的真正原因。
 	if errors.Is(err, errAlreadyReported) {
 		return
 	}
@@ -189,8 +189,8 @@ func (a ResourceAPI) retryImport(c *gin.Context) {
 // 网关调用失败时把任务标成 failed 并记下原因，attempts +1，等待重试；已 completed 的任务直接原样返回。
 func (a ResourceAPI) runImport(c *gin.Context, id string) {
 	var result ImportJob
-	// Hold the job lock across the bounded internal request. A crash rolls back
-	// metadata; replay safely observes the gateway's durable identity reservation.
+	// 在这次有界的内部请求期间一直持着任务锁。崩溃会把元数据一起回滚，
+	// 重放则能安全地看到网关那边已经持久占用的设备身份。
 	err := a.Store.AdminDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Table("device_import").Clauses(clause.Locking{Strength: "UPDATE"}).Where("import_id=?", id).Take(&result).Error; err != nil {
 			return err
@@ -245,10 +245,10 @@ func (a ResourceAPI) runImport(c *gin.Context, id string) {
 				"model": d.Model, "status": "enabled",
 				"reports_energy": d.ReportsEnergy, "reports_segmented_power": d.ReportsSegmentedPower,
 			}
-			// An existing device keeps whatever it was already classified as.
-			// The import is a fleet onboarding record, not a re-classification;
-			// overwriting a declared capability because a re-import omitted the
-			// field would un-price every board in the station at a stroke.
+			// 已存在的设备保持它原来被分类成的样子。
+			// 导入是设备上线记录，不是重新分类；
+			// 因为重新导入漏填了字段就把已声明的计量能力覆盖掉，
+			// 等于一瞬间让整个站点的板子都不可计价。
 			if d.ChargeMode != "" {
 				row["charge_mode"] = d.ChargeMode
 			}

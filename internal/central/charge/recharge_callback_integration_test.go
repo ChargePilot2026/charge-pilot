@@ -10,9 +10,9 @@ import (
 	"github.com/google/uuid"
 )
 
-// A wallet recharge never creates a payment intent. Before the callback was
-// routed on biz_type, every recharge notification was rejected for a missing
-// intent, so the customer paid and the balance never moved.
+// TestVerifiedRechargeCreditsWalletExactlyOnce —— 钱包充值不创建支付意图。
+// 在回调按 biz_type 分流之前，
+// 每一笔充值通知都会因为找不到意图而被拒，客户付了钱、余额却始终不动。
 func TestVerifiedRechargeCreditsWalletExactlyOnce(t *testing.T) {
 	url := os.Getenv("TEST_USER_DATABASE_URL")
 	if url == "" {
@@ -99,7 +99,7 @@ func TestVerifiedRechargeCreditsWalletExactlyOnce(t *testing.T) {
 		t.Fatalf("wallet_txn rows = %d, want 1", txns)
 	}
 
-	// A replayed notification must not credit a second time.
+	// 重放的通知不能第二次入账。
 	result, err := store.Apply(ctx, verified)
 	if err != nil {
 		t.Fatalf("replayed callback rejected: %v", err)
@@ -121,8 +121,8 @@ func TestVerifiedRechargeCreditsWalletExactlyOnce(t *testing.T) {
 	}
 }
 
-// A verified callback for another sum than the request must be refused, and a
-// recharge whose amount disagrees with the payment order must not settle.
+// TestVerifiedRechargeRejectsAmountMismatch —— 金额与申请不一致的验签回调必须被拒绝，
+// 充值金额与支付订单对不上时也不得结算。
 func TestVerifiedRechargeRejectsAmountMismatch(t *testing.T) {
 	url := os.Getenv("TEST_USER_DATABASE_URL")
 	if url == "" {
@@ -161,8 +161,8 @@ func TestVerifiedRechargeRejectsAmountMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	paymentOrderID, _ := payment.LastInsertId()
-	// The request asks for 5000 while the payment order and the verified
-	// notification all say 3000.
+	// 申请写的是 5000，
+	// 而支付订单和验签后的通知都写着 3000。
 	if _, err := db.ExecContext(ctx, `INSERT INTO wallet_recharge_request
 		(request_id, user_id, amount_cents, payment_order_id) VALUES (?, ?, 5000, ?)`,
 		uuid.NewString(), userID, paymentOrderID); err != nil {

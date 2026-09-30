@@ -9,9 +9,9 @@ import (
 	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol"
 )
 
-// deviceSessionRow mirrors gateway_db.device_session. The table is partitioned
-// by created_month, so that column is part of the primary key and must be
-// supplied on every write and read.
+// deviceSessionRow 对应 gateway_db.device_session。该表按 created_month
+// 分区，所以这一列属于主键，
+// 每次读写都必须带上它。
 type deviceSessionRow struct {
 	ID           uint64    `gorm:"column:id;primaryKey"`
 	SessionID    string    `gorm:"column:session_id"`
@@ -26,23 +26,23 @@ type deviceSessionRow struct {
 	BytesOut     int64     `gorm:"column:bytes_out"`
 	FramesIn     int64     `gorm:"column:frames_in"`
 	FramesOut    int64     `gorm:"column:frames_out"`
-	// created_month is a DATE, so it is read back as a time and formatted on write.
+	// created_month 是 DATE，所以读回来是时间值，写入时需要格式化。
 	CreatedMonth time.Time `gorm:"column:created_month"`
 }
 
 func (deviceSessionRow) TableName() string { return "device_session" }
 
-// RecordSession writes the terminal state of one device connection.
+// RecordSession 写入一条设备连接的终态。
 //
-// The row is keyed by (session_id, created_month) and created_month is derived
-// from the start time, not the end time: a connection that opens before midnight
-// and closes after it belongs entirely to the session's start day, and deriving
-// from the end would let the write land in a different partition from the one a
-// later read of the same session searches.
+// 这一行的键是 (session_id， created_month)，而 created_month 由开始时间
+// 推导、不是由结束时间推导：一条跨过午夜才关闭的连接，
+// 完整地属于它开始的那一天；如果从结束时间去推导，
+// 这一行就可能落进另一个分区，而之后读同一条会话时搜的却是
+// 最初那个分区。
 //
-// Writing a session twice is treated as success. A reconnect storm or a retried
-// close can both reach this path, and the second row carries the same numbers,
-// so overwriting is safer than surfacing an error the caller cannot act on.
+// 同一条会话被写两次按成功处理。重连风暴或者重试的关闭
+// 都可能走到这条路径上，而第二行携带的是同样的数字，
+// 所以覆盖比返回一个调用方无从处理的错误更安全。
 func (s MySQLSink) RecordSession(ctx context.Context, record protocol.SessionRecord) error {
 	if s.DB == nil {
 		return errors.New("gateway database is unavailable")
@@ -66,9 +66,9 @@ func (s MySQLSink) RecordSession(ctx context.Context, record protocol.SessionRec
 		FramesOut:    record.FramesOut,
 		CreatedMonth: month,
 	}
-	// Existence is checked explicitly rather than relying on an upsert: this
-	// table is partitioned, and an inferred conflict target produces an empty
-	// ON DUPLICATE KEY clause, which MySQL rejects as a syntax error.
+	// 存在性是显式检查的，而不是依赖 upsert：
+	// 这张表是分区表，推断出来的冲突目标会生成一句空的
+	// ON DUPLICATE KEY 子句，MySQL 会把它当语法错误拒掉。
 	var existing int64
 	if err := s.DB.WithContext(ctx).Model(&deviceSessionRow{}).
 		Where("session_id = ? AND created_month = ?", row.SessionID, month).

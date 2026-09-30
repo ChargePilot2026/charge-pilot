@@ -9,14 +9,14 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// Two things live here, both keyed to a device rather than a station:
+// 这个文件里有两件事，都挂在设备上而不是站点上：
 //
-//   - which tariff a device runs (device_pricing_assignment)
-//   - which packages it sells (charge_offer.device_id)
+//   - 设备跑哪套计费规则（device_pricing_assignment）
+//   - 设备在卖哪些套餐（charge_offer.device_id）
 //
-// A device with neither inherits the station default. That inheritance is what
-// keeps a station-wide rollout one click while still letting a single pile run
-// something different, which is the arrangement real stations actually use.
+// 两样都没有的设备继承站点默认值。
+// 正是这个继承让整站下发只要一键，同时单桩还能跑另一套规则——
+// 真实站点就是这么用的。
 
 // registerDevicePricing 挂载设备计费矩阵、设备回退到站点默认、站点策略三类路由，
 // 权限点分别是 pricing.read 与 pricing.rule.update。
@@ -24,10 +24,10 @@ func (a ResourceAPI) registerDevicePricing(r *gin.Engine) {
 	r.GET("/api/v1/admin/settings/device-pricing", a.Auth.Require("pricing.read"), a.devicePricingMatrix)
 	r.POST("/api/v1/admin/settings/device-pricing/reset", a.Auth.Require("pricing.rule.update"), a.resetDevicePricing)
 	r.GET("/api/v1/admin/settings/station-policies", a.Auth.Require("pricing.read"), a.stationPolicies)
-	// The path parameter is named :id because pathID reads that name, and every
-	// other route in this package does the same. Naming it :station_id made
-	// c.Param("id") empty, so the handler refused every request with "ID 必须为
-	// 正整数" — a refund policy that could never be saved.
+	// 路径参数取名 :id 是因为 pathID 读的就是这个名字，本包其它路由也一样。
+	// 早先叫 :station_id 时 c.Param("id") 拿不到值，
+	// 于是处理器对每个请求都回 "ID 必须为正整数"——
+	// 等于这条退款策略永远存不进去。
 	r.PUT("/api/v1/admin/settings/station-policies/:id", a.Auth.Require("pricing.rule.update"), a.saveStationPolicy)
 }
 
@@ -36,13 +36,13 @@ func (a ResourceAPI) registerDevicePricing(r *gin.Engine) {
 // 查询里 device_id 为空的那条 pricing_rule 是站点默认规则，SQL 别名为 station_default，
 // 对外 JSON 字段是 station_version（早先是 yard / yard_version，现已统一为站点口径）。
 //
-// devicePricingMatrix returns, per device, the tariff it actually runs and the
-// packages it sells. A device with no assignment and no device rule shows the
-// station's, so the operator sees the effective state rather than the intent.
+// devicePricingMatrix 逐台设备返回它实际在跑的计费规则和在卖的套餐。
+// 既没有独立规则、也没有设备级规则的设备显示站点默认值，
+// 这样运营看到的是生效后的状态，而不是当初的意图。
 //
-// What each board can measure is on the row too. A tariff refused for metering
-// is otherwise a dead end: the operator is told the board is the problem but
-// has no way to see or change the fact that made it one.
+// 同一行里还带着每块板子能计量什么。
+// 否则"因为计量能力被拒"就是一条死路：运营被告知问题出在板子上，
+// 却既看不到也改不了让它变成这样的那个事实。
 func (a ResourceAPI) devicePricingMatrix(c *gin.Context) {
 	ctx := c.Request.Context()
 	var station struct {
@@ -119,9 +119,9 @@ type resetDeviceInput struct {
 // 站点级的套餐保留，因此设备不会变成无可卖。整段放在一个事务里并对设备行加写锁，
 // 避免与并发的规则下发互相覆盖，审计也在同一事务内写入。
 //
-// resetDevicePricing hands a device back to the station default: its own rule is
-// disabled and its device-scoped packages are taken off sale. The station-wide
-// ones stay, so the device is not left with nothing to sell.
+// resetDevicePricing 把设备交还给站点默认：停用它自己的规则，
+// 并把它独有范围内的套餐下架。站点级的套餐留着，
+// 设备不会落到无套餐可卖。
 func (a ResourceAPI) resetDevicePricing(c *gin.Context) {
 	var in resetDeviceInput
 	if !decodeResource(c, &in) {
@@ -159,15 +159,15 @@ func (a ResourceAPI) resetDevicePricing(c *gin.Context) {
 	httpapi.OK(c, gin.H{"station_id": in.StationID, "device_id": in.DeviceID, "reset": true})
 }
 
-// A station policy is about moving money, not about pricing a session: whether
-// a charging user must top up, and what happens to their money when a start fails.
-// A refund is two independent questions: when one is allowed, and where the
-// money lands. The commercial back office renders the pair as a single string
-// such as "限时退款(时效外不退款)-原路退回", which is how a single enum came to
-// be written here originally — and an enum can only ever answer one of the two.
-// They are stored and edited separately.
+// 站点策略管的是钱怎么走，而不是一次充电怎么计价：
+// 充电用户是否必须先充值，以及开充失败后他的钱怎么处理。
+// 一次退款其实是两个独立问题：什么时候允许退，以及钱退到哪里。
+// 对标的商业后台把这一对渲染成一个字符串，例如
+// "限时退款(时效外不退款)-原路退回"——本文件最初就是这么写成一个枚举的，
+// 而一个枚举永远只能回答其中一个问题，
+// 所以这两件事分开存、分开编辑。
 // stationPolicyInput 是站点充值与退款策略的入参。充值门槛和退费规则分开存、分开编辑，
-// 详见下方英文说明：一次退款其实是"允不允许退"和"钱退到哪里"两个独立问题。
+// 详见上面的说明：一次退款其实是"允不允许退"和"钱退到哪里"两个独立问题。
 //
 // 它们是分两个字段存的（path 与 rule），不是各退一个原因。
 type stationPolicyInput struct {
@@ -215,7 +215,7 @@ func (a ResourceAPI) stationPolicies(c *gin.Context) {
 	httpapi.OK(c, gin.H{"items": rows, "permissions": c.MustGet("admin_profile").(Profile).Permissions})
 }
 
-// saveStationPolicy 是 PUT /api/v1/admin/settings/station-policies/:id 的处理函数。
+// saveStationPolicy 是 PUT /api/v1/admin/settings/station-policies/：id 的处理函数。
 // 用 expected_version 做乐观锁：已有记录必须版本号一致才允许覆盖，
 // 调用方以为存在而实际不存在（或反之）都返回 409，避免静默覆盖别人的改动。
 // 站点行与策略行都加写锁，版本自增后写审计。
@@ -251,8 +251,8 @@ func (a ResourceAPI) saveStationPolicy(c *gin.Context) {
 		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return err
 		} else if in.ExpectedVersion != 0 {
-			// The caller believes a policy exists and it does not: something
-			// changed underneath, and writing now would silently overwrite it.
+			// 调用方以为策略存在、实际并不存在：底下的数据被人动过，
+			// 这时候写下去等于静默覆盖。
 			return errConflict
 		}
 		row := map[string]any{

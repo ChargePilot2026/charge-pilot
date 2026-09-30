@@ -19,9 +19,9 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// UserAccountAPI serves the customer-facing account views the mini program needs
-// but the service never exposed: wallet, coupons, invoices, announcements,
-// support entry, nearby stations, phone binding and self-service fault reports.
+// UserAccountAPI 提供小程序需要、
+// 而服务此前从未暴露过的客户侧账户视图：钱包、
+// 优惠券、发票、公告、客服入口、附近站点、手机号绑定和自助故障上报。
 type UserAccountAPI struct {
 	Auth         identity.SessionAuthenticator
 	UserDB       *gorm.DB
@@ -30,14 +30,14 @@ type UserAccountAPI struct {
 	ServiceToken string
 	Gateway      serviceclient.Client
 	Prepay       PrepayProvider
-	// PhoneKey encrypts the stored phone number. Phone numbers must not sit in
-	// the database in the clear, and the same key must be supplied on every
-	// deployment that reads them.
+	// PhoneKey 用来加密落库的手机号。
+	// 手机号不能以明文躺在库里，
+	// 而且每个要读它们的部署都必须提供同一把密钥。
 	PhoneKey []byte
 }
 
-// Register wires the account routes. Every handler authenticates itself so a
-// missing session answers 401 instead of reaching a query with user id zero.
+// Register 挂载账户相关路由。每个处理器都自己做鉴权，
+// 这样会话缺失时直接返回 401，而不是带着 user id 为 0 去查库。
 func (a UserAccountAPI) Register(r *gin.Engine) {
 	r.GET("/api/v1/user/wallet/balance", a.walletBalance)
 	r.GET("/api/v1/user/wallet/txns", a.walletTxns)
@@ -152,7 +152,7 @@ func (a UserAccountAPI) walletRecharges(c *gin.Context) {
 		httpapi.Write(c, 503, 5003, "充值记录暂时无法读取", nil)
 		return
 	}
-	// The request row carries no status; the linked payment order does.
+	// 请求行本身没有状态，状态在关联的支付订单上。
 	rows := []struct {
 		RequestID     string    `gorm:"column:request_id" json:"request_id"`
 		AmountCents   int64     `gorm:"column:amount_cents" json:"amount_cents"`
@@ -170,9 +170,9 @@ func (a UserAccountAPI) walletRecharges(c *gin.Context) {
 	httpapi.OK(c, gin.H{"items": rows, "total": total, "page": page, "page_size": pageSize})
 }
 
-// walletRecharge opens a top-up order. The amount comes from the request but is
-// bounded, and the same request id replays the existing order instead of
-// charging twice.
+// walletRecharge 开一笔充值订单。
+// 金额取自请求但有上下界，
+// 同一个请求号会重放已有订单，而不是重复扣一次款。
 func (a UserAccountAPI) walletRecharge(c *gin.Context) {
 	userID, ok := a.userID(c)
 	if !ok {
@@ -190,7 +190,7 @@ func (a UserAccountAPI) walletRecharge(c *gin.Context) {
 		httpapi.BadRequest(c, "请提供 UUID 格式的请求号")
 		return
 	}
-	// Bounds keep a mistyped amount from creating an absurd channel order.
+	// 上下界防止一个输错的金额在渠道侧创建出荒谬的订单。
 	if in.AmountCents < 100 || in.AmountCents > 5000000 {
 		httpapi.BadRequest(c, "充值金额须在 1 元至 50000 元之间")
 		return
@@ -207,8 +207,8 @@ func (a UserAccountAPI) walletRecharge(c *gin.Context) {
 		httpapi.Write(c, 409, 2009, "账号缺少微信身份，无法发起充值", nil)
 		return
 	}
-	// The request row is keyed by the client's UUID, so a retry reuses it
-	// instead of charging twice.
+	// 请求行以客户端的 UUID 为键，
+	// 重试会复用它，而不是再扣一次款。
 	var existing struct {
 		RequestID      string  `gorm:"column:request_id"`
 		PaymentOrderID *uint64 `gorm:"column:payment_order_id"`
@@ -243,8 +243,8 @@ func (a UserAccountAPI) walletRecharge(c *gin.Context) {
 		if err := tx.Raw("SELECT LAST_INSERT_ID()").Scan(&paymentOrderID).Error; err != nil {
 			return err
 		}
-		// The request row is keyed by the client UUID. Updates cannot create it,
-		// so an existing row is patched and a new one is inserted.
+		// 请求行以客户端 UUID 为键，
+		// 更新语句建不出这一行，所以已有行是更新、没有才插入。
 		if priorExists {
 			return tx.Table("wallet_recharge_request").Where("request_id = ?", in.RequestID).
 				Update("payment_order_id", paymentOrderID).Error
@@ -271,7 +271,7 @@ func (a UserAccountAPI) walletRecharge(c *gin.Context) {
 	httpapi.OK(c, gin.H{"request_id": in.RequestID, "payment_order_id": paymentOrderID, "amount_cents": in.AmountCents, "payment_params": params})
 }
 
-// refundReview is the operator's decision on a wallet refund claim.
+// refundReview 是运营对一笔钱包退款申领做出的裁决。
 type refundReview struct {
 	Status  string  `gorm:"column:status" json:"status"`
 	Comment *string `gorm:"column:comment" json:"comment"`
@@ -293,8 +293,8 @@ func (a UserAccountAPI) walletRefunds(c *gin.Context) {
 		CreatedAt   time.Time     `gorm:"column:created_at" json:"created_at"`
 		Review      *refundReview `json:"review" gorm:"-"`
 	}{}
-	// A refund request is only ever a claim; the wallet_risk_review rows carry
-	// the operator's decision, so the two are read separately.
+	// 退款申请本身只是一条申领，
+	// 运营的裁决在 wallet_risk_review 行上，所以两者分开读取。
 	if err := a.UserDB.WithContext(c.Request.Context()).Table("wallet_refund_request").
 		Where("wallet_refund_request.user_id = ?", userID).
 		Order("created_at DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&rows).Error; err != nil {
@@ -334,9 +334,9 @@ func (a UserAccountAPI) walletRefunds(c *gin.Context) {
 	httpapi.OK(c, gin.H{"items": rows, "total": total, "page": page, "page_size": pageSize})
 }
 
-// walletRefund files a claim against the wallet balance. The money is frozen
-// immediately so it cannot also be spent on a charge, and the payout only
-// happens after an operator approves the risk review.
+// walletRefund 针对钱包余额提交一笔申领。
+// 钱立刻被冻结，
+// 以免它同时又被拿去充电；真正打款要等运营批准风控复核之后。
 func (a UserAccountAPI) walletRefund(c *gin.Context) {
 	userID, ok := a.userID(c)
 	if !ok {
@@ -395,9 +395,9 @@ func (a UserAccountAPI) walletRefund(c *gin.Context) {
 		}).Error; err != nil {
 			return err
 		}
-		// The part row is keyed by the payout record, so it is written when the
-		// operator approves and the money actually leaves; claiming it here would
-		// invent a refund record that does not exist yet.
+		// 分账行以打款记录为键，
+		// 所以等运营批准、钱真的出去时才写；
+		// 在这里就申领会凭空造出一笔还不存在的退款记录。
 		return nil
 	})
 	switch {
@@ -456,8 +456,8 @@ func (a UserAccountAPI) announcements(c *gin.Context) {
 	}
 	ctx := c.Request.Context()
 	now := time.Now().UTC()
-	// A customer sees global notices plus the ones scoped to a station they can
-	// reach; notices outside their window are never returned.
+	// 客户看到的是全局公告，
+	// 加上限定在可达站点范围内的那些；不在有效期内的公告一律不返回。
 	base := a.AdminDB.WithContext(ctx).Table("announcement").
 		Where("deleted_at IS NULL AND status = 'published' AND start_at <= ? AND (end_at IS NULL OR end_at >= ?)", now, now)
 	var rows []struct {
@@ -479,8 +479,8 @@ func (a UserAccountAPI) announcements(c *gin.Context) {
 			items = append(items, gin.H{"id": row.ID, "title": row.Title, "content": row.Content, "start_at": row.StartAt, "end_at": row.EndAt})
 			continue
 		}
-		// Station or city scoped notices still need a membership test; only
-		// global notices are unambiguous without a location.
+		// 站点或城市维度的公告仍需做一次归属判断；
+		// 只有全局公告在没有位置信息时才无歧义。
 		continue
 	}
 	httpapi.OK(c, gin.H{"items": items, "page": page, "page_size": pageSize})
@@ -490,7 +490,7 @@ func (a UserAccountAPI) supportEntry(c *gin.Context) {
 	if _, ok := a.userID(c); !ok {
 		return
 	}
-	// The mini program renders the highest-priority enabled seat.
+	// 小程序渲染的是优先级最高且已启用的那个坐席。
 	var seat struct {
 		AgentWechat string  `gorm:"column:agent_wechat"`
 		AgentName   *string `gorm:"column:agent_name"`
@@ -541,8 +541,8 @@ func (a UserAccountAPI) nearbyStations(c *gin.Context) {
 		Phone      *string  `gorm:"column:contact_phone"`
 		DistanceKM *float64 `gorm:"column:distance_km"`
 	}
-	// Distance is computed in SQL from the stored DECIMAL coordinates so
-	// ordering and paging happen before the rows are truncated.
+	// 距离由 SQL 直接基于库里的 DECIMAL 坐标算出，
+	// 这样排序和分页都发生在结果被截断之前。
 	rows := []station{}
 	err := a.AdminDB.WithContext(ctx).Raw(`
 		SELECT id, name, address,
@@ -631,7 +631,7 @@ func (a UserAccountAPI) bindPhone(c *gin.Context) {
 		return
 	}
 	if len(a.PhoneKey) == 0 {
-		// Refusing is safer than storing a number the platform cannot protect.
+		// 拒绝比存下一个平台保护不了的号码安全。
 		httpapi.Write(c, 503, 5003, "手机号加密未配置，暂不可绑定", nil)
 		return
 	}
@@ -642,7 +642,7 @@ func (a UserAccountAPI) bindPhone(c *gin.Context) {
 		return
 	}
 	err = a.UserDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
-		// The unique hash is what stops one number being attached to two accounts.
+		// 唯一哈希正是防止一个号码挂到两个账号上的那道闸。
 		var holder int64
 		if err := tx.Table("user").Where("phone_hash = ? AND id <> ? AND deleted_at IS NULL", hash, userID).Count(&holder).Error; err != nil {
 			return err
@@ -721,8 +721,8 @@ func (a UserAccountAPI) reportFault(c *gin.Context) {
 		if err := tx.Raw("SELECT LAST_INSERT_ID()").Scan(&id).Error; err != nil {
 			return err
 		}
-		// assigned_to is NOT NULL and no operator has picked this up yet, so the
-		// submitting customer is recorded as the actor of the opening step.
+		// assigned_to 是 NOT NULL 且目前还没有运营接手，
+		// 所以开单第一步的操作人记为提交的客户本人。
 		return tx.Table("device_fault_report_event").Create(map[string]any{
 			"report_id": id, "event_type": "reported", "from_status": "", "to_status": "open",
 			"actor_id": userID, "assigned_to": userID, "user_visible": true, "note": "用户提交报修",
@@ -773,12 +773,12 @@ func (a UserAccountAPI) myFaultHistory(c *gin.Context) {
 	var owned int64
 	if err := a.UserDB.WithContext(c.Request.Context()).Table("device_fault_report").
 		Where("id = ? AND user_id = ? AND deleted_at IS NULL", id, userID).Count(&owned).Error; err != nil || owned == 0 {
-		// Someone else's report is reported exactly like a missing one.
+		// 别人的报障单与不存在的报障单返回完全一样。
 		httpapi.Write(c, 404, 1004, "报修记录不存在", nil)
 		return
 	}
 	rows := []map[string]any{}
-	// Only customer-visible steps are exposed; internal assignments stay out.
+	// 只暴露客户可见的流转步骤；内部分派信息不外泄。
 	if err := a.UserDB.WithContext(c.Request.Context()).Table("device_fault_report_event").
 		Where("report_id = ? AND user_visible = 1", id).
 		Select("event_type, from_status, to_status, note, created_at").
@@ -816,8 +816,8 @@ func (a UserAccountAPI) myInvoices(c *gin.Context) {
 	httpapi.OK(c, gin.H{"items": rows, "total": total, "page": page, "page_size": pageSize})
 }
 
-// applyInvoice requests an invoice for one of the customer's own settled
-// orders. The amount is taken from the order, never from the request.
+// applyInvoice 为客户自己某一笔已结算的订单申请发票。
+// 金额取自订单，绝不取自请求。
 func (a UserAccountAPI) applyInvoice(c *gin.Context) {
 	userID, ok := a.userID(c)
 	if !ok {
@@ -839,7 +839,7 @@ func (a UserAccountAPI) applyInvoice(c *gin.Context) {
 		httpapi.BadRequest(c, "请提供 UUID 请求号与订单号")
 		return
 	}
-	// The stored enum is normal / vat_special; the mini program sends the same names.
+	// 库里枚举存的是 normal / vat_special；小程序发过来的也是这两个名字。
 	if !oneOfStatus(in.InvoiceType, "normal vat_special") {
 		httpapi.BadRequest(c, "发票类型无效")
 		return
@@ -874,14 +874,14 @@ func (a UserAccountAPI) applyInvoice(c *gin.Context) {
 		httpapi.Write(c, 503, 5003, "订单暂时无法读取", nil)
 		return
 	}
-	// Only a settled charge can be invoiced; anything else would invoice money
-	// that has not been collected.
+	// 只有已结算的充电才能开票；
+	// 其它状态开出来的是一笔还没收到的钱。
 	if order.Status != "completed" && order.Status != "refunding" && order.Status != "refunded" {
 		httpapi.Write(c, 409, 2009, "订单尚未完成，暂不能申请发票", nil)
 		return
 	}
-	// The invoiced amount comes from the billing receipt, the same source the
-	// order views use, never from a column the billing job never populates.
+	// 开票金额取自计费回执，
+	// 与订单视图同源，绝不取自计费任务从不写入的列。
 	receipt := ChargeFeeRecord{}
 	if err := a.UserDB.WithContext(ctx).Where("charge_order_id = ?", order.ID).Take(&receipt).Error; err != nil {
 		httpapi.Write(c, 409, 2009, "订单尚未计费，暂不能申请发票", nil)
@@ -904,7 +904,7 @@ func (a UserAccountAPI) applyInvoice(c *gin.Context) {
 		} else if !errors.Is(found.Error, gorm.ErrRecordNotFound) {
 			return found.Error
 		}
-		// One invoice per order prevents a customer claiming the same charge twice.
+		// 一单一张发票，防止客户把同一笔充电重复申领。
 		var duplicate int64
 		if err := tx.Table("invoice_request").
 			Where("biz_type = 'charge' AND biz_id = ? AND deleted_at IS NULL", order.ID).Count(&duplicate).Error; err != nil {
@@ -978,8 +978,8 @@ func readCoordinates(c *gin.Context) (float64, float64, bool) {
 	return longitude, latitude, true
 }
 
-// rechargeOrderNo derives the merchant order number for a top-up. The PAY prefix
-// is what the payment channel simulators and WeChat both expect.
+// rechargeOrderNo 推导充值的商户订单号。
+// PAY 前缀是支付渠道模拟器和微信都要求的形式。
 func rechargeOrderNo(requestID string) string {
 	return "PAYW" + strings.ToUpper(strings.ReplaceAll(requestID, "-", ""))
 }
@@ -992,7 +992,7 @@ func mustJSON(value any) string {
 	return string(encoded)
 }
 
-// resourceWriteFailure maps storage errors onto the shared envelope.
+// resourceWriteFailure 把存储错误映射到统一的响应信封。
 func resourceWriteFailure(c *gin.Context, err error) {
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		httpapi.Write(c, 404, 1004, "记录不存在", nil)

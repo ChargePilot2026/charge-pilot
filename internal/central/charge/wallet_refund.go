@@ -7,8 +7,8 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// Wallet refund reservations are settled atomically with the provider receipt.
-// The wallet row is locked before payment rows everywhere to avoid lock inversion.
+// 钱包退款的预占与渠道回单原子地一起结算。
+// 所有地方都是先锁钱包行再锁支付行，以避免加锁顺序反转。
 func lockRefundWallet(tx *gorm.DB, r RefundRecord) error {
 	if r.BizType != "wallet_recharge" {
 		return nil
@@ -58,8 +58,8 @@ func settleRefundWallet(tx *gorm.DB, r RefundRecord) error {
 	return tx.Table("wallet_refund_part").Where("refund_record_id=?", r.ID).Update("settled", true).Error
 }
 
-// A confirmed terminal channel failure returns the reservation to the wallet;
-// an unknown response deliberately keeps it reserved until reconciliation.
+// 渠道明确返回终态失败时把预占退回钱包；
+// 响应未知时则刻意继续预占，直到对账为止。
 func releaseFailedWalletRefund(tx *gorm.DB, r RefundRecord) error {
 	if r.BizType != "wallet_recharge" {
 		return nil

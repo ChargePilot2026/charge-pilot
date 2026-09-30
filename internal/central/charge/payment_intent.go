@@ -32,8 +32,8 @@ type PaymentIntent struct {
 	ExpiresAt       time.Time        `json:"expires_at"`
 	Status          string           `json:"status"`
 	CouponGrantID   uint64           `json:"coupon_grant_id,omitempty"`
-	// DiscountCents is what the coupon removed; PayableCents is what the
-	// customer actually pays.
+	// DiscountCents 是券减掉的金额；
+	// PayableCents 是客户真正要付的金额。
 	DiscountCents int64 `json:"discount_cents"`
 	PayableCents  int64 `json:"payable_cents"`
 }
@@ -46,15 +46,15 @@ type IntentInput struct {
 	Minutes         uint16
 	Rule            pricing.Rule
 	Offer           *pricing.Offer
-	// CouponGrantID is optional. When set, the discount is computed and frozen
-	// into the snapshot so a later replay cannot charge a different amount.
+	// CouponGrantID 可选。
+	// 填上就当场算好减免额并冻结进快照，这样之后重放不会按另一个金额扣费。
 	CouponGrantID uint64
 }
 
 type PaymentIntentStore struct{ DB *gorm.DB }
 
-// Replay returns the original frozen checkout for a repeated client request.
-// A published offer or pricing rule may have changed since the first request.
+// Replay 为重复的客户端请求返回最初冻结下来的结算方案。
+// 首次请求之后，已发布的活动或计价规则可能已经变了。
 func (s PaymentIntentStore) Replay(ctx context.Context, userID uint64, requestID, portID string, offerID, couponID uint64) (*PaymentIntent, error) {
 	if s.DB == nil || userID == 0 || uuid.Validate(requestID) != nil {
 		return nil, ErrPaymentIntentConflict
@@ -85,8 +85,8 @@ func (s PaymentIntentStore) Replay(ctx context.Context, userID uint64, requestID
 		CouponGrantID: row.CouponGrantID, DiscountCents: row.DiscountCents, PayableCents: row.TotalCents - row.DiscountCents}, nil
 }
 
-// Reserve creates a payment record and a short-lived port hold. It deliberately
-// does not insert charge_order; only verified payment callbacks may do that.
+// Reserve 创建支付记录和一个短生命周期的端口占用。
+// 它刻意不写 charge_order；只有验签通过的支付回调才可以写。
 func (s PaymentIntentStore) Reserve(ctx context.Context, input IntentInput) (PaymentIntent, error) {
 	if s.DB == nil || input.UserID == 0 || uuid.Validate(input.ClientRequestID) != nil ||
 		input.Port.Kind != "port" || input.Port.Port == nil || !input.Port.Port.Available ||
@@ -95,8 +95,8 @@ func (s PaymentIntentStore) Reserve(ctx context.Context, input IntentInput) (Pay
 		return PaymentIntent{}, ErrPaymentIntentConflict
 	}
 	if input.Offer != nil && input.CouponGrantID != 0 {
-		// Offer refunds use the amount actually paid. Coupon allocation needs a
-		// separate contract before it can be combined with fixed-price offers.
+		// 套餐返还按实付金额处理。
+		// 券的分摊需要另立一份契约，才能与固定价套餐组合。
 		return PaymentIntent{}, ErrPaymentIntentConflict
 	}
 	var previous PaymentIntentRecord
@@ -111,13 +111,13 @@ func (s PaymentIntentStore) Reserve(ctx context.Context, input IntentInput) (Pay
 		if !input.Offer.Valid() || input.Offer.StationID != input.Port.StationID {
 			return PaymentIntent{}, pricing.ErrInvalidPricing
 		}
-		// A fixed-span package is handed to the device as a span, so the board
-		// counts it down and stops itself. A prepaid amount has no device-side
-		// equivalent — the firmware reserves that charging type and never
-		// implemented it — so it is expressed as platform billing, where the
-		// platform prices the session and stops it. The long span sent along is
-		// a safety bound, not the stop rule; the stop rule lives on the server
-		// side of the pricing package and has not shipped yet.
+		// 固定时长套餐是以 span 的形式交给设备的，
+		// 由充电桩自己倒数并停机。
+		// 预付金额在设备侧没有对应实现——
+		// 固件把那种充电类型保留了却始终没实现——
+		// 所以它表达成平台计费：
+		// 由平台给这次会话定价并停机。
+		// 一起发过去的那个长 span 只是安全上界，不是停机规则；停机规则在计价包的服务端一侧，目前还没上线。
 		minutes, mode := uint16(10080), uint8(4)
 		if input.Offer.Mode == "package" {
 			minutes, mode = input.Offer.DurationMinutes, 0
@@ -130,8 +130,8 @@ func (s PaymentIntentStore) Reserve(ctx context.Context, input IntentInput) (Pay
 			return PaymentIntent{}, err
 		}
 	}
-	// The discount is computed before anything is reserved so a rejected coupon
-	// leaves no payment order or port hold behind.
+	// 减免额在任何东西被占用之前就算好，
+	// 这样一张被拒的券不会留下支付订单或端口占用。
 	var discount int64
 	if input.CouponGrantID != 0 {
 		coupons := CouponStore{DB: s.DB}
@@ -215,8 +215,8 @@ func existingIntent(row PaymentIntentRecord, input IntentInput) (PaymentIntent, 
 	} else if row.OfferID.Valid || row.EstimatedMinutes != input.Minutes || row.PricingRuleID != input.Rule.ID || row.PricingRuleVersion != input.Rule.Version {
 		return PaymentIntent{}, ErrPaymentIntentConflict
 	}
-	// A replay must present the same coupon; otherwise the customer could switch
-	// discounts on an intent they already confirmed.
+	// 重放必须带同一张券；
+	// 否则客户就能在自己已经确认过的意图上换一张折扣券。
 	if row.CouponGrantID != input.CouponGrantID {
 		return PaymentIntent{}, ErrPaymentIntentConflict
 	}

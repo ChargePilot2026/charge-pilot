@@ -90,7 +90,7 @@ const reconcileType: Record<string, string> = {
   wechat_refund: '微信退款', wechat_pay: '微信支付', split: '分账出账', withdraw: '提现打款',
 };
 
-/** Settlements shows the allocations actually written for each calculated fee. */
+/** Settlements 展示每一笔算出来的费用实际写入了哪些分账。 */
 export function Settlements() {
   const [rows, setRows] = useState<Settlement[]>([]);
   const [total, setTotal] = useState(0);
@@ -169,7 +169,7 @@ export function Settlements() {
   );
 }
 
-/** Withdrawals covers requesting, approving and paying out a party's earnings. */
+/** Withdrawals 覆盖一方收益的申请、审批和打款。 */
 export function Withdrawals() {
   const { message } = App.useApp();
   const [rows, setRows] = useState<Withdraw[]>([]);
@@ -316,7 +316,7 @@ export function Withdrawals() {
   );
 }
 
-/** Reconciliation compares the internal ledger with what the channel reports. */
+/** Reconciliation 把内部账本和渠道报上来的数做对比。 */
 export function Reconciliation() {
   const { message } = App.useApp();
   const [rows, setRows] = useState<Reconcile[]>([]);
@@ -355,7 +355,7 @@ export function Reconciliation() {
     setSaving(true);
     try {
       const result = await apiPost<{ diff_count: number }>(`${endpoint}/reconciles`, {
-        // The API takes a plain date; the picker returns a dayjs value.
+        // 接口收的是纯日期字符串，而选择器交回来的是 dayjs 对象。
         reconcile_type: values.reconcile_type, date: values.date.format('YYYY-MM-DD'), channel_amounts: parsed,
       });
       message.success(result?.diff_count ? `对账完成，发现 ${result.diff_count} 条差异` : '对账完成，未发现差异');
@@ -436,7 +436,7 @@ export function Reconciliation() {
   );
 }
 
-// Small wrappers keep the tables readable without pulling in more antd surface.
+// 这几个小包装让表格读起来清楚，同时不必再多引一层 antd 组件。
 function SelectStatus(props: { value?: string; onChange: (v: string) => void; options: { value: string; label: string }[] }) {
   return <NativeSelect {...props} options={[{ value: '', label: '全部状态' }, ...props.options]} />;
 }

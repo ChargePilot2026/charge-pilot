@@ -7,9 +7,9 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// registerPricing keeps only the station-scoped views. Creating a rule is no
-// longer a direct write: a template is created first and then applied to a
-// station, so the endpoints that bound a station at creation time are gone.
+// registerPricing 只保留站点维度的视图。创建规则已不再是直接写入：
+// 先建一个模板，再把它应用到某个站点，
+// 所以那些"创建时就要绑定站点"的接口已经移除。
 //
 // registerPricing 只保留站点维度的只读与停用能力。计费规则已不再直接创建：先建
 // 计费模板，再把它应用到某个站点，因此那些"创建时就要绑定站点"的旧接口已经移除。
@@ -32,8 +32,8 @@ func (a ResourceAPI) pricingRules(c *gin.Context) {
 	httpapi.OK(c, gin.H{"items": rows, "permissions": c.MustGet("admin_profile").(Profile).Permissions})
 }
 
-// pricingTemplateUsage reports which stations a template is currently running,
-// so an operator can see the blast radius before disabling or editing it.
+// pricingTemplateUsage 报告一个模板当前铺在哪些站点，
+// 运营在停用或改它之前能先看清影响面。
 //
 // pricingTemplateUsage 列出某个模板当前铺在哪些站点（含已停用的历史版本），运营在
 // 停用或改模板之前先看影响面。

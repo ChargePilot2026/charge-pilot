@@ -1,6 +1,6 @@
 #!/bin/bash
-# MySQL official entrypoint sources this only on an empty data volume.
-# Create schemas and grants; Goose in cmd/migrate owns all table DDL.
+# MySQL 官方入口脚本只在数据卷为空时才会 source 本文件。
+# 这里只建库和授权；所有建表 DDL 归 cmd/migrate 里的 Goose 管。
 (
     set -eu
     export MYSQL_PWD="$MYSQL_ROOT_PASSWORD"

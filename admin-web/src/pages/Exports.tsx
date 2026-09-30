@@ -43,9 +43,8 @@ export default function ExportsPage() {
   const [saving, setSaving] = useState(false);
   const [form] = Form.useForm();
 
-  // Listing needs finance.read while creating and downloading need the separate
-  // export.create, so the two calls are settled independently: a role that may
-  // read the history but not egress the data still gets its list.
+  // 看列表要 finance.read，新建和下载要单独的 export.create，所以这两个权限分开判：一个
+  // 只能读导出历史、不能把数据导出去的角色，仍然看得到自己的列表。
   const canCreate = (() => {
     try {
       return !!JSON.parse(localStorage.getItem('cp_admin') || 'null')?.permissions?.includes('export.create');
@@ -93,8 +92,7 @@ export default function ExportsPage() {
 
   const download = async (row: ExportTask) => {
     try {
-      // Fetch through the authenticated client so the bearer token is sent, then
-      // hand the browser a blob URL to save.
+      // 走带鉴权的客户端去请求，bearer token 才会带上，然后交给浏览器一个 blob URL 去存。
       const response = await fetch(`${endpoint}/${row.id}/download`, {
         headers: { Authorization: `Bearer ${localStorage.getItem('cp_token') || ''}` },
       });
@@ -107,8 +105,8 @@ export default function ExportsPage() {
       document.body.appendChild(link);
       link.click();
       link.remove();
-      // Revoking synchronously races the browser's download start-up and can
-      // silently cancel the save; give it a tick to pick the blob up first.
+      // 同步 revoke 会和浏览器启动下载抢时序，可能悄悄把保存取消掉；先给它一个 tick
+      // 让浏览器把 blob 取走再回收。
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (e: any) {
       message.error(e?.message || '下载失败');

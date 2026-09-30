@@ -54,10 +54,10 @@ func TestChargeEndReplayStoresOneMeterAndOutboxEvent(t *testing.T) {
 	}
 }
 
-// The outbox is the only way a device event leaves the gateway, and every
-// consumer reads it as the platform-wide envelope. Shipping the bare event
-// instead meant the type a consumer looks for was simply absent — the event
-// names it "Type" — and the whole event class was discarded downstream.
+// outbox 是设备事件离开 gateway 的唯一通道，
+// 而每个消费方都按全平台统一的那种信封来读它。
+// 直接发裸事件的话，消费方要找的类型字段根本不存在——事件把它叫作
+// "Type"——于是整类事件都在下游被丢弃了。
 func TestDeviceEventOutboxUsesTheSharedEnvelope(t *testing.T) {
 	url := os.Getenv("TEST_GATEWAY_DATABASE_URL")
 	if url == "" {
@@ -103,9 +103,9 @@ func TestDeviceEventOutboxUsesTheSharedEnvelope(t *testing.T) {
 	if decoded.EventID != key || decoded.Source != "gateway" {
 		t.Fatalf("envelope is missing its identity: %+v", decoded)
 	}
-	// The payload is compared after decoding rather than as text: the column is
-	// a native JSON type, so MySQL re-formats what it stores and a byte
-	// comparison would be asserting on its spacing.
+	// 载荷是解码之后再比，而不是按文本比：
+	// 那一列是原生 JSON 类型，MySQL 存的时候会重新排版，
+	// 按字节比较等于在断言它的空格。
 	var carried struct {
 		OrderNumber string `json:"OrderNumber"`
 		RawPayload  []byte `json:"RawPayload"`
@@ -123,7 +123,7 @@ func TestDeviceEventOutboxUsesTheSharedEnvelope(t *testing.T) {
 	if err := json.Unmarshal([]byte(stored), &kept); err != nil {
 		t.Fatal(err)
 	}
-	// The replay record must stay exactly what the board sent, frame and all.
+	// 重放凭据必须原封不动地保持板子发来的样子，连帧内容一起。
 	if kept.RawPayload[0] != 0xBB || kept.RawPayload[1] != 0x01 {
 		t.Fatalf("device_event.event_json lost the frame the board sent: %x", kept.RawPayload)
 	}

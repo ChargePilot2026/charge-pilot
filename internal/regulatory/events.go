@@ -16,8 +16,9 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// Event is the vendor-independent interchange object. A customer-specific
-// adapter may translate its Data into the platform's own field names later.
+// Event 是与厂商无关的交换对象。
+// 面向具体客户的适配器之后可以
+// 把它的 Data 翻译成平台自己的字段名。
 type Event struct {
 	EventID    string          `json:"event_id" validate:"required,uuid"`
 	ObjectType string          `json:"object_type" validate:"required,oneof=operator station device order alert battery"`
@@ -133,8 +134,9 @@ type Queue struct{ DB *sql.DB }
 
 var ErrEventConflict = errors.New("event_id already exists with different content")
 
-// Enqueue is idempotent by event_id. An event ID cannot be reused with a
-// changed type, key or data, so a retry cannot silently rewrite an audit fact.
+// Enqueue 按 event_id 幂等。
+// 同一个事件 ID 不能带着改过的 type、key 或 data 再次入队，
+// 所以重试无法悄悄改写一条审计事实。
 func (q Queue) Enqueue(ctx context.Context, event Event) (bool, error) {
 	data, err := ValidateEvent(event)
 	if err != nil {

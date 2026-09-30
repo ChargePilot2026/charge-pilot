@@ -26,7 +26,7 @@ func (f fakeExchange) Exchange(context.Context, string) (WeChatIdentity, error) 
 	return WeChatIdentity{OpenID: f.openID}, nil
 }
 
-// Runs only against disposable schemas selected explicitly by the caller.
+// 只在调用方显式指定的、用完即弃的库上运行。
 func TestLoginAndRefreshIntegration(t *testing.T) {
 	url := os.Getenv("TEST_USER_DATABASE_URL")
 	redisURL := os.Getenv("TEST_REDIS_URL")

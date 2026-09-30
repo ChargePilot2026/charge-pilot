@@ -17,8 +17,8 @@ type StartService struct {
 	Devices *protocol.Registry
 }
 
-// Start never treats a socket write as device success. It commits ownership
-// and the command before writing, then leaves the result for a matched B8 ACK.
+// Start 绝不把一次 socket 写入当成设备成功。它先把归属和命令落库，
+// 然后才去写，把结果留给 session 号对得上的 B8 ACK。
 func (s StartService) Start(ctx context.Context, orderNo string) (store.StartReservation, error) {
 	paid, err := s.Orders.PaidOrder(ctx, orderNo)
 	if err != nil {
@@ -48,8 +48,8 @@ func (s StartService) Start(ctx context.Context, orderNo string) (store.StartRes
 	}
 	reservation.Status = "sent"
 	if err := s.Devices.Send(ctx, paid.DeviceID, reservation.Wire); err != nil {
-		// A partial TCP write may have reached the device. Persist stopping
-		// before attempting the compensating STOP; never resend START here.
+		// 一次半截的 TCP 写入可能已经抵达设备。所以在尝试补偿性的 STOP 之前，
+		// 先把 stopping 落库；这里绝不能重发 START。
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if persistErr := s.Store.MarkStartStopping(cleanupCtx, reservation.CommandID, err); persistErr != nil {

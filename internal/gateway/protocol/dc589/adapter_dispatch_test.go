@@ -10,8 +10,8 @@ import (
 	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol"
 )
 
-// recordingSink keeps every event the adapter produces so a test can assert on
-// what an operator would actually be able to see afterwards.
+// recordingSink 留住 adapter 产出的每一个 event，好让测试能断言运维事后
+// 真正看得到的东西。
 type recordingSink struct {
 	mu     sync.Mutex
 	events []protocol.Event
@@ -42,10 +42,9 @@ func (s *recordingSink) findConfigResults() []protocol.Event {
 	return out
 }
 
-// serveWithFrames runs one adapter session over a real loopback socket, feeds
-// it a login and then the given frames, and returns the sink. It is the
-// shortest path from "a board sent this" to "an operator can see this", which
-// is the property these tests are about.
+// serveWithFrames 在一个真实回环 socket 上跑一次 adapter 会话，喂给它一次
+// 登录再喂上给定的若干帧，然后返回 sink。它是从「主板发了这个」到「运维
+// 看得到这个」的最短路径，也正是这些测试关心的性质。
 func serveWithFrames(t *testing.T, replies []Frame) *recordingSink {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -75,9 +74,8 @@ func serveWithFrames(t *testing.T, replies []Frame) *recordingSink {
 	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	// The adapter sends the register reply, then the 0xA6 asking for the
-	// heartbeat period. Drained in the background so nothing it writes can
-	// block the frames under test.
+	// adapter 会先发注册应答，再发索要心跳周期的 0xA6。在后台把它
+	// 写出的东西读空，以免它阻塞被测的那些帧。
 	go func() {
 		buf := make([]byte, 512)
 		for {
@@ -118,13 +116,12 @@ func serveWithFrames(t *testing.T, replies []Frame) *recordingSink {
 	return sink
 }
 
-// A board that refuses a parameter table is telling us the exact field that was
-// out of range. Before these replies were handled it fell through to the unknown
-// branch, so the refusal was recorded as "sent a command we do not recognise"
-// and the reason was gone — the same mistake the stop path made with 0x00 and
-// 0x04, on a path nobody had exercised because nothing sent the request.
+// 一块拒绝参数表的主板是在告诉我们究竟哪个字段越界了。这些应答在被
+// 处理之前会落到 unknown 分支里，于是拒绝被记成「发了个我们不认识的
+// 命令」，原因也没了——这跟停止路径当初在 0x00 和 0x04 上犯的是同一
+// 个错，而且发生在一条没人走过的路径上，因为根本没有东西发过那个请求。
 func TestConfigRejectionIsRecordedRatherThanCalledUnknown(t *testing.T) {
-	// Code 5 is the document's "card charge amount out of range".
+	// 错误码 5 是文档里的「刷卡扣费金额超出范围」。
 	sink := serveWithFrames(t, []Frame{{Command: ConfigAck, Data: []byte{5}}})
 
 	results := sink.findConfigResults()
@@ -145,9 +142,8 @@ func TestConfigRejectionIsRecordedRatherThanCalledUnknown(t *testing.T) {
 	}
 }
 
-// A refusal must be distinguishable from a link that simply never answered.
-// Both look like "no acknowledgement" from the outside, and only one of them
-// means an operator has to go and change a number.
+// 拒绝必须与「链路只是没回答」区分得开。从外面看两者都是「没有确认」，
+// 但只有其中一个意味着运维得去改一个数字。
 func TestConfigAcceptanceAndRefusalAreDistinguishable(t *testing.T) {
 	sink := serveWithFrames(t, []Frame{{Command: ConfigAck, Data: []byte{0}}})
 	results := sink.findConfigResults()
@@ -156,10 +152,8 @@ func TestConfigAcceptanceAndRefusalAreDistinguishable(t *testing.T) {
 	}
 }
 
-// The board's own report of what it is running is ordinary traffic on a healthy
-// link, so it must not be counted as an unrecognised command either — and the
-// bytes must be kept exactly as they arrived, because RawPayload is the replay
-// record.
+// 主板自报当前配置是健康链路上的正常流量，所以同样不该被算成不认识的
+// 命令——而且字节必须原样保留，因为 RawPayload 就是重放记录。
 func TestConfigReportIsNotTreatedAsUnknown(t *testing.T) {
 	table := ConfigTable{RunMode: 0, LocalCoinTime: 10, LocalCardTime: 20, CardAmountCents: 500,
 		TemperatureGuard: 0xFF, FloatSeconds: 300, FloatDeciWatts: 100, RemoveSeconds: 60}
@@ -178,8 +172,8 @@ func TestConfigReportIsNotTreatedAsUnknown(t *testing.T) {
 	if len(results[0].RawPayload) != len(report.Data) {
 		t.Fatalf("raw payload = %d bytes, want the %d that arrived", len(results[0].RawPayload), len(report.Data))
 	}
-	// A report this build cannot read is still visible as unreadable, rather
-	// than stored as a blob that looks fine.
+	// 这个构建读不懂的上报，会以「读不懂」的形式仍然可见，而不是被
+	// 存成一个看着挺正常的二进制块。
 	sink = serveWithFrames(t, []Frame{{Command: ConfigReport, Data: []byte{0, 1, 2}}})
 	results = sink.findConfigResults()
 	if len(results) == 0 || results[0].ResultCode != 0xFF {
@@ -187,8 +181,8 @@ func TestConfigReportIsNotTreatedAsUnknown(t *testing.T) {
 	}
 }
 
-// The power-control reply is the same shape of problem: a board that refuses to
-// drop its tiering has to be visible as a refusal.
+// 功率控制的应答是同一类问题：一块不肯放弃分档的主板，必须以「拒绝」
+// 的形态被看见。
 func TestPowerControlRefusalIsRecorded(t *testing.T) {
 	sink := serveWithFrames(t, []Frame{{Command: cmdPowerControlReply,
 		Data: []byte{byte(PowerSet), byte(PowerOpRemove), 0xFF, 0xF1, 0, 0}}})

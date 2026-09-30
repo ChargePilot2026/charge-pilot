@@ -7,17 +7,17 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// A charge offer is the station-scoped, sellable copy of a template package.
-// It is no longer created or edited by hand: an offer that exists without a
-// matching template package is a package priced against a tariff nobody
-// published. The only operator action left is taking one off a station, which
-// is what disabling means here.
+// 充电套餐是模板套餐挂在站点上、可以对外卖的那一份副本。
+// 它已经不再由人工新建或编辑：
+// 一个没有对应模板套餐的套餐，等于有人拿一份谁都没发布过的计费口径在定价。
+// 运营侧剩下的唯一动作就是把某个套餐从某个站点下架，
+// 这就是这里"停用"的含义。
 //
-// The offer used to carry a code derived from the package, the station and the
-// device, because the code column was NOT NULL with no default and an insert
-// leaving it out failed outright. That made the apply path hash the device id
-// down to a digest just to fit a string nobody looked up -- offers are found
-// by station_id + device_id. Migration admin_db/0045 drops the column.
+// 套餐过去会带一个由模板、站点和设备算出来的编码，
+// 因为 code 列是 NOT NULL 又没有默认值，插入时漏填它会直接失败。
+// 于是下发链路不得不把设备号哈希成一个摘要，只为塞进一个没人会查的字符串——
+// 套餐是靠 station_id + device_id 找到的。
+// 迁移 admin_db/0045 已经删掉了这一列。
 
 // registerChargeOffers 挂载充电套餐的查看与下架两个接口，没有新建/编辑路由：套餐必须
 // 由套餐模板下发，运营侧唯一剩下的动作就是把某个套餐从某个站点下架。
@@ -46,9 +46,9 @@ func (a ResourceAPI) chargeOffers(c *gin.Context) {
 	httpapi.OK(c, gin.H{"items": rows, "permissions": c.MustGet("admin_profile").(Profile).Permissions})
 }
 
-// disableChargeOffer takes one package off a station without touching the
-// station's tariff or its other packages. Orders already sold against it keep
-// their own copy of the terms.
+// disableChargeOffer 把一个套餐从站点下架，
+// 不碰该站点的计费规则，也不动它的其它套餐。
+// 已经按它卖出的订单，继续按各自留存的那份条款走。
 //
 // disableChargeOffer 把一个套餐从站点下架：事务内先对目标行加 UPDATE 行锁且只锁
 // active 的记录（已经是 disabled 的会因查不到而回 404），确认拿到之后才改状态并写

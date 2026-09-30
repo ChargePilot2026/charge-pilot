@@ -92,7 +92,7 @@ func (s ResourceStore) orderQuery(ctx context.Context) *gorm.DB {
 }
 
 // Orders 分页查询订单列表：先 Count 出总数再按创建时间倒序取当页，
-// 最后回填站点名称。时间筛选用 COALESCE(started_at, created_at)，未开始充电的订单也能落进区间。
+// 最后回填站点名称。时间筛选用 COALESCE(started_at， created_at)，未开始充电的订单也能落进区间。
 func (s ResourceStore) Orders(ctx context.Context, q OrderQuery) (Page[OrderView], error) {
 	out := Page[OrderView]{Items: []OrderView{}, Page: q.Page, PageSize: q.PageSize}
 	query := s.orderQuery(ctx)
@@ -196,7 +196,7 @@ func (a ResourceAPI) orders(c *gin.Context) {
 	httpapi.OK(c, out)
 }
 
-// order 是 GET /api/v1/admin/orders/:id 的处理函数：返回订单详情，并补上
+// order 是 GET /api/v1/admin/orders/：id 的处理函数：返回订单详情，并补上
 // billing_db 里的计费单号、分账汇总和各参与方金额。
 // RefundApplicantID 只有当操作人持有 order.refund.create 权限时才回填，
 // 前端据此显示退款入口；它不参与后端退款权限校验，只影响界面是否展示按钮。
@@ -247,7 +247,7 @@ func (a ResourceAPI) order(c *gin.Context) {
 	httpapi.OK(c, row)
 }
 
-// timeline 是 GET /api/v1/admin/orders/:id/timeline 的处理函数：
+// timeline 是 GET /api/v1/admin/orders/：id/timeline 的处理函数：
 // 按发生时间顺序返回该订单的事件日志，用于还原一次充电从下单到结束的完整过程。
 // 先确认订单存在再查日志，避免对不存在的订单返回空列表。
 func (a ResourceAPI) timeline(c *gin.Context) {

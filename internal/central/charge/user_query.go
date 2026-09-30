@@ -21,10 +21,10 @@ var (
 	ErrNotOwner      = errors.New("无权查看该订单")
 )
 
-// UserQueryAPI serves the read-only views a customer needs while charging: the
-// live snapshot, the telemetry curve behind it, and their own order history.
-// Telemetry lives in gateway_db, so the curve is read through the gateway's
-// service-token API rather than by opening a second connection here.
+// UserQueryAPI 提供客户充电过程中需要的只读视图：
+// 实时快照、背后的遥测曲线，
+// 以及他自己的订单历史。
+// 遥测数据在 gateway_db 里，所以曲线走网关的服务令牌接口读取，而不是在这里另开一条连接。
 type UserQueryAPI struct {
 	Auth           identity.SessionAuthenticator
 	DB             *gorm.DB
@@ -34,8 +34,8 @@ type UserQueryAPI struct {
 	AllowedWindows []string
 }
 
-// CurvePoint is one telemetry sample for a charge. Values are nullable because
-// a device may report only some of these metrics at a given moment.
+// CurvePoint 是一次充电的一个遥测采样点。
+// 这些值可为空，因为设备在某一时刻可能只上报其中一部分指标。
 type CurvePoint struct {
 	TS           time.Time `json:"ts"`
 	PowerW       *float64  `json:"power_w"`
@@ -55,9 +55,9 @@ func (a UserQueryAPI) Register(r *gin.Engine) {
 	r.GET("/api/v1/user/charge/:order_no", a.detail)
 }
 
-// resolveOrder loads an order and proves the caller owns it. Ownership is checked
-// before anything is read, so another customer's order is indistinguishable from
-// a missing one.
+// resolveOrder 载入订单并证明调用者拥有它。
+// 归属检查发生在读取任何东西之前，
+// 所以别人的订单与不存在的订单无从分辨。
 func (a UserQueryAPI) resolveOrder(c *gin.Context, orderNo string) (ChargeOrderRecord, bool) {
 	userID, ok := a.Auth.Authenticate(c)
 	if !ok {
@@ -128,7 +128,7 @@ func (a UserQueryAPI) snapshot(c *gin.Context) {
 		payload["total_cents"] = total
 		payload["shortfall_cents"] = shortfall
 	}
-	// Port state is supplementary: a gateway hiccup must not fail the snapshot.
+	// 端口状态只是补充信息：网关抖一下不该让整个快照失败。
 	var port struct {
 		Data any `json:"data"`
 	}
@@ -139,8 +139,8 @@ func (a UserQueryAPI) snapshot(c *gin.Context) {
 	httpapi.OK(c, payload)
 }
 
-// curveWindow bounds how far back a curve request may look, so a single call
-// cannot pull the whole telemetry history of a device.
+// curveWindow 限制曲线请求最多能回看多远，
+// 避免一次调用把某台设备的整段遥测历史都拉出来。
 type curveWindow struct {
 	From  time.Time
 	Label string
@@ -174,8 +174,8 @@ func (a UserQueryAPI) curve(c *gin.Context) {
 	window := a.window(strings.TrimSpace(c.Query("window")))
 	ctx := c.Request.Context()
 
-	// Telemetry is gateway-owned; a failure there is reported as such rather
-	// than being smoothed into an empty series.
+	// 遥测归网关所有；
+	// 那边的故障就如实报出来，而不是被抹平成一条空曲线。
 	var telemetry gatewayTelemetry
 	if err := a.Gateway.GetJSON(ctx, a.GatewayURL, a.ServiceToken,
 		fmt.Sprintf("/api/v1/internal/devices/%s/telemetry?from=%s&to=%s",
@@ -201,8 +201,8 @@ func (a UserQueryAPI) curve(c *gin.Context) {
 	})
 }
 
-// The order model uses sql.Null* columns; serialising them directly would leak
-// the driver internals into the JSON, so each is unwrapped to a plain value.
+// 订单模型用的是 sql.Null* 列，
+// 直接序列化会把驱动内部结构泄进 JSON，所以这里逐个解包成普通值。
 func nullTime(v sql.NullTime) any {
 	if !v.Valid {
 		return nil
@@ -224,8 +224,8 @@ func nullInt(v sql.NullInt64) any {
 	return v.Int64
 }
 
-// gatewayTelemetry mirrors the internal API envelope the gateway returns; the
-// payload sits under data, not at the top level.
+// gatewayTelemetry 对应网关返回的内部 API 信封；
+// 载荷在 data 下面，不在顶层。
 type gatewayTelemetry struct {
 	Data struct {
 		Granularity         string         `json:"granularity"`
@@ -304,8 +304,8 @@ func (a UserQueryAPI) historyCurve(c *gin.Context) {
 	})
 }
 
-// fee reads the settled amounts for an order. The receipt is the authoritative
-// record of what the customer owes once billing has run.
+// fee 读取一笔订单的结算金额。
+// 计费跑完之后，回执才是客户还欠多少的权威记录。
 func (a UserQueryAPI) fee(ctx context.Context, orderID uint64) (electric, service, total, shortfall int64, ok bool) {
 	var receipt ChargeFeeRecord
 	if err := a.DB.WithContext(ctx).Where("charge_order_id = ?", orderID).Take(&receipt).Error; err != nil {
@@ -334,8 +334,8 @@ type historyRow struct {
 	DiscountCents  int64      `json:"discount_cents" gorm:"column:discount_cents"`
 }
 
-// history pages a customer's own orders, newest first, with the same ownership
-// rule as every other order read.
+// history 按最新优先分页返回客户自己的订单，
+// 归属规则与其他所有订单读取完全一致。
 func (a UserQueryAPI) history(c *gin.Context) {
 	userID, ok := a.Auth.Authenticate(c)
 	if !ok {
@@ -370,9 +370,9 @@ func (a UserQueryAPI) history(c *gin.Context) {
 		return
 	}
 	rows := []historyRow{}
-	// The fee amounts live inside charge_fee_receipt.result_json, so they cannot
-	// be selected through a join; the page of orders is read first and the
-	// receipts for exactly that page are merged in afterwards.
+	// 费用金额存在 charge_fee_receipt.result_json 里面，
+	// 没法通过 join 选出来；
+	// 所以先读这一页订单，再把恰好属于这一页的回执合并进来。
 	if err := base.Select("id, order_no, device_id, port_no, status, started_at, ended_at, charged_kwh, charged_seconds, discount_cents").
 		Order("id DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&rows).Error; err != nil {
 		httpapi.Write(c, 503, 5003, "订单暂时无法读取", nil)
@@ -405,8 +405,8 @@ func (a UserQueryAPI) history(c *gin.Context) {
 	httpapi.OK(c, gin.H{"items": rows, "total": total, "page": page, "page_size": pageSize})
 }
 
-// detail returns one order with its fee receipt and refund summary so a customer
-// can see exactly what they were charged and refunded.
+// detail 返回一笔订单及其费用回执和退款汇总，
+// 让客户能看到自己到底被收了多少、退了多少。
 func (a UserQueryAPI) detail(c *gin.Context) {
 	order, ok := a.resolveOrder(c, c.Param("order_no"))
 	if !ok {
@@ -426,10 +426,10 @@ func (a UserQueryAPI) detail(c *gin.Context) {
 		payload["shortfall_cents"] = shortfall
 	}
 	if order.PaymentOrderID.Valid {
-		// Column names are mapped explicitly; GORM cannot infer them from the
-		// Go field names and would silently read zeros.
-		// Column names are mapped explicitly; GORM cannot infer them from the
-		// Go field names and would silently read zeros.
+		// 列名是显式映射的；
+		// GORM 无法从 Go 字段名推断列名，否则会悄悄读到零值。
+		// 列名是显式映射的；
+		// GORM 无法从 Go 字段名推断列名，否则会悄悄读到零值。
 		var payment struct {
 			OrderNo       string `gorm:"column:order_no" json:"order_no"`
 			TotalCents    int64  `gorm:"column:total_cents" json:"total_cents"`

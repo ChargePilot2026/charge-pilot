@@ -12,14 +12,11 @@ import {
 // GET /api/v1/admin/settings/device-pricing，口径与服务端读锁完全一致（不过滤 status）。
 type ScopeDevice = { device_id: string; own_latest_version?: number };
 
-// A pricing template is only the tariff: what is charged, on what basis, and
-// what the mini program may reveal. Packages are a separate pool (see
-// PackageTemplates) because a prepaid cap settles on its own price and stays
-// valid whichever tariff is running.
+// 电价模板就是电价本身：收多少、按什么口径收、以及小程序允许露出什么。套餐是另一个池子
+// （见 PackageTemplates），因为预付封顶自己结算，无论当前跑的是哪套电价都有效。
 //
-// The wizard's second step shows only the fields the chosen mode actually
-// reads. A device-billed mode has no rate anywhere in the system, so it gets
-// no rate input at all rather than inputs that would be silently ignored.
+// 向导第二步只显示所选计费方式真正会读到的字段。设备侧计费的方式在整个系统里都没有
+// 费率，所以它干脆一个费率输入框都不给，而不是给一堆会被静默忽略的输入框。
 
 export default function PricingTemplates() {
   const [templates, setTemplates] = useState<Template[]>([]);
@@ -101,8 +98,7 @@ export default function PricingTemplates() {
     setLocalErrors([]);
     setStep(0);
     if (source) {
-      // The detail endpoint is the authority; the list row carries only summary
-      // fields, so editing from the table would drop the tariff itself.
+      // 详情接口才是权威；列表行只带摘要字段，所以从表格直接编辑会把电价本身丢掉。
       try {
         const detail = await apiGet<Template>(`/api/v1/admin/settings/pricing-templates/${source.id}`);
         setEditing(detail);
@@ -207,7 +203,7 @@ export default function PricingTemplates() {
       return;
     }
     const device = applyDevice.trim();
-    // 锁比的是 (station_id, device_id) 这条链的最新版：留空设备编号就是整站链，
+    // 锁比的是 (station_id， device_id) 这条链的最新版：留空设备编号就是整站链，
     // 填了设备编号就是那台设备自己的链。写死 0 只能给「从未定价过的范围」用，
     // 站点一旦有规则，界面就再也换不了费率。
     const expected = device

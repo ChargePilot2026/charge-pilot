@@ -1,19 +1,19 @@
-// Package dc589sim runs a local stand-in for a dc589 charging board.
+// Package dc589sim 在本地顶替一块 dc589 充电板。
 //
-// It speaks the real 5.8.9 wire protocol over TCP, so it exercises the same
-// framing, the same payload validation and the same session handling the
-// gateway meets on a physical board. It is not a mock of the gateway: it is a
-// second implementation of the device end of the same contract.
+// 它通过 TCP 讲真实的 5.8.9 线路协议，
+// 因此走的是与网关面对真板时完全相同的组帧、载荷校验和会话处理。
+// 它不是网关的 mock：
+// 它是同一份契约设备端的第二套实现。
 //
-// The reason it exists is that the charge path cannot otherwise be walked end
-// to end without vendor hardware. It is a development and test tool and must
-// never be wired into a production process.
+// 之所以要它，是因为没有厂商硬件就无法把充电链路从头走到尾。
+// 它是开发与测试工具，
+// 绝不能接进任何生产进程。
 //
-// Simulators are per protocol: a second vendor, or an MQTT board, gets its own
-// package beside this one rather than a flag on a shared implementation,
-// because the behaviours they can express are not the same. The package is
-// named dc589sim rather than dc589 so it can still import the protocol codec it
-// implements.
+// 模拟器按协议划分：
+// 换一家厂商、或者换成 MQTT 板，应当在本网包旁
+// 边另起一个包，而不是给共享实现加一个开关参数，
+// 因为它们能表达的行为并不相同。
+// 本包命名为 dc589sim 而不是 dc589，就是为了还能 import 它所实现的协议编解码器。
 package dc589sim
 
 import (
@@ -29,47 +29,47 @@ import (
 	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol/dc589"
 )
 
-// Scenario selects the behaviour under test. Every scenario shares the same
-// register and heartbeat path and differs only in what the board does once it
-// is asked to charge, so a failure points at one behaviour.
+// Scenario 选定被测的行为。
+// 每个场景共用同一套注册与心跳路径，只在被要求充电之后板子做什么上不同，
+// 这样一次失败就能指向某一个具体行为。
 type Scenario string
 
 const (
-	// ScenarioByEnergy charges until the requested energy is delivered.
+	// ScenarioByEnergy 一直充到要求的电量送完为止。
 	ScenarioByEnergy Scenario = "by-energy"
-	// ScenarioByTime charges until the requested duration elapses.
+	// ScenarioByTime 一直充到要求的时长走完为止。
 	ScenarioByTime Scenario = "by-time"
-	// ScenarioStopOnCommand charges until the server sends B9, exercising the
-	// stop path without waiting for a full charge.
+	// ScenarioStopOnCommand 一直充到服务器下发 B9，
+	// 用来在不等到充满的前提下走通停止路径。
 	ScenarioStopOnCommand Scenario = "stop-on-command"
-	// ScenarioRejectStart answers B8 with a failure, which drives the server's
-	// refund-on-rejection path.
+	// ScenarioRejectStart 对 B8 回一个失败，
+	// 用来驱动服务器「被拒即退款」的路径。
 	ScenarioRejectStart Scenario = "reject-start"
-	// ScenarioFault reports a fault shortly after a charge starts.
+	// ScenarioFault 在充电开始后不久上报一个故障。
 	ScenarioFault Scenario = "fault"
-	// ScenarioSilent registers and then stops talking, so the read timeout and
-	// the abandoned-session cleanup can be observed.
+	// ScenarioSilent 注册之后就不再说话，
+	// 便于观察读超时和会话被遗弃之后的清理。
 	ScenarioSilent Scenario = "silent"
-	// ScenarioReconnect drops and re-registers, verifying session replacement
-	// and the connection audit.
+	// ScenarioReconnect 断开并重新注册，
+	// 用来验证会话替换与连接审计。
 	ScenarioReconnect Scenario = "reconnect"
 )
 
-// Config is everything a simulated board needs. Rates use the units the
-// protocol uses so they can be compared directly with the wire fields.
+// Config 是一块模拟板所需的全部配置。
+// 速率一律用协议自身的单位，方便和线路字段直接比对。
 type Config struct {
 	Identity  dc589.DeviceIdentity
 	PortCount int
 	Gateway   string
 	Scenario  Scenario
 	Heartbeat time.Duration
-	// PowerDeciWatts is the constant draw while charging, in tenths of a watt.
+	// PowerDeciWatts 是充电时的恒定功率，单位 0.1W。
 	PowerDeciWatts uint32
-	// ReconnectAfter is the pause before reconnecting in ScenarioReconnect.
+	// ReconnectAfter 是 ScenarioReconnect 下重连前的停顿。
 	ReconnectAfter time.Duration
-	// FaultAfter delays the fault report in ScenarioFault.
+	// FaultAfter 是 ScenarioFault 下故障上报的延迟。
 	FaultAfter time.Duration
-	// Log receives progress lines. Nil discards them.
+	// Log 接收进度日志，为 nil 时丢弃。
 	Log *log.Logger
 }
 
@@ -99,9 +99,9 @@ type discard struct{}
 
 func (discard) Write(p []byte) (int, error) { return len(p), nil }
 
-// Run connects and serves until the context is cancelled. The reconnect
-// scenario re-establishes the connection on its own; every other scenario
-// returns when the connection ends.
+// Run 建立连接并服务到 context 被取消
+// 为止：reconnect 场景会自己重建连接，
+// 其余场景在连接结束时返回。
 func Run(ctx context.Context, config Config) error {
 	config = config.withDefaults()
 	for {
@@ -133,7 +133,7 @@ func serveOnce(ctx context.Context, config Config) error {
 	}
 	board := newBoard(config, conn)
 
-	// Closing the connection is how cancellation interrupts a blocking read.
+	// 靠关连接来打断阻塞读。
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
@@ -155,53 +155,53 @@ func serveOnce(ctx context.Context, config Config) error {
 	return board.loop(ctx)
 }
 
-// deciWattSecondsPerMilliWh converts the board's energy accumulator into
-// milliwatt-hours: a milliwatt-hour is 3.6 watt-seconds, and the accumulator
-// counts tenths of a watt-second, so one milliwatt-hour is 36 of them.
+// deciWattSecondsPerMilliWh 把板子电量累加器的单位换算成
+// 毫瓦时：1 毫瓦时等于 3.6 瓦秒，而累加器计的是 0.1 瓦秒，
+// 所以 1 毫瓦时是它的 36 个单位。
 //
-// Accumulating in 0.1W·s and converting only when a figure goes on the wire is
-// what keeps the metering exact. The alternative — banking a fixed number of
-// milliwatt-hours per tick — cannot be reconciled with the power the board
-// reports, because the two then become independent constants: a board claiming
-// 150W while banking 3.6kWh every hour over-delivers by 24x, and every number
-// in the settlement still looks like a plausible one.
+// 用 0.1W·s 累加、只有在数值要上
+// 线时才换算，是计量精确的前提。
+// 另一条路——每 tick 固定存进一个毫瓦时数——无法和板子上报的功率对账，
+// 因为两者会变成互不相干的常数：
+// 板子声称 150W 却每小时存 3.6kWh，就会多送 24
+// 倍，而结算单里的每个数字看上去都仍然合理。
 const deciWattSecondsPerMilliWh = 36
 
-// charge is the state of one running charge.
+// charge 是一笔正在进行的充电的状态。
 type charge struct {
 	port      byte
 	orderBCD  [8]byte
 	mode      dc589.ChargeMode
 	startedAt time.Time
-	// wattDeciSeconds is the energy delivered so far, in tenths of a watt-second.
+	// wattDeciSeconds 是已送出的电量，单位 0.1 瓦秒。
 	wattDeciSeconds uint64
-	// targetMilliWh is what the order paid for, in milliwatt-hours. It is only
-	// read on an energy-billed charge; a time-billed one carries its limit in
-	// remaining instead.
+	// targetMilliWh 是这笔订单买下的电量，
+	// 单位毫瓦时。只有按电量计费的充电会读
+	// 它；按时间计费的把上限放在 remaining 里。
 	targetMilliWh uint32
-	// remaining is the time left on a time-billed charge.
+	// remaining 是按时间计费的充电还剩多久。
 	remaining  time.Duration
 	stopReason byte
 	faultSent  bool
 }
 
-// energyBilled reports whether the order's quantity is an energy figure rather
-// than a duration.
+// energyBilled 报告这笔订单的数量是电量而不是时长。
 //
-// The wire carries a single unsigned field for both, and the charge mode is the
-// only thing that says which one it is. Reading an energy order as a duration
-// is how a 1Wh order becomes a one-second charge that reports several times the
-// energy it was sold.
+// 线路对两者只有同一个无符号字段，
+// 唯一能说明它是哪一个的只有充电
+// 模式。把按电量下的单当成时长去
+// 读，就会让一笔 1Wh 的订单变成一次一
+// 秒的充电，还上报数倍于卖出量的电。
 func energyBilled(mode dc589.ChargeMode) bool {
 	return mode == dc589.ByEnergy || mode == dc589.LongEnergy
 }
 
-// chargedMilliWh is the energy delivered so far.
+// chargedMilliWh 是已经送出的电量。
 func (c *charge) chargedMilliWh() uint32 {
 	return uint32(c.wattDeciSeconds / deciWattSecondsPerMilliWh)
 }
 
-// remainingMilliWh is what the order still owes, never negative.
+// remainingMilliWh 是这笔订单还欠的电量，不会为负。
 func (c *charge) remainingMilliWh() uint32 {
 	if delivered := c.chargedMilliWh(); delivered < c.targetMilliWh {
 		return c.targetMilliWh - delivered
@@ -209,9 +209,9 @@ func (c *charge) remainingMilliWh() uint32 {
 	return 0
 }
 
-// complete reports whether the charge has delivered everything the order paid
-// for. An energy order finishes on the meter and a time order on the clock,
-// because that is the thing the user actually bought.
+// complete 报告这笔充电是否已送出订单买下的全部
+// 量。按电量下的单看电表，按时间下的单看时钟，
+// 因为那才是用户真正买的东西。
 func (c *charge) complete() bool {
 	if energyBilled(c.mode) {
 		return c.chargedMilliWh() >= c.targetMilliWh
@@ -228,29 +228,29 @@ type board struct {
 	mu       sync.Mutex
 	session  [6]byte
 	charging map[byte]*charge
-	// clockOffset is how far the board's own clock trails the server's, seeded
-	// from the register reply and refreshed by every A9. Settlement is timed on
-	// the timestamps the board stamps itself, so an uncorrected clock does not
-	// merely look wrong in a log — it places the whole session in the wrong
-	// time, and the readings that follow it are compared against those times.
+	// clockOffset 是板子自身时钟落后服务器多少：
+	// 注册回包时取初值，之后每个 A9 刷新。
+	// 结算用的是板子自己打的时间戳，
+	// 所以未经校正的时钟不只是日志里看着别
+	// 扭——它会把整个会话放到错误的时间里，而后续读数都是拿这些时间去比的。
 	clockOffset time.Duration
-	// heartbeat is re-armed whenever the platform sets a new period, and
-	// portTelemetry records whether port data is included. Both are server
-	// decisions since 5.8.6, so the board keeps them rather than assuming its
-	// own defaults still apply.
+	// heartbeat 在平台每次下发新周期时重
+	// 建，portTelemetry 记录是否带上端口数据。
+	// 自 5.8.6 起这两项都由服务器决定，
+	// 所以板子把它们记下来，而不是假定自己的默认值还算数。
 	heartbeat     *time.Ticker
 	portTelemetry bool
 	configTable   dc589.ConfigTable
 }
 
-// factoryTable is the parameter table a board ships with.
+// factoryTable 是板子出厂自带的参数表。
 //
-// It exists because the zero value is not a legal table. The firmware refuses a
-// temperature guard outside 50-100 with 0xFF as the only escape, and likewise
-// bounds the float charge and the removal timer, so a board that had never been
-// configured would fail its own validation and answer a read with "rejected" —
-// the platform would conclude its tariff had failed to land when in fact nobody
-// had ever sent one.
+// 之所以要有它，是因为零值不是一张合法的表。
+// 固件拒绝 50-100 之外的温度保护值（只有 0xFF 一个出口），
+// 同样限制了浮充电流和拔枪定时器，
+// 所以一块从未被配置过的板子会在自己的校验里失败，对一次读操作回「拒绝」
+// ——平台会以为自己的费率没下发成功，
+// 实际上压根没人发过。
 func factoryTable() dc589.ConfigTable {
 	return dc589.ConfigTable{
 		RunMode:          0,   // 先充电后按键
@@ -279,10 +279,10 @@ func newBoard(config Config, conn net.Conn) *board {
 	}
 }
 
-// now is the time the board believes it is, expressed in the civil timezone the
-// protocol carries. encodeTime writes the calendar fields of whatever location
-// it is handed, so a board stamping an event in the host's local zone would have
-// it read back by the server as a different instant.
+// now 是板子认为的当前时间，
+// 用协议承载的那个民用时区表示。encodeTime 会写入交给它的那个时区的日历字段，
+// 所以板子若按宿主本地时区给事件打时间戳，
+// 服务器读回来就会变成另一个瞬间。
 func (b *board) now() time.Time {
 	b.mu.Lock()
 	offset := b.clockOffset
@@ -290,9 +290,9 @@ func (b *board) now() time.Time {
 	return dc589.Civil(time.Now().Add(offset))
 }
 
-// setClock adopts the server's time. The correction is kept as an offset rather
-// than as a new time base, so the board's clock keeps advancing at the host's
-// real rate and a second sync measures the drift instead of re-deriving it.
+// setClock 采用服务器的时间。
+// 校正量以偏移量而非新的时间基准保存，这样板子的时钟仍按宿主的真实速率前进，
+// 第二次对时量到的是漂移，而不是把漂移重新推一遍。
 func (b *board) setClock(server time.Time) {
 	offset := server.Sub(time.Now())
 	b.mu.Lock()
@@ -302,9 +302,9 @@ func (b *board) setClock(server time.Time) {
 	b.config.Log.Printf("server time %s adopted, clock moved %s", server.Format(time.RFC3339), (offset - previous).Truncate(time.Second))
 }
 
-// register performs the A0/A1 exchange and adopts the session bytes the server
-// issues. Every later frame carries them, which is how the server correlates
-// frames to this connection.
+// register 完成 A0/A1 交换并采用服务器下发的会话字节。
+// 之后每一帧都带着它们，
+// 服务器就是靠这个把帧关联到这条连接的。
 func (b *board) register(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -329,25 +329,25 @@ func (b *board) register(ctx context.Context) error {
 	}
 	b.mu.Lock()
 	b.session = reply.Session
-	// The register reply already carries the server's time, so the board is
-	// calibrated before it sends anything else. Reading it here rather than
-	// waiting for the A9 means even a gateway that never answers a time request
-	// cannot leave the board stamping settlements from an uncorrected clock.
+	// 注册回包本身已经带着服务器时间，
+	// 所以在发出任何别的东西之前板子就已校准。在这里就读掉它而不是等 A9，
+	// 意味着即便服务器从不回答对时请求，也不会让板
+	// 子用未经校正的时钟去给结算打时间戳。
 	b.clockOffset = at.Sub(time.Now())
 	b.mu.Unlock()
 	b.config.Log.Printf("registered at %s with server time %s", b.config.Gateway, at.Format(time.RFC3339))
-	// Ask for time explicitly as well. The server answers an A8 with an A9 and
-	// records a time-sync event, and that event is the only place a clock
-	// correction becomes visible in the session audit — without it, a board that
-	// drifted after login would be corrected silently and never traceable.
+	// 另外再显式索要一次时间。
+	// 服务器会用 A9 回答 A8 并记一条对时事件，而这条
+	// 事件是时钟校正在会话审计里唯一显形的地方——没有它，
+	// 一块登录后发生漂移的板子会被悄悄地校正掉，永远查不到。
 	if err := b.writer.send(dc589.BuildTimeRequest()); err != nil {
 		return fmt.Errorf("send time request: %w", err)
 	}
 	return nil
 }
 
-// loop multiplexes the three things a board does at once: answering server
-// commands, heartbeating, and letting a charge run to its conclusion.
+// loop 把板子同时要做的三件事复合成一路：应答服务器命令、
+// 发心跳、让充电跑到自己的终点。
 func (b *board) loop(ctx context.Context) error {
 	frames := make(chan dc589.Frame, 16)
 	readErr := make(chan error, 1)
@@ -367,12 +367,12 @@ func (b *board) loop(ctx context.Context) error {
 	}()
 
 	b.heartbeat = time.NewTicker(b.config.Heartbeat)
-	// Through a closure, because the field is replaced every time the platform
-	// sets a new period: evaluating it now would stop the original ticker on the
-	// way out and leave the one actually in use running.
+	// 用闭包，
+	// 因为平台每次下发新周期都会替换这个字段：
+	// 现在求值会在返回时停掉原来那个 ticker，而真正在用的那个还在跑。
 	defer func() { b.heartbeat.Stop() }()
-	// Metering advances on its own cadence so a charge progresses between
-	// heartbeats even when the server is not asking.
+	// 计量按自己的节奏推进，这样即便服务器不催，
+	// 充电在两次心跳之间也在走。
 	meter := time.NewTicker(time.Second)
 	defer meter.Stop()
 
@@ -394,7 +394,7 @@ func (b *board) loop(ctx context.Context) error {
 	}
 }
 
-// handle answers one server frame.
+// handle 应答一帧服务器下行。
 func (b *board) handle(ctx context.Context, frame dc589.Frame) error {
 	switch frame.Command {
 	case dc589.StartCharge:
@@ -410,12 +410,12 @@ func (b *board) handle(ctx context.Context, frame dc589.Frame) error {
 		}
 		return b.stop(port, 0)
 	case dc589.TimeReply:
-		// A9 is the server's answer to the A8 this board sent at registration.
-		// Handling A8 here instead was dead code on two counts: the gateway never
-		// sends A8, because A8 travels board to server, and the A9 it does send
-		// fell through to the default branch and was dropped without trace. The
-		// correction therefore never happened even though the server was offering
-		// one on every connection.
+		// A9 是服务器对本板注册时发出的 A8 的应答。
+		// 这里当初处理的是 A8，两头都不成立：
+		// 网关从不下发 A8（A8 是板子到服务
+		// 器方向），而它确实下发的 A9 则掉进 default 分支被无声丢弃。
+		// 于是即便服务器每次连接都主动提供校正，
+		// 校正也从未发生。
 		server, err := dc589.ParseTimeReply(frame)
 		if err != nil {
 			return fmt.Errorf("parse time reply: %w", err)
@@ -423,11 +423,11 @@ func (b *board) handle(ctx context.Context, frame dc589.Frame) error {
 		b.setClock(server)
 		return nil
 	case dc589.HeartbeatInterval:
-		// Since 5.8.6 this also decides whether port telemetry appears in each
-		// heartbeat. A board that ignores it would be reporting whatever its
-		// factory default was, which is precisely the ambiguity the command
-		// exists to remove, so the simulator honours it and then uses the value
-		// it was given rather than its own default.
+		// 自 5.8.6 起，
+		// 这条命令还决定每次心跳里是否带端口遥测。
+		// 忽略它的板子会一直按自己的出厂默认值上报，而这正是这条命令要消除的歧义，
+		// 所以模拟器遵守它，
+		// 并按收到的值而不是自己的默认值去发心跳。
 		ok, err := dc589.ParseHeartbeatInterval(frame)
 		if err != nil {
 			return err
@@ -443,31 +443,31 @@ func (b *board) handle(ctx context.Context, frame dc589.Frame) error {
 		}
 		report, err := dc589.BuildConfigReport(b.configTable)
 		if err != nil {
-			// A table the board could not encode is reported as a rejected
-			// write rather than dropped, so the platform is never left waiting
-			// for a read that will not come.
+			// 板子编不出来的表要回「
+			// 写入被拒」而不是丢掉，
+			// 这样平台不会一直等一个永远不会到达的读响应。
 			return b.writer.send(dc589.BuildConfigAck(1))
 		}
 		return b.writer.send(report)
 	case dc589.RegisterReply, dc589.HeartbeatReply, dc589.ChargeEndReply, dc589.FaultReply:
-		// Acknowledgements of frames this board has already sent. Answering an
-		// acknowledgement would start a loop, so silence is the correct reading
-		// of the protocol rather than a gap in the switch.
+		// 这些是对本板已发出帧的确认。
+		// 回应确认会形成回路，
+		// 所以按协议沉默才是正确读法，而不是 switch 的疏漏。
 		return nil
 	default:
-		// Anything else is a downlink this build does not implement, and
-		// swallowing it is the one response that makes it undiagnosable: the
-		// command vanishes with no record on either side, so "the simulator
-		// never implemented it" and "the gateway never sent it" look identical
-		// from the outside. Naming the byte is the whole difference — a remote
-		// control or a power control showing up here means the product grew a
-		// caller for a command the simulator is not yet answering.
+		// 其余都是本版本未实现的下行，而吞掉
+		// 它恰恰是唯一让问题无法诊断的响应：
+		// 命令无影无踪，
+		// 两边都没有记录，
+		// 于是「模拟器没实现」和「网关没发」从外面看一模一样。
+		// 打出这个字节就是全部差别——这里冒出的远程控制或功率控制，
+		// 意味着产品为一条模拟器尚未应答的命令新增了调用方。
 		b.config.Log.Printf("unhandled downlink 0x%02X (%d bytes) ignored", frame.Command, len(frame.Data))
 		return nil
 	}
 }
 
-// setHeartbeat adopts the period the server asked for.
+// setHeartbeat 采用服务器要求的周期。
 func (b *board) setHeartbeat(seconds uint16) {
 	if seconds == 0 {
 		return
@@ -478,10 +478,10 @@ func (b *board) setHeartbeat(seconds uint16) {
 	b.heartbeat = time.NewTicker(time.Duration(seconds) * time.Second)
 }
 
-// applyConfig accepts a parameter table the way a board would: it validates the
-// ranges, and a rejected write leaves the previous table in place. A simulator
-// that accepted everything would make the 0xC4 error path untestable, which is
-// the only way the platform learns its tariff did not reach the device.
+// applyConfig 像真板子那样接收参数表：
+// 校验各区间，被拒的写入保留原来那张表。
+// 一个什么都收的模拟器会让 0xC4 的错误路径无从测
+// 试，而那是平台得知费率没有送达设备的唯一途径。
 func (b *board) applyConfig(frame dc589.Frame) error {
 	table, err := dc589.DecodeConfig(frame)
 	if err != nil {
@@ -491,8 +491,8 @@ func (b *board) applyConfig(frame dc589.Frame) error {
 	return b.writer.send(dc589.BuildConfigAck(0))
 }
 
-// start begins or refuses a charge. A refusal is what the server turns into a
-// refund, so it is answered with a non-zero result code.
+// start 开始或拒绝一次充电。
+// 拒绝会被服务器转成退款，所以要用非零的结果码回应。
 func (b *board) start(ctx context.Context, command dc589.StartCommand) error {
 	code := byte(0)
 	if b.config.Scenario == ScenarioRejectStart {
@@ -515,22 +515,22 @@ func (b *board) start(ctx context.Context, command dc589.StartCommand) error {
 		return fmt.Errorf("start for port %d, but the board has %d ports", port, b.config.PortCount)
 	}
 	running := &charge{port: port, orderBCD: command.OrderBCD, mode: command.Mode, startedAt: b.now()}
-	// The quantity means minutes on a time order and watt-hours on an energy
-	// one, which is why one field carries both and the mode is the only thing
-	// that says which it is. Treating the energy figure as a count of seconds
-	// finished a 1Wh order in one second while still reporting several watt-hours
-	// against it.
+	// 数量在按时间下单时是分钟、在按电量下单时是瓦时，
+	// 所以一个字段同时承载两者，只有模式能说
+	// 明它到底是哪个。把电量数字当成秒数
+	// 读，会让一笔 1Wh 的订单一秒就结束，
+	// 却仍按好几瓦时上报。
 	if energyBilled(command.Mode) {
 		running.targetMilliWh = uint32(command.Quantity) * 1000
 	} else {
 		running.remaining = time.Duration(command.Quantity) * time.Minute
 	}
 	if b.config.Scenario == ScenarioStopOnCommand || b.config.Scenario == ScenarioFault {
-		// These two end on a command or a fault rather than on their own, so the
-		// limit only has to sit far enough away never to be the reason. It still
-		// has to be a real figure in both modes: the heartbeat reports the
-		// projected time left, and a charge answering "zero remaining" reads on
-		// the platform as one that is about to end on its own.
+		// 这两个场景靠命令或故障结束而不是自己跑完，
+		// 所以上限只要远到不可能成为结束原因即可。
+		// 但两种模式下它仍必须是个真实数值：
+		// 心跳会上报预计剩余时间，而回「剩余为
+		// 零」的充电在平台看来就是即将自行结束。
 		const unbounded = 24 * time.Hour
 		running.remaining = unbounded
 		if running.targetMilliWh == 0 {
@@ -545,9 +545,9 @@ func (b *board) start(ctx context.Context, command dc589.StartCommand) error {
 	return nil
 }
 
-// stop ends a charge and reports it with BB, which is what closes the order.
-// A stop for a port that is not charging is still acknowledged: it is a
-// legitimate late command, not a reason to drop the connection.
+// stop 结束一次充电并用 BB 上报，
+// 这才让订单收尾。对没在充电的端口下发的停止同样要确认：
+// 它是一条合法的迟到命令，不构成断连接的理由。
 func (b *board) stop(port byte, reason byte) error {
 	ack, err := dc589.BuildCommandResult(dc589.StopReply, 0, port)
 	if err != nil {
@@ -591,12 +591,12 @@ func (b *board) reportEnd(running *charge, reason byte) error {
 	return nil
 }
 
-// remainingSecs projects how much longer a charge will run, in seconds.
+// remainingSecs 推算这次充电还能跑多久，单位秒。
 //
-// The heartbeat's remaining field asks the same question in both billing modes,
-// so an energy-billed charge is projected from the energy it still owes divided
-// by the power it is actually drawing. Answering zero there would tell the
-// platform a charge is about to end when it has barely begun.
+// 心跳的 remaining 字段在两种计费模式下问的是同一个问题，
+// 所以按电量计费的充电要用「还欠的电量 ÷ 实际取的功率」来推算。
+// 那种情况下回零，
+// 等于告诉平台一次刚开始的充电马上就要结束了。
 func (b *board) remainingSecs(running *charge) uint32 {
 	if !energyBilled(running.mode) {
 		if running.remaining <= 0 {
@@ -610,16 +610,16 @@ func (b *board) remainingSecs(running *charge) uint32 {
 	return uint32(uint64(running.remainingMilliWh()) * deciWattSecondsPerMilliWh / uint64(b.config.PowerDeciWatts))
 }
 
-// advance moves every running charge forward one second of simulated time.
+// advance 把每一笔进行中的充电向前推进一秒模拟时间。
 func (b *board) advance() {
 	b.mu.Lock()
 	var finished []*charge
 	for port, running := range b.charging {
-		// One tick is one second, so the board delivers the power the platform
-		// configured for that second. Deriving the energy from the same figure it
-		// reports is the point: a settlement that disagrees with the power
-		// reading by a constant ratio is one nobody ever catches, because the
-		// energy still lands within a range an operator would call reasonable.
+		// 一个 tick 就是一秒，
+		// 所以板子在这一秒里送出平台配置的功率。
+		// 关键在于电量由它上报的同一个数字推导出来：
+		// 一份和功率读数差一个固定比例的结算没人会发现，
+		// 因为电量仍落在运维会认为合理的区间里。
 		running.wattDeciSeconds += uint64(b.config.PowerDeciWatts)
 		if !energyBilled(running.mode) {
 			running.remaining -= time.Second
@@ -636,7 +636,7 @@ func (b *board) advance() {
 		}
 		switch b.config.Scenario {
 		case ScenarioStopOnCommand, ScenarioFault:
-			// These end on a command or a fault rather than on their own.
+			// 这两个场景靠命令或故障结束，而不是自己跑完。
 			continue
 		default:
 			finished = append(finished, running)
@@ -651,14 +651,14 @@ func (b *board) advance() {
 	}
 }
 
-// sendHeartbeat reports the board and, when the platform asked for port data
-// and something is charging, the state of each charging port.
+// sendHeartbeat 上报板子信息；
+// 平台要求了端口数据且确有充电时，再带上每个充电端口的状态。
 //
-// Whether the port block appears at all is the platform's decision since 5.8.6,
-// taken in A6. Reporting it unconditionally would make "this build ignores what
-// it was told" indistinguishable from "this build is fine", which is the exact
-// ambiguity the command exists to remove — and it would mean a platform that
-// had deliberately turned port telemetry off still saw it arrive.
+// 端口块是否出现自 5.8.6 起由平台决定，在 A6 里下发。
+// 无条件上报会让「本版本忽略了指令」与「本版本没问题」
+// 变得无法区分，而这正是该命令要
+// 消除的歧义——还会导致一个明确关
+// 掉了端口遥测的平台照样收到它。
 func (b *board) sendHeartbeat() {
 	b.mu.Lock()
 	var status *dc589.PortStatus
@@ -695,9 +695,9 @@ func (b *board) readFrame() (dc589.Frame, error) {
 	return dc589.ReadFrame(b.reader)
 }
 
-// frameWriter serialises writes. The heartbeat, the command replies and the
-// charge-end report all originate from different places in the loop, and two
-// frames interleaved on the wire would desynchronise the server's reader.
+// frameWriter 串行化写操作。
+// 心跳、命令回包和充电结束上报分别来自循环里的不同
+// 位置，而两帧在链路上交插会让服务器的读取器错位。
 type frameWriter struct {
 	conn net.Conn
 	mu   sync.Mutex

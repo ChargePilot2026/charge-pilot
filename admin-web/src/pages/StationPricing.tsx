@@ -4,13 +4,12 @@ import { apiGet, apiPost, apiPut } from '../api/client';
 import { fromCents, modeLabel, toCents, type Spec, type Station, type Template } from './pricing/model';
 import { LoadError } from '../components/LoadError';
 
-// Everything about one station: what it charges, what each pile runs, and whether
-// the last switch actually landed. The three tabs answer three different
-// questions an operator has before opening a station: can a charging user start, what is
-// each pile really charging, and did the change I made last week arrive.
+// 一个站点的全部：它收多少钱、每个桩在跑什么、以及上次那次切换到底有没有生效。
+// 三个页签回答的是运营打开站点前要问的三个不同问题：充电用户能不能启动、每个桩实际
+// 在收多少钱、以及我上周改的东西到了没有。
 //
-// A station policy is about moving money, not about pricing a session, so it
-// lives on its own tab rather than inside a tariff.
+// 站点策略管的是钱往哪儿走，不是一次充电怎么计价，所以它独立成一个页签，而不是塞进
+// 某个电价模板里。
 
 type StationPolicy = {
   station_id: number; station_name?: string; force_recharge: boolean; min_balance_cents: number;
@@ -22,21 +21,18 @@ type StationPolicy = {
 type DeviceRow = {
   device_id: string; model?: string; device_status: string;
   template_name?: string; template_id?: number; own_rule_id?: number; own_version?: number; station_version?: number;
-  // The effective spec is parsed server-side, so the matrix can answer "what
-  // is this device really charging" without a second round trip.
+  // 生效后的 spec 由服务端解析，所以矩阵能直接回答「这个桩实际在收多少钱」，不必再发一轮请求。
   spec_json?: Spec;
-  // null means the row it inherits from is the station default, not a rule of
-  // this device's own.
+  // 为 null 表示它继承的那一行是站点默认值，而不是这个桩自己的规则。
   effective_rule_device_id?: string | null;
   // 下发模板时乐观锁比对的版本号。这一对字段刻意不过滤 status，与服务端读法一致：
   // own_rule_id/own_version/station_version 描述的是「现在正在生效什么」，
   // latest 描述的是「这条链上最新到第几版」，后者才是回填 expected_version 该用的。
   own_latest_version?: number;
   offer_count?: number; offer_names?: string;
-  // What the board can report, as recorded against the device itself. Both are
-  // false until someone declares them, and an undeclared board cannot be
-  // priced by meter at all — so the column is here to make that visible
-  // before an apply is refused, not after.
+  // 板端自己能报什么，以记录在设备上的为准。这两个开关在人工声明之前都是 false，
+  // 而没声明的板子根本无法按电表计价——所以这一列是为了让这件事在 apply 被拒绝之前就
+  // 看得见，而不是被拒之后才发现。
   charge_mode?: string; reports_energy?: boolean; reports_segmented_power?: boolean;
 };
 type SwitchTask = {
@@ -49,10 +45,9 @@ type SwitchItem = {
   offered_snapshot?: string; error_msg?: string;
 };
 
-// A refund is two orthogonal questions, asked separately per payment path:
-// whether a failed start gives money back at all, by which rule, and where the
-// money lands. The backend stores exactly that, so the editor asks exactly that
-// and the display folds the pair back into one sentence.
+// 退款是两个正交的问题，并且按支付方式分开提问：启动失败到底退不退、按哪条规则退、
+// 以及钱退到哪里。后端存的正是这两项，所以编辑器也只问这两项，展示时再把这一对
+// 折回一句话。
 type RefundPath = 'balance' | 'original';
 type ScanRefundRule = 'none' | 'realtime' | 'time_limited';
 type CardRefundRule = 'none' | 'realtime' | 'time_limited_prorated';
@@ -74,9 +69,8 @@ const CARD_RULE: { value: CardRefundRule; label: string; detail: string }[] = [
 const pathLabel = (v?: string) => REFUND_PATH.find(o => o.value === v)?.label || v || '—';
 const ruleDetail = (options: { value: string; detail: string }[], v?: string) => options.find(o => o.value === v)?.detail || '—';
 
-// refundSentence reads the two stored fields back as the one line an operator
-// would say out loud. A rule of "none" has no destination, so it stands alone;
-// a time-limited rule needs its caveat attached or the sentence over-promises.
+// refundSentence 把存下来的两个字段读回运营会脱口而出的那一句话。规则为 "none" 时
+// 没有退到哪儿，所以单独成句；限时规则必须把时效说明带上，否则这句话承诺过头了。
 function refundSentence(rule: string | undefined, path: string | undefined) {
   const all: { value: string; label: string }[] = [...SCAN_RULE, ...CARD_RULE];
   const label = all.find(o => o.value === rule)?.label || rule || '—';
@@ -125,8 +119,7 @@ export default function StationPricing() {
 
   const canUpdate = permissions.includes('pricing.rule.update');
   const canCreate = permissions.includes('pricing.rule.create');
-  // The list comes back for every station, so pick this station's row out of it
-  // rather than trusting the response to have been scoped.
+  // 列表是按全部站点返回的，所以要从里面挑出本站点那一行，不要指望服务端已经按站点过滤过。
   const policy = policies.find(p => p.station_id === stationId);
 
   const searchStations = async (keyword: string) => {
@@ -159,8 +152,7 @@ export default function StationPricing() {
       } else {
         setDevices([]);
       }
-      // Read the permission off this response rather than the state, which is
-      // still empty on the first load and would silently skip the pool.
+      // 权限从这次响应里读，不要读 state：首次加载时它还是空的，会让模板池被静默跳过。
       if (rules.permissions?.includes('pricing.rule.create')) {
         const pool = await apiGet<{ items: Template[] }>('/api/v1/admin/settings/pricing-templates');
         setTemplates((pool.items || []).filter(t => t.status === 'active'));
@@ -346,8 +338,8 @@ export default function StationPricing() {
                     if (!r.spec_json?.mode) {
                       return <span style={{ color: '#999' }}>未配置</span>;
                     }
-                    // A null effective device id means the row behind this
-                    // device is the station default rather than its own rule.
+                    // effective_rule_device_id 为 null 表示这个桩背后那一行是站点默认值，
+                    // 而不是它自己的规则。
                     const inherited = r.effective_rule_device_id == null;
                     return <>
                       {modeLabel(r.spec_json.mode)}

@@ -19,7 +19,7 @@ var ErrLocked = errors.New("账号已锁定，请在 30 分钟后重试")
 var ErrMFA = errors.New("此账号已启用双因素认证，当前登录入口暂不支持")
 
 // Account 是一个后台账号在 admin_user_role 表上的行，同时承载登录判定所需的全部字段。
-// 敏感字段一律 json:"-"，不会随任何接口返回。
+// 敏感字段一律 json："-"，不会随任何接口返回。
 type Account struct {
 	AuthVersion      uint64         `json:"-"`             // 凭证版本号：改密或强制下线时自增，用于让已签发的令牌立即失效
 	ID               uint64         `json:"admin_user_id"` // 账号主键
@@ -75,7 +75,7 @@ func (s Store) Bootstrap(ctx context.Context, username, password string) error {
 		if err := tx.Model(&Account{}).Where("deleted_at IS NULL").Count(&count).Error; err != nil {
 			return err
 		}
-		// Only initialize a fresh installation. Never reset an existing password.
+		// 只初始化一套全新安装，绝不重置已有口令。
 		if count > 0 {
 			return nil
 		}
@@ -128,9 +128,9 @@ func (s Store) Login(ctx context.Context, username, password, ip string) (Accoun
 			return audit(tx, account, "login_failed", ip)
 		}
 		if account.MFAEnabled {
-			// The password is correct but a second factor is required. The login
-			// is not complete yet, so no session is issued and the success state
-			// is only written once the code verifies.
+			// 口令是对的，但还差一个二次因素。
+			// 这次登录还没走完，所以不发会话，
+			// 成功状态也只在验证码校验通过之后才写。
 			account.Status = "active"
 			return nil
 		}
@@ -152,9 +152,9 @@ func (s Store) Login(ctx context.Context, username, password, ip string) (Accoun
 // CompleteMFA 校验 TOTP 动态口令，通过后才把这次登录标记为成功并写登录时间。
 // 动态口令错误同样计入失败次数，因此无法脱离口令单独暴力破解验证码。
 //
-// CompleteMFA verifies the second factor and only then marks the login
-// successful. A wrong code counts toward the lockout so codes cannot be brute
-// forced independently of the password.
+// CompleteMFA 校验二次因素，通过之后才把这次登录标记为成功。
+// 验证码填错同样计入锁定计数，
+// 所以没法绕开口令单独暴力破解验证码。
 func (s Store) CompleteMFA(ctx context.Context, accountID uint64, code, ip string) (Account, error) {
 	var account Account
 	var denied error

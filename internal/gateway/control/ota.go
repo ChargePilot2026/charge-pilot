@@ -18,9 +18,9 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// OtaAPI accepts firmware rollout plans from central and tracks each device's
-// acknowledgement. gateway_db owns ota_command, so delivery state stays with the
-// service that actually talks to devices.
+// OtaAPI 接收 central 下发的固件推送计划，并跟踪每台设备的确认情况。
+// ota_command 归 gateway_db 所有，交付状态就留在真正和设备对话的
+// 这个服务里。
 type OtaAPI struct {
 	DB           *gorm.DB
 	ServiceToken string
@@ -59,9 +59,9 @@ func (a OtaAPI) authorized(c *gin.Context) bool {
 	return true
 }
 
-// dispatch records a firmware push for each target device. The command id is
-// derived from the schedule and device so a retried plan cannot enqueue a
-// second upgrade for the same device.
+// dispatch 为每台目标设备记录一次固件推送。command id 由推送计划和设备
+// 推导而来，所以被重试的同一个计划
+// 不会给同一台设备再排一次升级。
 func (a OtaAPI) dispatch(c *gin.Context) {
 	if !a.authorized(c) {
 		return
@@ -90,7 +90,7 @@ func (a OtaAPI) dispatch(c *gin.Context) {
 			if deviceID == "" || len(deviceID) > 64 {
 				return ErrOtaInvalidDevice
 			}
-			// Only a provisioned, enabled device may receive firmware.
+			// 只有已开通、且状态启用的设备才允许接收固件。
 			var exists int64
 			if err := tx.Table("device").Where("device_id = ? AND status = 'active' AND deleted_at IS NULL", deviceID).Count(&exists).Error; err != nil {
 				return err
@@ -104,7 +104,7 @@ func (a OtaAPI) dispatch(c *gin.Context) {
 				"package_version": request.PackageVersion, "status": "pending",
 				"created_month": month,
 			}
-			// Replaying the same plan returns the existing command untouched.
+			// 重放同一个计划时原样返回已存在的命令，不做任何改动。
 			if err := tx.Table("ota_command").Clauses(clause.OnConflict{DoNothing: true}).Create(row).Error; err != nil {
 				return err
 			}
@@ -125,8 +125,8 @@ func (a OtaAPI) dispatch(c *gin.Context) {
 	httpapi.OK(c, gin.H{"queued": queued, "checksum_sha256": strings.ToLower(request.Checksum)})
 }
 
-// ack records what the device reported. A device that explicitly refuses is not
-// retried, and an ack for an unknown command is rejected rather than invented.
+// ack 记录设备回报的结果。设备明确拒绝的不会再重试，
+// 而针对一条不存在的命令的 ack 会被拒绝，而不是凭空造出一条。
 func (a OtaAPI) ack(c *gin.Context) {
 	if !a.authorized(c) {
 		return
@@ -151,7 +151,7 @@ func (a OtaAPI) ack(c *gin.Context) {
 			return err
 		}
 		if row.Status == "acked" {
-			// Already confirmed: a duplicate ack must not move the terminal state.
+			// 已经确认过：重复的 ack 不允许再推动这个终态。
 			return nil
 		}
 		if row.Status == "failed" {
@@ -178,8 +178,8 @@ func (a OtaAPI) ack(c *gin.Context) {
 	httpapi.OK(c, gin.H{"command_id": request.CommandID})
 }
 
-// status reports rollout progress for one schedule, which central polls to
-// decide whether a batch may continue or must halt.
+// status 报告某个计划的推送进度，central 靠轮询它
+// 来决定这一批是可以继续，还是必须停下来。
 func (a OtaAPI) status(c *gin.Context) {
 	if !a.authorized(c) {
 		return
@@ -219,8 +219,8 @@ func otaFailure(c *gin.Context, err error) {
 	}
 }
 
-// VerifyChecksum lets central confirm the artifact hash before publishing a
-// package, so a corrupted upload never reaches a device.
+// VerifyChecksum 让 central 在发布固件包之前先核对制品哈希，
+// 这样上传损坏的包永远到不了设备手上。
 func VerifyChecksum(expected, actual string) error {
 	want, err := hex.DecodeString(strings.ToLower(strings.TrimSpace(expected)))
 	if err != nil || len(want) != sha256.Size {

@@ -8,9 +8,8 @@ type MeterSegment struct {
 	StartedAt time.Time `json:"started_at"`
 	EndedAt   time.Time `json:"ended_at"`
 	EnergyWh  uint32    `json:"energy_wh"`
-	// PeakW is the highest power reported inside the segment. It is what makes
-	// power-tier and peak-power tariffs computable from the meter; when it is
-	// zero the engine derives an average instead.
+	// PeakW 是该段内上报过的最高功率。正是它让功率档与峰值功率类电价表可以从
+	// 计量里算出来；它为零时，引擎改为用平均值反推。
 	PeakW uint32 `json:"peak_w,omitempty"`
 }
 
@@ -24,31 +23,27 @@ type ActualMeter struct {
 
 type ActualFee = Fee
 
-// PriceActual never treats the uniformly distributed estimate as a meter.
-// Energy segments may span boundaries only where both effective rates match.
-// Missing or contradictory variable-rate readings are sent to review.
+// PriceActual 从不把均匀分摊出来的预估值当成计量。电量分段只有在前后两段的
+// 实际费率一致时才允许跨过费率边界；缺失或自相矛盾的变价费率读数一律送去复核。
 //
-// The arithmetic itself is Cost's: this function only decides whether the
-// reported meter is trustworthy enough to hand over.
+// 算术本身是 Cost 的：这个函数只负责判断上报的这份计量是否可信到可以交出去。
 func PriceActual(rule Rule, meter ActualMeter) (Fee, error) {
 	usage, err := usageFromMeter(rule, meter)
 	if err != nil {
 		return Fee{}, err
 	}
-	// dc589 reports energy, not per-segment power, so tiered and peak tariffs
-	// price off the segment average. Documented as a known accuracy limit; the
-	// alternative (sending every power-tier invoice to review) would make the
-	// basis unusable rather than approximate.
+	// dc589 报的是电量而不是分段功率，所以阶梯与峰值类电价表按分段平均值计价。
+	// 这是已记录在案的已知精度限制；另一个选择（把每一张功率档发票都送去复核）
+	// 会让这个口径变得不可用，而不只是变得不精确。
 	return Cost(rule.Spec, usage)
 }
 
-// usageFromMeter turns a meter record into the usage the engine costs.
+// usageFromMeter 把一条计量记录转成引擎要计价的 Usage。
 //
-// The validation is the substance here, not a formality: it decides whether the
-// reported meter is trustworthy enough to hand to Cost. It lives in its own
-// function because a spend cap has to be tested against exactly the same meter
-// the settlement will use — a cap measured on a looser reading is a cap that
-// fires at the wrong moment, and nobody would notice until an invoice was wrong.
+// 这里的校验才是实质内容而不是走过场：它决定上报的这份计量是否可信到可以交给
+// Cost。它之所以单独成一个函数，是因为消费封顶必须拿结算将要用的同一份计量
+// 来试算——用更宽松的读数去量封顶，就会得到一个在错误时刻触发的封顶，
+// 而在账单出错之前没有人会发现。
 func usageFromMeter(rule Rule, meter ActualMeter) (Usage, error) {
 	if ValidateSpec(rule.Spec) != nil || rule.ID == 0 || rule.Version == 0 {
 		return Usage{}, ErrInvalidPricing
@@ -64,10 +59,9 @@ func usageFromMeter(rule Rule, meter ActualMeter) (Usage, error) {
 		return Usage{}, ErrMeterReview
 	}
 	usage := Usage{Start: meter.StartedAt, End: meter.EndedAt, EnergyWh: uint64(meter.ChargedWh), Channel: rule.Channel}
-	// Spreading an unsegmented meter evenly is only exact when the rate does
-	// not change during the session. Under a varying tariff it is a guess, and
-	// the guess decides what the operator is charged, so it goes to review
-	// instead. This is what makes measured segments worth collecting.
+	// 把没有分段的计量均摊开，只有在充电期间费率不变时才是精确的。在会变价的
+	// 电价表下它只是一句猜测，而猜测直接决定运营方被收多少，所以这时送复核
+	// 而不是照猜结算。正因如此，实测分段才值得采集。
 	if len(meter.Segments) == 0 && !specIsUniformOver(rule.Spec, meter.StartedAt, meter.EndedAt) {
 		return Usage{}, ErrMeterReview
 	}
@@ -88,14 +82,13 @@ func usageFromMeter(rule Rule, meter ActualMeter) (Usage, error) {
 	return usage, nil
 }
 
-// StopAtMeter decides whether a running session has reached the spend cap its
-// tariff declares, measured on a meter record.
+// StopAtMeter 判断一次运行中的充电是否已经触到它那份电价表所声明的消费封顶，
+// 依据是一条计量记录。
 //
-// The meter goes through the same validation a settlement would, so a session is
-// never cut off on a reading that could not have been billed. A tariff the
-// engine can no longer price, or one that is not server-billed, produces a plan
-// that says so rather than an error: a stop rule derived from a tariff the
-// engine rejects is not a reason to cut somebody's charge off.
+// 这条计量走的是与结算完全相同的校验，所以一次充电绝不会因为一个本来就没法
+// 开票的读数而被切断。一份引擎已经算不出价的电价表，或者一个并非服务端计费的
+// 模式，得到的会是一份明说这件事的计划而不是一个错误：拿一份引擎拒绝执行的
+// 电价表推出来的停止规则，不构成切断别人充电的理由。
 func StopAtMeter(rule Rule, meter ActualMeter) (StopPlan, error) {
 	usage, err := usageFromMeter(rule, meter)
 	if err != nil {

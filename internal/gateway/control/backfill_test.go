@@ -31,8 +31,8 @@ func TestParseBackfillAcceptsStringAndNumberPayloads(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("want 2 samples, got %d", len(got))
 	}
-	// Values are normalised to the column's 6-decimal scale without ever
-	// passing through float64.
+	// 数值会归一到列的 6 位小数精度上，
+	// 全程都不经过 float64。
 	byMetric := map[string]string{}
 	for _, s := range got {
 		byMetric[s.metric] = s.value
@@ -71,8 +71,8 @@ func TestParseBackfillRejectsInvalidFrames(t *testing.T) {
 func TestParseBackfillCollapsesDuplicateSamples(t *testing.T) {
 	now := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
 	ts := now.Add(-time.Hour).Format(time.RFC3339)
-	// A device that retries mid-flight repeats frames verbatim; the retry must
-	// not double-count the same reading.
+	// 设备在传输途中重试时会逐字重发同一批帧；重试绝不能
+	// 把同一条读数算两遍。
 	body := `{"frames":[` +
 		`{"device_id":"xx_001_abc","port_no":1,"msg_type":"telemetry","ts":"` + ts + `","payload":{"power_w":"10"}},` +
 		`{"device_id":"xx_001_abc","port_no":1,"msg_type":"telemetry","ts":"` + ts + `","payload":{"power_w":"10"}},` +
@@ -88,7 +88,7 @@ func TestParseBackfillCollapsesDuplicateSamples(t *testing.T) {
 }
 
 func TestValidDeviceID(t *testing.T) {
-	// The accepted range must stay identical to the provisioning endpoint's.
+	// 允许的范围必须与开通接口保持一致。
 	for _, id := range []string{"xx_001_abc", "DEV-A123", "a12345678"} {
 		if !validDeviceID(id) {
 			t.Fatalf("%q should be accepted", id)

@@ -7,7 +7,8 @@ import (
 	"sort"
 )
 
-// Money is always stored in cents. No floating point value enters settlement.
+// Money 一律以分为单位存储。
+// 任何浮点数都不会进入结算。
 type Money int64
 
 type SplitMode string
@@ -35,8 +36,9 @@ type Allocation struct {
 
 var ErrInvalidSplit = errors.New("invalid split configuration")
 
-// Allocate splits the electric and service components independently. Remainders
-// are distributed by largest fractional remainder, then stable party ID.
+// Allocate 把电费与服务费两项各自独立拆分。
+// 余数按最大余数法分配，
+// 余数相同时再按 party ID 稳定排序。
 func Allocate(electric, service Money, mode SplitMode, parties []Party) (Allocation, error) {
 	if electric < 0 || service < 0 || len(parties) < 2 || len(parties) > 8 || (mode != SplitAll && mode != SplitServiceOnly) {
 		return Allocation{}, ErrInvalidSplit

@@ -20,9 +20,8 @@ func TestPowerControlRoundTrip(t *testing.T) {
 	if len(frame.Data) != powerControlDataBytes {
 		t.Fatalf("data = %d bytes, want %d", len(frame.Data), powerControlDataBytes)
 	}
-	// The reserved bytes must go out as zero. The document calls them reserved
-	// and never says what a non-zero value means, so sending one would be a
-	// guess about firmware behaviour.
+	// 保留字节必须发零。文档称它们为保留，却从没说非零代表
+	// 什么，所以发一个非零值就是对固件行为的猜测。
 	if frame.Data[4] != 0 || frame.Data[5] != 0 {
 		t.Fatalf("reserved bytes are %#x, want 0", frame.Data[4:6])
 	}
@@ -39,9 +38,8 @@ func TestPowerControlRoundTrip(t *testing.T) {
 }
 
 func TestPowerControlRejectsTheDocumentedFailureMarker(t *testing.T) {
-	// 0xFFF1 fills the parameter field, so a board that could not honour the
-	// request is recognisable and does not have to be told apart by a code the
-	// document does not define.
+	// 0xFFF1 占满参数字段，所以一块满足不了请求的主板是可以
+	// 认出来的，不必去靠一个文档没定义的错误码来区分。
 	_, err := ParsePowerControlReply(Frame{
 		Command: cmdPowerControlReply,
 		Data:    []byte{byte(PowerSet), byte(PowerOpRemove), 0xFF, 0xF1, 0, 0},
@@ -52,8 +50,8 @@ func TestPowerControlRejectsTheDocumentedFailureMarker(t *testing.T) {
 }
 
 func TestPowerControlRefusesAnUndocumentedOperation(t *testing.T) {
-	// The document defines operation 0 and does not enumerate the rest. A code
-	// outside the set is refused here so no frame is ever built on a guess.
+	// 文档只定义了操作 0，其余没有列举。这个集合之外的码
+	// 在这里就被拒绝，免得任何一帧建立在猜测之上。
 	_, err := BuildPowerControl([6]byte{}, PowerControl{Control: PowerSet, Operation: PowerOperation(9)})
 	var unknown ErrPowerOperationUnknown
 	if !errors.As(err, &unknown) || unknown.Operation != 9 {
@@ -62,8 +60,8 @@ func TestPowerControlRefusesAnUndocumentedOperation(t *testing.T) {
 }
 
 func TestPowerQueryCarriesNoParameter(t *testing.T) {
-	// A query that also carries a value asks the board to do two things at
-	// once, and which one it honours is firmware behaviour nobody has measured.
+	// 一条又查又带值的命令是在要求主板同时做两件事，而它听
+	// 哪一件，全看没人测量过的固件行为。
 	if _, err := BuildPowerControl([6]byte{},
 		PowerControl{Control: PowerQuery, Operation: PowerOpRemove, DeciWatts: 100}); err == nil {
 		t.Fatal("a query carrying a parameter was accepted")
@@ -75,9 +73,9 @@ func TestPowerQueryCarriesNoParameter(t *testing.T) {
 }
 
 func TestPowerControlRejectsAnUnknownControlByte(t *testing.T) {
-	// A 0xE1 echoing a control byte this build does not know is not something
-	// to interpret. Refusing it keeps a future firmware value from being read
-	// as today's meaning.
+	// 一帧回显了本构建不认识控制字的 0xE1，不是什么该去
+	// 解释的东西。拒掉它，就不至于将来固件的一个新取值被
+	// 当成今天的意思来读。
 	_, err := ParsePowerControlReply(Frame{
 		Command: cmdPowerControlReply,
 		Data:    []byte{0x07, byte(PowerOpRemove), 0x00, 0x00, 0, 0},

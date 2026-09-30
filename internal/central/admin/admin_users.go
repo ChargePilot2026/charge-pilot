@@ -80,9 +80,9 @@ func (a ResourceAPI) listAdminUsers(c *gin.Context) {
 	httpapi.OK(c, out)
 }
 
-// assignableRole confirms the target role exists and that the acting operator
-// does not grant powers beyond their own, so privilege cannot be escalated by
-// creating or editing an account.
+// assignableRole 确认目标角色存在，
+// 并且操作者没有授予超出自己范围的权限，
+// 这样就无法通过新建或编辑账号来给自己提权。
 
 // assignableRole 校验目标角色可以授予：角色必须存在且至少带一项权限，
 // 并且每一项权限操作者自己都有——否则通过新建或编辑账号就能自我提权。
@@ -157,8 +157,8 @@ func (a ResourceAPI) updateAdminUser(c *gin.Context) {
 	}
 	if in.RoleID != nil {
 		values["role_id"] = *in.RoleID
-		// Changing a role must invalidate existing sessions, otherwise the old
-		// permissions stay live until the token expires.
+		// 换角色必须让已存在的会话失效，
+		// 否则旧权限会一直有效，直到令牌自然过期。
 		values["auth_version"] = gorm.Expr("auth_version + 1")
 	}
 	if len(values) == 0 {
@@ -172,8 +172,8 @@ func (a ResourceAPI) updateAdminUser(c *gin.Context) {
 			return err
 		}
 		if id == profile.ID {
-			// An operator must not be able to demote or disable themselves and
-			// lock the last administrator out of the console.
+			// 不能让操作者把自己降级或停用，
+			// 那会把最后一个管理员锁在控制台外面。
 			if in.Status != nil && *in.Status == "disabled" {
 				return errConflict
 			}
@@ -312,12 +312,12 @@ func (a ResourceAPI) resetAdminPassword(c *gin.Context) {
 		resourceFailure(c, err)
 		return
 	}
-	// Bumping auth_version already invalidates every issued session.
+	// auth_version 加一本身就已经让所有已签发的会话失效了。
 	httpapi.OK(c, gin.H{"id": id, "sessions_revoked": true})
 }
 
-// adminUserMFA enrols, confirms or removes the second factor. A secret is only
-// persisted after the operator proves the authenticator works.
+// adminUserMFA 为某账号登记、确认或移除双因素。
+// 密钥只有在操作者证明验证器确实能用之后才落库。
 
 // adminUserMFA 为某账号启用、确认或关闭双因素认证（TOTP），按 action 分三种：
 // enrol 生成密钥并以"未启用"状态落库（密钥在 confirm 之前不生效）；
@@ -334,8 +334,8 @@ func (a ResourceAPI) adminUserMFA(c *gin.Context) {
 		httpapi.Write(c, http.StatusConflict, 2009, "请使用本人账号的安全设置修改双因素认证", nil)
 		return
 	}
-	// The enrolment label must name the account being protected, not the
-	// operator, so the authenticator app cannot be bound to the wrong identity.
+	// 登记用的标签必须写被保护的那个账号，而不是操作者自己，
+	// 否则验证器 App 可能被绑到错误的身份上。
 	var target struct {
 		Username string `gorm:"column:username"`
 	}
@@ -370,7 +370,7 @@ func (a ResourceAPI) adminUserMFA(c *gin.Context) {
 			resourceFailure(c, err)
 			return
 		}
-		// The secret is stored disabled; it only becomes active after confirm.
+		// 密钥以未启用状态存下来，只有 confirm 之后才真正生效。
 		if err := a.Store.AdminDB.WithContext(c.Request.Context()).Table("admin_user_role").
 			Where("id = ? AND deleted_at IS NULL", id).
 			Updates(map[string]any{"mfa_secret": secret, "mfa_enabled": false}).Error; err != nil {

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run every Go integration test against isolated, disposable MySQL and Redis.
+# 用一套隔离、用完即弃的 MySQL 与 Redis 跑全部 Go 集成测试。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 name="chargepilot-test-$$"
@@ -16,8 +16,8 @@ mysql_port=$(docker port "$name-mysql" 3306/tcp | sed 's/.*://')
 redis_port=$(docker port "$name-redis" 6379/tcp | sed 's/.*://')
 for schema in gateway user admin billing worker; do
   docker exec -e MYSQL_PWD=integration-only "$name-mysql" mysql -h 127.0.0.1 -uroot -e "CREATE DATABASE ${schema}_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
-  # macOS ships bash 3.2, which has no ${var^^}; uppercase via tr so the script
-  # runs on both the CI image and a stock macOS shell.
+  # macOS 自带的是 bash 3.2，没有 ${var^^}；改用 tr 转大写，
+  # 这样脚本在 CI 镜像和原版 macOS shell 上都能跑。
   upper=$(printf '%s' "$schema" | tr '[:lower:]' '[:upper:]')
   key="DATABASE_URL_${upper}"
   export "$key=mysql://root:integration-only@127.0.0.1:$mysql_port/${schema}_db"

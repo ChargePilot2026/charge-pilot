@@ -28,8 +28,9 @@ type SimulationSender struct{}
 func (SimulationSender) Mode() string                      { return "simulation" }
 func (SimulationSender) Send(context.Context, Event) error { return nil }
 
-// HTTPSender is a replaceable baseline adapter. A real regulator's field map,
-// signature scheme and national cryptography must be supplied from its spec.
+// HTTPSender 是可替换的基线适配器。
+// 真实监管方的字段映射、签名方案和国密算法
+// 必须依据其对接规范另行提供。
 type HTTPSender struct {
 	Endpoint string
 	Secret   string
@@ -88,8 +89,9 @@ type queuedReport struct {
 	LeaseToken string
 }
 
-// RunBatch claims persisted events with a lease; failed sends remain queued
-// with bounded exponential delay, so an offline receiver does not lose data.
+// RunBatch 用租约抢占已落库的事件；
+// 发送失败的仍留在队列里，按有界的指数退避重试，
+// 这样接收方离线也不会丢数据。
 func (d Deliverer) RunBatch(ctx context.Context) (int, error) {
 	if d.DB == nil || d.Sender == nil {
 		return 0, errors.New("regulatory deliverer not configured")

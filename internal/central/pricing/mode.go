@@ -2,46 +2,42 @@ package pricing
 
 import "errors"
 
-// ChargeExecutor is the primary axis of the whole pricing domain: it answers
-// the only question that changes every downstream behaviour — does the server
-// compute the money, or does the device?
+// ChargeExecutor 是整个计价领域的主轴：它只回答一个问题，而这个问题决定了下游
+// 的所有行为——钱是服务端算的，还是设备算的。
 type ChargeExecutor string
 
 const (
-	// ExecutorServer means the platform prices the session from the meter and
-	// bills afterwards. The device only reports.
+	// ExecutorServer 表示平台按计量结果给这次充电计价，事后扣费，
+	// 设备只负责上报。
 	ExecutorServer ChargeExecutor = "server"
-	// ExecutorDevice means the money was already collected at payment time and
-	// the device merely spends that allowance down until it runs out. The
-	// server never recomputes a bill on this path.
+	// ExecutorDevice 表示钱在支付时就已经收走，设备只是把这份额度一分一分地
+	// 花完为止；服务端在这条路径上从不重算账单。
 	ExecutorDevice ChargeExecutor = "device"
 )
 
-// ChargeMode is the flat set of billable configurations. It is deliberately
-// flat rather than a two-level type: the device-side modes carry no secondary
-// attribute at all, so a nested shape would leave a field that only the server
-// side can fill and that a device mode can still be given a value in.
+// ChargeMode 是可计费配置的扁平集合。它刻意不做成两级类型：设备侧的模式根本
+// 没有第二级属性，做成嵌套就会多出一个只有服务端能填、而设备模式却仍然能被
+// 赋上值的字段。
 type ChargeMode string
 
 const (
-	// Server modes: the fee comes out of Cost against real usage.
+	// 服务端模式：费用由 Cost 按真实用量算出来。
 	ModeServerRealtimePower ChargeMode = "server_realtime_power" // 按实时功率
 	ModeServerMaxPower      ChargeMode = "server_max_power"      // 按最大功率
 	ModeServerEnergy        ChargeMode = "server_energy"         // 按电量
-	// Device modes: the fee is what the charging user already paid.
+	// 设备模式：费用就是充电用户已经付掉的钱。
 	ModeDeviceDuration ChargeMode = "device_duration" // 时长
 	ModeDeviceEnergy   ChargeMode = "device_energy"   // 电量
 	ModeDevicePower    ChargeMode = "device_power"    // 功率档位
 )
 
 var (
-	// ErrNotServerBilled is returned when something asks the pricing engine
-	// for a number on a device-billed session. There is no correct answer, and
-	// guessing one is exactly how a quote stops matching what was collected.
+	// ErrNotServerBilled 在有人对设备计费的充电向计价引擎要一个数字时返回。
+	// 这里没有正确答案，而猜一个正是报价与实收对不上的开始。
 	ErrNotServerBilled = errors.New("该计费方式由设备执行，服务端不计算费用")
 )
 
-// Executor reports which side of the split a mode sits on.
+// Executor 报告这个模式站在这条分界线的哪一侧。
 func (m ChargeMode) Executor() ChargeExecutor {
 	switch m {
 	case ModeServerRealtimePower, ModeServerMaxPower, ModeServerEnergy:
@@ -53,31 +49,29 @@ func (m ChargeMode) Executor() ChargeExecutor {
 	}
 }
 
-// ServerBilled reports whether Cost is authoritative for this mode.
+// ServerBilled 报告这个模式下 Cost 是不是权威口径。
 func (m ChargeMode) ServerBilled() bool { return m.Executor() == ExecutorServer }
 
-// IsDevice reports whether the device, rather than the platform, decides when
-// the charge ends.
+// IsDevice 报告是设备而不是平台来决定充电何时结束。
 func (e ChargeExecutor) IsDevice() bool { return e == ExecutorDevice }
 
-// Valid reports whether the mode is one this build knows how to execute.
+// Valid 报告这个模式是否是本版本知道怎么执行的模式。
 func (m ChargeMode) Valid() bool { return m.Executor() != "" }
 
-// ServerBasis is what the electric line is charged on, and it only ever means
-// anything for a server-billed mode.
+// ServerBasis 是电费按什么口径收取，它只对服务端计费模式有意义。
 type ServerBasis string
 
 const (
-	// BasisRealtimePower prices each slice by the power it actually drew.
+	// BasisRealtimePower 按每一片实际抽取的功率给这一片定价。
 	BasisRealtimePower ServerBasis = "realtime_power"
-	// BasisMaxPower prices the whole session against its peak power.
+	// BasisMaxPower 拿整次充电的峰值功率给这一次充电定价。
 	BasisMaxPower ServerBasis = "max_power"
-	// BasisEnergy prices energy directly. There is no ladder of rates to find.
+	// BasisEnergy 直接给电量定价，不存在需要去找的费率阶梯。
 	BasisEnergy ServerBasis = "energy"
 )
 
-// BasisFor returns the electric basis a server mode must be configured with, so
-// the mode and the tariff cannot drift into describing two different tariffs.
+// BasisFor 返回一个服务端模式必须配置成的电量口径，使模式与电价表不会
+// 各自漂移到描述两份不同的电价表。
 func (m ChargeMode) BasisFor() ServerBasis {
 	switch m {
 	case ModeServerRealtimePower:
@@ -91,25 +85,24 @@ func (m ChargeMode) BasisFor() ServerBasis {
 	}
 }
 
-// ServiceBasis is what the service line is charged on. It is a second,
-// independent line: it has its own switch, its own basis, and combines freely
-// with whatever the electric line is doing.
+// ServiceBasis 是服务费按什么口径收取。它是独立的第二条线：有自己的开关、
+// 自己的口径，并且可以与电费正在做的一切自由组合。
 type ServiceBasis string
 
 const (
-	// ServiceNone means no service fee at all.
+	// ServiceNone 表示完全不收服务费。
 	ServiceNone ServiceBasis = "none"
-	// ServiceEnergy charges per kWh.
+	// ServiceEnergy 按每 kWh 收。
 	ServiceEnergy ServiceBasis = "energy"
-	// ServiceMinutePower charges per kWh but priced through the power ladder.
+	// ServiceMinutePower 按每 kWh 收，但单价走功率阶梯来定。
 	ServiceMinutePower ServiceBasis = "minute_power"
-	// ServiceMinute charges a flat rate per minute of charging.
+	// ServiceMinute 按每分钟充电时长收一个固定费率。
 	ServiceMinute ServiceBasis = "minute"
-	// ServiceSession charges one flat amount for the session.
+	// ServiceSession 整次充电收一个固定金额。
 	ServiceSession ServiceBasis = "session"
 )
 
-// Valid reports whether the service basis is one the engine can execute.
+// Valid 报告这个服务费口径是否是引擎能执行的。
 func (b ServiceBasis) Valid() bool {
 	switch b {
 	case ServiceNone, ServiceEnergy, ServiceMinutePower, ServiceMinute, ServiceSession:
@@ -119,16 +112,15 @@ func (b ServiceBasis) Valid() bool {
 	}
 }
 
-// TierPriceBasis records how a power tier's hourly rate becomes money. The
-// trade quotes gradient pricing in cents-per-hour while the meter reports
-// energy, so the conversion is a stored commercial decision rather than an
-// assumption buried in the arithmetic.
+// TierPriceBasis 记录功率档的每小时费率是怎么变成钱的。行业惯例用每小时的分数
+// 报梯度电价，而计量报的是电量，所以这个换算是存下来的商业决策，而不是埋在
+// 算式里的假设。
 type TierPriceBasis string
 
 const (
-	// TierPerHourAtCeiling converts as rate * (tier ceiling in kW), giving the
-	// equivalent cents per kWh.
+	// TierPerHourAtCeiling 按 费率 ×（该档上界，单位 kW）换算，
+	// 得到等价的每 kWh 分数。
 	TierPerHourAtCeiling TierPriceBasis = "per_hour_at_ceiling"
-	// TierPerKWh reads the stored number as a plain cents-per-kWh.
+	// TierPerKWh 把存下来的数字直接当作每 kWh 的分数来读。
 	TierPerKWh TierPriceBasis = "per_kwh"
 )

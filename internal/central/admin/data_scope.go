@@ -9,9 +9,9 @@ import (
 	"gorm.io/gorm"
 )
 
-// DataScope restricts which stations and vendors an account may read. An
-// account with no scope rows is unrestricted within its role permissions, which
-// keeps the common case simple without weakening the scoped one.
+// DataScope 限制一个账号能读哪些站点和厂商。
+// 没有任何范围行的账号在其角色权限内不受限，
+// 这样既让最常见的情况保持简单，又不会把配了范围的那个账号放宽。
 //
 // 一个账号在 admin_data_scope 表上的数据范围，限制它能看到哪些站点和厂商。
 // 库表里一行是"一个范围项"，下面的 StationIDs / VendorIDs 是读出来后按类型归并的内存视图。
@@ -27,9 +27,9 @@ type DataScope struct {
 // TableName 指明 DataScope 映射到 admin_data_scope。
 func (DataScope) TableName() string { return "admin_data_scope" }
 
-// LoadDataScope reads the account's scope. It returns an empty, unrestricted
-// scope when the operator holds the wildcard role, because the built-in
-// customer administrator is the break-glass account for the whole platform.
+// LoadDataScope 读出账号的数据范围。运营持有通配角色时返回空的不受限范围，
+// 因为内置的客户管理员本来就是全平台的破窗账号
+// （出问题时用来应急的那个）。
 //
 // LoadDataScope 读出账号的数据范围，并按范围类型归并到 StationIDs / VendorIDs。
 // 一行记录都没有即视为不受限（Unrestricted=true）：这是最常见的情况，
@@ -55,8 +55,8 @@ func LoadDataScope(ctx context.Context, db *gorm.DB, p Profile) (DataScope, erro
 	return scope, nil
 }
 
-// ApplyStations narrows a query to the stations in scope. An empty list means
-// the account may see every station, so no condition is added.
+// ApplyStations 把查询收窄到范围内的站点。列表为空表示这个账号可以看到所有站点，
+// 所以不追加任何条件。
 //
 // ApplyStations 给查询加上站点范围过滤。column 是调用方的站点列名（如 t.station_id），
 // 不受限或范围内没有站点时原样返回，不加任何条件。
@@ -67,7 +67,7 @@ func (s DataScope) ApplyStations(query *gorm.DB, column string) *gorm.DB {
 	return query.Where(column+" IN ?", s.StationIDs)
 }
 
-// ApplyVendors narrows a query the same way for vendor-owned resources.
+// ApplyVendors 对归属厂商的资源用同样的方式收窄查询。
 //
 // ApplyVendors 与 ApplyStations 同理，只是作用于厂商维度的字段。
 func (s DataScope) ApplyVendors(query *gorm.DB, column string) *gorm.DB {
@@ -77,7 +77,7 @@ func (s DataScope) ApplyVendors(query *gorm.DB, column string) *gorm.DB {
 	return query.Where(column+" IN ?", s.VendorIDs)
 }
 
-// AllowsStation reports whether a single station is visible.
+// AllowsStation 报告单个站点是否可见。
 //
 // AllowsStation 判断单个站点是否可见，供详情接口在取出记录后做归属校验。
 func (s DataScope) AllowsStation(id uint64) bool {
@@ -92,8 +92,8 @@ func (s DataScope) AllowsStation(id uint64) bool {
 	return false
 }
 
-// FieldMask hides sensitive columns for roles that must see the record but not
-// the raw value, such as a support agent reading a customer's phone number.
+// FieldMask 为"必须看到这条记录、但不该看到原始值"的角色遮蔽敏感列，
+// 比如客服去读用户的手机号这个场景。
 //
 // FieldMask 是按角色配置的字段遮蔽规则：角色能看到这条记录，但不该看到其中的原始值
 // （客服能查用户、但看不到完整手机号）。规则行来自 admin_field_mask 表。
@@ -111,7 +111,7 @@ type MaskedField struct {
 // TableName 指明 FieldMask 映射到 admin_field_mask。
 func (FieldMask) TableName() string { return "admin_field_mask" }
 
-// LoadFieldMask reads the masking rules bound to a role.
+// LoadFieldMask 读出绑在某个角色上的遮蔽规则。
 //
 // LoadFieldMask 读出某角色的全部遮蔽规则；roleID 为 0 表示不限角色，直接返回空规则集（不遮蔽）。
 func LoadFieldMask(ctx context.Context, db *gorm.DB, roleID uint64) (FieldMask, error) {
@@ -125,7 +125,7 @@ func LoadFieldMask(ctx context.Context, db *gorm.DB, roleID uint64) (FieldMask, 
 	return mask, nil
 }
 
-// Hide reports whether a field must be masked for this role.
+// Hide 判断某资源的某个字段对该角色是否必须打码。
 //
 // Hide 判断某资源的某字段是否需要打码。
 func (m FieldMask) Hide(resource, field string) bool {
@@ -137,8 +137,8 @@ func (m FieldMask) Hide(resource, field string) bool {
 	return false
 }
 
-// MaskRow blanks the masked keys of a JSON-shaped row so the same masking rule
-// applies to list and detail responses without hand-writing each projection.
+// MaskRow 把一行 JSON 结构数据里命中遮蔽规则的键置空，
+// 于是同一条遮蔽规则不用逐个手写投影，就能同时管住列表和详情响应。
 //
 // MaskRow 就地把一行 map 里命中遮蔽规则的字段替换成占位符。
 // 只处理行里已存在的键，缺失的键不补，因此不会凭空多出字段。
@@ -160,7 +160,7 @@ func (m FieldMask) MaskRow(resource string, row map[string]any) map[string]any {
 // maskPlaceholder 是被遮蔽字段的固定占位值，让前端能看出"这里有值但你看不到"。
 const maskPlaceholder = "***"
 
-// MaskSlice applies MaskRow across a list response.
+// MaskSlice 对一个列表响应里的每一行套用 MaskRow。
 //
 // MaskSlice 对列表响应里的每一行套用 MaskRow，原地修改并返回。
 func (m FieldMask) MaskSlice(resource string, rows []map[string]any) []map[string]any {
@@ -173,8 +173,8 @@ func (m FieldMask) MaskSlice(resource string, rows []map[string]any) []map[strin
 // errScopeConflict 表示范围配置本身不合法（类型未知、ID 不存在、数量越界），统一按 409 返回。
 var errScopeConflict = errors.New("数据范围与现有记录冲突")
 
-// scopeRequest validates the scope ids actually exist before storing them, so a
-// typo cannot silently grant an empty (that is, unrestricted) scope later.
+// validateScope 在存库之前校验范围 ID 确实存在，
+// 这样打错一个 ID 也不会事后悄悄变成空范围（也就是不受限）。
 //
 // validateScope 校验待保存的范围 ID 真实存在，数量须在 1–500 之间。
 // 这一步不能省：范围记录存空等于"不受限"，一个打错的 ID 会悄悄把账号变成全平台可见。

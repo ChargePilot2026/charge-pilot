@@ -2,8 +2,8 @@
 # =============================================================================
 # ChargePilot 部署配置校验脚本
 # =============================================================================
-# 触发:CI / 首次部署前 / docker-compose / Caddyfile 变更后
-# 退出码:0=全通过 / 1=检查发现错误 / 2=缺少 Docker 或 Caddy,未完成验证
+# 触发：CI / 首次部署前 / docker-compose / Caddyfile 变更后
+# 退出码：0=全通过 / 1=检查发现错误 / 2=缺少 Docker 或 Caddy，未完成验证
 # =============================================================================
 
 set -u
@@ -28,7 +28,7 @@ section "1. 配置文件存在"
 
 # ---------- 2. Caddyfile 全局块位置 ----------
 section "2. Caddyfile 全局块必须在文件开头"
-# Caddy 要求全局块 `{ ... }` 在文件开头(在任何 site block 之前)
+# Caddy 要求全局块 `{ ... }` 在文件开头（在任何 site block 之前）
 FIRST_SITE_LINE=$(grep -nE '^[a-zA-Z0-9._:-]+\s*\{' "$CADDYFILE" | head -n1 | cut -d: -f1)
 FIRST_GLOBAL_OPEN=$(grep -n '^[[:space:]]*{' "$CADDYFILE" | head -n1 | cut -d: -f1)
 if [ -z "$FIRST_SITE_LINE" ]; then
@@ -41,7 +41,7 @@ else
   ok "Caddyfile 全局块在第 $FIRST_GLOBAL_OPEN 行(在 site block 之前)"
 fi
 
-# ---------- 3. Caddyfile 校验(若 caddy 可用)----------
+# ---------- 3. Caddyfile 校验（若 caddy 可用）----------
 section "3. Caddy adapt 校验"
 if command -v caddy >/dev/null 2>&1; then
   caddy adapt --config "$CADDYFILE" --validate >/dev/null 2>&1 \
@@ -62,7 +62,7 @@ section "4. docker-compose 内部端口不暴露"
 INTERNAL_PORTS=(8081 8082 8083 8084)
 for port in "${INTERNAL_PORTS[@]}"; do
   # 扫描 `ports:` 段是否包含宿主机映射的内部端口
-  # 提取 ports 块(注意:expose 段不暴露,合法)
+  # 提取 ports 块（注意：expose 段不暴露，合法）
   PORT_LINES=$(awk '/^[[:space:]]*ports:/{p=1; next} p && /^[[:space:]]*-/{print} p && /^[[:space:]]*[a-z]/{p=0}' "$COMPOSE")
   if echo "$PORT_LINES" | grep -qE "\"[0-9]+:${port}\"|\"${port}:${port}\""; then
     err "内部端口 ${port} 被错误暴露到宿主机(docker-compose.yml 的 ports 段)"
@@ -71,7 +71,7 @@ for port in "${INTERNAL_PORTS[@]}"; do
   fi
 done
 
-# ---------- 5. 端口映射白名单(9100/80/443 允许)----------
+# ---------- 5. 端口映射白名单（9100/80/443 允许）----------
 section "5. 端口映射白名单"
 WHITELIST_PORTS=(80 443 9100)
 ALLOWED=$(awk '/^[[:space:]]*ports:/{p=1; next} p && /^[[:space:]]*-/{print} p && /^[[:space:]]*[a-z]/{p=0}' "$COMPOSE" \
@@ -114,7 +114,7 @@ fi
 
 # ---------- 8. 容器命名规范 ----------
 section "8. 容器命名统一 chargepilot-* 前缀"
-# 提取 `services:` 块下所有顶级服务名(2 空格缩进)
+# 提取 `services:` 块下所有顶级服务名（2 空格缩进）
 SERVICES=$(awk '
   /^services:$/ { in_services=1; next }
   in_services && /^  [a-z]/ && !/^    / {

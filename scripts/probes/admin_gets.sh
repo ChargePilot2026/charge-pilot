@@ -1,22 +1,22 @@
 #!/bin/bash
-# Probe every admin-web "list" / "get" / "detail" GET endpoint and report status.
+# 探测 admin-web 每一个「列表 / 详情 / 明细」类 GET 端点并报告状态。
 #
-# Usage:
-#   TOKEN=$(curl -sS -m 5 -X POST http://localhost:8082/api/v1/admin/auth/login \
+# 用法：
+#   TOKEN=$(curl -sS -m 5 -X POST http：//localhost：8082/api/v1/admin/auth/login \
 #     -H 'Content-Type: application/json' \
 #     -d '{"username":"admin","password":"DevAdmin2026!"}' \
 #     | python3 -c 'import sys,json; print(json.load(sys.stdin)["data"]["token"])')
 #   echo "$TOKEN" > .codewave/temps/token.txt
 #   bash scripts/probes/admin_gets.sh
 #
-# Exit codes:
-#   0  probe finished (regardless of individual endpoint failures)
-#   1  no token file found
+# 退出码：
+#   0  探测完成（不管有没有单个端点失败）
+#   1  没找到 token 文件
 #
-# Output columns: METHOD PATH HTTP_CODE [code=N msg=...]
-#   code=N is the ApiEnvelope.code; msg is the human-readable message.
-#   "non-json" indicates the server returned HTML / non-JSON (likely SPA
-#   fallback from static_serve::serve_spa — usually a wrong path).
+# 输出列：METHOD PATH HTTP_CODE [code=N msg=...]
+#   code=N 是 ApiEnvelope.code，msg 是给人看的消息。
+#   "non-json" 表示服务端返回了 HTML / 非 JSON 内容（多半是 static_serve：：serve_spa
+#   的 SPA 兜底 —— 通常意味着路径写错了）。
 set -u
 cd "$(dirname "$0")/../.."
 

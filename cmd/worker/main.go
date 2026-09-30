@@ -68,10 +68,8 @@ func run(ctx context.Context) error {
 		return err
 	}
 	gin.SetMode(gin.ReleaseMode)
-	// Metrics are exposed unauthenticated so a scraper needs no operator
-	// session; the endpoint carries route names, status codes and timings only.
-	// The registry is passed into NewRouter so the recording middleware is
-	// installed before any route is registered.
+	// 指标端点不做鉴权，抓取器因此不必持有运营会话；它只暴露路由名、状态码和耗时。
+	// registry 是在 NewRouter 之前传进去的，这样记录用的中间件会在任何路由注册之前装好。
 	metrics := httpapi.NewMetrics("worker")
 	router := httpapi.NewRouter(metrics)
 	metrics.Register(router)
@@ -112,8 +110,7 @@ func run(ctx context.Context) error {
 	}
 	dlq := outbox.DLQ{WorkerDB: orms["worker"], Stream: stream, Consumer: "worker-dlq"}
 	internaljob.OpsAPI{WorkerDB: orms["worker"], ServiceToken: cfg.ServiceToken, DLQ: dlq}.Register(router)
-	// Refund results arrive asynchronously from the channel; the consumer posts
-	// them exactly once and records each attempt in comp_tx_log.
+	// 退款结果是从 channel 异步送来的；消费端保证只投递一次，并把每次尝试记进 comp_tx_log。
 	refundResults := outbox.ResultConsumer{UserDB: orms["user"], WorkerDB: orms["worker"], Stream: stream, Group: "refund-result"}
 	alertEngine := alerts.Evaluator{GatewayDB: orms["gateway"], AdminDB: orms["admin"]}
 	scheduler := schedule.Scheduler{DB: orms["worker"], Handlers: map[string]schedule.Handler{

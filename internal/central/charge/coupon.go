@@ -38,10 +38,10 @@ type CouponGrant struct {
 
 func (CouponGrant) TableName() string { return "coupon_grant" }
 
-// CouponStore resolves and redeems a customer's coupon against a charge.
+// CouponStore 负责把客户的券解析出来并核销到一笔充电上。
 type CouponStore struct{ DB *gorm.DB }
 
-// AvailableCoupons lists the coupons a customer may still use right now.
+// AvailableCoupons 列出客户当前还可以用的券。
 func (s CouponStore) AvailableCoupons(ctx context.Context, userID uint64) ([]CouponGrant, error) {
 	rows := []CouponGrant{}
 	err := s.DB.WithContext(ctx).Table("coupon_grant AS g").
@@ -52,8 +52,8 @@ func (s CouponStore) AvailableCoupons(ctx context.Context, userID uint64) ([]Cou
 	return rows, err
 }
 
-// Quote computes the discount a coupon would give for a given fee. It never
-// mutates state, so the customer can preview before paying.
+// Quote 计算一张券对给定费用能减多少。
+// 它不改动任何状态，所以客户可以在支付前先预览。
 func (s CouponStore) Quote(ctx context.Context, userID, grantID uint64, totalCents int64) (int64, error) {
 	grant, err := s.load(ctx, userID, grantID)
 	if err != nil {
@@ -62,8 +62,8 @@ func (s CouponStore) Quote(ctx context.Context, userID, grantID uint64, totalCen
 	return discountFor(grant, totalCents)
 }
 
-// discountFor applies the coupon rules. The discount is capped at the fee so a
-// coupon can never produce a negative charge.
+// discountFor 套用券的规则。
+// 减免额以费用为上限，这样一张券永远不会把一笔充电算成负数。
 func discountFor(grant CouponGrant, totalCents int64) (int64, error) {
 	if totalCents <= 0 || grant.MinCharge > totalCents {
 		return 0, ErrCouponThreshold
@@ -79,8 +79,8 @@ func discountFor(grant CouponGrant, totalCents int64) (int64, error) {
 		if grant.Percent == nil || *grant.Percent <= 0 || *grant.Percent >= 100 {
 			return 0, ErrCouponNotFound
 		}
-		// Decimal arithmetic keeps the percentage exact; the result is rounded
-		// once, half up, to a whole cent.
+		// 用十进制运算保证百分比精确；
+		// 结果只四舍五入一次（half up）到整分。
 		keep := decimal.NewFromInt(totalCents).Mul(decimal.NewFromFloat(*grant.Percent)).Div(decimal.NewFromInt(100)).Round(0).IntPart()
 		discount = totalCents - keep
 	case "time_free":
@@ -100,13 +100,13 @@ func discountFor(grant CouponGrant, totalCents int64) (int64, error) {
 	return discount, nil
 }
 
-// serviceRatePerMinute is the fallback value used to price a free-time coupon
-// when the charge rule does not state a per-minute service fee.
+// serviceRatePerMinute 是计价时长券时的兜底值，
+// 用于充电规则没有给出每分钟服务费的情况。
 const serviceRatePerMinute = 0
 
-// Redeem consumes the coupon and applies the discount to the payment order. The
-// grant row is locked and its status checked inside the transaction, so two
-// concurrent payments cannot both use the same coupon.
+// Redeem 核销券并把减免额应用到支付订单。
+// 发放行在事务内被加锁并校验状态，
+// 所以两笔并发支付不可能用掉同一张券。
 func (s CouponStore) Redeem(ctx context.Context, userID, grantID uint64, orderNo string, paymentOrderID uint64, totalCents int64) (int64, error) {
 	var discount int64
 	err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -125,7 +125,7 @@ func (s CouponStore) Redeem(ctx context.Context, userID, grantID uint64, orderNo
 			return updated.Error
 		}
 		if updated.RowsAffected == 0 {
-			// Another payment consumed the coupon first.
+			// 券已经被另一笔支付先核销掉了。
 			return ErrCouponExhausted
 		}
 		return tx.Table("coupon_redemption").Create(map[string]any{
@@ -139,8 +139,8 @@ func (s CouponStore) Redeem(ctx context.Context, userID, grantID uint64, orderNo
 	return discount, nil
 }
 
-// Release returns a coupon when its payment never completes, so a failed
-// payment does not permanently consume the customer's discount.
+// Release 在券对应的支付始终没有完成时把它退回，
+// 这样支付失败不会永久吃掉客户的折扣。
 func (s CouponStore) Release(ctx context.Context, userID, paymentOrderID uint64) error {
 	return s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var row struct {
@@ -192,7 +192,7 @@ func loadGrant(ctx context.Context, db *gorm.DB, userID, grantID uint64) (Coupon
 	return grant, nil
 }
 
-// freeMinutes reads the free-time allowance for a duration coupon.
+// freeMinutes 读取时长券的免费时长额度。
 func freeMinutes(ctx context.Context, db *gorm.DB, couponID uint64) (uint32, error) {
 	var row struct {
 		Value int32 `gorm:"column:value"`
@@ -208,13 +208,13 @@ func freeMinutes(ctx context.Context, db *gorm.DB, couponID uint64) (uint32, err
 	return uint32(row.Value), nil
 }
 
-// chargeNoFor derives the redemption reference before the charge row exists.
+// chargeNoFor 在充电行还不存在时推导出核销单号。
 func chargeNoFor(paymentOrderID uint64) string {
 	return fmt.Sprintf("PENDING-%d", paymentOrderID)
 }
 
-// redeemCouponInTx consumes the coupon inside the payment transaction. The grant
-// row is locked, so a coupon cannot be spent by two payments at once.
+// redeemCouponInTx 在支付事务内核销券。
+// 发放行被加锁，一张券不可能被两笔支付同时花掉。
 func redeemCouponInTx(tx *gorm.DB, intent PaymentIntentRecord, order PaymentOrderRecord, reference string) error {
 	grant, err := loadGrant(context.Background(), tx, intent.UserID, intent.CouponGrantID)
 	if err != nil {
@@ -239,8 +239,8 @@ func redeemCouponInTx(tx *gorm.DB, intent PaymentIntentRecord, order PaymentOrde
 	}).Error
 }
 
-// CouponAPI exposes the customer's usable coupons. Redemption itself happens
-// when the payment is confirmed, so this endpoint is read-only by design.
+// CouponAPI 暴露客户可用的券。
+// 核销本身发生在支付确认的那一刻，所以这个接口按设计只读。
 type CouponAPI struct {
 	Auth    identity.SessionAuthenticator
 	Coupons CouponStore

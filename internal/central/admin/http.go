@@ -74,8 +74,8 @@ func (a API) login(c *gin.Context) {
 		return
 	}
 	if account.MFAEnabled {
-		// The password step succeeded but the login is not complete. Hand back a
-		// short-lived challenge instead of a session token.
+		// 口令这步过了，但登录还没完成。
+		// 所以回一个短期的 challenge，而不是会话令牌。
 		challenge, err := a.Sessions.BeginMFA(c.Request.Context(), account)
 		if err != nil {
 			a.failure(c, err)
@@ -88,7 +88,7 @@ func (a API) login(c *gin.Context) {
 }
 
 // verifyMFA 完成被双因素挡住的登录：用 challenge 换回账号，再用 TOTP 码校验，成功后销掉 challenge 并发放会话。
-// verifyMFA finishes a login that paused for a second factor.
+// verifyMFA 收尾一次因二次因素而暂停的登录。
 func (a API) verifyMFA(c *gin.Context) {
 	if !a.rate(c) {
 		return

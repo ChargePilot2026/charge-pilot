@@ -49,7 +49,7 @@ const scheduleStatus: Record<string, { color: string; label: string }> = {
 const strategyLabel: Record<string, string> = { all: '全量', canary: '灰度', batch: '分批', manual: '手动' };
 const sizeText = (bytes: number) => bytes > 1 << 20 ? `${(bytes / (1 << 20)).toFixed(1)} MB` : `${Math.round(bytes / 1024)} KB`;
 
-/** OtaPackages records firmware metadata; the artifact itself lives in HTTPS storage. */
+/** OtaPackages 只记录固件元数据；固件包本身放在 HTTPS 存储里。 */
 export function OtaPackages() {
   const { message } = App.useApp();
   const [rows, setRows] = useState<OtaPackage[]>([]);
@@ -163,7 +163,7 @@ export function OtaPackages() {
   );
 }
 
-/** OtaSchedules creates rollout plans and triggers the device push. */
+/** OtaSchedules 制定推送计划并触发设备端下发。 */
 export function OtaSchedules() {
   const { message } = App.useApp();
   const [rows, setRows] = useState<OtaSchedule[]>([]);

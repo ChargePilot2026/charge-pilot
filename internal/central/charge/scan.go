@@ -51,8 +51,8 @@ func (a ScanAPI) resolve(c *gin.Context) { a.handle(c, false) }
 func (a ScanAPI) port(c *gin.Context)    { a.handle(c, true) }
 
 func (a ScanAPI) handle(c *gin.Context, requirePort bool) {
-	// Device and port discovery is public. Authentication is required only when
-	// the customer creates a payment intent in /scan/start.
+	// 设备和端口的发现接口是公开的。
+	// 只有客户在 /scan/start 创建支付意图时才需要鉴权。
 	var body struct {
 		Code   string `json:"code"`
 		PortID string `json:"port_id"`
@@ -97,8 +97,8 @@ func (a ScanAPI) handle(c *gin.Context, requirePort bool) {
 	httpapi.OK(c, result)
 }
 
-// The app sends the untouched QR payload. Customer QR links may carry the
-// printed device/port code in `code`, while plain codes remain valid too.
+// App 发来的是未经加工的二维码载荷。
+// 客户二维码链接里可能在 `code` 中带印在纸上的设备/端口码，裸码也同样有效。
 func canonicalScanCode(raw string) (string, bool) {
 	if userScanCodePattern.MatchString(raw) {
 		return raw, true

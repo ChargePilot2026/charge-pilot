@@ -7,10 +7,9 @@ import (
 	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol"
 )
 
-// The device encoder and the server parser are two halves of one contract. A
-// field that moves on one side and not the other would still compile, so these
-// tests assert the duality directly: whatever Build* produces must come back
-// out of the matching Parse* unchanged.
+// 设备端编码器与服务端解析器是同一份契约的两半。某个字段只在一侧挪位
+// 照样能编译，所以这些测试直接断言这种对偶性：Build* 产出的东西，
+// 必须原封不动地从配对的 Parse* 里出来。
 
 func testIdentity() DeviceIdentity {
 	return DeviceIdentity{
@@ -51,9 +50,8 @@ func TestBuildRegistrationRoundTripsThroughServerParser(t *testing.T) {
 	}
 }
 
-// The vendor sample in the protocol document is the only known-good frame, so
-// it is reproduced byte for byte to prove the encoder agrees with the document
-// and not merely with our own parser.
+// 协议文档里那份厂商样例帧是唯一已知可用的帧，所以这里逐字节复现它，
+// 以证明编码器与文档一致，而不只是与我们自己的解析器一致。
 func TestBuildRegistrationMatchesVendorSample(t *testing.T) {
 	frame, err := BuildRegistration(testIdentity())
 	if err != nil {
@@ -63,7 +61,7 @@ func TestBuildRegistrationMatchesVendorSample(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A0, LEN=53 (8 header + 45 payload), the identity, then the XOR checksum.
+	// A0、LEN=53（8 字节帧头 + 45 字节 payload）、身份信息，然后是 XOR 校验和。
 	if raw[0] != StartByte || raw[2] != Register {
 		t.Fatalf("unexpected framing: %x", raw[:3])
 	}
@@ -85,8 +83,8 @@ func TestBuildRegistrationRejectsNonNumericBoardID(t *testing.T) {
 	}
 }
 
-// A SIM containing a letter must survive as hex rather than being rejected,
-// which is what the server's decodeIdentifier does on the way in.
+// 含字母的 SIM 必须以十六进制存活下来而不是被拒掉，这正是服务端的
+// decodeIdentifier 在入口处做的事。
 func TestBuildRegistrationCarriesNonDecimalIdentifierAsHex(t *testing.T) {
 	identity := testIdentity()
 	identity.SIM = "8986000000000000AB01"
@@ -128,7 +126,7 @@ func TestBuildHeartbeatWithPortStatusRoundTrips(t *testing.T) {
 	status := &PortStatus{
 		DeviceStatus: 1,
 		VoltageV:     231,
-		TemperatureC: -10, // exercises the +50 bias across zero
+		TemperatureC: -10, // 让 +50 偏置跨过零点
 		PortStates:   []byte{0, 1, 2, 0},
 		Charging: []protocol.PortTelemetry{
 			{Port: 2, RemainingSecs: 300 + 5, ChargedSeconds: 120 + 7, RemainingMWh: 15000, ChargedMWh: 23000, PowerDeciWatts: 1500},
@@ -166,7 +164,7 @@ func TestBuildHeartbeatWithPortStatusRoundTrips(t *testing.T) {
 func TestBuildHeartbeatRejectsInconsistentPortData(t *testing.T) {
 	base := PortStatus{PortStates: []byte{0, 0}, TemperatureC: 20}
 	bad := base
-	bad.Charging = []protocol.PortTelemetry{{Port: 9}} // port beyond the state list
+	bad.Charging = []protocol.PortTelemetry{{Port: 9}} // 端口超出状态列表范围
 	if _, err := BuildHeartbeat(testIdentity(), &bad); err == nil {
 		t.Fatal("accepted a charging port outside the declared port list")
 	}
@@ -176,7 +174,7 @@ func TestBuildHeartbeatRejectsInconsistentPortData(t *testing.T) {
 		t.Fatal("accepted port status with no ports")
 	}
 	hot := base
-	hot.TemperatureC = 250 // +50 would overflow a byte
+	hot.TemperatureC = 250 // +50 之后会溢出 1 字节
 	if _, err := BuildHeartbeat(testIdentity(), &hot); err == nil {
 		t.Fatal("accepted a temperature that cannot be encoded")
 	}
@@ -233,8 +231,8 @@ func TestBuildChargeEndRoundTrips(t *testing.T) {
 	}
 }
 
-// The order bytes are opaque to the board: echoing them unchanged is what ties
-// the closing frame back to the order that started the charge.
+// 订单字节对主板是不透明的：原样回显才把结束帧与启动这笔充电的订单
+// 绑回去。
 func TestBuildChargeEndEchoesOrderBytesVerbatim(t *testing.T) {
 	started := time.Date(2026, 9, 29, 10, 0, 0, 0, chinaLocation)
 	order := [8]byte{0x53, 0x48, 0x24, 0x05, 0x14, 0x08, 0x26, 0x52}
@@ -278,8 +276,8 @@ func TestBuildFaultAndTimeRequestMatchServerExpectations(t *testing.T) {
 	}
 }
 
-// The device half of a start command is what turns a server command into a
-// running charge, so the server's encoder and the device's parser must agree.
+// 启动命令的设备端一半，是把服务端的一条命令变成一次正在跑的充电，
+// 所以服务端的编码器与设备端的解析器必须一致。
 func TestParseStartCommandRoundTripsServerBuild(t *testing.T) {
 	session := [6]byte{1, 2, 3, 4, 5, 6}
 	order := [8]byte{0, 0, 0, 0, 0, 0, 0x12, 0x34}
@@ -328,14 +326,13 @@ func TestParseRegisterReplyAdoptsServerTime(t *testing.T) {
 	}
 }
 
-// A9 is the only way a board learns what time the platform believes it is, and
-// the simulator's settlement is timed on the board's own stamps. Before
-// ParseTimeReply existed the frame was received and discarded, so the two halves
-// of the pair were not dual at all.
+// A9 是主板得知平台认为此刻是几点时间的唯一途径，而模拟器的结算又是
+// 按主板自己打的时间戳计时的。在 ParseTimeReply 存在之前，这个帧收
+// 下来就被丢掉，于是这一对命令的两半根本谈不上对偶。
 func TestParseTimeReplyRoundTripsServerBuild(t *testing.T) {
-	// Deliberately not the host's local zone: the frame carries civil time with
-	// no offset, so a caller in another zone must still read back the same
-	// instant rather than a shifted one.
+	// 故意不用宿主机本地时区：该帧携带的是不带偏移量的民用时间，
+	// 所以处在别的时区的调用方读回来仍必须是同一时刻，而不是偏移
+	// 过的另一个。
 	server := time.Date(2026, 9, 29, 16, 30, 45, 0, time.FixedZone("UTC+9", 9*3600))
 	frame := BuildTimeReply([6]byte{1, 2, 3, 4, 5, 6}, server)
 	at, err := ParseTimeReply(frame)
@@ -350,10 +347,9 @@ func TestParseTimeReplyRoundTripsServerBuild(t *testing.T) {
 	}
 }
 
-// The gateway has parsed C2 since the codec was written, but nothing could ever
-// produce one, so the telemetry path was reachable from no code path at all. The
-// report is time, not money: banding discounts the hours left, which is why
-// MinutesAfter is the figure the server reads.
+// 自打这个编解码器写出来起，网关就一直会解析 C2，却没有任何代码能
+// 产出一帧，所以遥测路径从任何代码路径都到不了。这份上报说的是时间
+// 不是钱：分档折掉的是剩余小时数，这正是服务端读 MinutesAfter 的原因。
 func TestBuildChargingBandRoundTripsThroughTheServerParser(t *testing.T) {
 	frame, err := BuildChargingBand(ChargingBandReport{
 		Port: 2, BandBefore: 1, BandAfter: 3,
@@ -377,9 +373,8 @@ func TestBuildChargingBandRoundTripsThroughTheServerParser(t *testing.T) {
 	}
 }
 
-// The band is 1-based here, which is the opposite of the zero-based ladder the
-// port-status reply counts. Encoding a 0 or a 6 would put a rung on the wire that
-// the board's own firmware could not read back.
+// 这里的档位是从 1 开始的，与端口状态应答里从 0 数档位正好相反。
+// 编码一个 0 或 6，就是往线上放一个主板自己的固件都读不回来的档。
 func TestBuildChargingBandRefusesABandOutsideOneToFive(t *testing.T) {
 	for _, band := range []byte{0, 6} {
 		if _, err := BuildChargingBand(ChargingBandReport{Port: 1, BandBefore: band, BandAfter: band}); err == nil {
@@ -391,15 +386,13 @@ func TestBuildChargingBandRefusesABandOutsideOneToFive(t *testing.T) {
 	}
 }
 
-// The register reply and the time reply carry the same instant in the same
-// encoding, and a board calibrates itself from the first and re-calibrates from
-// the second. Answering them from different timezones made the board see the
-// server correct itself by eight hours on every connection, and adopt that
-// correction — so a gateway running in a container on UTC shipped a pile a
-// clock skewed by exactly the offset it was meant to be removing.
+// 注册应答与时间应答用同一种编码携带同一时刻，而主板靠前者校时、又会
+// 靠后者重新校时。用不同时区回答这两帧，会让主板每次连接都看到服务
+// 器自我修正了 8 小时，并采纳这个修正——于是跑在 UTC 容器里的网关，
+// 会送给充电桩一个恰好偏离它本该消除的那个时差的时钟。
 func TestRegisterReplyAndTimeReplyAgreeOnTheSameInstant(t *testing.T) {
-	// A host in a zone the protocol does not use, which is the normal case for a
-	// container and the only case where the two can disagree at all.
+	// 处在协议并不使用的时区的宿主，这既是容器的常态，也是两者唯一
+	// 可能不一致的情形。
 	host := time.Date(2026, 9, 29, 18, 39, 2, 0, time.UTC)
 	_, registeredAt, err := ParseRegisterReply(BuildRegisterReply([6]byte{1, 2, 3, 4, 5, 6}, host))
 	if err != nil {

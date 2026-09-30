@@ -1,7 +1,7 @@
-// Package serviceclient provides the service-token authenticated HTTP calls the
-// central services make to each other and to the gateway. Keeping it in
-// platform means every module applies the same timeout, header and error
-// handling instead of repeating it.
+// Package serviceclient 提供 central 各服务之间、以及它们与 gateway 之间
+// 那些用 service token 鉴权的 HTTP 调用。
+// 把它放在 platform，是为了让每个模块都套用同一套
+// 超时、请求头与错误处理，而不是各自复制一遍。
 package serviceclient
 
 import (
@@ -15,13 +15,13 @@ import (
 	"time"
 )
 
-// ErrUnauthorized means the callee rejected the shared service token.
+// ErrUnauthorized 表示被调用方拒收了共享的 service token。
 var ErrUnauthorized = errors.New("service token rejected")
 
-// ErrNotFound means the callee answered but the resource does not exist.
+// ErrNotFound 表示被调用方有应答，但资源不存在。
 var ErrNotFound = errors.New("resource not found")
 
-// Client performs signed-free internal calls authenticated by service token.
+// Client 执行无需签名、仅以 service token 鉴权的内部调用。
 type Client struct {
 	HTTP    *http.Client
 	Timeout time.Duration
@@ -38,9 +38,9 @@ func (c Client) httpClient() *http.Client {
 	return &http.Client{Timeout: timeout}
 }
 
-// Get performs an authenticated GET and returns the raw body. A 404 is surfaced
-// as ErrNotFound so callers can distinguish absence from failure instead of
-// turning a missing record into an empty result.
+// Get 发出一个带鉴权的 GET 并返回原始响应体。404 会被转成 ErrNotFound，
+// 这样调用方能区分"不存在"与"调用失败"，
+// 而不是把一条缺失的记录当成空结果。
 func (c Client) Get(ctx context.Context, baseURL, serviceToken, path string) ([]byte, error) {
 	target := strings.TrimRight(baseURL, "/") + path
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
@@ -69,7 +69,7 @@ func (c Client) Get(ctx context.Context, baseURL, serviceToken, path string) ([]
 	}
 }
 
-// GetJSON decodes a successful GET into out.
+// GetJSON 把一次成功的 GET 解码进 out。
 func (c Client) GetJSON(ctx context.Context, baseURL, serviceToken, path string, out any) error {
 	body, err := c.Get(ctx, baseURL, serviceToken, path)
 	if err != nil {
@@ -84,7 +84,7 @@ func (c Client) GetJSON(ctx context.Context, baseURL, serviceToken, path string,
 	return nil
 }
 
-// Post sends an authenticated JSON POST and decodes the reply into out.
+// Post 发出一个带鉴权的 JSON POST，并把应答解码进 out。
 func (c Client) Post(ctx context.Context, baseURL, serviceToken, path string, payload any, out any) error {
 	body, err := json.Marshal(payload)
 	if err != nil {

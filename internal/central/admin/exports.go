@@ -17,11 +17,11 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// ExportTask builds bounded CSV, XLSX or summary PDF files. Exports are permission checked
-// when they are requested and again when they are downloaded, because a file
-// must not stay readable after the requesting account loses its role.
-// ExportTask 是导出能力的一站式入口:申请时按资源权限和数据范围过滤,
-// 生成 CSV/XLSX/PDF 落到导出目录,下载时再校验一次权限与有效期,过期后由定时任务清理。
+// ExportTask 生成行数有上限的 CSV、XLSX 或汇总 PDF。
+// 导出在申请时校验一次权限，下载时再校验一次：
+// 申请它的账号一旦失去角色，文件就不能继续被读到。
+// ExportTask 是导出能力的一站式入口：申请时按资源权限和数据范围过滤，
+// 生成 CSV/XLSX/PDF 落到导出目录，下载时再校验一次权限与有效期，过期后由定时任务清理。
 type ExportTask struct {
 	Store     ResourceStore // 数据库连接集合,导出时按资源选择用户库/管理库/计费库
 	Auth      API           // 鉴权器,申请与下载两个动作都走它的权限校验
@@ -29,7 +29,7 @@ type ExportTask struct {
 	MaxRows   int           // 单次导出行数上限,留空默认 50000,超出直接判失败而不是截断
 }
 
-// exportRow 对应管理库 export_task 表的一行,记录一次导出申请从申请到过期的一生。
+// exportRow 对应管理库 export_task 表的一行，记录一次导出申请从申请到过期的一生。
 type exportRow struct {
 	ID          uint64  `json:"id"`                                      // 导出任务主键 ID
 	TaskNo      string  `json:"task_no" gorm:"column:task_no"`           // 任务号,形如 EXP + 32 位 UUID(大写无横线),同时用作文件名
@@ -49,7 +49,7 @@ type exportRow struct {
 // TableName 指定 GORM 映射到管理库 export_task 表。
 func (exportRow) TableName() string { return "export_task" }
 
-// maxRows 返回单次导出的行数上限,未配置时回落到 50000;取数会多取一行用来判断是否超限。
+// maxRows 返回单次导出的行数上限，未配置时回落到 50000；取数会多取一行用来判断是否超限。
 func (t ExportTask) maxRows() int {
 	if t.MaxRows > 0 {
 		return t.MaxRows
@@ -57,7 +57,7 @@ func (t ExportTask) maxRows() int {
 	return 50000
 }
 
-// exportDir 返回导出文件目录,未配置时使用系统临时目录下的 chargepilot-exports。
+// exportDir 返回导出文件目录，未配置时使用系统临时目录下的 chargepilot-exports。
 func (t ExportTask) exportDir() string {
 	if t.ExportDir != "" {
 		return t.ExportDir
@@ -65,10 +65,10 @@ func (t ExportTask) exportDir() string {
 	return filepath.Join(os.TempDir(), "chargepilot-exports")
 }
 
-// CleanupExpired removes finished files after the 24-hour download window.
-// The expected path is recomputed rather than trusting a mutable DB value.
-// CleanupExpired 清理已过期任务:删掉磁盘文件并把状态置为 expired,单次最多处理 1000 条,
-// 由定时任务周期调用;文件路径是重新算出来的,不信任库里那个可被改写的值。
+// CleanupExpired 在 24 小时下载窗口结束后清掉已完成的文件。
+// 期望路径是重新算出来的，而不是信任库里那个可被改写的值。
+// CleanupExpired 清理已过期任务：删掉磁盘文件并把状态置为 expired，单次最多处理 1000 条，
+// 由定时任务周期调用；文件路径是重新算出来的，不信任库里那个可被改写的值。
 func (t ExportTask) CleanupExpired(ctx context.Context) (int, error) {
 	rows := []exportRow{}
 	if err := t.Store.AdminDB.WithContext(ctx).Table("export_task").
@@ -96,10 +96,10 @@ func (t ExportTask) CleanupExpired(ctx context.Context) (int, error) {
 	return removed, nil
 }
 
-// exportSpec declares the columns and query for one resource, so adding a
-// resource cannot accidentally expose an unmasked column.
-// exportSpec 描述一个可导出资源:需要什么权限、数据在哪张表、导出哪些列,以及怎么套用数据范围。
-// 新增资源必须在这里登记,避免漏做权限校验或把未脱敏的列带出去。
+// exportSpec 声明一个资源的导出列与查询方式，新增一个资源时
+// 就不可能顺手把没脱敏的列带出去。
+// exportSpec 描述一个可导出资源：需要什么权限、数据在哪张表、导出哪些列，以及怎么套用数据范围。
+// 新增资源必须在这里登记，避免漏做权限校验或把未脱敏的列带出去。
 type exportSpec struct {
 	Permission string                                                          // 导出该资源所需的读权限,申请和下载时都会校验
 	Table      string                                                          // 数据来源表名,据此选择用户库/管理库/计费库连接
@@ -107,14 +107,14 @@ type exportSpec struct {
 	Builder    func(ctx context.Context, q *gorm.DB, scope DataScope) *gorm.DB // 在基础查询上追加数据范围等条件的钩子,为空表示不额外过滤
 }
 
-// exportColumn 是一列的表头与数据库列名映射,两者分开,表头才能用中文。
+// exportColumn 是一列的表头与数据库列名映射，两者分开，表头才能用中文。
 type exportColumn struct {
 	Header string // 文件里的中文表头
 	Column string // 数据库列名,也是字段脱敏规则匹配用的字段名
 }
 
-// exportRegistry 是可导出资源的白名单:键是资源名,值是它的权限、表、列和过滤钩子。
-// 没登记的资源无法被申请,运营也就没法临时拼 SQL 导出未脱敏字段。
+// exportRegistry 是可导出资源的白名单：键是资源名，值是它的权限、表、列和过滤钩子。
+// 没登记的资源无法被申请，运营也就没法临时拼 SQL 导出未脱敏字段。
 var exportRegistry = map[string]exportSpec{
 	"orders": {
 		Permission: "order.read",
@@ -178,7 +178,7 @@ var exportRegistry = map[string]exportSpec{
 	},
 }
 
-// register 注册导出路由:申请与下载需要 export.create,列表与详情需要 finance.read。
+// register 注册导出路由：申请与下载需要 export.create，列表与详情需要 finance.read。
 func (t ExportTask) register(r *gin.Engine) {
 	r.GET("/api/v1/admin/exports", t.Auth.Require("finance.read"), t.listTasks)
 	r.GET("/api/v1/admin/exports/:id", t.Auth.Require("finance.read"), t.detailTask)
@@ -187,7 +187,7 @@ func (t ExportTask) register(r *gin.Engine) {
 	r.GET("/api/v1/admin/exports/resources", t.Auth.Require("export.create"), t.listResources)
 }
 
-// detailTask 返回单个导出任务的状态且不含文件路径;能不能下载由下载接口单独判定。
+// detailTask 返回单个导出任务的状态且不含文件路径；能不能下载由下载接口单独判定。
 func (t ExportTask) detailTask(c *gin.Context) {
 	id, ok := pathID(c)
 	if !ok {
@@ -198,13 +198,13 @@ func (t ExportTask) detailTask(c *gin.Context) {
 		resourceFailure(c, err)
 		return
 	}
-	// exportRow.FilePath is excluded from JSON. Reading task status does not
-	// grant access to the file; download rechecks creator and resource rights.
+	// exportRow.FilePath 不进 JSON。看到任务状态并不等于拿到文件；
+	// 下载时还会重查申请人和资源权限。
 	httpapi.OK(c, row)
 }
 
-// listResources 返回当前管理员可导出的资源与格式清单,并带上行数上限,
-// 前端据此渲染导出选项,避免给出点了必然 403 的组合。
+// listResources 返回当前管理员可导出的资源与格式清单，并带上行数上限，
+// 前端据此渲染导出选项，避免给出点了必然 403 的组合。
 func (t ExportTask) listResources(c *gin.Context) {
 	profile := c.MustGet("admin_profile").(Profile)
 	scope, err := LoadDataScope(c.Request.Context(), t.Store.AdminDB, profile)
@@ -222,12 +222,12 @@ func (t ExportTask) listResources(c *gin.Context) {
 }
 
 // exportRequiresGlobalScope 判断该资源是否只允许全局数据范围的管理员导出。
-// 财务类资源(bills/reconciles/settlements)天然跨站点,限定站点范围的账号拿不到全量,故直接禁掉。
+// 财务类资源（bills/reconciles/settlements）天然跨站点，限定站点范围的账号拿不到全量，故直接禁掉。
 func exportRequiresGlobalScope(resource string) bool {
 	return resource == "bills" || resource == "reconciles" || resource == "settlements"
 }
 
-// listTasks 分页返回导出任务,支持按状态过滤,按 ID 倒序。
+// listTasks 分页返回导出任务，支持按状态过滤，按 ID 倒序。
 func (t ExportTask) listTasks(c *gin.Context) {
 	page, ok := parsePage(c, "pending running completed failed expired")
 	if !ok {
@@ -249,8 +249,8 @@ func (t ExportTask) listTasks(c *gin.Context) {
 	httpapi.OK(c, out)
 }
 
-// createTask 受理一次导出申请:校验请求号、资源、格式、权限与数据范围后落一条 pending 任务,
-// 随后同步生成文件并直接返回结果;相同请求号重放返回原任务,条件不一致则报冲突。
+// createTask 受理一次导出申请：校验请求号、资源、格式、权限与数据范围后落一条 pending 任务，
+// 随后同步生成文件并直接返回结果；相同请求号重放返回原任务，条件不一致则报冲突。
 func (t ExportTask) createTask(c *gin.Context) {
 	var in struct {
 		RequestID string         `json:"request_id"` // 客户端请求号,必须是 UUID,用于幂等
@@ -301,8 +301,8 @@ func (t ExportTask) createTask(c *gin.Context) {
 			return
 		}
 	}
-	// Keep all 128 UUID bits. Truncating the trailing bytes made requests with
-	// the same prefix collide even though their request IDs were distinct.
+	// 128 位 UUID 一个位都不截。早先砍掉尾部字节，导致前缀相同、
+	// 请求号其实不同的两个请求撞在了一起。
 	taskNo := "EXP" + strings.ToUpper(strings.ReplaceAll(in.RequestID, "-", ""))
 	filter, err := json.Marshal(in.Filter)
 	if err != nil {
@@ -343,8 +343,8 @@ func (t ExportTask) createTask(c *gin.Context) {
 		httpapi.OK(c, gin.H{"task_no": taskNo, "status": replayed.Status, "row_count": replayed.RowCount, "expires_at": replayed.ExpiresAt})
 		return
 	}
-	// Build synchronously: exports are small and bounded, and returning a ready
-	// file keeps the operator flow to one step instead of polling.
+	// 同步生成：导出量本来就小而且有上限，直接返回一个可用的文件，
+	// 才能让运营一步做完，而不用轮询。
 	if err := t.run(c.Request.Context(), taskNo, spec, profile); err != nil {
 		httpapi.OK(c, gin.H{"task_no": taskNo, "status": "failed", "message": "导出失败，请稍后重试"})
 		return
@@ -354,10 +354,10 @@ func (t ExportTask) createTask(c *gin.Context) {
 	httpapi.OK(c, gin.H{"task_no": taskNo, "status": finished.Status, "row_count": finished.RowCount, "expires_at": finished.ExpiresAt})
 }
 
-// run writes the requested format and records the outcome. The file is written to a
-// temporary name and renamed, so a partial export is never downloadable.
-// run 真正执行导出:按资源选库、套数据范围与日期区间、取数、脱敏,再写成目标格式,
-// 先写 .partial 再改名,保证下载端永远拿不到半截文件;任一步失败都把任务置为 failed。
+// run 写出请求的格式并记录结果。文件先写临时名再改名，
+// 所以半截导出永远不会被下载到。
+// run 真正执行导出：按资源选库、套数据范围与日期区间、取数、脱敏，再写成目标格式，
+// 先写 .partial 再改名，保证下载端永远拿不到半截文件；任一步失败都把任务置为 failed。
 func (t ExportTask) run(ctx context.Context, taskNo string, spec exportSpec, profile Profile) error {
 	dir := t.exportDir()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -455,14 +455,14 @@ func (t ExportTask) run(ctx context.Context, taskNo string, spec exportSpec, pro
 			"completed_at": time.Now().UTC()}).Error
 }
 
-// fail 把任务标记为失败并记录截断后的错误原因,同时把错误原样返回给调用方。
+// fail 把任务标记为失败并记录截断后的错误原因，同时把错误原样返回给调用方。
 func (t ExportTask) fail(ctx context.Context, taskNo string, cause error) error {
 	_ = t.Store.AdminDB.WithContext(ctx).Model(&exportRow{}).Where("task_no = ?", taskNo).
 		Updates(map[string]any{"status": "failed", "error_msg": truncate(cause.Error(), 255)}).Error
 	return cause
 }
 
-// stringifyCell 把驱动返回的任意值转成导出用字符串:nil 输出空串,[]byte 按文本解包。
+// stringifyCell 把驱动返回的任意值转成导出用字符串：nil 输出空串，[]byte 按文本解包。
 func stringifyCell(value any) string {
 	switch v := value.(type) {
 	case nil:
@@ -476,7 +476,7 @@ func stringifyCell(value any) string {
 	}
 }
 
-// truncate 按字节截断字符串,用于把错误信息塞进长度受限的字段。
+// truncate 按字节截断字符串，用于把错误信息塞进长度受限的字段。
 func truncate(value string, max int) string {
 	if len(value) > max {
 		return value[:max]
@@ -484,10 +484,10 @@ func truncate(value string, max int) string {
 	return value
 }
 
-// downloadTask serves a finished export. Ownership and expiry are re-checked on
-// every download so revoking an account immediately revokes its files.
-// downloadTask 发送导出文件:每次下载都重新校验归属、资源权限、数据范围和有效期,
-// 过期时顺手删文件并置 expired,保证权限被收回后文件立刻不可达。
+// downloadTask 发送已完成的导出文件。归属与有效期每次下载都重新校验，
+// 所以收回一个账号，它的文件也立刻被收回。
+// downloadTask 发送导出文件：每次下载都重新校验归属、资源权限、数据范围和有效期，
+// 过期时顺手删文件并置 expired，保证权限被收回后文件立刻不可达。
 func (t ExportTask) downloadTask(c *gin.Context) {
 	id, ok := pathID(c)
 	if !ok {
@@ -506,7 +506,7 @@ func (t ExportTask) downloadTask(c *gin.Context) {
 	}
 	spec, known := exportRegistry[row.Resource]
 	if !known || !hasPermission(profile, spec.Permission) {
-		// The permission that justified the export must still be held.
+		// 当初批准这次导出的那个权限，现在必须还持有。
 		httpapi.Write(c, 403, 1003, "没有下载该导出的权限", nil)
 		return
 	}

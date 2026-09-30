@@ -5,8 +5,8 @@ import (
 	"strings"
 )
 
-// Simulator is only wired by the explicit local development PAYMENT_MODE.
-// Its response is not a WeChat payment credential.
+// Simulator 只在显式开启本地开发用 PAYMENT_MODE 时才接上线。
+// 它返回的不是微信支付凭证。
 type Simulator struct{}
 
 func (Simulator) Prepay(_ context.Context, request PrepayRequest) (PrepayParams, error) {

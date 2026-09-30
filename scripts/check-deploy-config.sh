@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# 部署配置校验脚本(技术规格 § 10.3)
-# 检查:
+# 部署配置校验脚本（技术规格 § 10.3）
+# 检查：
 #   1. Caddyfile 全局块必须在文件开头
-#   2. docker-compose 内部端口未泄露(expose 而非 ports)
+#   2. docker-compose 内部端口未泄露（expose 而非 ports）
 #   3. Redis maxmemory-policy 区分事件/缓存
 #   4. 网络拓扑完整
 #   5. .env 必备变量已设置

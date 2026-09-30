@@ -1,18 +1,18 @@
 #!/usr/bin/env tsx
 /**
- * docs 一致性 CI 守门脚本(P1-9 重写)
+ * docs 一致性 CI 守门脚本（P1-9 重写）
  *
- * 检查项:
- *   1. cross-reference.md § 1 列出的 Stream 名 + 加粗项,在 api/*.md / db/*.md 中出现的 _stream 名必须 ∈ 此集合
+ * 检查项：
+ *   1. cross-reference.md § 1 列出的 Stream 名 + 加粗项，在 api/*.md / db/*.md 中出现的 _stream 名必须 ∈ 此集合
  *   2. cross-reference.md § 2 标题数字必须 = § 2 各小节清点到的表数
  *   3. cross-reference.md § 4.x 写端点表中的端点必须在对应 api/*.md 中存在
- *   4. 裸 § 引用需要人工判断是否指向当前文件,不做易误报的自动拦截
- *   5. 跨 schema 访问由架构审查核对,本脚本不声称已验证
+ *   4. 裸 § 引用需要人工判断是否指向当前文件，不做易误报的自动拦截
+ *   5. 跨 schema 访问由架构审查核对，本脚本不声称已验证
  *
- * 使用:
+ * 使用：
  *   tsx tools/check-api-consistency.ts                 # 全量检查
  *
- * 退出码:
+ * 退出码：
  *   0 = 全部通过
  *   1 = 有错误
  */
@@ -33,7 +33,7 @@ function fail(file: string, line: number, message: string) {
   findings.push({ file, line, message });
 }
 
-// ---------- helpers ----------
+// ---------- 辅助函数 ----------
 function read(file: string): string {
   return readFileSync(file, 'utf-8');
 }
@@ -43,7 +43,7 @@ function mdFiles(dir: string): string[] {
 }
 
 /**
- * 提取一个 markdown 表格的所有行(从首个 |...| 行到下一个空行 / 非表格行)。
+ * 提取一个 markdown 表格的所有行（从首个 |...| 行到下一个空行 / 非表格行）。
  * 用于解析 cross-reference.md 的 § 1 / § 2.x / § 4.x 等表格。
  */
 function extractTable(text: string, headerPattern: RegExp): string[] {
@@ -57,10 +57,10 @@ function extractTable(text: string, headerPattern: RegExp): string[] {
     if (l.trim().startsWith('|')) {
       tableLines.push(l);
     } else if (tableLines.length > 0 && l.trim() === '') {
-      // 表格结束(空行)
+      // 表格结束（空行）
       break;
     } else if (tableLines.length > 0) {
-      // 表格结束(其他内容)
+      // 表格结束（其他内容）
       break;
     }
   }
@@ -70,7 +70,7 @@ function extractTable(text: string, headerPattern: RegExp): string[] {
 // ---------- 1. Stream 名总账 ----------
 function checkStreams() {
   const cross = read(CROSS_REF);
-  // § 1 表里所有行,提取 `xxx_stream`(含加粗 **`xxx_stream`**)
+  // § 1 表里所有行，提取 `xxx_stream`(含加粗 **`xxx_stream`**)
   const tableLines = extractTable(cross, /^## § 1 Stream 名总账/m);
   const known = new Set<string>();
   for (const row of tableLines) {
@@ -108,7 +108,7 @@ function checkTableCount() {
   }
   const claimed = Number(sec2[1]);
 
-  // § 2.x 各小节清点(支持加粗 **`表名`**)
+  // § 2.x 各小节清点（支持加粗 **`表名`**）
   const subClaims = [...cross.matchAll(/^### 2\.(\d) ([a-z_]+)\((?:计划)?(?:\*\*)?(\d+)\s*张(?:\*\*)?\)/gm)];
   let sumClaimedFromSubs = 0;
   for (const m of subClaims) {
@@ -118,13 +118,13 @@ function checkTableCount() {
     fail(CROSS_REF, 27, `§ 2 标题声称 ${claimed} 张,§ 2.x 子节合计 ${sumClaimedFromSubs} 张(应等于)`);
   }
 
-  // 进一步:db/*.md 的实际表数也应 = cross-reference § 2 各小节声称
+  // 进一步：db/*.md 的实际表数也应 = cross-reference § 2 各小节声称
   const bySchema: Record<string, number> = {};
   for (const file of mdFiles(DB_DIR)) {
     const schema = file.match(/db[\\/]+([a-z_]+)\.md$/)?.[1] ?? '';
     if (!schema) continue;
     const text = read(file);
-    // db/*.md "## 表清单" 段(支持加粗 **`表名`**)
+    // db/*.md "## 表清单" 段（支持加粗 **`表名`**）
     const listBlock = text.match(/## 表清单[\s\S]*?(?=^## )/m)?.[0] ?? '';
     const actual = (listBlock.match(/^\|[*\s]*`([a-z_]+)`/gm) ?? []).length;
     bySchema[schema] = actual;
@@ -143,8 +143,8 @@ function checkTableCount() {
 // ---------- 3. 写端点 ↔ api/*.md 闭环 ----------
 function checkWriteEndpoints() {
   const cross = read(CROSS_REF);
-  // § 4.x 各表中的写端点: `POST /path` 或 `PUT /path` 等
-  // 注意:§ 4.x 第一列是端点(/api/v1/...),写端点必有 / 在行内
+  // § 4.x 各表中的写端点： `POST /path` 或 `PUT /path` 等
+  // 注意：§ 4.x 第一列是端点（/api/v1/...），写端点必有 / 在行内
   const endpointRegex = /`((?:POST|PUT|DELETE|PATCH)\s+\/[^`\s]+)`/g;
   const declared = new Set<string>();
   // § 4.1 - § 4.5 段落
@@ -153,7 +153,7 @@ function checkWriteEndpoints() {
   const sec4 = sec4Match[1];
   for (const m of sec4.split('\n').filter((line) => line.trim().startsWith('|')).join('\n').matchAll(endpointRegex)) {
     const ep = m[1];
-    // 跳过:§ 4 文本里的示例代码块 / 注释
+    // 跳过：§ 4 文本里的示例代码块 / 注释
     if (ep.includes('内部接口') || ep.includes('xxx')) continue;
     declared.add(ep);
   }
@@ -189,7 +189,7 @@ function checkWriteEndpoints() {
   }
 }
 
-// ---------- main ----------
+// ---------- 主流程 ----------
 function main() {
   console.log('[1/3] 检查 Stream 名总账...');
   checkStreams();

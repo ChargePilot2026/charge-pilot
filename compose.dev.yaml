@@ -1,5 +1,5 @@
-# Disposable Go development stack. Existing Rust-era data volume must be
-# removed or rebuilt before Goose can initialize migration history.
+# 用完即弃的 Go 开发栈。Rust 时代遗留的数据卷必须先删掉或重建，
+# Goose 才能初始化迁移历史。
 name: chargepilot-dev
 
 x-go: &go
@@ -12,8 +12,8 @@ x-go: &go
     - go-build:/root/.cache/go-build
   environment: &go-env
     GOTOOLCHAIN: auto
-    # proxy.golang.org is unreachable from mainland China; goproxy.cn is the
-    # working mirror. Remove once the team standardizes on a reachable proxy.
+    # 在中国大陆访问不到 proxy.golang.org，能用的是 goproxy.cn 这个镜像。
+    # 等团队统一到可达的代理后删掉这段。
     GOPROXY: https://goproxy.cn,direct
     JWT_SECRET: local-dev-jwt-secret-do-not-use-in-production
     SERVICE_TOKEN: local-dev-service-token-do-not-use-in-production

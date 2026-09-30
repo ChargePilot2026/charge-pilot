@@ -12,9 +12,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// The whole point of recording a capability per device is that a tariff the
-// board cannot run is refused before it is published. These are the six cases
-// that rule has to get right, and one case that proves the default is refusal.
+// 按设备记录能力，全部意义就在于：板子跑不了的费率在发布之前就被拒掉。
+// 下面六种情况是这条规则必须做对的，另有一种用来证明默认值确实是拒绝。
 
 func meterless() deviceCapability {
 	return deviceCapability{DeviceID: "DC589TEST001"}
@@ -55,10 +54,9 @@ func TestCapabilityAllowsOnlyWhatTheBoardCanReport(t *testing.T) {
 	}
 }
 
-// A device nobody has classified measures nothing as far as the engine is
-// concerned. The new protocol does not promise any field it does not carry, so
-// guessing that a board supports kWh because most of them do would reintroduce
-// exactly the class of error the column exists to prevent.
+// 谁都没分类过的设备，在引擎看来就等于什么都不测。新协议不承诺它没有
+// 携带的字段，所以因为「大部分板子都支持」就猜某块板子支持 kWh，等于把
+// 这一列本来要防的那类错误又请回来。
 func TestUnclassifiedDeviceIsRefusedEveryMeteredMode(t *testing.T) {
 	cap := deviceCapability{DeviceID: "DC589NEW001", ChargeMode: string(pricing.ModeDeviceDuration)}
 	for _, mode := range []pricing.ChargeMode{
@@ -71,9 +69,8 @@ func TestUnclassifiedDeviceIsRefusedEveryMeteredMode(t *testing.T) {
 	}
 }
 
-// Every blocked board is named. A refusal that says "some devices cannot take
-// this" leaves the operator guessing which, and the ones not named are the ones
-// that stay on the old tariff with nothing in a log to say so.
+// 每块被拒的板子都要点名。只说「有些设备不支持」的拒绝，会让运营去猜是哪几块；
+// 而没被点名的那些，就会继续按旧费率充电，日志里什么都不留。
 func TestCheckMeteringNamesEveryBlockedDevice(t *testing.T) {
 	targets := []switchTarget{
 		{DeviceID: "A", Cap: deviceCapability{DeviceID: "A"}},
@@ -101,18 +98,16 @@ func TestCommonModeCollapsesOnlyWhenTheBoardsAgree(t *testing.T) {
 	if got := commonMode(mixed, true); got != "mixed" {
 		t.Fatalf("commonMode = %v, want a marker rather than one board's mode", got)
 	}
-	// No board has ever been priced, so there is no before-figure to report.
-	// A summary filled in with the mode about to be set would make a first-time
-	// application look like a change from itself.
+	// 还没有任何板子被计过费，所以没有「变更前」的数字可报。
+	// 拿即将设置的计费方式填进汇总，会让首次下发看起来像是从自己变到自己。
 	never := []switchTarget{{DeviceID: "A", Before: modeNeverSet}}
 	if got := commonMode(never, true); got != modeNeverSet {
 		t.Fatalf("commonMode = %v, want %q", got, modeNeverSet)
 	}
 }
 
-// A station priced before its hardware arrived is normal, and the board that turns
-// up later never went through the capability check that ran at publish time.
-// This is the check that catches it.
+// 站点在硬件到货之前就先定好费率是常事，而后来才出现的那块板子
+// 从没经过发布时那次能力校验。这就是拦住它的那道检查。
 func TestCheckImportAgainstStationRefusesABoardThatCannotBeMetered(t *testing.T) {
 	db := dbWithStationMode(t, pricing.ModeServerEnergy)
 	station := stationOf(t, db)
@@ -120,8 +115,7 @@ func TestCheckImportAgainstStationRefusesABoardThatCannotBeMetered(t *testing.T)
 		{DeviceID: "DC589OK001", StationID: station, ReportsEnergy: true},
 		{DeviceID: "DC589BAD01", StationID: station},
 	}
-	// The whole batch is refused, not half of it: a fleet that is partly
-	// priceable is one an operator has to reconcile by hand.
+	// 整批一起拒，不是拒一半：一支只有部分设备能计价的机队，等于要运营手工去对账。
 	if err := checkImportAgainstStation(db, devices); err == nil {
 		t.Fatal("a batch containing an unmeasurable board was accepted")
 	} else {
@@ -139,8 +133,7 @@ func TestCheckImportAgainstStationRefusesABoardThatCannotBeMetered(t *testing.T)
 	}
 }
 
-// A station with no tariff yet accepts any board, and so does a duration
-// tariff, which needs no meter at all.
+// 还没定费率的站点接受任何板子；按时长计费的也一样，它压根不需要电表。
 func TestCheckImportAgainstStationAllowsWhenNothingNeedsAMeter(t *testing.T) {
 	unpriced := dbWithStationMode(t, "")
 	station := stationOf(t, unpriced)
@@ -156,12 +149,11 @@ func TestCheckImportAgainstStationAllowsWhenNothingNeedsAMeter(t *testing.T) {
 	}
 }
 
-// dbWithStationMode stands up a disposable database carrying one station whose
-// default is charging on the given mode. An empty mode means the station has no
-// active default at all.
+// dbWithStationMode 起一个一次性数据库，里面放一个站点，其默认规则正按给定
+// 计费方式运行。计费方式为空表示这个站点根本没有生效的默认规则。
 //
-// It reads the same URL the rest of the integration suite uses, and skips when
-// there is none, so the unit tests above stay runnable without a database.
+// 它读的是集成测试套件其余部分用的同一个连接串，没有配置就跳过，
+// 这样上面的单测在没有数据库时照样能跑。
 func dbWithStationMode(t *testing.T, mode pricing.ChargeMode) *gorm.DB {
 	t.Helper()
 	raw := os.Getenv("TEST_ADMIN_DATABASE_URL")
@@ -177,8 +169,7 @@ func dbWithStationMode(t *testing.T, mode pricing.ChargeMode) *gorm.DB {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A free station id, so a second case in the same run does not collide with
-	// the first on the primary key.
+	// 换一个空闲的站点 ID，同一轮里的第二个用例才不会在主键上和第一个撞车。
 	var next uint64
 	if err := orm.Raw("SELECT COALESCE(MAX(id),0)+9000 FROM station").Scan(&next).Error; err != nil {
 		t.Fatal(err)
@@ -207,8 +198,7 @@ func dbWithStationMode(t *testing.T, mode pricing.ChargeMode) *gorm.DB {
 	return orm
 }
 
-// lastCapabilityStation carries the id the helper allocated, so a test can
-// address the station the check will actually look at.
+// lastCapabilityStation 记下辅助函数分配到的 ID，测试据此定位这次检查实际会看的那个站点。
 var lastCapabilityStation atomic.Uint64
 
 func stationOf(t *testing.T, _ *gorm.DB) uint64 {

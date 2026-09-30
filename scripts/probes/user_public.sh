@@ -1,29 +1,25 @@
 #!/bin/bash
-# Probe every user-facing route exposed by central's user module (the miniprogram
-# backend). The script:
-#   1. Hits /api/v1/public/auth/* without any token.
-#   2. Mints a local-dev JWT (same secret as the user service) for
-#      user_id=1 / openid=test_openid and SETs a stub session into
-#      Redis-cache so the session middleware accepts the request.
-#   3. Walks all 17 user_routes (profile, charge_*, wallet_*, coupon_*,
-#      invoice_*, station_*, phone_*, announcement_*, customer-service,
-#      device-fault-reports, scan_*) and prints HTTP status + envelope
-#      code.
+# 探测 central 的 user 模块（小程序后端）对用户暴露的每一条路由。本脚本：
+#   1. 不带任何 token 请求 /api/v1/public/auth/*。
+#   2. 用与 user 服务相同的密钥签一个本地开发 JWT（user_id=1 /
+#      openid=test_openid），并往 Redis-cache 里 SET 一个桩会话，
+#      让会话中间件放行请求。
+#   3. 走完全部 17 条 user_routes（profile、charge_*、wallet_*、coupon_*、
+#      invoice_*、station_*、phone_*、announcement_*、customer-service、
+#      device-fault-reports、scan_*），并打印 HTTP 状态码与响应信封里的 code。
 #
-# Usage:
+# 用法：
 #   bash scripts/probes/user_public.sh
 #
-# Exit code: 0 always (per-endpoint failures are not fatal; the goal is
-# to surface them in the table).
+# 退出码：恒为 0（单个端点失败不算致命，目的是把它们都暴露到表里）。
 #
-# Output columns: METHOD PATH HTTP_CODE [code=N msg=...]
-#   "non-json" indicates the request body was rejected by axum before
-#   reaching the handler (e.g. JSON body sent where a query string is
-#   expected). Fix the probe, not the server.
+# 输出列：METHOD PATH HTTP_CODE [code=N msg=...]
+#   "non-json" 表示请求体在到达处理函数之前就被拒了（例如本该是查询串的
+#   位置发了 JSON body）。要修的是探针，不是服务端。
 #
-# Side effects: this script writes /auth:user:session:test_sid into
-# Redis-cache and creates a user row in user_db.user. It cleans up
-# after itself on exit (best effort; kill -9 leaves residue).
+# 副作用：本脚本会往 Redis-cache 写 /auth：user：session：test_sid，并在
+# user_db.user 里建一行用户数据。退出时会自行清理（尽力而为；被 kill -9
+# 杀掉会留下残留）。
 set -u
 cd "$(dirname "$0")/../.."
 
@@ -50,7 +46,7 @@ docker compose -f compose.dev.yaml exec -T "$MYSQL_HOST" \
     mysql -uroot -pchargepilot_root_dev -e \
     "USE user_db; INSERT INTO user (openid, status) VALUES ('$TEST_OPENID', 'active'); INSERT INTO user_login_identity (openid) VALUES ('$TEST_OPENID');" \
     >/dev/null 2>&1
-# Read back the id we just inserted (no AUTO_INCREMENT lock to worry about).
+# 读回刚插入的 id（不存在 AUTO_INCREMENT 锁竞争的问题）。
 TEST_USER_ID=$(docker compose -f compose.dev.yaml exec -T "$MYSQL_HOST" \
     mysql -uroot -pchargepilot_root_dev -N -B -e \
     "USE user_db; SELECT id FROM user WHERE openid='$TEST_OPENID' LIMIT 1;" 2>/dev/null | tr -d '[:space:]')
@@ -64,7 +60,7 @@ docker compose -f compose.dev.yaml exec -T "$REDIS_HOST" \
 echo "openid=$TEST_OPENID  sid=$TEST_SID  user_id=$TEST_USER_ID"
 echo
 
-# Mint a JWT (HS256) with the same secret the user service uses.
+# 用 user 服务相同的密钥签一个 HS256 的 JWT。
 USER_TOKEN=$(python3 -c "
 import hmac, hashlib, base64, json, time, sys
 secret = sys.argv[1].encode()
@@ -102,8 +98,8 @@ except: print('non-json')" 2>/dev/null || echo "non-json")
 probe_user() {
     local method="$1" path="$2" body="${3:-}"
     local out
-    # Heuristic: if body looks like query string (contains '=' before any '{' or starts with k=v),
-    # pass it as URL query via curl --data-urlencode and skip JSON content-type.
+    # 启发式判断：body 长得像查询串（在任何 '{' 之前就含 '='，或以 k=v 开头），
+    # 就用 curl --data-urlencode 当 URL 查询串发，并跳过 JSON content-type。
     if [[ "$body" == *"="* && "$body" != *"{"* ]]; then
         out=$(curl -sS -m 6 -X "$method" "$USER_HOST$path" \
             -H "Authorization: Bearer $USER_TOKEN" \

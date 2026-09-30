@@ -29,7 +29,7 @@ func activityDB(t *testing.T) *gorm.DB {
 	return orm
 }
 
-// lastID reads the id of the row the previous INSERT created on this connection.
+// lastID 读取上一条 INSERT 在这条连接上创建的那一行的 id。
 func lastID(t *testing.T, orm *gorm.DB) uint64 {
 	t.Helper()
 	var id uint64
@@ -120,12 +120,12 @@ func TestFirstRechargeGrantsOnce(t *testing.T) {
 	if n := fx.grantRows(t); n != 1 {
 		t.Fatalf("grant rows = %d, want 1", n)
 	}
-	// Replaying the same trigger must not pay out again.
+	// 重放同一个触发不能再次发券。
 	runActivity(t, orm, event)
 	if n := fx.grantRows(t); n != 1 {
 		t.Fatalf("grant rows after replay = %d, want 1", n)
 	}
-	// A different recharge by the same customer is still capped by per_user_limit.
+	// 同一客户的另一笔充值仍受 per_user_limit 限制。
 	second := event
 	second.EventKey = uuid.NewString()
 	runActivity(t, orm, second)
@@ -142,7 +142,7 @@ func TestThresholdRuleOnlyFiresAboveThreshold(t *testing.T) {
 	if err := orm.Exec("UPDATE coupon_activity_rule SET threshold_cents = 3000 WHERE id = ?", fx.ruleID).Error; err != nil {
 		t.Fatal(err)
 	}
-	// Below the threshold nothing is granted.
+	// 没到门槛不发放。
 	if got := runActivity(t, orm, activityEvent{TriggerType: "threshold_redeem", UserID: fx.userID, EventKey: fx.eventKey, AmountCents: 2999, Now: now}); len(got) != 0 {
 		t.Fatalf("a 2999-cent order triggered a 3000-cent rule: %+v", got)
 	}
@@ -161,7 +161,7 @@ func TestCampaignBudgetStopsGrants(t *testing.T) {
 	now := time.Now().UTC()
 	runActivity(t, orm, activityEvent{TriggerType: "first_recharge", UserID: fx.userID, EventKey: fx.eventKey, Now: now})
 
-	// A second customer must not be able to spend a budget that is already gone.
+	// 第二个客户不能花掉已经用完的预算。
 	if err := orm.Exec("INSERT INTO user (openid) VALUES (?)", "act-"+uuid.NewString()).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -191,9 +191,6 @@ func TestExpiredAndDisabledRulesDoNotGrant(t *testing.T) {
 	}
 }
 
-// An invite reward must not pay out to a ring of throwaway accounts: the
-// inviter has to have actually used the platform, and nobody may invite
-// themselves.
 // 一条指向已删券的规则不发放，也不该留下任何痕迹。
 //
 // 规则和券分属两张表，删券不会连带删规则。原来的写法照样往 coupon_grant 里
@@ -230,17 +227,19 @@ func TestRulePointingAtDeletedCouponGrantsNothing(t *testing.T) {
 	}
 }
 
+// TestInviteRewardRequiresEstablishedInviter 邀请奖励不能发给一圈一次性账号：
+// 邀请人必须真的用过平台，而且谁也不能邀请自己。
 func TestInviteRewardRequiresEstablishedInviter(t *testing.T) {
 	orm := activityDB(t)
 	fx := newActivityFixture(t, orm, "invite_reward", 5, 0)
 	defer fx.cleanup()
 	now := time.Now().UTC()
 
-	// Self-invite is refused.
+	// 自邀请被拒绝。
 	if got := runActivity(t, orm, activityEvent{TriggerType: "invite_reward", UserID: fx.userID, EventKey: fx.eventKey, InviterID: fx.userID, Now: now}); len(got) != 0 {
 		t.Fatalf("self-invite granted: %+v", got)
 	}
-	// A brand new inviter with no history is refused.
+	// 完全没有历史记录的新邀请人被拒绝。
 	if err := orm.Exec("INSERT INTO user (openid) VALUES (?)", "act-"+uuid.NewString()).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -249,7 +248,7 @@ func TestInviteRewardRequiresEstablishedInviter(t *testing.T) {
 	if got := runActivity(t, orm, activityEvent{TriggerType: "invite_reward", UserID: fx.userID, EventKey: fx.eventKey, InviterID: otherID, Now: now}); len(got) != 0 {
 		t.Fatalf("an unused inviter was rewarded: %+v", got)
 	}
-	// Once the inviter has a settled recharge they qualify.
+	// 邀请人有一笔已结算的充值之后才算合格。
 	if err := orm.Exec(`INSERT INTO payment_order
 		(order_no, biz_type, biz_id, user_id, pay_method, total_cents, paid_cents, status, created_month)
 		VALUES (?, 'wallet_recharge', 0, ?, 'wechat', 1000, 1000, 'paid', ?)`, "AC"+uuid.NewString()[:8], otherID, utcDate()).Error; err != nil {

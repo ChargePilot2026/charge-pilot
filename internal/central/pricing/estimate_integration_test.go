@@ -5,10 +5,9 @@ import (
 	"testing"
 )
 
-// A station tariff is the rule with no device_id. Asking for it used to run the
-// same query as asking for a device's rule, minus the device filter, so a
-// station that had never been priced as a whole but did have one pile priced on
-// its own reported that pile's tariff as the station's.
+// 整站电价表就是 device_id 为空的那条规则。要它的时候过去跑的是与查设备规则
+// 同一条查询，只是少了设备过滤，于是一个从未整站定价、却给某个桩单独定了价的
+// 站点，会把那台设备的费率当成整站费率报出去。
 func TestStationRuleIsNeverADeviceRule(t *testing.T) {
 	store, done := offerTestStore(t)
 	defer done()
@@ -23,7 +22,7 @@ func TestStationRuleIsNeverADeviceRule(t *testing.T) {
 	defer store.DB.Exec("DELETE FROM pricing_rule WHERE station_id=?", stationID)
 	defer store.DB.Exec("DELETE FROM station WHERE id=?", stationID)
 
-	// Only a device-scoped rule exists. The station itself was never priced.
+	// 只存在一条设备范围的规则，站点本身从未被定价。
 	if err := store.DB.Exec(
 		"INSERT INTO pricing_rule(name,station_id,device_id,version,status,spec_json,channel) "+
 			"VALUES('设备单独定价',?,'DEV-ONLY',1,'active',?,'default')",
@@ -36,8 +35,8 @@ func TestStationRuleIsNeverADeviceRule(t *testing.T) {
 		t.Fatalf("整站口径返回了设备规则，err=%v", err)
 	}
 
-	// The same device still resolves to its own rule: the narrowing must not
-	// break the override path it was meant to protect.
+	// 同一台设备仍然能解析到自己的规则：这次收窄不能顺手破坏它本来要保护的
+	// 那条覆盖路径。
 	rule, err := store.ActiveDeviceRule(exec, stationID, "DEV-ONLY")
 	if err != nil {
 		t.Fatalf("设备规则查不到: %v", err)
@@ -46,8 +45,7 @@ func TestStationRuleIsNeverADeviceRule(t *testing.T) {
 		t.Fatalf("设备口径拿到的不是自己的规则: %+v", rule)
 	}
 
-	// Once the station is priced as a whole, the station rule is found and the
-	// device still overrides it.
+	// 一旦站点整站定价完成，整站规则能被查到，而设备规则仍然覆盖它。
 	if err := store.DB.Exec(
 		"INSERT INTO pricing_rule(name,station_id,device_id,version,status,spec_json,channel) "+
 			"VALUES('整站默认',?,NULL,1,'active',?,'default')",

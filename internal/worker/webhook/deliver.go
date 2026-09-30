@@ -20,8 +20,8 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// WebhookDeliverer signs and posts admin event subscriptions. Subscriptions are
-// stored in admin_db, which the worker already owns.
+// WebhookDeliverer 给管理端事件订阅签名并投递。订阅存在 admin_db 里，
+// 而 admin_db 本来就归 worker 管。
 type WebhookDeliverer struct {
 	AdminDB   *gorm.DB
 	Stream    *redis.Client
@@ -30,8 +30,8 @@ type WebhookDeliverer struct {
 	Streams   []string
 }
 
-// event_types is a JSON column, so it cannot be scanned into a []string field;
-// it is loaded separately and decoded.
+// event_types 是 JSON 列，没法直接扫进 []string 字段，
+// 所以单独查出来再解码。
 type webhookSubscription struct {
 	ID         uint64   `gorm:"column:id"`
 	Name       string   `gorm:"column:name"`
@@ -51,8 +51,8 @@ type webhookEvent struct {
 	Data       json.RawMessage `json:"data"`
 }
 
-// ErrDeliveryRejected marks a permanent failure: retrying cannot fix a 4xx body
-// the subscriber rejects, so the entry moves straight to the dead-letter state.
+// ErrDeliveryRejected 标记一类不可恢复的失败：订阅方拒绝的 4xx 请求体
+// 重试也救不回来，所以这条记录直接进死信状态。
 var ErrDeliveryRejected = errors.New("webhook endpoint rejected the event")
 
 func (d WebhookDeliverer) client() *http.Client {
@@ -69,9 +69,9 @@ func (d WebhookDeliverer) batchSize() int {
 	return 100
 }
 
-// PublishBatch consumes pending events from the configured streams and delivers
-// each to every matching subscription. Delivery state is persisted before the
-// Redis ack, so a crash replays rather than loses the event.
+// PublishBatch 从配置的流上消费待处理事件，并投递给每个匹配的订阅。
+// 投递状态在 Redis ack 之前就已落库，
+// 因此崩溃之后是重放而不是丢事件。
 func (d WebhookDeliverer) PublishBatch(ctx context.Context) (int, error) {
 	if d.AdminDB == nil || d.Stream == nil {
 		return 0, errors.New("webhook deliverer is not configured")
@@ -93,14 +93,14 @@ func (d WebhookDeliverer) PublishBatch(ctx context.Context) (int, error) {
 		for _, entry := range entries {
 			event, err := parseStreamEntry(entry.Values)
 			if err != nil {
-				// An entry this consumer cannot read is not this consumer's to
-				// destroy. The streams are shared, and the entry may be perfectly
-				// valid to the service that owns it — deleting it here dropped
-				// every device event outright, because a device event names its
-				// type "Type" while this parser looks for the envelope's
-				// "event_type". Skipping it leaves it for its owner, and saying so
-				// out loud is what turns a silent hole in the data into something
-				// an operator can see.
+				// 这条记录本消费者读不懂，就不由本消费者来删。
+				// 这些流是共享的，它对拥有它的服务来说可能完全合法 ——
+				// 在这里删掉曾把所有设备事件直接删光，因为设备事件把类型写成
+				// "Type"，而这个解析器找的是外层的 "event_type"。
+				// 跳过它，把它留给它的主人；
+				// 并把这件事明确记下来，
+				// 正是这样才把数据里那个无声的缺口
+				// 变成运维看得见的东西。
 				log.Printf("webhook delivery skipped an unreadable %s entry %s: %v", stream, entry.ID, err)
 				continue
 			}
@@ -119,9 +119,9 @@ func (d WebhookDeliverer) PublishBatch(ctx context.Context) (int, error) {
 
 const consumerGroup = "webhook-delivery"
 
-// EventStreams lists the streams a subscriber may be attached to. These are the
-// same stream names the outbox publisher writes, so no extra configuration is
-// required to route a new event type to webhook delivery.
+// EventStreams 列出订阅可以挂载的流。
+// 它们与 outbox publisher 写入的流名一致，
+// 所以把一个新的事件类型路由到 webhook 投递不需要额外配置。
 var EventStreams = []string{
 	"charge_events_stream",
 	"charge_started_stream",
@@ -133,7 +133,7 @@ var EventStreams = []string{
 	"device_event_stream",
 }
 
-// streams returns the configured event streams, defaulting to the standard set.
+// streams 返回配置的事件流，未配置时用标准那一组。
 func (d WebhookDeliverer) streams(ctx context.Context) ([]string, error) {
 	if len(d.Streams) > 0 {
 		return d.Streams, nil
@@ -222,8 +222,8 @@ func (d WebhookDeliverer) subscriptions(ctx context.Context, eventType string) (
 	for _, row := range types {
 		var decoded []string
 		if len(row.EventTypes) > 0 {
-			// A malformed payload simply matches nothing rather than blocking
-			// delivery for every other subscription.
+			// 畸形负载只是匹配不到任何订阅，
+			// 而不是让其他所有订阅都投不出去。
 			_ = json.Unmarshal(row.EventTypes, &decoded)
 		}
 		byID[row.ID] = decoded
@@ -247,8 +247,8 @@ func subscriptionWants(types []string, eventType string) bool {
 	return false
 }
 
-// deliverOne posts a single signed request and records the outcome. The delivery
-// log is the audit trail, so it is written whether the post succeeds or fails.
+// deliverOne 发出一个带签名的请求并记录结果。投递日志就是审计凭证，
+// 无论投递成功还是失败都要写。
 func (d WebhookDeliverer) deliverOne(ctx context.Context, sub webhookSubscription, event webhookEvent) error {
 	body, err := json.Marshal(map[string]any{
 		"event_id": event.EventID, "event_type": event.EventType, "source": event.Source,
@@ -261,8 +261,8 @@ func (d WebhookDeliverer) deliverOne(ctx context.Context, sub webhookSubscriptio
 	if err := netguard.ValidatePublicHTTPS(sub.URL); err != nil {
 		return d.log(ctx, sub, event, string(body), nil, nil, err, attempt, 0)
 	}
-	// The signature covers the exact bytes sent, so a subscriber can verify the
-	// payload it received rather than a re-serialized variant.
+	// 签名覆盖的是实际发出的那些字节，订阅方校验的是它真正收到的那份负载，
+	// 而不是某个重新序列化出来的变体。
 	timestamp := time.Now().UTC().Unix()
 	signature := signPayload(sub.Secret, timestamp, body)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, sub.URL, bytes.NewReader(body))
@@ -282,8 +282,8 @@ func (d WebhookDeliverer) deliverOne(ctx context.Context, sub webhookSubscriptio
 		return d.log(ctx, sub, event, string(body), nil, nil, err, attempt, elapsed.Milliseconds())
 	}
 	defer resp.Body.Close()
-	// Read only a bounded prefix of the reply; the stored log keeps diagnostics
-	// without letting an oversized response bloat the table.
+	// 只读取响应的有限前缀；落库的日志既留得住诊断信息，
+	// 又不会让超大响应把表撑爆。
 	responseBytes, readErr := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
 	if readErr != nil {
 		readErr = fmt.Errorf("read webhook response: %w", readErr)
@@ -325,9 +325,9 @@ func (d WebhookDeliverer) log(ctx context.Context, sub webhookSubscription, even
 		"delivered_at": time.Now().UTC(),
 	}
 	err := d.AdminDB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// One row per subscription and event, updated in place on retry. An
-		// explicit update column list is required because MySQL cannot build an
-		// ON DUPLICATE KEY clause from a map.
+		// 每个订阅 + 事件只占一行，重试时就地更新。
+		// 必须显式列出更新列，
+		// 因为 MySQL 无法从 map 构造 ON DUPLICATE KEY 子句。
 		return tx.Table("webhook_delivery_log").Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "subscription_id"}, {Name: "event_id"}},
 			DoUpdates: clause.AssignmentColumns([]string{"event_type", "request_body", "response_status", "response_body", "error_msg", "attempt_count", "duration_ms", "delivered_at"}),

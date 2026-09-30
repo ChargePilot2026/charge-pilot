@@ -12,9 +12,10 @@ import (
 	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol"
 )
 
-// C2 has no cumulative meter. Only full heartbeat measurements are eligible.
-// Device elapsed seconds locate each reading on the BB device clock; receipt
-// time is used only to reject stale or inconsistent reports, never to spread Wh.
+// C2 没有累计电表，只有完整的心跳测量值可用。
+// 设备侧的已用秒数把每条读数定位到 BB 的设备时钟上；
+// 接收时间只用来剔除过期或前后矛盾的上报，
+// 绝不用来分摊 Wh。
 func measuredSegments(start time.Time, end protocol.Event, samples []protocol.Event) []pricing.MeterSegment {
 	if start.IsZero() || end.StartedAt.IsZero() || end.EndedAt.Before(start) || end.EndedAt.Sub(start) > 7*24*time.Hour || end.EndedAt.Sub(end.StartedAt) != time.Duration(end.ChargedSeconds)*time.Second || len(samples) > 10080 {
 		return nil
@@ -70,8 +71,9 @@ func (s EndSynchronizer) meterSegments(ctx context.Context, command workerCharge
 		return nil, nil
 	}
 	var rows []workerDeviceEventRow
-	// The BB event ID bounds the immutable evidence set. A delayed heartbeat
-	// inserted after BB cannot change a retried end-result payload.
+	// BB 的事件 ID 圈定了这份不可变证据集的范围。
+	// 在 BB 之后才落库的延迟心跳
+	// 改不了重放时生成的结束结果负载。
 	err := s.GatewayDB.WithContext(ctx).Where("device_id=? AND event_type='heartbeat' AND id<=? AND received_at>=? AND received_at<=?", end.DeviceID, endID, command.AckAt.Time, end.ReceivedAt).Order("id").Limit(10081).Find(&rows).Error
 	if err != nil {
 		return nil, err
@@ -90,8 +92,9 @@ func (s EndSynchronizer) meterSegments(ctx context.Context, command workerCharge
 	return measuredSegments(command.AckAt.Time, end, samples), nil
 }
 
-// Freeze the whole internal request before the first HTTP attempt. Neither
-// delayed telemetry nor retention cleanup may alter a replayed end receipt.
+// 在第一次 HTTP 尝试之前就把整份内部请求冻结。
+// 无论是延迟到达的遥测还是保留期清理，
+// 都不允许改动一份重放出去的结束回执。
 func (s EndSynchronizer) freezeEndResult(ctx context.Context, command workerChargeCommandRow, id uint64, event protocol.Event, candidate endResult) (endResult, error) {
 	var row struct{ PayloadJSON []byte }
 	query := s.GatewayDB.WithContext(ctx).Table("charge_end_delivery")

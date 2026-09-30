@@ -36,8 +36,8 @@ func openAccountDB(t *testing.T, key string) *gorm.DB {
 	return orm
 }
 
-// accountRouter builds a router with a real session so the handlers' ownership
-// and status checks run exactly as they do in production.
+// accountRouter 构造一个带真实会话的路由，
+// 让处理器里的归属与状态校验完全按生产的样子跑。
 func accountRouter(t *testing.T, userDB, adminDB *gorm.DB, userID uint64) http.Handler {
 	t.Helper()
 	options, err := redis.ParseURL(os.Getenv("TEST_REDIS_URL"))
@@ -69,12 +69,12 @@ func accountRouter(t *testing.T, userDB, adminDB *gorm.DB, userID uint64) http.H
 		UserDB: userDB, AdminDB: adminDB, Gateway: serviceclient.Client{},
 		PhoneKey: []byte("account-test-phone-key-32-bytes!"),
 	}.Register(router)
-	// gin applies Use only to routes registered afterwards, so the bearer token
-	// is stamped onto each request by the wrapper instead.
+	// gin 的 Use 只对其后注册的路由生效，
+	// 所以 bearer token 改由这个 wrapper 打到每个请求上。
 	return &authenticatedRouter{Engine: router, token: token}
 }
 
-// authenticatedRouter carries the session token on every request.
+// authenticatedRouter 让每个请求都带上会话 token。
 type authenticatedRouter struct {
 	*gin.Engine
 	token string
@@ -105,8 +105,8 @@ func callJSON(t *testing.T, router http.Handler, method, path string, body any) 
 	return response.Code, envelope
 }
 
-// A phone number may back only one account. The check must happen before the
-// write, otherwise two accounts could briefly share a number.
+// TestPhoneBindRejectsNumberAlreadyOwned —— 一个手机号只能对应一个账号。
+// 这道检查必须发生在写入之前，否则两个账号可能短暂共用同一个号码。
 func TestPhoneBindRejectsNumberAlreadyOwned(t *testing.T) {
 	if os.Getenv("TEST_USER_DATABASE_URL") == "" || os.Getenv("TEST_ADMIN_DATABASE_URL") == "" || os.Getenv("TEST_REDIS_URL") == "" {
 		t.Skip("disposable MySQL and Redis required")
@@ -121,7 +121,7 @@ func TestPhoneBindRejectsNumberAlreadyOwned(t *testing.T) {
 	})
 	router := accountRouter(t, userDB, adminDB, second)
 
-	// The second account claims a number the first already holds.
+	// 第二个账号要认领第一个账号已经占用的号码。
 	if err := userDB.Exec("UPDATE user SET phone_hash = ? WHERE id = ?", phonecrypto.Hash("13900000001"), first).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -130,11 +130,11 @@ func TestPhoneBindRejectsNumberAlreadyOwned(t *testing.T) {
 		t.Fatalf("duplicate phone returned %d: %s", code, body["message"])
 	}
 
-	// A malformed number is rejected before any lookup.
+	// 格式不对的号码在任何查询之前就被拒绝。
 	if code, _ := callJSON(t, router, "POST", "/api/v1/user/phone/bind", map[string]any{"phone": "12345"}); code != 400 {
 		t.Fatalf("malformed phone returned %d, want 400", code)
 	}
-	// An unused number binds and comes back masked.
+	// 未被占用的号码绑定成功，返回时已做脱敏。
 	if code, body := callJSON(t, router, "POST", "/api/v1/user/phone/bind", map[string]any{"phone": "13900000002"}); code != 200 {
 		t.Fatalf("bind returned %d: %s", code, body["message"])
 	}
@@ -148,14 +148,14 @@ func TestPhoneBindRejectsNumberAlreadyOwned(t *testing.T) {
 	if len(stored.Encrypted) == 0 || stored.Hash != phonecrypto.Hash("13900000002") {
 		t.Fatal("phone was not stored encrypted with its hash")
 	}
-	// The plaintext must not appear anywhere in the stored blob.
+	// 明文不允许出现在存储 blob 里的任何位置。
 	if json.Valid(stored.Encrypted) && string(stored.Encrypted) == "13900000002" {
 		t.Fatal("phone was stored in the clear")
 	}
 }
 
-// A wallet refund freezes the money immediately; approving later is what pays
-// it out. Without the freeze the same balance could fund a charge and a refund.
+// TestWalletRefundFreezesBalanceOnClaim —— 钱包退款一申请就冻结资金，之后批准才是真正打款。
+// 没有这道冻结，同一笔余额可能同时供一笔充电和一笔退款。
 func TestWalletRefundFreezesBalanceOnClaim(t *testing.T) {
 	if os.Getenv("TEST_USER_DATABASE_URL") == "" || os.Getenv("TEST_ADMIN_DATABASE_URL") == "" || os.Getenv("TEST_REDIS_URL") == "" {
 		t.Skip("disposable MySQL and Redis required")
@@ -187,7 +187,7 @@ func TestWalletRefundFreezesBalanceOnClaim(t *testing.T) {
 		t.Fatalf("balance after claim = %v, want 30000 frozen / 20000 available", balance)
 	}
 
-	// Claiming more than the remaining balance must be refused.
+	// 申领金额超过剩余余额必须被拒绝。
 	code, _ = callJSON(t, router, "POST", "/api/v1/user/wallet/refund", map[string]any{
 		"request_id": uuid.NewString(), "amount_cents": 90000, "reason": "超额",
 	})
@@ -195,7 +195,7 @@ func TestWalletRefundFreezesBalanceOnClaim(t *testing.T) {
 		t.Fatalf("over-balance claim returned %d, want 409", code)
 	}
 
-	// The same request id is idempotent and must not freeze a second time.
+	// 同一个请求号是幂等的，不能第二次冻结。
 	if code, _ := callJSON(t, router, "POST", "/api/v1/user/wallet/refund", map[string]any{
 		"request_id": requestID, "amount_cents": 30000, "reason": "验收提取",
 	}); code != 200 {

@@ -7,24 +7,21 @@ import (
 	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol"
 )
 
-// This file is the device half of the 5.8.9 codec. commands.go and
-// measurements.go only describe the server half: they parse what a board sends
-// and build what a server answers. A board simulator needs the mirror image, and
-// it needs the *real* encoder rather than a hand-rolled approximation — an
-// approximation would let a bug hide behind a matching bug.
+// 本文件是 5.8.9 编解码器的设备端一半。commands.go 与 measurements.go
+// 只描述服务端一半：解析主板发来的东西，构造服务端应答的东西。主板
+// 模拟器需要它的镜像，而且需要*真正的*编码器，而不是一个手工凑出来的
+// 近似——近似会让一个 bug 躲在另一个正好抵消它的 bug 后面。
 //
-// Every function here is the dual of a function in the server half, and the
-// round-trip tests assert that duality. If a vendor field moves, exactly one of
-// the two sides fails.
+// 这里每个函数都是服务端一半某个函数的对偶，往返测试会断言这种对偶
+// 性。厂商字段一旦挪位，两边必有且只有一边会失败。
 
-// BoardIDDigits is the number of decimal digits in a board identifier. The
-// board id occupies a fixed eight BCD bytes, so it is always exactly sixteen
-// digits and never shorter. This is narrower than the device_id column and than
-// the provisioning rule (^[A-Za-z0-9_-]{8,32}$), which accepts identifiers this
-// frame cannot carry; see DeviceIdentity.
+// BoardIDDigits 是主板标识中十进制位数的固定值。主板 ID 占固定 8 个
+// BCD 字节，所以它总是正好 16 位，绝不会更短。这比 device_id 列更窄，
+// 也比开通规则 (^[A-Za-z0-9_-]{8，32}$) 更窄：那条规则会放行本帧
+// 承载不了的标识；见 DeviceIdentity。
 const BoardIDDigits = 16
 
-// DeviceIdentity is a board's fixed identity as it travels in A0.
+// DeviceIdentity 是主板在 A0 中传递的固定身份信息。
 type DeviceIdentity struct {
 	BoardID         string
 	HardwareVersion string
@@ -35,9 +32,9 @@ type DeviceIdentity struct {
 	Signal          byte
 }
 
-// BuildRegistration encodes A0. The board id must be exactly sixteen decimal
-// digits because it is encoded as BCD; any other length cannot be represented,
-// so it is refused here rather than silently truncated on the way to the device.
+// BuildRegistration 编码 A0。主板 ID 必须正好 16 位十进制数字，因为它
+// 按 BCD 编码；其他任何长度都表示不出来，所以这里直接拒绝，而不是在
+// 送往设备的路上被悄悄截断。
 func BuildRegistration(identity DeviceIdentity) (Frame, error) {
 	board, err := encodeBCD(identity.BoardID)
 	if err != nil {
@@ -65,21 +62,20 @@ func BuildRegistration(identity DeviceIdentity) (Frame, error) {
 	return Frame{Command: Register, Data: data}, nil
 }
 
-// PortStatus is the board-wide state a heartbeat can carry alongside the port
-// list. The extended heartbeat is optional: a board that does not report it
-// sends the seventeen byte form instead.
+// PortStatus 是心跳在端口列表之外还能带的整机状态。扩展心跳是可选的：
+// 不报这块的主板改发 17 字节短格式。
 type PortStatus struct {
 	DeviceStatus byte
 	VoltageV     uint16
-	// TemperatureC is sent with a +50 bias to keep the field unsigned, which is
-	// what the server subtracts on the way in.
+	// TemperatureC 带 +50 偏置发送，好让该字段保持无符号，服务端
+	// 解码时再把这个偏置减回去。
 	TemperatureC int16
 	PortStates   []byte
 	Charging     []protocol.PortTelemetry
 }
 
-// BuildHeartbeat encodes A4. Passing no status produces the short seventeen byte
-// form; passing one produces the extended form the server enables on A6.
+// BuildHeartbeat 编码 A4。status 传 nil 产出 17 字节短格式；传一个则
+// 产出服务端在 A6 上启用后的扩展格式。
 func BuildHeartbeat(identity DeviceIdentity, status *PortStatus) (Frame, error) {
 	board, err := encodeBCD(identity.BoardID)
 	if err != nil {
@@ -99,8 +95,8 @@ func BuildHeartbeat(identity DeviceIdentity, status *PortStatus) (Frame, error) 
 	if len(status.PortStates) == 0 || len(status.PortStates) > 64 {
 		return Frame{}, ErrPayload
 	}
-	// A frame may carry at most 255 bytes of payload, so a full board cannot
-	// report every charging port in one heartbeat.
+	// 一帧最多带 255 字节 payload，所以一块满载的主板没法在一次
+	// 心跳里报完所有充电端口。
 	if 23+len(status.PortStates)+13*len(status.Charging) > 255 {
 		return Frame{}, ErrLength
 	}
@@ -124,7 +120,7 @@ func BuildHeartbeat(identity DeviceIdentity, status *PortStatus) (Frame, error) 
 		entry[3] = byte(port.RemainingSecs % 60)
 		binary.LittleEndian.PutUint16(entry[4:6], uint16(port.ChargedSeconds/60))
 		entry[6] = byte(port.ChargedSeconds % 60)
-		// The wire unit is thousandths of a milliwatt-hour, matching the server.
+		// 线上单位是毫瓦时的千分之一，与服务端一致。
 		binary.LittleEndian.PutUint16(entry[7:9], uint16(port.RemainingMWh/1000))
 		binary.LittleEndian.PutUint16(entry[9:11], uint16(port.ChargedMWh/1000))
 		binary.LittleEndian.PutUint16(entry[11:13], uint16(port.PowerDeciWatts))
@@ -133,8 +129,8 @@ func BuildHeartbeat(identity DeviceIdentity, status *PortStatus) (Frame, error) 
 	return Frame{Command: Heartbeat, Data: data}, nil
 }
 
-// BuildCommandResult encodes B8 (start) and BA (stop). The caller chooses which
-// by command; the payload is identical, so one encoder serves both.
+// BuildCommandResult 编码 B8（启动）和 BA（停止）。用哪一个由调用方
+// 通过 command 决定；两者 payload 完全相同，所以一个编码器就够。
 func BuildCommandResult(command, code, port byte) (Frame, error) {
 	if command != StartReply && command != StopReply {
 		return Frame{}, ErrPayload
@@ -142,13 +138,11 @@ func BuildCommandResult(command, code, port byte) (Frame, error) {
 	return Frame{Command: command, Data: []byte{code, port}}, nil
 }
 
-// ChargeEndReport is what a board reports when a charge finishes, on its own or
-// because it was told to stop.
+// ChargeEndReport 是充电结束时主板上报的内容，或是自行结束，或是被叫停。
 type ChargeEndReport struct {
 	Port byte
-	// OrderBCD is the eight bytes copied verbatim from the B7 that started this
-	// charge. The board does not interpret it; echoing it unchanged is what ties
-	// the closing frame to the order.
+	// OrderBCD 是从启动本次充电的 B7 原样抄来的 8 个字节。主板不
+	// 解释它；原样回显才把结束帧与这笔订单绑在一起。
 	OrderBCD       [8]byte
 	StartedAt      time.Time
 	EndedAt        time.Time
@@ -158,9 +152,8 @@ type ChargeEndReport struct {
 	ConsumerType   byte
 }
 
-// BuildChargeEnd encodes BB, a fixed forty-four byte payload. Every field the
-// server reads is written at the documented offset; the gaps are reserved and
-// sent as zero.
+// BuildChargeEnd 编码 BB，固定 44 字节 payload。服务端会读的每个字段
+// 都写在文档规定的偏移上；空出来的位置是保留位，一律发零。
 func BuildChargeEnd(report ChargeEndReport) (Frame, error) {
 	if report.Port == 0 || report.EndedAt.Before(report.StartedAt) {
 		return Frame{}, ErrPayload
@@ -170,8 +163,8 @@ func BuildChargeEnd(report ChargeEndReport) (Frame, error) {
 	copy(data[2:10], report.OrderBCD[:])
 	encodeTime(data[10:16], report.StartedAt)
 	encodeTime(data[16:22], report.EndedAt)
-	// The server rebuilds the duration from these two fields and rejects a
-	// seconds remainder above 59, so the split must be exact.
+	// 服务端用这两个字段重建时长，并拒绝秒余数大于 59 的值，所以
+	// 这一刀必须切准。
 	seconds := uint32(report.EndedAt.Sub(report.StartedAt).Seconds())
 	binary.LittleEndian.PutUint16(data[26:28], uint16(seconds/60))
 	data[28] = byte(seconds % 60)
@@ -182,8 +175,8 @@ func BuildChargeEnd(report ChargeEndReport) (Frame, error) {
 	return Frame{Command: ChargeEnd, Data: data}, nil
 }
 
-// BuildFault encodes C0. The payload is five bytes: the affected port, the
-// vendor fault code, and three reserved bytes the server does not read.
+// BuildFault 编码 C0。payload 是 5 字节：出问题的端口、厂商故障码，
+// 外加 3 个服务端不读的保留字节。
 func BuildFault(port, code byte) (Frame, error) {
 	if port == 0 {
 		return Frame{}, ErrPayload
@@ -191,19 +184,17 @@ func BuildFault(port, code byte) (Frame, error) {
 	return Frame{Command: Fault, Data: []byte{port, code, 0, 0, 0}}, nil
 }
 
-// BuildTimeRequest encodes A8, the device asking the server for civil time.
+// BuildTimeRequest 编码 A8，即设备向服务端索要本地民用时间。
 func BuildTimeRequest() Frame {
 	return Frame{Command: TimeRequest, Data: make([]byte, 6)}
 }
 
-// ParseTimeReply reads A9, the server's answer to that request.
+// ParseTimeReply 读取 A9，也就是服务端对上面那个请求的应答。
 //
-// A board that has just logged in has no business trusting its own clock, and
-// the settlement is timed on the board's timestamps, so this is how a device
-// learns what time the platform believes it is. The payload is the same six BCD
-// bytes A1 carries in the same civil timezone, and it is read by the same
-// decoder — a second implementation would be a second place for the timezone
-// assumption to be wrong.
+// 一块刚登录的主板没有理由相信自己的时钟，而结算又是按主板打的时间戳
+// 计时的，所以设备只能靠这个帧知道平台认为现在几点。payload 是与 A1
+// 携带的一样 6 个 BCD 字节、处在同一个民用时区，也由同一个解码器读取
+// ——再写一份实现，就等于给时区假设多留一个出错的地方。
 func ParseTimeReply(frame Frame) (time.Time, error) {
 	if frame.Command != TimeReply || len(frame.Data) != 6 {
 		return time.Time{}, ErrPayload
@@ -211,12 +202,11 @@ func ParseTimeReply(frame Frame) (time.Time, error) {
 	return decodeTime(frame.Data)
 }
 
-// ChargingBandReport is what a board sends on C2 when it changes power tier.
+// ChargingBandReport 是主板切换功率档位时用 C2 发来的内容。
 //
-// Banding discounts time, not money: the board keeps supplying, but it reports
-// how much time is left *after* the discount rather than before it. Both
-// band numbers are 1-based, which is the opposite of the zero-based ladder the
-// port-status reply counts, so each side pins its own base.
+// 分档折的是时间不是钱：主板照旧供电，但它报的是打折*之后*还剩多少
+// 时间，而不是打折之前。两个档位编号都是从 1 开始的，这跟端口状态
+// 应答里从 0 数档位正好相反，所以两边各自固定自己的起点。
 type ChargingBandReport struct {
 	Port           byte
 	BandBefore     byte
@@ -226,9 +216,9 @@ type ChargingBandReport struct {
 	PowerDeciWatts uint16
 }
 
-// BuildChargingBand encodes C2. It is the mirror of ParseChargingBand, and
-// without it the codec has a decoder for an uplink no device can produce — the
-// gateway's telemetry path was reachable from no code path at all.
+// BuildChargingBand 编码 C2。它是 ParseChargingBand 的镜像，缺了它，
+// 这个编解码器就只会解一种没有任何设备能产生的上行帧——网关的遥测
+// 路径将完全无法从任何代码路径到达。
 func BuildChargingBand(report ChargingBandReport) (Frame, error) {
 	if report.Port == 0 || report.BandBefore < 1 || report.BandBefore > 5 ||
 		report.BandAfter < 1 || report.BandAfter > 5 {
@@ -244,8 +234,8 @@ func BuildChargingBand(report ChargingBandReport) (Frame, error) {
 	return Frame{Command: ChargingBand, Data: data}, nil
 }
 
-// ParseRegisterReply reads A1. The session bytes in the frame header are the
-// board's new session, so a device adopts them for every frame it sends after.
+// ParseRegisterReply 读取 A1。帧头里的 session 字节是主板的新 session，
+// 所以设备之后发的每一帧都改用它们。
 func ParseRegisterReply(frame Frame) (status byte, at time.Time, err error) {
 	if frame.Command != RegisterReply || len(frame.Data) != 7 {
 		return 0, time.Time{}, ErrPayload
@@ -254,8 +244,8 @@ func ParseRegisterReply(frame Frame) (status byte, at time.Time, err error) {
 	return frame.Data[0], parsed, err
 }
 
-// ParseStartCommand reads B7. A board cannot meter a charge it does not know
-// about, so this is what turns a command into a running session.
+// ParseStartCommand 读取 B7。主板没法给一笔自己不知情的充电计量，所以
+// 正是这个函数把一条命令变成一个运行中的会话。
 func ParseStartCommand(frame Frame) (StartCommand, error) {
 	if frame.Command != StartCharge || len(frame.Data) != 19 {
 		return StartCommand{}, ErrPayload
@@ -269,7 +259,7 @@ func ParseStartCommand(frame Frame) (StartCommand, error) {
 	return command, nil
 }
 
-// ParseStopCommand reads B9, a one byte payload naming the port to stop.
+// ParseStopCommand 读取 B9，1 字节 payload 指明要停哪个端口。
 func ParseStopCommand(frame Frame) (port byte, err error) {
 	if frame.Command != StopCharge || len(frame.Data) != 1 || frame.Data[0] == 0 {
 		return 0, ErrPayload
@@ -277,8 +267,8 @@ func ParseStopCommand(frame Frame) (port byte, err error) {
 	return frame.Data[0], nil
 }
 
-// encodeBCD turns decimal digits into packed BCD, rejecting anything the
-// server's decoder would refuse to read back.
+// encodeBCD 把十进制数字压成 BCD，凡是服务端的解码器读不回去的
+// 一律拒绝。
 func encodeBCD(digits string) ([]byte, error) {
 	if len(digits)%2 != 0 {
 		return nil, ErrPayload
@@ -294,15 +284,13 @@ func encodeBCD(digits string) ([]byte, error) {
 	return out, nil
 }
 
-// encodeIdentifier packs a module or SIM identifier into a fixed number of
-// bytes. The field is fixed width, so the identifier must be exactly twice that
-// width in characters; a shorter one is rejected rather than zero-padded, which
-// would silently change the identifier the server reads back.
+// encodeIdentifier 把模块号或 SIM 标识压进固定字节数。该字段宽度固定，
+// 所以标识的字符数必须正好是该宽度的两倍；更短的直接拒绝而不是补零，
+// 补零会悄悄改掉服务端读回来的标识。
 //
-// A clean decimal identifier is packed as BCD, matching the vendor example.
-// Anything else is packed as hex nibbles, mirroring the server's
-// decodeIdentifier, which falls back to uppercase hex rather than rejecting a
-// board whose SIM contains a letter.
+// 干净的十进制标识按 BCD 压，与厂商示例一致。其余一律按十六进制半字节
+// 压，对应服务端的 decodeIdentifier——它对含字母的 SIM 回退成大写
+// 十六进制，而不是把那块主板直接拒掉。
 func encodeIdentifier(value string, width int) ([]byte, error) {
 	if len(value) != width*2 {
 		return nil, ErrPayload

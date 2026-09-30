@@ -10,9 +10,9 @@ import (
 	"gorm.io/gorm"
 )
 
-// AggregateSample is one reading on its way into the rollup tables. It is
-// exported so the backfill endpoint, which writes the same table from a
-// different package, keeps the rollups in step as well.
+// AggregateSample 是一条正在写往汇总表的读数。它被导出，
+// 是为了让断线补传这个从另一个包写同一张表的接口
+// 也能同步维护汇总表。
 type AggregateSample struct {
 	DeviceID string
 	Port     sql.NullInt16
@@ -21,25 +21,22 @@ type AggregateSample struct {
 	TS       time.Time
 }
 
-// refreshAggregates keeps the 15-minute and hourly rollups in step with the raw
-// telemetry table.
+// refreshAggregates 让 15 分钟与小时两张汇总表跟上原始 telemetry 表。
 //
-// The raw table keeps every sample, so reading a long window out of it means
-// paging through tens of thousands of rows; the curve endpoint has a hard point
-// budget and would otherwise return only the newest slice of a 24-hour request
-// while presenting it as the whole window. The rollups answer the same question
-// in a bounded number of rows.
+// 原始表保留每一个样本，所以从它里面读一个长窗口意味着
+// 要翻过几万行；曲线接口的点数预算是硬的，
+// 否则它只会把 24 小时请求里最新的一段返回来，
+// 却对外声称这就是整个窗口。
+// 汇总表用有界的行数回答同样的问题。
 //
-// Both tables carry uk_bucket (device_id, port_no, metric, bucket_start,
-// bucket_month), so a plain ON DUPLICATE KEY UPDATE maintains the running mean,
-// extremes and sample count in place. The conflict target is spelled out in the
-// column list rather than left to the driver, because these tables are
-// partitioned on bucket_month and an inferred target produces an empty
-// ON DUPLICATE KEY clause.
+// 两张表都带 uk_bucket（device_id， port_no， metric， bucket_start，
+// bucket_month），所以一句普通的 ON DUPLICATE KEY UPDATE 就能就地
+// 维护运行均值、极值和样本数。冲突目标写死在列清单里而不交给驱动去推断，
+// 因为这些表是按 bucket_month 分区的，
+// 推断出来的目标会生成一句空的 ON DUPLICATE KEY 子句。
 //
-// The rollup is written in the same transaction as the raw rows. If the
-// transaction rolls back, neither persists, so a bucket can never claim samples
-// that the raw table does not have.
+// 汇总表与原始行写在同一个事务里。事务一旦回滚，两者都不会落盘，
+// 所以任何一个桶都不可能声称拥有原始表里并不存在的样本。
 func refreshAggregates(ctx context.Context, tx *gorm.DB, samples []AggregateSample) error {
 	if len(samples) == 0 {
 		return nil
@@ -55,14 +52,14 @@ func refreshAggregates(ctx context.Context, tx *gorm.DB, samples []AggregateSamp
 	return nil
 }
 
-// RefreshAggregates is the exported entry point for writers outside this package.
+// RefreshAggregates 是给本包之外的写入方用的导出入口。
 func RefreshAggregates(ctx context.Context, tx *gorm.DB, samples []AggregateSample) error {
 	return refreshAggregates(ctx, tx, samples)
 }
 
 func upsertAggregate(ctx context.Context, tx *gorm.DB, table string, width time.Duration, samples []AggregateSample) error {
-	// One statement per table, not one per sample: the TCP path runs on every
-	// device frame and a statement per metric would dominate its cost.
+	// 每张表一条语句，而不是每个样本一条：TCP 那条路每来一帧都会跑一次，
+	// 一个指标一条语句的话成本会被它占满。
 	values := make([]string, 0, len(samples))
 	args := make([]any, 0, len(samples)*9)
 	for _, sample := range samples {

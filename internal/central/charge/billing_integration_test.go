@@ -142,7 +142,7 @@ func TestActualBillingPersistsAndRefundsOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Concurrent consumers share one global receipt, despite monthly partitions.
+	// 尽管按月分区，并发消费者共享的仍是同一张全局回执。
 	var wg sync.WaitGroup
 	errs := make(chan error, 8)
 	for range 8 {
@@ -189,7 +189,7 @@ func TestActualBillingPersistsAndRefundsOnce(t *testing.T) {
 	if _, err := store.Calculate(ctx, source); !errors.Is(err, billing.ErrConflict) {
 		t.Fatalf("modified snapshot accepted: %v", err)
 	}
-	// Simulate loss of the billing acknowledgement after the user transaction.
+	// 模拟用户事务提交后计费确认丢失。
 	exec(billingDB, "UPDATE fee_delivery SET delivered=0,scheduled_at=UTC_TIMESTAMP(3) WHERE charge_order_id=?", id)
 	if _, err := service.Run(ctx); err != nil {
 		t.Fatal(err)
@@ -270,7 +270,7 @@ func TestActualBillingPersistsAndRefundsOnce(t *testing.T) {
 	if fee.ElectricCents != 90 || fee.ServiceCents != 25 || fee.TotalCents != 115 {
 		t.Fatalf("corrected measured fee %+v", fee)
 	}
-	// Pluck requires a slice destination; scanning a scalar through it fails.
+	// Pluck 要求目标是切片；用它去扫一个标量会失败。
 	var reviewStates []string
 	billingDB.Table("manual_fee_review").Where("charge_order_id=?", reviewID).Pluck("status", &reviewStates)
 	if len(reviewStates) != 1 || reviewStates[0] != "resolved" {

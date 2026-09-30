@@ -10,13 +10,13 @@ import (
 	"gorm.io/gorm"
 )
 
-// Activity rules are the operator-facing side of the coupon campaign engine.
-// The engine itself lives in the charge service; this only lets an operator see
-// which campaigns are running, open and close them, and check what they cost.
+// 活动规则是券活动引擎面向运营的那一面。
+// 引擎本身在 charge 服务里；
+// 这里只让运营看哪些活动在跑、把活动开关起来、核对花了多少钱。
 //
-// Money is stored in cents and windows are absolute, so whether a campaign is
-// running is a plain comparison against the clock rather than a stored flag
-// that can disagree with it.
+// 金额以分存储、窗口是绝对时间，
+// 所以"活动是否在进行中"是拿当前时间直接比一下，
+// 而不是靠一个可能和实际情况对不上的状态位。
 var activityTriggers = map[string]bool{
 	"first_recharge": true, "invite_reward": true, "threshold_redeem": true, "holiday": true,
 }
@@ -48,8 +48,8 @@ func (a ResourceAPI) registerActivityRules(r *gin.Engine) {
 	r.PUT("/api/v1/admin/coupon-activities/:id", a.Auth.Require("coupon.activity.manage"), a.updateActivityRule)
 }
 
-// grantedCounts counts what each rule actually handed out, so an operator can
-// see a campaign's real cost without leaving the page.
+// grantedCounts 统计每条规则实际发出了多少份，
+// 运营不用离开页面就能看到一个活动的真实花费。
 // grantedCounts 统计这批活动券各自实际发出了多少份，让运营不用离开列表页就能看出活动花了多少钱。
 // 只认 coupon_grant 中来源为 activity 或 invite_reward 的发放记录；券 ID 相同的活动会合并计数。
 func (a ResourceAPI) grantedCounts(tx *gorm.DB, ruleIDs []uint64) (map[uint64]int64, error) {
@@ -196,8 +196,8 @@ func (a ResourceAPI) createActivityRule(c *gin.Context) {
 		httpapi.BadRequest(c, "活动规则无效：名称不能为空，门槛为非负分，窗口须为 RFC3339 且结束晚于开始，满减须设门槛，邀请有奖须设邀请人券")
 		return
 	}
-	// A rule pointing at a missing or disabled coupon would silently never
-	// grant, so it is refused at creation instead.
+	// 指向不存在或已停用券的规则会静默地永远发不出券，
+	// 所以这里在创建时直接拒掉。
 	if err := a.couponUsable(c, in.CouponID); err != nil {
 		httpapi.BadRequest(c, "活动券不存在或已停用")
 		return
@@ -225,9 +225,9 @@ func (a ResourceAPI) createActivityRule(c *gin.Context) {
 		resourceFailure(c, err)
 		return
 	}
-	// The rule lives in user_db and audit_log lives in admin_db. Joining them in
-	// one transaction would be a cross-schema write, which this project does not
-	// do, so the audit is written through AdminDB once the change has committed.
+	// 规则在 user_db，audit_log 在 admin_db。把两者放进同一个事务
+	// 就是跨 schema 写入，本项目不这么做，
+	// 所以等改动提交之后再经 AdminDB 单独补写审计。
 	a.auditToAdmin(c, "create", "coupon_activity", id, nil, in, "")
 	httpapi.OK(c, gin.H{"id": id})
 }
@@ -253,8 +253,8 @@ func (a ResourceAPI) updateActivityRule(c *gin.Context) {
 		httpapi.BadRequest(c, "活动券不存在或已停用")
 		return
 	}
-	// A typed snapshot, not `any`: GORM reflects on the destination and panics
-	// on a nil interface.
+	// 用带类型的快照而不是 `any`：GORM 会对目标做反射，
+	// 目标是 nil 接口时它会 panic。
 	var before activityRuleRow
 	if err := a.Store.UserDB.WithContext(c.Request.Context()).
 		Table("coupon_activity_rule").Where("id = ? AND deleted_at IS NULL", id).Take(&before).Error; err != nil {
@@ -297,9 +297,9 @@ func (a ResourceAPI) couponUsable(c *gin.Context, couponID uint64) error {
 		Where("id = ? AND status = 'active' AND deleted_at IS NULL", couponID).Count(&count).Error; err != nil {
 		return err
 	}
-	// A count of zero is not an error, so it has to be checked explicitly: a
-	// rule pointing at a coupon that does not exist would never grant anything
-	// and would look exactly like a working campaign until it expired.
+	// 计数为 0 不算错误，所以必须显式判断：一条指向不存在券的规则
+	// 永远发不出任何东西，而且在过期之前看上去和一个正常在跑的活动
+	// 一模一样。
 	if count == 0 {
 		return errActivityInput
 	}

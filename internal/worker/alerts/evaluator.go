@@ -15,9 +15,9 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// Evaluator turns raw telemetry into alert events using the operator-configured
-// rules. gateway_db owns telemetry and admin_db owns rules and alerts; the worker
-// holds both connections, so no cross-schema SQL is required.
+// Evaluator 按运维配置的规则，把原始遥测转成告警事件。
+// telemetry 归 gateway_db 管，规则与告警归 admin_db 管；
+// worker 同时持有这两个连接，因此不需要跨库 SQL。
 type Evaluator struct {
 	GatewayDB *gorm.DB
 	AdminDB   *gorm.DB
@@ -38,16 +38,16 @@ type rule struct {
 
 func (rule) TableName() string { return "alert_rule" }
 
-// threshold is either a single number or a [low, high] pair for "between".
+// threshold 要么是单个数值，要么是 "between" 用的 [low, high] 区间。
 type threshold struct {
 	Low  decimal.Decimal
 	High decimal.Decimal
 }
 
-// Evaluate reads recent telemetry once and applies every enabled rule. An alert
-// is raised only when the device had no active alert for that rule, and is
-// auto-resolved once the metric returns to normal, so operators are not paged
-// repeatedly for one ongoing fault.
+// Evaluate 读取一次最近的遥测，并套用每条已启用的规则。
+// 只有当该设备在这条规则上还没有活跃告警时才会新发告警；
+// 指标恢复正常后告警会自动关闭，
+// 这样同一个持续故障不会反复呼叫运维。
 func (e Evaluator) Evaluate(ctx context.Context) (int, error) {
 	if e.GatewayDB == nil || e.AdminDB == nil {
 		return 0, errors.New("alert evaluator is not configured")
@@ -63,8 +63,8 @@ func (e Evaluator) Evaluate(ctx context.Context) (int, error) {
 	if len(rules) == 0 {
 		return 0, nil
 	}
-	// Only metrics some enabled rule watches are read, so a busy fleet does not
-	// pull the whole telemetry table into memory.
+	// 只读取有启用规则在监看的指标，
+	// 这样设备规模再大也不会把整张遥测表拉进内存。
 	metrics := map[string]bool{}
 	for _, r := range rules {
 		metrics[r.Metric] = true
@@ -112,8 +112,8 @@ func (e Evaluator) rules(ctx context.Context) ([]rule, error) {
 	return rows, nil
 }
 
-// Column names differ from the Go field names, so they are mapped explicitly;
-// without the tags GORM scans zeros and no threshold ever matches.
+// 列名与 Go 字段名不一致，所以显式映射；没有这些 tag 时 GORM 扫出来全是零值，
+// 任何阈值都匹配不上。
 type sample struct {
 	DeviceID string          `gorm:"column:device_id"`
 	Metric   string          `gorm:"column:metric"`
@@ -130,15 +130,15 @@ func (e Evaluator) samples(ctx context.Context, metrics map[string]bool, limit i
 		return nil, nil
 	}
 	rows := []sample{}
-	// value_num is DECIMAL, so it is scanned as a string and converted exactly.
+	// value_num 是 DECIMAL 类型，所以先按字符串扫出来再精确转换。
 	if err := e.GatewayDB.WithContext(ctx).Table("telemetry").
 		Select("device_id, metric, value_num, ts").
 		Where("metric IN ? AND value_num IS NOT NULL AND ts >= DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 5 MINUTE)", names).
 		Order("ts DESC, id DESC").Limit(limit).Find(&rows).Error; err != nil {
 		return nil, err
 	}
-	// A zero reading is legitimate, so rows are kept as scanned; the SQL already
-	// excludes the NULL value_num that decimal cannot represent.
+	// 读数为零是合法值，所以扫出来什么就保留什么；SQL 已经排除了
+	// decimal 无法表示的 NULL value_num。
 	if len(rows) == 0 {
 		return nil, nil
 	}
@@ -157,8 +157,8 @@ func parseThreshold(raw []byte) (threshold, error) {
 	return threshold{}, errors.New("threshold must be a number or an ordered [low, high] pair")
 }
 
-// evaluate applies one operator. "between" is inclusive on both ends so a rule
-// author does not have to reason about a boundary that does not exist.
+// evaluate 套用一个比较算子。"between" 两端都含，
+// 这样配规则的人不必去推理一个并不存在的边界。
 func evaluate(op string, value decimal.Decimal, bound threshold) bool {
 	switch op {
 	case ">":
@@ -180,7 +180,7 @@ func evaluate(op string, value decimal.Decimal, bound threshold) bool {
 	}
 }
 
-// matchesDevice supports the documented '*' wildcard plus literal identifiers.
+// matchesDevice 支持文档里约定的 '*' 通配符，以及完全字面匹配的设备标识。
 func matchesDevice(pattern, deviceID string) bool {
 	pattern = strings.TrimSpace(pattern)
 	if pattern == "" || pattern == "*" {
@@ -216,8 +216,8 @@ func (e Evaluator) reconcileAlert(ctx context.Context, r rule, s sample, breache
 		ID     uint64 `gorm:"column:id"`
 		Status string `gorm:"column:status"`
 	}
-	// Lock the open alert for this device+rule so two evaluations cannot both
-	// decide to raise it.
+	// 锁住该设备+规则上未关闭的告警，
+	// 避免两次评估都决定把它发出来。
 	found := e.AdminDB.WithContext(ctx).Table("alert_event").
 		Clauses(clause.Locking{Strength: "UPDATE"}).
 		Where("device_id = ? AND rule_id = ? AND created_month = ? AND status IN ('active','acknowledged')", s.DeviceID, r.ID, month).
@@ -230,8 +230,8 @@ func (e Evaluator) reconcileAlert(ctx context.Context, r rule, s sample, breache
 		if found.RowsAffected == 0 {
 			return false, nil
 		}
-		// The condition cleared: close the alert automatically so the operator
-		// does not have to confirm a recovery they did not perform.
+		// 条件已解除：自动关闭告警，
+		// 省得运维去确认一个自己并没有做过的恢复。
 		if existing.Status == "auto_resolved" {
 			return false, nil
 		}
@@ -243,7 +243,7 @@ func (e Evaluator) reconcileAlert(ctx context.Context, r rule, s sample, breache
 		return true, nil
 	}
 	if found.RowsAffected > 0 {
-		// Already open: update the observed value so operators see it drift.
+		// 已经在开：更新观测值，让运维看得到它正在往哪边漂。
 		if err := e.AdminDB.WithContext(ctx).Table("alert_event").
 			Where("id = ? AND created_month = ?", existing.ID, month).
 			Updates(map[string]any{"value": s.Value}).Error; err != nil {
@@ -259,17 +259,17 @@ func (e Evaluator) reconcileAlert(ctx context.Context, r rule, s sample, breache
 	if err := e.AdminDB.WithContext(ctx).Table("alert_event").Create(row).Error; err != nil {
 		return false, err
 	}
-	// Fan the new alert out to every enabled subscription so webhook and
-	// in-console routing use the same source of truth.
+	// 把新告警分发给每个启用的订阅，让 webhook 与控制台通知
+	// 用的是同一个事实来源。
 	if err := e.notifySubscribers(ctx, r, s, eventID, thresholdText); err != nil {
 		return true, err
 	}
 	return true, nil
 }
 
-// notifySubscribers queues a webhook event for each subscription bound to this
-// rule or its severity. Delivery itself happens in the webhook worker, so a
-// subscriber outage cannot slow down evaluation.
+// notifySubscribers 为绑定了这条规则或该严重级别的每个订阅，
+// 各排一个 webhook 事件。真正的投递发生在 webhook worker 里，
+// 所以订阅方故障不会拖慢评估。
 func (e Evaluator) notifySubscribers(ctx context.Context, r rule, s sample, eventID, thresholdText string) error {
 	var targets []struct {
 		SubscriptionID *uint64 `gorm:"column:webhook_subscription_id"`
@@ -295,9 +295,9 @@ func (e Evaluator) notifySubscribers(ctx context.Context, r rule, s sample, even
 		if err != nil {
 			return err
 		}
-		// The event id is derived from the alert and subscription, so re-running
-		// evaluation must re-use the existing outbox row instead of failing on
-		// the unique key.
+		// 事件 id 由告警和订阅推导而来，
+		// 所以重跑评估必须复用已有的 outbox 行，
+		// 而不是撞唯一键失败。
 		outboxID := uuid.NewSHA1(uuid.NameSpaceURL, []byte(eventID+fmt.Sprint(*target.SubscriptionID))).String()
 		insert := e.AdminDB.WithContext(ctx).Table("event_outbox").Create(map[string]any{
 			"event_id": outboxID, "stream": "charge_events_stream", "envelope_json": string(envelope),
@@ -312,8 +312,8 @@ func (e Evaluator) notifySubscribers(ctx context.Context, r rule, s sample, even
 	return nil
 }
 
-// isDuplicateKey reports MySQL's unique-constraint violation, which for these
-// deterministic event ids means the notification was already queued.
+// isDuplicateKey 判定 MySQL 唯一约束冲突；对这些确定性事件 id 来说，
+// 它意味着这条通知早已入过队。
 func isDuplicateKey(err error) bool {
 	if err == nil {
 		return false

@@ -96,7 +96,7 @@ func (a ResourceAPI) createCoupon(c *gin.Context) {
 	httpapi.OK(c, in)
 }
 
-// updateCoupon 是 PUT /api/v1/admin/coupons/:id 的处理函数。
+// updateCoupon 是 PUT /api/v1/admin/coupons/：id 的处理函数。
 // 只能改名称和启停状态，额度与优惠力度一旦发出去就不能再改，否则已发出的券无法解释。
 // 改动前对券行加写锁并留存旧值快照，审计在事务提交后另行写入。
 func (a ResourceAPI) updateCoupon(c *gin.Context) {
@@ -135,7 +135,7 @@ func (a ResourceAPI) updateCoupon(c *gin.Context) {
 	httpapi.OK(c, in)
 }
 
-// couponStats 是 GET /api/v1/admin/coupons/:id/stats 的处理函数：
+// couponStats 是 GET /api/v1/admin/coupons/：id/stats 的处理函数：
 // 统计该券模板已发放、未使用、已使用、已过期四种发放记录的数量及使用率。
 // 未使用与已过期是按当前时刻动态判定的（status 仍是 unused 但已过期的记为过期），
 // 四个状态互斥，加总等于发放总数。
@@ -172,7 +172,7 @@ func (a ResourceAPI) couponStats(c *gin.Context) {
 // 这个号是幂等的唯一依据，格式不统一就挡不住重复发放。
 var requestIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
-// grantCoupon 是 POST /api/v1/admin/coupons/:id/grants 的处理函数：给指定用户发一张券。
+// grantCoupon 是 POST /api/v1/admin/coupons/：id/grants 的处理函数：给指定用户发一张券。
 // 同一个 request_id 重复提交只会返回首次发放的券 ID（幂等回执 coupon_grant_request），
 // 但请求号对应的券和用户必须与本次一致，否则返回 409。
 // 发券前校验券是否生效期内、用户是否正常、总量与单人额度是否用尽，全部在事务内并加行锁；

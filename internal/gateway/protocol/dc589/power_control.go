@@ -6,67 +6,63 @@ import (
 	"fmt"
 )
 
-// 0xE0 / 0xE1 are new in 5.8.9 and they are the protocol's own way of saying
-// "do not tier this board", which is the entry point the service-billed modes
-// need. The alternative — charge type 4 — implies it for the duration of a
-// session, while these set it on the board itself.
+// 0xE0 / 0xE1 是 5.8.9 才有的命令，也是协议自带的「别给这块板分档」的手段，
+// 正是按服务计费的那些模式需要的入口。另一条路——充电类型 4——只能在整个会话
+// 期间隐含这个前提，而这两条命令是把开关直接写到板子上。
 //
-// What is implemented here is only the operation the document defines. It says
-// "operation type: 0 = remove power" and does not enumerate the rest, and the
-// rest is unresolved item 28 in docs/migration/go-rebuild.md. An unknown
-// operation code is therefore refused here by name rather than being encoded as
-// a guess: a wrong guess would be a frame the board interprets as something
-// this platform never intended to ask for.
+// 这里实现的只有文档定义的那一个操作。文档只写了「操作类型：0 = 移除功率」，
+// 其余没有列举，而其余部分正是 docs/migration/go-rebuild.md 里的未决条目 28。
+// 因此遇到未知的操作码，这里按名字拒掉，而不是硬编码成某种猜测：猜错就会发出
+// 一帧主板解读成平台从未打算要求的东西。
 
 const (
 	cmdPowerControl       = 0xE0
 	cmdPowerControlReply  = 0xE1
-	powerControlDataBytes = 6 // control + operation + parameter + reserved
+	powerControlDataBytes = 6 // 控制字 + 操作 + 参数 + 保留
 )
 
 type PowerControlKind byte
 
 const (
-	// PowerQuery asks the board what its current setting is.
+	// PowerQuery 询问主板当前的设置是什么。
 	PowerQuery PowerControlKind = 0
-	// PowerSet changes it.
+	// PowerSet 修改这个设置。
 	PowerSet PowerControlKind = 1
 )
 
 type PowerOperation byte
 
 const (
-	// PowerOpRemove turns off the tiered power control: the board stops
-	// dividing its output into tiers and delivers a flat setting, which is what
-	// a platform doing its own power pricing needs.
+	// PowerOpRemove 关闭分档功率控制：主板不再把输出拆成若干
+	// 档，而是按一个恒定值供电，这正是平台自己做功率定价时
+	// 需要的。
 	PowerOpRemove PowerOperation = 0
 )
 
-// powerControlFailure is the value the board writes into the parameter field of
-// a 0xE1 it could not honour. The document states it as 0xFFF1, which is two
-// bytes: the whole field, not a value inside it.
+// powerControlFailure 是主板在无法满足请求时写进 0xE1 参数字段的值。
+// 文档写作 0xFFF1，那是整整两个字节：占满整个字段，而不是字段
+// 里的某个取值。
 const powerControlFailure uint16 = 0xFFF1
 
-// ErrPowerControlRejected reports that the board refused a power control, or
-// answered with the failure marker.
+// ErrPowerControlRejected 表示主板拒绝了功率控制，或者
+// 用失败标记作答。
 var ErrPowerControlRejected = errors.New("主板拒绝功率控制")
 
-// ErrPowerOperationUnknown reports an operation code the document does not
-// define. It is a distinct error from a refusal, because the board never saw
-// the request: this platform declined to encode it.
+// ErrPowerOperationUnknown 表示操作码是文档没有定义的。它与
+// 「被拒绝」是不同的错误，因为主板压根没见过这个请求。
 type ErrPowerOperationUnknown struct{ Operation PowerOperation }
 
 func (e ErrPowerOperationUnknown) Error() string {
 	return fmt.Sprintf("未知的 0xE0 操作类型 %d，厂商文档只定义了 0=移除功率", byte(e.Operation))
 }
 
-// PowerControl is one 0xE0 request.
+// PowerControl 是一条 0xE0 请求。
 type PowerControl struct {
 	Control   PowerControlKind
 	Operation PowerOperation
-	// DeciWatts is the parameter in the document's 0.1W unit. It is meaningless
-	// for PowerQuery and must be zero there: a query that also carries a
-	// parameter is asking the board to do two things at once.
+	// DeciWatts 是文档里 0.1W 单位的参数。对 PowerQuery 它
+	// 没有意义，必须填零：一条既查询又带参数的命令等于要求主板
+	// 同时做两件事。
 	DeciWatts uint16
 }
 
@@ -91,12 +87,12 @@ func encodePowerControl(c PowerControl) ([]byte, error) {
 	data[0] = byte(c.Control)
 	data[1] = byte(c.Operation)
 	binary.BigEndian.PutUint16(data[2:4], c.DeciWatts)
-	// data[4:6] stays zero: the document calls it reserved and says nothing
-	// about what a non-zero value means, so nothing non-zero is ever sent.
+	// data[4:6] 保持为零：文档称它为保留位，却没说非零
+	// 代表什么，所以永远不发非零值。
 	return data, nil
 }
 
-// BuildPowerControl encodes a 0xE0 for the wire.
+// BuildPowerControl 把一条 0xE0 编码到线上。
 func BuildPowerControl(session [6]byte, c PowerControl) (Frame, error) {
 	data, err := encodePowerControl(c)
 	if err != nil {
@@ -105,9 +101,9 @@ func BuildPowerControl(session [6]byte, c PowerControl) (Frame, error) {
 	return Frame{Command: cmdPowerControl, Session: session, Data: data}, nil
 }
 
-// ParsePowerControlReply reads a 0xE1. A reply whose parameter field is the
-// failure marker is a refusal, and it is returned as ErrPowerControlRejected
-// rather than as a value the caller has to remember to check.
+// ParsePowerControlReply 读取 0xE1。参数字段等于失败标记的
+// 应答就是一次拒绝，这里直接返回 ErrPowerControlRejected，而不是
+// 丢给调用方一个还得记得自己检查的值。
 func ParsePowerControlReply(frame Frame) (PowerControl, error) {
 	if len(frame.Data) != powerControlDataBytes {
 		return PowerControl{}, ErrPayload
@@ -126,10 +122,10 @@ func ParsePowerControlReply(frame Frame) (PowerControl, error) {
 	return reply, nil
 }
 
-// SetNoTiering is the call the service-billed modes need: take the board out of
-// tiered power control so the platform's own power pricing is the only one in
-// effect. It is a named operation rather than a raw frame so the intent is
-// visible at the call site.
+// SetNoTiering 是按服务计费的模式需要的那个动作：把主板带出
+// 分档功率控制，让平台自己的功率定价成为唯一生效的规则。它是
+// 一个有名字的操作而不是一帧裸数据，这样调用点上一眼能看出
+// 意图。
 func SetNoTiering(session [6]byte) (Frame, error) {
 	return BuildPowerControl(session, PowerControl{Control: PowerSet, Operation: PowerOpRemove})
 }

@@ -13,9 +13,9 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// resourceCodePattern guards the operator-supplied business codes that are
-// still around. The station code used to live here too and is gone as of
-// migration 0044; what is left is the split template and its parties.
+// resourceCodePattern 守住那些还留在系统里、由运营手工填写的业务编码。
+// 站点编码原先也走这里，已随 0044 迁移删掉；
+// 现在剩下的只有分账模板编码和参与方编码。
 // resourceCodePattern 约束运营手工填写的业务编码：只允许字母、数字、下划线、短横，1–64 位。
 // 站点编码原先也走这里，已随 0044 迁移删除，现在只剩分账模板编码和参与方编码。
 var resourceCodePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
@@ -410,9 +410,9 @@ func requireUsableSplitTemplate(tx *gorm.DB, id uint64) error {
 	return nil
 }
 
-// Rebinding an existing station is allowed only before it has any payment or
-// charge history. Settlement reads the bound template when it runs; preserving
-// history avoids reallocating a delayed settlement under a different template.
+// 已有的站点只有在还没产生任何充值或充电记录之前才允许改绑。
+// 结算在执行时才去读绑定的模板；保住历史，
+// 也就避免了让一笔延迟到账的结算按另一个模板重新分配。
 
 // bindStationSplitTemplate 给站点改绑分账模板。约束：必须带 expected_template_id 做乐观锁（未绑定时传 0），
 // 目标模板必须可用；站点只允许在没有任何充值订单、没有充电订单、且已被停用时才可改绑，

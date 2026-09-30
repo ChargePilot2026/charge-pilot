@@ -22,8 +22,8 @@ type SessionAuthenticator struct {
 	}
 }
 
-// Authenticate verifies the signed token, live session, and current account
-// state on every user request. The caller must return when ok is false.
+// Authenticate 在每个用户请求上校验签名过的 token、存活的会话
+// 以及当前的账号状态。ok 为 false 时调用方必须直接返回。
 func (a SessionAuthenticator) Authenticate(c *gin.Context) (userID uint64, ok bool) {
 	parts := strings.Fields(c.GetHeader("Authorization"))
 	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
@@ -50,8 +50,8 @@ func (a SessionAuthenticator) Authenticate(c *gin.Context) (userID uint64, ok bo
 		return 0, false
 	}
 	if a.Users == nil {
-		// A misconfigured deployment must answer with a retryable error rather
-		// than dereferencing a nil store inside the request path.
+		// 配置错了的部署必须回一个可重试的错误，
+		// 而不是让请求路径里去解引用一个 nil 的存储。
 		httpapi.Write(c, http.StatusServiceUnavailable, 5001, "user unavailable", nil)
 		return 0, false
 	}

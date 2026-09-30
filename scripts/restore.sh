@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
-# Restore a backup produced by scripts/backup.sh into the configured schemas.
-# This is destructive by design: it drops each schema first so a restore cannot
-# silently merge with stale rows. It refuses to run unless RESTORE_CONFIRM is set
-# to the schema list it is about to replace.
+# 把 scripts/backup.sh 产出的备份恢复到配置好的各个库。
+# 破坏性是刻意设计的：先 DROP 每个库，恢复才不会和陈旧数据悄悄合并。
+# 除非 RESTORE_CONFIRM 等于它即将替换掉的库名清单，否则拒绝执行。
 #
-# Usage:
+# 用法：
 #   RESTORE_CONFIRM="user admin billing worker gateway" \
 #     scripts/restore.sh backups/chargepilot-20260929T000000Z.sql.gz
 set -euo pipefail
@@ -20,8 +19,7 @@ host="${MYSQL_HOST:-127.0.0.1}"
 port="${MYSQL_PORT:-3306}"
 user="${MYSQL_USER:-root}"
 
-# The archive is the source of truth for what gets replaced; the operator must
-# confirm exactly those schemas.
+# 归档才是「要替换掉什么」的准绳，操作者必须确认的正是这几个库。
 targets="$(gzip -dc "$archive" | sed -n 's/^-- schemas: //p' | head -1)"
 if [[ -z "$targets" ]]; then
   echo "archive does not declare which schemas it contains: $archive" >&2
@@ -43,8 +41,7 @@ else
   exit 1
 fi
 for schema in $targets; do
-  # Dropping and recreating is the only way to guarantee the restored data
-  # matches the archive rather than layering on top of whatever was there.
+  # 只有 DROP 再重建，才能保证恢复后的数据与归档一致，而不是叠在原有数据之上。
   "${mysql[@]}" -e \
     "DROP DATABASE IF EXISTS \`${schema}\`; CREATE DATABASE \`${schema}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
 done
@@ -54,9 +51,8 @@ if ! gzip -dc "$archive" | "${mysql[@]}"; then
   exit 1
 fi
 
-# Goose has to be re-run after a restore because the schema history lives in the
-# database itself; skipping it would leave migrations unrecorded. The connection
-# URLs come from the environment, so this only runs when they are configured.
+# 恢复后必须重跑 Goose：迁移历史本身就存在数据库里，跳过会让迁移没被记录。
+# 连接串取自环境变量，所以只在配置齐全时才执行。
 if command -v go >/dev/null 2>&1 && [[ -n "${DATABASE_URL_USER:-}" ]]; then
   echo "re-applying migrations after restore"
   go run ./cmd/migrate --schema all
@@ -70,9 +66,8 @@ for schema in $targets; do
   echo "restored ${schema}: ${tables} tables"
 done
 
-# The services read their configuration and bootstrap state at startup. A restore
-# that empties the admin tables leaves nobody able to sign in until they are
-# restarted, so this says so instead of leaving a silent lockout.
+# 各服务在启动时读取配置与引导状态。恢复把管理后台的表清空后，在重启之前
+# 没有人能登录，所以这里明确提示，而不是让人撞上无声的锁死。
 echo ""
 echo "restart the services so they reload the restored data:"
 echo "  docker compose restart central gateway worker   # development stack"

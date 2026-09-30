@@ -11,8 +11,8 @@ export class SessionExpired extends Error {}
 type StoragePort = Pick<Storage,'getItem'|'setItem'|'removeItem'>;
 type LockPort = <T>(action:()=>Promise<T>)=>Promise<T>;
 
-// A single lock is shared by refresh, sign-in and sign-out. A late response may
-// never replace credentials belonging to a later login in this or another tab.
+// 刷新、登录、登出共用同一把锁。一个迟到的响应绝不能覆盖掉属于更晚一次登录的凭据，
+// 无论是本标签页还是别的标签页。
 export function createSessionManager(storage:StoragePort, lock:LockPort, changed:()=>void, newEpoch:()=>string) {
  const epoch=()=>storage.getItem('cp_session_epoch');
  const write=(data:SessionTokens,username?:string)=>{

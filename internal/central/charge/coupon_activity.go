@@ -12,23 +12,13 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// Activity rules hand out coupons when a customer meets a condition. The coupon
-// itself lives in `coupon`; a rule only decides when one is granted and how far
-// the campaign may run.
-//
-// Every grant is written with a deterministic source_event_id derived from the
-// rule, the customer and the triggering fact. That is what makes a replayed
-// event a no-op instead of a second coupon: the same trigger always produces
-// the same key, and the unique constraint behind coupon_grant_request turns a
-// repeat into a duplicate error we can swallow.
-//
-// A rule that cannot be satisfied is not an error. Campaigns expire, run out of
-// budget, or lose a race, and none of that should fail the payment or order that
-// triggered them, so evaluation reports what it granted and leaves the rest.
+// errActivityNotApplicable 表示这次事件没有任何规则够得着（规则过期、
+// 预算用尽或并发里输掉了竞争）。调用方把它当作正常结果吞掉，
+// 而不是失败——求值只汇报发了什么，其余一律略过。
 var errActivityNotApplicable = errors.New("no activity rule applies")
 
-// activityRule is the subset of a rule the engine needs. Reading it as a struct
-// rather than a map keeps a schema change from silently changing behaviour.
+// activityRule 是引擎真正用到的规则字段子集。
+// 用结构体而不是 map 来读，schema 变更就不会悄悄改变行为。
 type activityRule struct {
 	ID              uint64        `gorm:"column:id"`
 	TriggerType     string        `gorm:"column:trigger_type"`
@@ -42,20 +32,20 @@ type activityRule struct {
 	EndAt           time.Time     `gorm:"column:end_at"`
 }
 
-// activityEvent identifies what happened. EventKey must be stable across
-// retries: the same real-world fact has to produce the same key, because that
-// key is what makes the grant idempotent.
+// activityEvent 说明发生了什么。
+// EventKey 必须在重试之间保持稳定：
+// 同一个现实事实必须算出同一个键，因为正是这个键让发放幂等。
 type activityEvent struct {
 	TriggerType string
 	UserID      uint64
-	// EventKey distinguishes repeated occurrences of the same trigger, e.g. two
-	// different recharge request ids for the same customer.
+	// EventKey 用来区分同一类触发的多次发生，
+	// 例如同一客户的两笔不同充值请求号。
 	EventKey string
-	// AmountCents is only read by threshold rules.
+	// AmountCents 只有门槛类规则才会读。
 	AmountCents int64
-	// InviterID is only used by invite_reward.
+	// InviterID 只被 invite_reward 用到。
 	InviterID uint64
-	// Now is injected so tests do not depend on the wall clock.
+	// Now 由外部注入，测试才不必依赖墙上时钟。
 	Now time.Time
 }
 
@@ -66,9 +56,14 @@ type activityResult struct {
 	Already    bool   `json:"already_granted"`
 }
 
-// ApplyActivityRules grants whatever the customer's event qualifies for. It is
-// called from inside the transaction that settled the triggering fact, so a
-// rule can never pay out for a payment that then rolls back.
+// ApplyActivityRules 发放客户这次事件够得着的全部券。
+// 它在结算触发事实的那个事务内部被调用，
+// 所以规则绝不会为一笔随后回滚的支付付出券。
+//
+// 券本身存放在 coupon 表里；规则只决定何时发一张券，以及这次活动最远能跑到哪一步。
+// 每次发放都带着一个确定性的 source_event_id，由规则、客户和触发事实推导出来。
+// 正是它让重放的事件变成空操作而不是第二张券：同一个触发永远算出同一个键，
+// 而 coupon_grant_request 背后的唯一约束会把重复变成一个可以直接吞掉的重复键错误。
 func ApplyActivityRules(tx *gorm.DB, event activityEvent) ([]activityResult, error) {
 	if event.UserID == 0 || event.EventKey == "" || event.Now.IsZero() {
 		return nil, errActivityNotApplicable
@@ -108,10 +103,10 @@ func activeRules(tx *gorm.DB, event activityEvent) ([]activityRule, error) {
 func grantFromRule(tx *gorm.DB, rule activityRule, event activityEvent) (activityResult, error) {
 	result := activityResult{RuleID: rule.ID, CouponID: rule.CouponID}
 
-	// A customer cannot invite themselves, and the inviter must be someone who
-	// already used the platform. Without the second check an attacker can
-	// register a batch of fresh accounts, have them invite each other, and drain
-	// the campaign.
+	// 客户不能邀请自己，
+	// 邀请人也必须是真正用过平台的人。
+	// 少了后一道检查，
+	// 攻击者可以批量注册一批新号、让它们互相邀请，把活动预算掏空。
 	if rule.TriggerType == "invite_reward" {
 		if event.InviterID == 0 || event.InviterID == event.UserID {
 			return result, errActivityNotApplicable
@@ -125,10 +120,10 @@ func grantFromRule(tx *gorm.DB, rule activityRule, event activityEvent) (activit
 		}
 	}
 
-	// The rule row is locked so two concurrent events cannot both read a
-	// remaining budget and both spend the last one.
-	// The table name is given explicitly: GORM would otherwise derive
-	// "activity_rules" from the struct name, which is not a real table.
+	// 这里锁住规则行，
+	// 避免两个并发事件都读到还剩预算并各花掉最后一份。
+	// 表名是显式给的：
+	// 否则 GORM 会从结构体名推导出"activity_rules"，而那不是一张真表。
 	var locked activityRule
 	if err := tx.Table("coupon_activity_rule").Clauses(clause.Locking{Strength: "UPDATE"}).
 		Where("id = ? AND status = 'active' AND deleted_at IS NULL", rule.ID).Take(&locked).Error; err != nil {
@@ -192,8 +187,8 @@ func grantFromRule(tx *gorm.DB, rule activityRule, event activityEvent) (activit
 		return result, err
 	}
 
-	// The inviter is paid separately, under their own per-user budget, so one
-	// busy inviter cannot drain the invitee's allocation or vice versa.
+	// 邀请人的奖励单独发放，走他自己那份单人预算，
+	// 这样一个活跃邀请人既掏不空被邀请人的额度，反过来也一样。
 	if rule.TriggerType == "invite_reward" && rule.InviterCouponID.Valid && rule.InviterCouponID.Int64 > 0 {
 		granted, err := grantToInviter(tx, rule, event, eventID)
 		if err != nil {
@@ -217,8 +212,8 @@ func grantToInviter(tx *gorm.DB, rule activityRule, event activityEvent, eventID
 		perUser = 1
 	}
 	if used >= int64(perUser) {
-		// The invitee still keeps their reward; only the inviter's side is
-		// skipped, so a capped inviter never costs the customer their coupon.
+		// 被邀请人照样拿到自己的奖励；
+		// 跳过的只是邀请人那一侧，所以邀请人触顶不会让客户损失他应得的券。
 		return false, nil
 	}
 	inviterEvent := activityEvent{UserID: event.InviterID, Now: event.Now}
@@ -234,10 +229,10 @@ func grantToInviter(tx *gorm.DB, rule activityRule, event activityEvent, eventID
 	return true, nil
 }
 
-// grantSourceFor maps a trigger onto the coupon_grant source vocabulary. The
-// column is an enum that predates the activity table and only knows "activity"
-// and "invite_reward", so the individual triggers are recorded under the
-// campaign they belong to rather than under their own name.
+// grantSourceFor 把触发类型映射到 coupon_grant 的 source 取值集合。
+// 该列是早于活动表存在的枚举，
+// 只认 "activity" 和 "invite_reward"，
+// 所以各个触发类型都记在它所属的活动名下，而不是记在各自的名字下。
 func grantSourceFor(triggerType string) string {
 	if triggerType == "invite_reward" {
 		return "invite_reward"
@@ -245,15 +240,15 @@ func grantSourceFor(triggerType string) string {
 	return "activity"
 }
 
-// activityEventID derives the idempotency key. The same rule and the same
-// trigger always produce the same key, so a replayed payment or settlement finds
-// the existing grant instead of paying out again.
+// activityEventID 推导幂等键。同一条规则、
+// 同一个触发永远算出同一个键，
+// 所以重放的支付或结算只会找到已有的发放记录，而不会再次发券。
 //
-// The rule is identified by its primary key, not by a code. That key is what
-// coupon_grant.source_event_id was being seeded from, and a row id is just as
-// stable as a code would have been -- it cannot be edited out from under a live
-// campaign, which a code could. The optional scope separates the inviter grant
-// from the invitee's own so one rule firing once cannot collide with itself.
+// 规则用主键标识，而不是用 code。
+// 发放记录的 source_event_id 就是拿这个键做种子的，
+// 而行 id 和 code 一样稳定——
+// 它不会在活动上线之后被人偷偷改掉，code 却会。
+// 可选的 scope 把邀请人的发放与被邀请人自己的分开，免得一条规则触发一次就撞上自己。
 func activityEventID(ruleID uint64, event activityEvent, scope ...string) string {
 	key := fmt.Sprint(ruleID)
 	for _, s := range scope {
@@ -263,8 +258,8 @@ func activityEventID(ruleID uint64, event activityEvent, scope ...string) string
 	return hex.EncodeToString(sum[:16])
 }
 
-// grantExpiry respects both the coupon's own validity window and the campaign's
-// end, so a coupon cannot outlive the activity that handed it out.
+// grantExpiry 同时尊重券自身的有效期和活动结束时间，
+// 这样券不会活得比发出它的那次活动更久。
 func grantExpiry(tx *gorm.DB, rule activityRule, now time.Time) time.Time {
 	var coupon struct {
 		ValidHours int          `gorm:"column:valid_hours"`
@@ -290,9 +285,9 @@ func countRuleGrants(tx *gorm.DB, rule activityRule) (int64, error) {
 	return granted, err
 }
 
-// isEstablishedUser reports whether the inviter has actually used the platform:
-// a completed charge or a settled recharge. Fresh sign-ups alone cannot earn a
-// referral reward, which is what stops a ring of empty accounts from farming.
+// isEstablishedUser 判断邀请人是否真的用过平台：
+// 有一笔已完成的充电，或一笔已结算的充值。
+// 仅注册的空号挣不到推荐奖励，这正是挡住一圈空账号刷奖励的那道闸。
 func isEstablishedUser(tx *gorm.DB, userID uint64) (bool, error) {
 	var orders int64
 	if err := tx.Table("charge_order").
@@ -311,8 +306,8 @@ func isEstablishedUser(tx *gorm.DB, userID uint64) (bool, error) {
 	return recharges > 0, nil
 }
 
-// activityEventKeyForRecharge builds the stable key for a first-recharge reward.
+// activityEventKeyForRecharge 构造首充奖励的稳定键。
 func activityEventKeyForRecharge(requestID string) string { return "recharge:" + requestID }
 
-// activityEventKeyForOrder builds the stable key for an order-based reward.
+// activityEventKeyForOrder 构造按订单发放奖励的稳定键。
 func activityEventKeyForOrder(orderNo string) string { return "order:" + orderNo }

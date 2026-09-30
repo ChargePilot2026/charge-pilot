@@ -17,12 +17,12 @@ import (
 	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol/dc589"
 )
 
-// These tests run the simulated board against the real gateway adapter over a
-// real TCP socket. A fake server would prove nothing about framing, session
-// negotiation or payload validation, which is the whole reason this tool exists.
+// 这些测试让模拟板通过真实 TCP socket 面对真实的网关适配器。
+// 假服务器证明不了组帧、会话协商或载荷
+// 校验，而这三样正是本工具存在的理由。
 
-// recordingSink captures what the gateway parsed out of the board, so a test
-// can assert on decoded values rather than on bytes.
+// recordingSink 记录网关从板子解析出的内容，
+// 这样测试断言的是解码后的值而不是字节。
 type recordingSink struct {
 	mu       sync.Mutex
 	events   []protocol.Event
@@ -67,9 +67,9 @@ func (s *recordingSink) deviceID() string {
 
 func (s *recordingSink) heartbeatCount() int { return len(s.ofType(protocol.Heartbeat)) }
 
-// serveGateway runs the real adapter on a real port. The registry it uses is
-// returned so the test can issue commands the same way the control layer does,
-// rather than reaching into the board's connection directly.
+// serveGateway 在真实端口上跑真实适配器。
+// 它使用的 registry 会一并返回，
+// 好让测试像控制层那样下发命令，而不是直接伸手进板子的连接里。
 func serveGateway(t *testing.T, ctx context.Context, sink protocol.Sink) (string, *protocol.Registry) {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -117,8 +117,8 @@ func (w testWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// A board that registers and heartbeats must be understood by the real adapter,
-// which is the minimum for any scenario to be meaningful.
+// 能注册并发心跳的板子必须被真实适配器看懂，
+// 这是任何场景有意义的前提。
 func TestSimulatorRegistersAndHeartbeats(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
@@ -129,19 +129,19 @@ func TestSimulatorRegistersAndHeartbeats(t *testing.T) {
 	config.Gateway = address
 	go func() { _ = Run(ctx, config) }()
 
-	// The board is told its heartbeat period by the platform right after it
-	// logs in, and it adopts that value. The simulator's own configured period
-	// is only what it uses until then, so a test that assumed it would keep
-	// ticking at its own speed was asserting behaviour the protocol does not
-	// have: since 5.8.6 the server owns the interval.
+	// 板子登录后平台会立刻告诉它心跳周期，它就采用这个值。
+	// 模拟器自己配置的周期只是它在此之前用的，
+	// 所以一个假定它会按自己速度一直跳的测试，
+	// 断言的是协议并不具备的行为：
+	// 自 5.8.6 起间隔由服务器说了算。
 	waitFor(t, 8*time.Second, func() bool { return sink.heartbeatCount() >= 1 })
 	if got := sink.deviceID(); got != config.Identity.BoardID {
 		t.Fatalf("gateway saw device %q, want %q", got, config.Identity.BoardID)
 	}
 }
 
-// The charge path is the point of the tool: start command, acknowledgement,
-// metering, then a closing report the gateway can bind back to the order.
+// 充电链路才是本工具的意义所在：启动命令、确认、
+// 计量，然后是一份网关能绑回订单的收尾上报。
 func TestSimulatorRunsAChargeToCompletion(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
@@ -150,18 +150,18 @@ func TestSimulatorRunsAChargeToCompletion(t *testing.T) {
 
 	config := quietConfig(t, ScenarioByEnergy)
 	config.Gateway = address
-	// A one minute charge in energy terms would outlast the test, so the
-	// scenario is driven by a stop command instead, which is the realistic path.
+	// 按电量来算的话，一分钟的充电会超过测试时长，
+	// 所以改用停止命令驱动场景，这也是真实路径。
 	config.Scenario = ScenarioStopOnCommand
-	// 3600.0W, so a second of charging is a whole milliwatt-hour. At the 150W
-	// default a short test produces a reading that truncates away to nothing,
-	// which is the same reason the assertion below is about agreement rather
-	// than about a figure being merely non-zero.
+	// 取 3600.0W，
+	// 于是充电一秒就是整整一毫瓦时。在 150W 默认值下，
+	// 短测试得到的读数会被截断成 0，
+	// 这也正是下面的断言考究的是一致性而不是「非零即可」的原因。
 	config.PowerDeciWatts = 36000
 	go func() { _ = Run(ctx, config) }()
 
-	// Wait for registration, then issue a start through the registry the way
-	// the control layer would.
+	// 等注册完成，
+	// 然后像控制层那样经 registry 下发启动命令。
 	session := commandSession()
 	order := [8]byte{0, 0, 0, 0, 0, 0, 0x01, 0x23}
 	command := protocol.Command{Kind: protocol.CommandStart, SessionID: session, Port: 1, OrderBCD: order, Mode: 0, Quantity: 60}
@@ -171,14 +171,14 @@ func TestSimulatorRunsAChargeToCompletion(t *testing.T) {
 
 	waitFor(t, 10*time.Second, func() bool { return len(sink.ofType(protocol.StartResult)) > 0 })
 
-	// Let the board meter long enough that the closing report carries a
-	// duration and an energy both large enough to compare; stopping instantly
-	// would prove only that the frames line up. Three seconds at 3600.0W is
-	// three whole watt-hours, which is what it takes for the reading to be
-	// wider than the frame's own resolution.
+	// 让板子计够时间，使收尾上
+	// 报里的时长和电量都大到可比；
+	// 立刻停止只能证明帧对得上。3600.0W
+	// 下三秒就是整整三瓦时，
+	// 正好让读数宽过帧自身的分辨率。
 	time.Sleep(3 * time.Second)
 
-	// Ask the board to stop; it should acknowledge and report the charge end.
+	// 让板子停止；它应当确认并上报充电结束。
 	stop := protocol.Command{Kind: protocol.CommandStop, SessionID: session, Port: 1}
 	if err := commandThrough(t, registry, config.Identity.BoardID, stop); err != nil {
 		t.Fatal(err)
@@ -196,16 +196,16 @@ func TestSimulatorRunsAChargeToCompletion(t *testing.T) {
 	if ends.EnergyMilliKWh == 0 {
 		t.Fatal("a charge that ran delivered no energy")
 	}
-	// The settlement has to agree with the power the board reported all along,
-	// or the energy money moves on is not the energy the pile drew.
+	// 结算必须和板子一路报上来的功率一致，
+	// 否则钱据以结算的电量就不是桩实际取的电量。
 	assertEnergyAgrees(t, ends.EnergyMilliKWh, ends.ChargedSeconds, ends.PowerDeciWatts)
 	if len(sink.ofType(protocol.StopResult)) == 0 {
 		t.Fatal("the stop acknowledgement never reached the gateway")
 	}
 }
 
-// A refused start is what drives the refund path, so the failure has to be a
-// well formed result rather than silence.
+// 被拒的启动才是驱动退款路径的东西，
+// 所以失败必须是一个格式良好的结果，而不是沉默。
 func TestSimulatorCanRefuseAStart(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
@@ -252,8 +252,8 @@ func TestSimulatorReportsAFault(t *testing.T) {
 	}
 }
 
-// The reconnect scenario is what verifies that a replacement session is treated
-// as a new connection rather than a continuation of the old one.
+// reconnect 场景验证的正是：被替换掉的会
+// 话会被当成一条新连接，而不是旧连接的延续。
 func TestSimulatorReconnectsAsANewSession(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
@@ -265,8 +265,8 @@ func TestSimulatorReconnectsAsANewSession(t *testing.T) {
 	config.ReconnectAfter = 200 * time.Millisecond
 	go func() { _ = Run(ctx, config) }()
 
-	// Each reconnection performs a fresh registration; two of them prove the
-	// board came back rather than the first attempt lingering.
+	// 每次重连都会重新注册一次；
+	// 两次就足以证明板子真的回来了，而不是第一次尝试还挂着。
 	waitFor(t, 15*time.Second, func() bool {
 		return len(sink.ofType(protocol.Heartbeat)) >= 2
 	})
@@ -288,13 +288,13 @@ func waitFor(t *testing.T, limit time.Duration, done func() bool) struct{} {
 	return struct{}{}
 }
 
-// commandSession is the session the test issues commands with.
+// commandSession 是测试下发命令时用的会话。
 //
-// In production the control layer reads this from the charge command row it
-// persisted before contacting the board; the gateway never hands the session
-// back to the sink, and the board simply echoes whatever session the server put
-// in the frame header. Supplying one here reproduces that flow, and
-// commandThrough already waits for the board to be routable.
+// 生产中控制层从联系板子之前持久化的充电命令记录里读这个值；
+// 网关从不会把会话交还给 sink，
+// 板子也只是原样回显服务器放进帧头的会
+// 话。在这里造一个就复现了这条流程，而
+// commandThrough 本身会等到板子可路由为止。
 func commandSession() [6]byte { return [6]byte{0xA1, 0xB2, 0xC3, 0xD4, 0xE5, 0xF6} }
 
 func waitForEnd(t *testing.T, sink *recordingSink, limit time.Duration) protocol.Event {
@@ -311,8 +311,8 @@ func waitForEnd(t *testing.T, sink *recordingSink, limit time.Duration) protocol
 	return protocol.Event{}
 }
 
-// commandThrough routes a command to the board the way the control layer does:
-// by device id, through the registry the adapter owns.
+// commandThrough 像控制层那样把命令路由到板子：按设备 id，
+// 经适配器持有的 registry。
 func commandThrough(t *testing.T, registry *protocol.Registry, deviceID string, command protocol.Command) error {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -331,30 +331,30 @@ func commandThrough(t *testing.T, registry *protocol.Registry, deviceID string, 
 	}
 }
 
-// scriptedGateway accepts one board and relays whatever the test pushes at it.
+// scriptedGateway 接入一块板子，转发测试推给它的任何东西。
 //
-// It runs the real codec over a real socket, so framing and payload validation
-// are still genuinely exercised. What it does not do is decide for itself which
-// downlinks to send. That distinction matters: the full adapter is the right
-// harness for proving the two ends interoperate, and the wrong one for proving
-// what the board does when the platform asks for something specific, because
-// "the port block arrived because we asked for it" is indistinguishable from
-// "the port block always arrives" once the adapter is the one choosing.
+// 它跑的是真实编解码器和真实 socket，
+// 所以组帧与载荷校验仍被真正验证到。
+// 它唯一不做的是自己决定下发哪些下行。
+// 这个区别很关键：完整适配器适合证明两端互通，
+// 却不适合证明「平台要求某件事时板子会怎么做」，
+// 因为一旦由适配器来选，
+// 「端口块出现是因为我们要求了」与「端口块总是出现」就分不出来了。
 type scriptedGateway struct {
 	address  string
 	session  [6]byte
 	traffic  *boardTraffic
 	downlink chan dc589.Frame
-	// clock is the time the server claims when it answers a time request, and
-	// registerClock the one it stamps into the register reply. They are separate
-	// fields because a board that answers A1 correctly and then ignores the A9
-	// looks perfectly right whenever the two agree — which is the state a test
-	// has to move out of before it can see the difference at all.
+	// clock 是服务器回答对时请求时声称的时间，registerClock 是它盖进注册回包的那个。
+	// 分成两个字段是因为：
+	// 一块正确处理了 A1 随后又忽略 A9 的板子，只要两者一
+	// 致看上去就完全正常——而这正是测试必须先走出来的状态，
+	// 否则根本看不出差别。
 	clock         time.Time
 	registerClock time.Time
 }
 
-// boardTraffic is everything a board has sent, in order.
+// boardTraffic 是板子发出过的全部帧，按顺序排列。
 type boardTraffic struct {
 	mu     sync.Mutex
 	frames []dc589.Frame
@@ -372,12 +372,12 @@ func (b *boardTraffic) add(frame dc589.Frame) {
 	b.mu.Unlock()
 }
 
-// waitFor returns the first frame at or after `from` that satisfies match.
+// waitFor 返回 `from` 及其之后第一帧满足 match 的帧。
 //
-// Indexing rather than re-matching on content is what lets a test assert that
-// the *same* command changed shape within one session. The port telemetry flag
-// cannot be proven any other way: a board that always sends the extended form
-// and a board that always obeys produce identical traffic in half the states.
+// 用下标而不是按内容重新匹配，才能让测试
+// 断言*同一条*命令在一个会话内改变了形态。
+// 端口遥测开关没法用别的方式证明：
+// 一直发扩展格式的板子和一直听话的板子，在一半的状态下产生的流量完全相同。
 func (b *boardTraffic) waitFor(t *testing.T, limit time.Duration, from int, match func(dc589.Frame) bool) dc589.Frame {
 	t.Helper()
 	deadline := time.Now().Add(limit)
@@ -484,7 +484,7 @@ func (g *scriptedGateway) push(t *testing.T, frame dc589.Frame) {
 	}
 }
 
-// startCharge asks the board to begin charging, the way a paid order would.
+// startCharge 让板子开始充电，就像一笔已付款的订单那样。
 func (g *scriptedGateway) startCharge(t *testing.T, port byte, mode dc589.ChargeMode, quantity uint16) {
 	t.Helper()
 	frame, err := dc589.BuildStart(dc589.StartCommand{
@@ -509,20 +509,20 @@ func isHeartbeat(frame dc589.Frame) bool { return frame.Command == dc589.Heartbe
 
 func hasPortStatus(frame dc589.Frame) bool { return len(frame.Data) > 17 }
 
-// A8 is the board asking for the time and A9 is the server answering, so the
-// server never sends A8 and the board never receives one. Handling A8 was
-// therefore unreachable, and the A9 the server does send fell into the default
-// branch and was dropped. The board stamped every settlement from its own
-// uncorrected clock while the server was offering a correction on every
-// connection.
+// A8 是板子索要时间，A9 是服务器回答，
+// 所以服务器从不下发 A8，
+// 板子也从来收不到 A8。
+// 于是处理 A8 根本不可达，而服务器确实下发的 A9 则掉进 default 分支被丢弃。
+// 服务器每次连接都在提供校正的同时，
+// 板子却一直用自己未校正的时钟给每笔结算打戳。
 func TestBoardAsksForTimeAndSettlesOnTheServerClock(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
-	// The register reply and the later time request deliberately disagree. A
-	// board that only ever reads the A1 is then off by the gap between them for
-	// the rest of the session, which is what happens in the field once a pile's
-	// clock drifts after it logs in: the platform offers a correction on every
-	// connection and the board walks past it.
+	// 注册回包和后来的对时请求被故意设成不
+	// 一致。只读 A1 的板子此后整个会话都会偏上两者的差值，而这
+	// 正是现场一块桩登录后时钟漂移时的情形：
+	// 平台每次连接都主动提供校正，
+	// 板子却走了过去。
 	registerClock := time.Now()
 	serverClock := registerClock.Add(2 * time.Hour)
 	gateway := serveScriptedGateway(t, ctx, serverClock)
@@ -534,8 +534,8 @@ func TestBoardAsksForTimeAndSettlesOnTheServerClock(t *testing.T) {
 	config.Log = log.New(logs, "", 0)
 	go func() { _ = Run(ctx, config) }()
 
-	// The board asks rather than waiting to be told: the time-sync event is the
-	// only place a correction shows up in the session audit.
+	// 板子是主动索要而不是等着被告知：对时
+	// 事件是时钟校正在会话审计里唯一显形之处。
 	waitFor(t, 8*time.Second, func() bool {
 		_, ok := gateway.traffic.first(dc589.TimeRequest)
 		return ok
@@ -562,10 +562,10 @@ func TestBoardAsksForTimeAndSettlesOnTheServerClock(t *testing.T) {
 	}
 }
 
-// Since 5.8.6 the port block is present only when the platform asked for it, so
-// the flag is the whole point of A6. The board recorded it and then never read
-// it, which made "this build ignores its instructions" and "nothing is charging"
-// produce the same seventeen byte heartbeat.
+// 自 5.8.6 起端口块只在平台要求时才出现，
+// 所以这个开关就是 A6 的全部意义。
+// 板子记下了它却从不读取，
+// 于是「本版本无视指令」与「没有充电在进行」会产出同一个 17 字节心跳。
 func TestBoardHonoursThePortTelemetryFlag(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
@@ -575,7 +575,7 @@ func TestBoardHonoursThePortTelemetryFlag(t *testing.T) {
 	config.Gateway = gateway.address
 	go func() { _ = Run(ctx, config) }()
 
-	// With the flag off the board must fall back to the short form.
+	// 开关关着时板子必须退回短格式。
 	off, err := dc589.BuildHeartbeatInterval(gateway.session, 1, false)
 	if err != nil {
 		t.Fatal(err)
@@ -586,7 +586,7 @@ func TestBoardHonoursThePortTelemetryFlag(t *testing.T) {
 		t.Fatal("the board reported ports after the platform had switched them off")
 	}
 
-	// A charge is running, so the extended form is the one that must appear.
+	// 有一笔充电在进行，所以这时必须出现扩展格式。
 	gateway.startCharge(t, 1, dc589.ByTime, 60)
 	on, err := dc589.BuildHeartbeatInterval(gateway.session, 1, true)
 	if err != nil {
@@ -603,9 +603,9 @@ func TestBoardHonoursThePortTelemetryFlag(t *testing.T) {
 		t.Fatalf("the extended heartbeat did not carry the charging port: %+v", heartbeat.ChargingPorts)
 	}
 
-	// And switching it off again must take effect mid-charge. This is the step
-	// that cannot pass by accident: a board that always sends the extended form
-	// satisfies the previous assertion just as happily as one that obeys.
+	// 而且在充电中途再关掉也必须立刻生效。
+	// 这一步不可能蒙混过关：
+	// 一直发扩展格式的板子同样能心安理得地满足上一条断言。
 	mark = gateway.traffic.mark()
 	gateway.push(t, off)
 	if got := gateway.traffic.waitFor(t, 8*time.Second, mark, isHeartbeat); hasPortStatus(got) {
@@ -613,9 +613,9 @@ func TestBoardHonoursThePortTelemetryFlag(t *testing.T) {
 	}
 }
 
-// A downlink the board cannot answer used to vanish with no record on either
-// side, which made "the simulator never implemented it" and "the gateway never
-// sent it" indistinguishable from the outside.
+// 板子答不了的下行过去会无影无踪，
+// 两边都没有记录，
+// 于是「模拟器没实现」与「网关没发」从外面看无法区分。
 func TestUnprocessedDownlinkIsNamedAndSurvives(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
@@ -629,9 +629,9 @@ func TestUnprocessedDownlinkIsNamedAndSurvives(t *testing.T) {
 
 	waitFor(t, 8*time.Second, func() bool { return gateway.traffic.mark() > 0 })
 
-	// 0xE0 is the power control the gateway has a codec for but no caller for
-	// yet, so this is exactly the shape of command that would otherwise arrive
-	// and be lost.
+	// 0xE0 是网关已有编解码器、
+	// 却还没有调用方的功率控制，
+	// 所以它正是那种「本来会到达然后丢失」的命令的典型形态。
 	frame, err := dc589.SetNoTiering(gateway.session)
 	if err != nil {
 		t.Fatal(err)
@@ -639,7 +639,7 @@ func TestUnprocessedDownlinkIsNamedAndSurvives(t *testing.T) {
 	gateway.push(t, frame)
 
 	waitFor(t, 5*time.Second, func() bool { return logs.contains("unhandled downlink 0xE0") })
-	// Ignoring it must not cost the board its link.
+	// 忽略它不能以丢掉链路为代价。
 	mark := gateway.traffic.mark()
 	interval, err := dc589.BuildHeartbeatInterval(gateway.session, 1, false)
 	if err != nil {
@@ -649,10 +649,10 @@ func TestUnprocessedDownlinkIsNamedAndSurvives(t *testing.T) {
 	gateway.traffic.waitFor(t, 8*time.Second, mark, isHeartbeat)
 }
 
-// The zero value is not a legal parameter table, so a board that had never been
-// configured failed its own validation and answered a read with "rejected" —
-// telling the platform its tariff had failed to land when nobody had ever sent
-// one. The read has to come back as an actual table.
+// 零值不是一张合法的参数表，
+// 所以从未被配置过的板子会在自己的校验里失败，对一次读操作回「拒绝」
+// ——在压根没人发过费率的情况下告诉平台费率没送达。
+// 这次读必须回的是一张真实的表。
 func TestParameterReadAnswersWithTheStoredTable(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
@@ -683,11 +683,11 @@ func TestParameterReadAnswersWithTheStoredTable(t *testing.T) {
 	}
 }
 
-// newTestBoard gives a board a real in-memory connection.
+// newTestBoard 给板子一条真实的内存连接。
 //
-// A charge that reaches its limit reports the end over the wire, so a unit test
-// that walks a charge to completion needs somewhere to write. A nil connection
-// would turn the assertion into a segmentation fault instead of a result.
+// 跑到上限的充电会通过链路上报结束，
+// 所以一个把充电走到完成的单元测试需要有个地方可写。
+// 连接为 nil 会让断言变成段错误而不是一个结果。
 func newTestBoard(t *testing.T, config Config) *board {
 	t.Helper()
 	conn, peer := net.Pipe()
@@ -696,8 +696,8 @@ func newTestBoard(t *testing.T, config Config) *board {
 	return newBoard(config.withDefaults(), conn)
 }
 
-// captureLog collects the board's log lines so a test can assert that something
-// was reported rather than swallowed.
+// captureLog 收集板子的日志行，
+// 好让测试断言某件事确实被上报了，而不是被吞掉。
 type captureLog struct {
 	mu    sync.Mutex
 	lines []string
@@ -721,17 +721,17 @@ func (c *captureLog) contains(substr string) bool {
 	return false
 }
 
-// The quantity on an energy order is watt-hours and the wire carries no unit, so
-// the charge mode is the only thing that says what it means. Reading it as a
-// count of seconds finished a 1Wh order in one second and then reported several
-// watt-hours against it, so the user was billed for far more than was delivered
-// and nothing in the settlement looked unusual.
+// 按电量下单时数量单位是瓦时，而线路不带单位，
+// 所以唯一能说明它含义的就是充电模式。
+// 当成秒数读会让一笔 1Wh 的订单一秒就结束，
+// 随后还按好几瓦时上报，
+// 于是用户被按远超实际送出量的金额计费，而结算里看不出任何异常。
 func TestEnergyOrderDoesNotTreatItsQuantityAsSeconds(t *testing.T) {
 	board := newTestBoard(t, quietConfig(t, ScenarioByEnergy))
-	// The charge is held directly rather than read back out of the map: a board
-	// that meters wrongly finishes early and takes itself out of the map, and a
-	// lookup on a missing key would turn that into a nil dereference instead of
-	// the assertion the test is actually making.
+	// 这里直接持有这笔充电而不从 map 里读回来：
+	// 计量有错的板子会提前结束并把自己从 map 里摘掉，
+	// 查询一个不存在的 key 会把这件事变成
+	// nil 解引用，而不是测试真正要做的断言。
 	running := &charge{port: 1, mode: dc589.ByEnergy, targetMilliWh: 1000}
 	board.charging[1] = running
 
@@ -739,17 +739,17 @@ func TestEnergyOrderDoesNotTreatItsQuantityAsSeconds(t *testing.T) {
 	if running.complete() {
 		t.Fatalf("a 1Wh order finished after one second; its quantity is being read as a duration")
 	}
-	// 150W fills a milliwatt-hour every 36/1500 s, so a second buys 41.67mWh.
+	// 150W 每 36/1500 秒填满一毫瓦时，所以一秒买到 41.67mWh。
 	if got := running.chargedMilliWh(); got != 41 {
 		t.Fatalf("after one second at 150W the meter read %d mWh, want 41", got)
 	}
 }
 
-// The energy a board reports and the power it reports have to be the same
-// number. They used to be independent constants — the meter banked a fixed
-// 3600 mWh every tick while the board claimed 150W — which is a factor of 24
-// between the power in the heartbeat and the energy in the settlement, and the
-// settlement is the number money moves on.
+// 板子上报的电量与它上报的功率必须是同一个数字来源。
+// 它们过去是两个互不相干的常数——电表每个
+// tick 固定存 3600 mWh，而板子声称 150W—
+// —等于心跳里的功率和结算里的电量之间差
+// 24 倍，而结算正是钱据以移动的数字。
 func TestMeteredEnergyFollowsTheReportedPower(t *testing.T) {
 	config := quietConfig(t, ScenarioByEnergy)
 	config.PowerDeciWatts = 1500 // 150.0W
@@ -760,29 +760,29 @@ func TestMeteredEnergyFollowsTheReportedPower(t *testing.T) {
 	for range 60 {
 		board.advance()
 	}
-	// 150.0W for 60s is 9000J, which is 2.5Wh.
+	// 150.0W 持续 60s 是 9000J，即 2.5Wh。
 	if got := running.chargedMilliWh(); got != 2500 {
 		t.Fatalf("60s at 150W metered %d mWh, want 2500", got)
 	}
-	// The heartbeat answers in seconds on both billing modes, so an energy
-	// order is projected from the power it is drawing. Reporting the energy
-	// figure's absence of a duration would tell the platform a charge is over
-	// the moment it starts.
+	// 心跳在两种计费模式下都用秒作单位，
+	// 所以按电量下单的充电要按它当前取的功率推算。
+	// 若按电量数字那样只报一个没有时长的值，
+	// 等于告诉平台这笔充电刚开始就结束了。
 	if got := board.remainingSecs(running); got != 180 {
 		t.Fatalf("the heartbeat would have reported %d seconds left, want 180", got)
 	}
 }
 
-// The whole chain has to hold together: the power the board reports sets the
-// rate it meters, the rate decides how long the purchased energy takes, and the
-// order ends when the meter says so rather than when a clock happens to agree.
+// 整条链必须自洽：板子上报的功率决定它的计量速率，
+// 速率决定买到的电量要充多久，
+// 订单结束以电表为准，而不是碰巧与某个时钟一致。
 func TestEnergyOrderEndsWhenTheMeterReachesThePurchasedEnergy(t *testing.T) {
 	config := quietConfig(t, ScenarioByEnergy)
 	config.PowerDeciWatts = 1500 // 150.0W
 	board := newTestBoard(t, config)
 	board.charging[1] = &charge{port: 1, mode: dc589.ByEnergy, targetMilliWh: 5 * 1000}
 
-	// 150.0W fills 1000mWh every 24 seconds, so 5Wh is two minutes of charging.
+	// 150.0W 每 24 秒填满 1000mWh，所以 5Wh 是两分钟的充电。
 	ticks := 0
 	for ticks = 1; ticks <= 600; ticks++ {
 		board.advance()
@@ -795,8 +795,8 @@ func TestEnergyOrderEndsWhenTheMeterReachesThePurchasedEnergy(t *testing.T) {
 	}
 }
 
-// A time order is bounded by its clock, and the energy it reports follows from
-// the same power rather than from a constant.
+// 按时间下单由时钟封顶，而它上报的电量同样来自那个功率，
+// 不来自某个常数。
 func TestTimeOrderEndsWhenItsClockRunsOut(t *testing.T) {
 	board := newTestBoard(t, quietConfig(t, ScenarioByTime))
 	board.charging[1] = &charge{port: 1, mode: dc589.ByTime, remaining: 3 * time.Second}
@@ -806,27 +806,27 @@ func TestTimeOrderEndsWhenItsClockRunsOut(t *testing.T) {
 	if board.charging[1].complete() {
 		t.Fatal("a three second order finished after two seconds")
 	}
-	// The board is still holding the port, which is the other half of the claim.
+	// 板子还占着这个端口，这是该结论的另一半。
 	board.advance()
 	if _, running := board.charging[1]; running {
 		t.Fatal("a three second order was still running after three seconds")
 	}
 }
 
-// assertEnergyAgrees checks a settlement's energy against the power and the
-// duration the board reported alongside it.
+// assertEnergyAgrees 用板子一并上
+// 报的功率和时长校验一份结算的电量。
 //
-// The energy is in milli-kWh, the unit the gateway's event carries and the unit
-// the frame's whole watt-hour field resolves to. The tolerance is a tenth plus
-// one of those, because the frame counts whole watt-hours and a charge that ran
-// a few seconds cannot be pinned more tightly than its own resolution. A
-// tolerance loose enough to absorb that rounding would also absorb the factor of
-// 24 the meter used to report, so it is kept in one place rather than widened
-// at each call site as short charges come out slightly off.
+// 电量单位是毫千瓦时，也就是网关事件承载的单
+// 位，也正是帧里整瓦时字段换算到的单位。
+// 容差取该单位的十分之一加一，
+// 因为帧按整瓦时计数，只跑了几秒的充
+// 电不可能比它自身的分辨率卡得更准。
+// 宽到足以吸收这种取整的容差，也会把电表过去上报的那个 24 倍偏差一并吸收掉，
+// 所以容差只放在这一处，而不是随着短充电略有偏差在各调用点被逐个放宽。
 func assertEnergyAgrees(t *testing.T, milliKWh, seconds, deciWatts uint32) {
 	t.Helper()
-	// A milliwatt-hour is 36 of the board's accumulator units per second and a
-	// milli-kWh is a thousand of those, so the two conversions cancel here.
+	// 一毫瓦时是板子累加器每秒的 36 个单位，而一毫千瓦时是这些单位的一千倍，
+	// 所以两次换算在这里正好抵消。
 	want := uint64(deciWatts) * uint64(seconds) / (deciWattSecondsPerMilliWh * 1000)
 	slack := want/10 + 1
 	got := uint64(milliKWh)
@@ -836,10 +836,10 @@ func assertEnergyAgrees(t *testing.T, milliKWh, seconds, deciWatts uint32) {
 	}
 }
 
-// The settlement is the number money moves on, so the energy it carries has to
-// agree with the power and the duration the board reported along the way. The
-// draw is set high enough that the figure survives the frame's whole watt-hour
-// resolution rather than truncating to zero.
+// 结算是钱据以移动的数字，
+// 所以它承载的电量必须与板子一路报上来的功率和时长一致。
+// 取功率定得足够高，让这个数字能扛过
+// 帧的整瓦时分辨率而不被截断成 0。
 func TestSettlementEnergyAgreesWithTheReportedPower(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
@@ -867,7 +867,7 @@ func TestSettlementEnergyAgreesWithTheReportedPower(t *testing.T) {
 	if report.PowerDeciWatts != 36000 {
 		t.Fatalf("the settlement reported %d deciwatts, want 36000", report.PowerDeciWatts)
 	}
-	// One second of 3600.0W is 1000mWh, so the charge should have metered about
-	// one milliwatt-hour per second it ran.
+	// 3600.0W 的一秒是 1000mWh，
+	// 所以这笔充电每跑一秒应该计量到约一毫瓦时。
 	assertEnergyAgrees(t, report.ChargedMWh/1000, report.ChargedSeconds, report.PowerDeciWatts)
 }

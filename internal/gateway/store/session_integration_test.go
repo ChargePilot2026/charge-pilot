@@ -62,8 +62,8 @@ func TestRecordSessionPersistsConnectionAudit(t *testing.T) {
 	}
 }
 
-// A retried close must not fail the caller: the second write carries the same
-// terminal numbers, so overwriting is the correct behaviour.
+// 重试的关闭不能让调用方失败：第二次写入携带的是同样的
+// 终态数字，所以覆盖才是正确行为。
 func TestRecordSessionIsIdempotentForTheSameSession(t *testing.T) {
 	sink := sessionDB(t)
 	ctx := context.Background()
@@ -98,8 +98,8 @@ func TestRecordSessionIsIdempotentForTheSameSession(t *testing.T) {
 	}
 }
 
-// A session that opens before midnight and closes after it must still be found
-// by a later read, which means the partition key has to come from the start.
+// 一条跨过午夜才关闭的会话，之后仍然必须能被查到，
+// 这意味着分区键必须来自开始时间。
 func TestRecordSessionDerivesPartitionFromStartTime(t *testing.T) {
 	sink := sessionDB(t)
 	ctx := context.Background()
@@ -111,7 +111,7 @@ func TestRecordSessionDerivesPartitionFromStartTime(t *testing.T) {
 	record := protocol.SessionRecord{
 		SessionID: sessionID, DeviceID: "QA-SESSION-003", Transport: protocol.TransportTCP,
 		RemoteAddr: "10.0.0.9:53000", StartedAt: started,
-		LastActive: started.Add(2 * time.Minute), // crosses midnight
+		LastActive: started.Add(2 * time.Minute), // 跨过午夜
 		EndedAt:    started.Add(2 * time.Minute), CloseReason: "device_closed", FramesIn: 5,
 	}
 	if err := sink.RecordSession(ctx, record); err != nil {
@@ -126,8 +126,8 @@ func TestRecordSessionDerivesPartitionFromStartTime(t *testing.T) {
 	}
 }
 
-// Without both keys the row would be unattributable, so it is refused rather
-// than written as an orphan.
+// 两个键缺任何一个，这一行都无法归属，所以宁可拒绝，
+// 也不写成一条孤儿记录。
 func TestRecordSessionRejectsMissingIdentity(t *testing.T) {
 	sink := sessionDB(t)
 	ctx := context.Background()
@@ -139,10 +139,10 @@ func TestRecordSessionRejectsMissingIdentity(t *testing.T) {
 	}
 }
 
-// The protocol column is an ENUM of tcp and mqtt, not free text. An adapter
-// name such as "dc589" once reached this insert and MySQL truncated it, which
-// only the database can catch, so the accepted values are asserted here to keep
-// the vocabulary in one place.
+// protocol 这一列是 tcp 与 mqtt 两个值的 ENUM，不是自由文本。
+// 曾经有一个 "dc589" 这样的适配器名一路走到了这个 INSERT，
+// MySQL 把它截断了，而这种事只有数据库自己才拦得住，
+// 所以这里直接断言允许的取值，把这份词表固定在一处。
 func TestRecordSessionRejectsTransportOutsideTheEnum(t *testing.T) {
 	sink := sessionDB(t)
 	ctx := context.Background()
@@ -155,9 +155,9 @@ func TestRecordSessionRejectsTransportOutsideTheEnum(t *testing.T) {
 		RemoteAddr: "10.0.0.10:54000", StartedAt: started,
 		LastActive: started, EndedAt: started, CloseReason: "device_closed",
 	}
-	// Under a non-strict server this would insert an empty string and quietly
-	// lose the transport, so the test asserts the value is refused rather than
-	// accepting whatever the server mode allows.
+	// 在非严格模式下，这里会插入一个空字符串并悄悄丢掉传输方式，
+	// 所以测试断言的是这个值被拒绝，
+	// 而不是接受服务器模式所允许的任何结果。
 	if err := sink.RecordSession(ctx, record); err == nil {
 		var row deviceSessionRow
 		sink.DB.WithContext(ctx).Where("session_id = ?", sessionID).Take(&row)
@@ -167,8 +167,8 @@ func TestRecordSessionRejectsTransportOutsideTheEnum(t *testing.T) {
 	}
 }
 
-// monthOf matches how RecordSession derives the partition key: a DATE column
-// carries no time of day, so a query has to compare against midnight as well.
+// monthOf 与 RecordSession 推导分区键的方式保持一致：
+// DATE 这一列不携带时分秒，所以查询也必须拿零点来比。
 func monthOf(t time.Time) time.Time {
 	u := t.UTC()
 	return time.Date(u.Year(), u.Month(), u.Day(), 0, 0, 0, 0, time.UTC)
@@ -176,8 +176,8 @@ func monthOf(t time.Time) time.Time {
 
 func recordSuffix(t *testing.T) string {
 	t.Helper()
-	// The column is VARCHAR(64) and session_id already carries a prefix, so the
-	// suffix is trimmed rather than letting MySQL reject the insert.
+	// 这一列是 VARCHAR(64)，而 session_id 本身已经带了前缀，
+	// 所以这里裁掉后缀，而不是任由 MySQL 拒绝这次插入。
 	seed := t.Name() + time.Now().Format("150405.000000")
 	if len(seed) > 24 {
 		seed = seed[len(seed)-24:]

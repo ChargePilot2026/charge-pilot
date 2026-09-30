@@ -16,8 +16,8 @@ func TestHeartbeatWithChargingPortAndShortForm(t *testing.T) {
 	if err != nil || short.HasPortStatus || short.BoardID != "5348240514082652" {
 		t.Fatalf("short heartbeat: %+v, %v", short, err)
 	}
-	// One of a two-frame report for a 20-port board. The total charging
-	// count is two, but this frame contains one 13-byte port measurement.
+	// 这是 20 端口主板两帧上报中的一帧。充电总数是 2，
+	// 但这一帧只含 1 条 13 字节的端口测量。
 	data := append(append([]byte(nil), base...), 0, 220, 0, 100, 20)
 	states := make([]byte, 20)
 	states[14] = 1
@@ -41,8 +41,8 @@ func TestHeartbeatWithChargingPortAndShortForm(t *testing.T) {
 }
 
 func TestDocumentedChargeEndMeterOffsetsAndLocalTime(t *testing.T) {
-	// The PDF labels 0C12 as 300 minutes; little-endian 300 is 2C01.
-	// Use the stated duration while retaining all other sample fields.
+	// PDF 把 0C12 标成 300 分钟；小端的 300 就是 2C01。
+	// 这里采用文档声称的时长，其余样例字段全部保留。
 	data, err := hex.DecodeString("01050000000000000000240829150000240829200000000000002c0100020000e8036400000000000001d007")
 	if err != nil {
 		t.Fatal(err)
@@ -54,7 +54,7 @@ func TestDocumentedChargeEndMeterOffsetsAndLocalTime(t *testing.T) {
 	if err != nil || end.Port != 5 || end.ChargedSeconds != 300*60 || end.ChargedMWh != 1000000 || end.PowerDeciWatts != 2000 || end.ConsumerType != 2 || end.EndedAt.UTC().Hour() != 12 {
 		t.Fatalf("charge end: %+v, %v", end, err)
 	}
-	data[16] = 0x23 // end before start
+	data[16] = 0x23 // 结束早于开始
 	if _, err := ParseChargeEnd(Frame{Command: ChargeEnd, Data: data}); !errors.Is(err, ErrPayload) {
 		t.Fatalf("bad end time accepted: %v", err)
 	}

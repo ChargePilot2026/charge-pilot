@@ -34,8 +34,8 @@ func TestSessionAuditCountsFramesAndBytes(t *testing.T) {
 	}
 }
 
-// A connection that never carries a frame must still produce a usable row:
-// "connected and went quiet" is exactly the case an operator needs to see.
+// 一条从未承载过任何帧的连接也必须能产出一条可用的记录：
+// "连上了然后一直沉默"恰恰是运维最需要看到的那种情况。
 func TestSessionAuditWithNoFramesReportsStartAsLastActive(t *testing.T) {
 	start := time.Date(2026, 9, 29, 10, 0, 0, 0, time.UTC)
 	record := NewSessionAudit(TransportTCP, "s1", "10.0.0.7:51000", start).
@@ -48,9 +48,9 @@ func TestSessionAuditWithNoFramesReportsStartAsLastActive(t *testing.T) {
 	}
 }
 
-// The audit is read once, after the connection is gone, but a session can be
-// detached from a different goroutine than the one serving frames. A data race
-// here would corrupt the recorded totals rather than merely reorder them.
+// 审计只在连接消失之后读一次，但会话可能从另一个 goroutine 被 detach，
+// 而那个 goroutine 并不是在服务帧的那个。这里的数据竞争会算错
+// 记录下来的总量，而不只是让它们乱序。
 func TestSessionAuditIsSafeUnderConcurrentFrames(t *testing.T) {
 	start := time.Date(2026, 9, 29, 10, 0, 0, 0, time.UTC)
 	audit := NewSessionAudit(TransportTCP, "s1", "addr", start)

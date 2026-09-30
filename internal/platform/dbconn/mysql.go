@@ -16,8 +16,8 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-// DSN converts the deployment URL to a database/sql MySQL DSN. The URL is
-// validated before any network connection is attempted.
+// DSN 把部署用的 URL 转换成 database/sql 的 MySQL DSN。
+// 在尝试任何网络连接之前，URL 就已经先被校验过了。
 func DSN(raw string, multiStatements bool) (string, error) {
 	u, err := url.Parse(raw)
 	if err != nil || u.Scheme != "mysql" || u.Host == "" || u.User == nil || u.User.Username() == "" {
@@ -67,8 +67,8 @@ func Open(ctx context.Context, raw string) (*sql.DB, error) {
 	return db, nil
 }
 
-// WrapGORM configures the application ORM over an already validated and
-// pinged MySQL pool. Goose continues to use Open's database/sql handle.
+// WrapGORM 在一个已校验并 ping 过的 MySQL 连接池之上配置应用使用的 ORM。
+// Goose 仍然使用 Open 返回的那个 database/sql 句柄。
 func WrapGORM(db *sql.DB) (*gorm.DB, error) {
 	if db == nil {
 		return nil, errors.New("nil MySQL pool")
