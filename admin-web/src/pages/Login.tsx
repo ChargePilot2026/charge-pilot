@@ -4,7 +4,7 @@ import { Alert, Form, Input, Button, Typography, App, Card } from 'antd';
 import { UserOutlined, LockOutlined, SafetyOutlined } from '@ant-design/icons';
 import { apiPost, adminSession } from '../api/client';
 
-const { Title, Text } = Typography;
+const { Title } = Typography;
 
 interface LoginResp {
   token?: string;
@@ -49,7 +49,7 @@ export default function LoginPage() {
     <div className="login-bg">
       <Card className="login-card">
         <Title level={3} style={{ textAlign: 'center', marginBottom: 24 }}>
-          <span style={{ color: '#1677ff' }}>ChargePilot</span> · PC 后台
+          <span style={{ color: '#1677ff' }}>ChargePilot</span>
         </Title>
         {challenge ? (
           <Alert
@@ -79,9 +79,6 @@ export default function LoginPage() {
           {challenge && (
             <Button type="link" block onClick={() => setChallenge('')}>返回重新登录</Button>
           )}
-          <div style={{ color: '#999', fontSize: 12, textAlign: 'center' }}>
-            <Text type="secondary">默认管理员账户由 .env 中 ADMIN_BOOTSTRAP_* 配置</Text>
-          </div>
         </Form>
       </Card>
     </div>
