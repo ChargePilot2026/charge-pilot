@@ -323,7 +323,7 @@ export default function StationPricing() {
         key: 'devices', label: '设备分配矩阵',
         children: <>
           <Alert type="info" showIcon style={{ marginBottom: 12 }}
-            message="矩阵显示每台设备当前真正生效的计费方式与套餐：没有独立规则的设备显示的是站点默认。分配只影响计费规则，套餐需要到「套餐模板池」单独上架。" />
+            message="矩阵显示每台设备当前真正生效的计费方式与套餐：没有独立规则的设备显示的是站点默认。分配只影响计费规则，套餐需要到「套餐模板」单独上架。" />
           {!stationId
             ? <div style={{ color: '#999' }}>请先选择站点</div>
             : <Table<DeviceRow> rowKey="device_id" dataSource={devices} loading={loading} scroll={{ x: 1100 }}

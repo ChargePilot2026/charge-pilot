@@ -59,7 +59,7 @@ export default function StationsPage() {
         <Button icon={<ReloadOutlined />} onClick={load}>刷新</Button>
         <Button type="primary" icon={<PlusOutlined />} disabled={!permissions.includes('station.create')} onClick={() => edit(null)}>新建</Button>
       </Space>
-      <Space wrap style={{marginBottom:12}}>
+      <Space wrap style={{display:'flex',marginBottom:12}}>
         <Input aria-label="站点关键词" placeholder="搜索名称或地址" maxLength={128} value={keyword} onChange={e=>setKeyword(e.target.value)} onPressEnter={()=>setQuery({...query,page:1,keyword,status})} allowClear />
         <Select aria-label="站点状态" value={status} onChange={setStatus} style={{width:140}} options={[{value:'',label:'全部状态'},{value:'active',label:'运营中'},{value:'disabled',label:'已停用'},{value:'construction',label:'建设中'}]} />
         <Button onClick={()=>setQuery({...query,page:1,keyword,status})}>查询</Button>
