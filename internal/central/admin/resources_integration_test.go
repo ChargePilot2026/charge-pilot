@@ -70,14 +70,25 @@ func TestAdminPagesIntegration(t *testing.T) {
 			floors[db] = floor
 		}
 	}
+	// 站点在跑到一半时会被改名（分页站点 → 更新站点），所以创建时记下的名字
+	// 到清理时已经对不上了：按名字删等于什么都没删，每跑一次就往站点列表里
+	// 塞一条，几轮之后 demo 站点被挤出首页。这里按接口回给本轮的主键删——
+	// 改名动不了主键。
+	var pagesStationID uint64
 	t.Cleanup(func() {
 		const (
 			pagesUsers     = "openid LIKE 'pages%'"
 			pagesDevices   = "device_id LIKE 'PAGES%'"
-			pagesStations  = "name = 'PAGES_STATION'"
-			pagesTemplates = "name IN ('集成计费模板','坏时段','空档位','设备计费带费率','模式与费率不符','改价后的模板','模板副本','并发模板','已绑定模板','名称可更新','分页站点','上下架套餐')"
+			pagesTemplates = "name IN ('集成计费模板','坏时段','空档位','设备计费带费率','模式与费率不符','改价后的模板','模板副本','并发模板','已绑定模板','名称可更新','分页站点','更新站点','上下架套餐')"
+			pagesPackages  = "name = '上下架套餐'"
 			pagesPayment   = "order_no LIKE 'PAGES_%' OR wechat_transaction_id LIKE 'SIMPAGES%'"
 		)
+		// 本轮没建出站点时（测试提前失败）退化成 id = 0，删不到任何东西，
+		// 不会误伤库里原有的站点。
+		pagesStations := "id = 0"
+		if pagesStationID != 0 {
+			pagesStations = "id = " + strconv.FormatUint(pagesStationID, 10)
+		}
 		byDB := []struct {
 			db    *gorm.DB
 			stmts []string
@@ -91,6 +102,12 @@ func TestAdminPagesIntegration(t *testing.T) {
 				"DELETE FROM finance_reconcile_log WHERE reconcile_type = 'wechat_pay' AND reconcile_date IN ('2026-09-15','2026-10-01')",
 				"DELETE FROM split_party WHERE split_template_id IN (SELECT id FROM split_template WHERE code LIKE 'PAGES_%')",
 				"DELETE FROM split_template WHERE code LIKE 'PAGES_%'",
+				// 上架动作把套餐模板复制成一条按站点售卖的 charge_offer。两者都不
+				// 清就会一版版攒起来：套餐模板池里堆着几十条同名模板，售卖记录还
+				// 指向早就删掉的站点，变成后台再也查不出来的孤儿。
+				"DELETE FROM charge_offer WHERE station_id IN (SELECT id FROM station WHERE " + pagesStations + ") OR package_template_id IN (SELECT id FROM pricing_package_template WHERE " + pagesPackages + ")",
+				"DELETE FROM station_recharge_package WHERE package_template_id IN (SELECT id FROM pricing_package_template WHERE " + pagesPackages + ")",
+				"DELETE FROM pricing_package_template WHERE " + pagesPackages,
 				"DELETE FROM station_policy WHERE station_id IN (SELECT id FROM station WHERE " + pagesStations + ")",
 				"DELETE FROM station WHERE " + pagesStations,
 				// A tariff that outlives its own cleanup keeps its version counter,
@@ -103,8 +120,11 @@ func TestAdminPagesIntegration(t *testing.T) {
 				// reference reaches.
 				"DELETE FROM pricing_rule WHERE name = 'legacy unbound' OR template_id IN (SELECT id FROM pricing_template WHERE " + pagesTemplates + ") OR station_id IN (SELECT id FROM station WHERE " + pagesStations + ")",
 				"DELETE FROM pricing_template WHERE " + pagesTemplates,
-				"DELETE FROM announcement WHERE title LIKE '%pages%'",
-				"DELETE FROM webhook_subscription WHERE name LIKE '%pages%' OR url LIKE '%pages%'",
+				"DELETE FROM announcement WHERE title = '测试公告' OR title LIKE '%pages%'",
+				// 坐席的 DELETE 路由是"停用"不是物理删除（坐席记录要留痕），所以
+				// 每跑一次就多一条停用坐席，后台列表会一版版变长。测试得自己摘。
+				"DELETE FROM customer_service_config WHERE agent_wechat = 'pages_seat'",
+				"DELETE FROM webhook_subscription WHERE name = '测试订阅' OR name LIKE '%pages%' OR url LIKE '%pages%'",
 				// Matched on the board itself, not on the import it arrived in: a
 				// failed batch still records the identity it saw, and that row is
 				// what refuses the next attempt at the same board.
@@ -291,6 +311,8 @@ func TestAdminPagesIntegration(t *testing.T) {
 	call(adminToken, "GET", "billing/meter-reviews?status=invalid", nil, 400)
 	station := gin.H{"name": "分页站点", "longitude": 116.3, "latitude": 39.9, "status": "active"}
 	sid := data(call(adminToken, "POST", "stations", station, 200))["id"]
+	// 记下主键，清理时按它删：这个站点稍后会被改名，按名字认不准。
+	pagesStationID = uint64(sid.(float64))
 	parties := []gin.H{{"party_code": "operator", "party_name": "运营方", "ratio_bp": 6000},
 		{"party_code": "property", "party_name": "物业", "ratio_bp": 4000, "bank_account": "6222000012345678"}}
 	call("", "POST", "settings/split-templates", gin.H{"code": "PAGES_SPLIT", "name": "页面验收分账", "mode": "mode_a", "parties": parties}, 401)

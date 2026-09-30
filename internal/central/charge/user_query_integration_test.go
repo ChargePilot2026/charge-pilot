@@ -315,12 +315,23 @@ func TestUserDetailHidesForeignOrder(t *testing.T) {
 	orderID, ownerID := curveFixture(t, ctx, "QA-CURVE-DEV")
 	var orderNo string
 	userDB, _ := dbconn.Open(ctx, os.Getenv("TEST_USER_DATABASE_URL"))
-	defer userDB.Close()
+	// 用 t.Cleanup 而不是 defer 关连接：defer 在函数体退出时先跑，那时下面
+	// 注册的清理还没轮到，连接已经关了，清理报 "sql: database is closed"
+	// 然后把冒名账号永久留在库里。t.Cleanup 后进先出，晚注册的先跑。
+	t.Cleanup(func() { userDB.Close() })
 	orm, _ := dbconn.WrapGORM(userDB)
 	orm.Table("charge_order").Where("id = ?", orderID).Pluck("order_no", &orderNo)
 
 	// A second account must not be able to read the first one's order.
-	orm.Exec("INSERT INTO user(openid) VALUES(?)", "qa-intruder-"+uuid.NewString()[:8])
+	// 这个冒名账号只在本测试里存在，名字带 qa-intruder- 前缀就是为了能被认出来
+	// 摘掉：不清的话，后台「充电用户」列表里会一版版多出叫"用户 #900xxx"的空账号。
+	intruderOpenID := "qa-intruder-" + uuid.NewString()[:8]
+	orm.Exec("INSERT INTO user(openid) VALUES(?)", intruderOpenID)
+	t.Cleanup(func() {
+		if err := orm.Exec("DELETE FROM user WHERE openid = ?", intruderOpenID).Error; err != nil {
+			t.Errorf("清理冒名账号夹具失败: %v", err)
+		}
+	})
 	var intruderID uint64
 	orm.Table("user").Where("openid LIKE 'qa-intruder-%'").Order("id DESC").Limit(1).Pluck("id", &intruderID)
 	if intruderID == 0 || intruderID == ownerID {

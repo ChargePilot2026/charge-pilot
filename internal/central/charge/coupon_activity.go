@@ -160,6 +160,21 @@ func grantFromRule(tx *gorm.DB, rule activityRule, event activityEvent) (activit
 		return result, errActivityNotApplicable
 	}
 
+	// 券被删掉后规则还留在表里（规则和券是两张表，删券不删规则）。这时直接
+	// 写发放记录会留下一张指向不存在券的券：用户钱包里多出一张永远核销不了
+	// 的券，券的库存与单人限领统计也被污染，而且发放记录的 source_event_id
+	// 由规则主键算出，下一次同一笔订单再触发就会撞唯一键——一次坏配置能顶
+	// 住后面所有结算。规则不适用比发放一张幽灵券更接近真相。
+	var couponExists int64
+	if err := tx.Table("coupon").
+		Where("id = ? AND status = 'active'", locked.CouponID).
+		Count(&couponExists).Error; err != nil {
+		return result, err
+	}
+	if couponExists == 0 {
+		return result, errActivityNotApplicable
+	}
+
 	eventID := activityEventID(rule.ID, event)
 	var grantID uint64
 	if err := tx.Table("coupon_grant").Create(map[string]any{

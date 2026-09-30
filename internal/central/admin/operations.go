@@ -65,8 +65,24 @@ func (a ResourceAPI) registerOperations(r *gin.Engine) {
 // JSON values reach browsers as arrays/objects instead of base64 strings.
 // normalizeRows 归一化 admin 库查出来的行：MySQL 把 JSON、DECIMAL 等列当 []byte 返回，
 // 先转成字符串；event_types、target_ids 以及所有以 _json 结尾的列在能解析时展开成
-// 数组或对象；enabled 这类 0/1 列转成布尔值。解析不出来的保持原样——
+// 数组或对象；布尔列转成 true/false。解析不出来的保持原样——
 // 展示问题不该让整页列表失败。
+//
+// 布尔列走白名单而不是逐个 if：MySQL 的 tinyint(1) 回来是数字，前端拿到的是
+// 1 而不是 true。前端一旦用 === true 判断，数字 1 就会被判成 false——设备矩阵
+// 会把一台明明上报电量的桩显示成"仅时长"，运营照着它去配计费方式就会撞上
+// "未声明电量上报能力"。
+//
+// 这里只列真正从库里查出来、且列类型是 tinyint(1) 的列。像 can_review、mfa_required
+// 这种在 Go 里现算的响应字段不在表里——它们本来就是 bool，加进来只会让人
+// 误以为漏了哪张表。以后新增布尔列时记得把列名加进来。
+var booleanColumns = map[string]bool{
+	"enabled":                 true,
+	"reports_energy":          true,
+	"reports_segmented_power": true,
+	"user_visible":            true,
+}
+
 func normalizeRows(rows []map[string]any) {
 	for _, row := range rows {
 		for k, v := range row {
@@ -82,7 +98,7 @@ func normalizeRows(rows []map[string]any) {
 					}
 				}
 			}
-			if k == "enabled" {
+			if booleanColumns[k] {
 				switch n := v.(type) {
 				case int64:
 					row[k] = n != 0
@@ -90,6 +106,8 @@ func normalizeRows(rows []map[string]any) {
 					row[k] = n != 0
 				case int8:
 					row[k] = n != 0
+				case bool:
+					// 已经是布尔值，原样留着。
 				}
 			}
 		}

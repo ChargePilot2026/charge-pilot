@@ -306,12 +306,24 @@ func seedOrder(ctx context.Context, userDB *sql.DB, userID int64, u demoUser, o 
 	// 没有默认值，必须显式写入；写成订单创建时间的月初。
 	month := time.Date(created.Year(), created.Month(), 1, 0, 0, 0, 0, time.UTC)
 	orderNo := fmt.Sprintf("DEMO-%s-%d", month.Format("200601"), userID*100+int64(o.daysAgo))
+	// 已结束的订单必须写 ended_at。结算和首页都靠它：后台首页的"近 7 天完成
+	// 订单与结算金额"是按 ended_at 分天汇总的，示例数据一律留空的话，运营打开
+	// 后台第一眼看到的就是一张全 0 的表，还以为平台没数据。订单列表的"结束时间"
+	// 列同样因此全是"—"。
+	//
+	// 结束时间按 charged_seconds 往后推，不另造时长：示例订单的时长本来就统一
+	// 取 3600 秒，这里只是把这个口径落到 ended_at 上，两处不再各说各话。
+	// 仍在充电的订单不写——正在充的订单本来就还没有结束时刻。
+	var endedAt any
+	if orderHasEndedAt(o.status) {
+		endedAt = created.Add(time.Duration(3600) * time.Second)
+	}
 	result, err := userDB.ExecContext(ctx, `
 		INSERT INTO charge_order
-		  (order_no, user_id, device_id, port_no, status, started_at, charged_kwh, charged_seconds,
+		  (order_no, user_id, device_id, port_no, status, started_at, ended_at, charged_kwh, charged_seconds,
 		   electric_cents, service_cents, total_cents, created_month, created_at)
-		VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		orderNo, userID, deviceID, o.status, created, o.kwh, 3600, electric, service, total, month.Format("2006-01-02"), created)
+		VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		orderNo, userID, deviceID, o.status, created, endedAt, o.kwh, 3600, electric, service, total, month.Format("2006-01-02"), created)
 	if err != nil {
 		return err
 	}
@@ -334,6 +346,14 @@ func seedOrder(ctx context.Context, userDB *sql.DB, userID int64, u demoUser, o 
 		fmt.Sprintf("%s-01", deviceID), stationID, o.kwh, orZero(electric), orZero(service), orZero(total),
 		intentStatus(o.status), created.Add(15*time.Minute), created, created, orderID)
 	return err
+}
+
+// orderHasEndedAt 报告这个状态的订单是否应当带结束时刻。
+//
+// 只有真正跑完的订单才有结束时刻：仍在充电的订单没有，已取消的订单是被中止
+// 的、同样没有。示例数据的 status 只用这四种，所以列全即可。
+func orderHasEndedAt(status string) bool {
+	return status == "completed" || status == "refunded"
 }
 
 // intentStatus 把订单状态映射成支付意图状态。已取消的订单对应的意图是 closed，

@@ -194,6 +194,42 @@ func TestExpiredAndDisabledRulesDoNotGrant(t *testing.T) {
 // An invite reward must not pay out to a ring of throwaway accounts: the
 // inviter has to have actually used the platform, and nobody may invite
 // themselves.
+// 一条指向已删券的规则不发放，也不该留下任何痕迹。
+//
+// 规则和券分属两张表，删券不会连带删规则。原来的写法照样往 coupon_grant 里
+// 写一行：用户钱包里多出一张永远核销不了的券，券的库存与单人限领统计被污染。
+// 更麻烦的是发放记录的 source_event_id 由规则主键算出来，同一笔订单再次触发
+// 就会撞上 uk_coupon_grant_source_event——一次坏配置能顶住后面所有结算。
+func TestRulePointingAtDeletedCouponGrantsNothing(t *testing.T) {
+	orm := activityDB(t)
+	fx := newActivityFixture(t, orm, "first_recharge", 1, 0)
+	defer fx.cleanup()
+	now := time.Now().UTC()
+
+	// 把规则指向一张不存在的券：券没了，规则还在。
+	if err := orm.Exec("UPDATE coupon_activity_rule SET coupon_id = 99999999 WHERE id = ?", fx.ruleID).Error; err != nil {
+		t.Fatal(err)
+	}
+	event := activityEvent{TriggerType: "first_recharge", UserID: fx.userID, EventKey: fx.eventKey, AmountCents: 5000, Now: now}
+	if got := runActivity(t, orm, event); len(got) != 0 {
+		t.Fatalf("a rule on a deleted coupon still granted: %+v", got)
+	}
+	var grants int64
+	if err := orm.Table("coupon_grant").Where("user_id = ?", fx.userID).Count(&grants).Error; err != nil {
+		t.Fatal(err)
+	}
+	if grants != 0 {
+		t.Fatalf("coupon_grant rows = %d, want 0", grants)
+	}
+	var requests int64
+	if err := orm.Table("coupon_grant_request").Where("user_id = ?", fx.userID).Count(&requests).Error; err != nil {
+		t.Fatal(err)
+	}
+	if requests != 0 {
+		t.Fatalf("coupon_grant_request rows = %d, want 0", requests)
+	}
+}
+
 func TestInviteRewardRequiresEstablishedInviter(t *testing.T) {
 	orm := activityDB(t)
 	fx := newActivityFixture(t, orm, "invite_reward", 5, 0)
