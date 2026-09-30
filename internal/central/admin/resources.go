@@ -84,6 +84,7 @@ type PageQuery struct {
 	Page            int    // 页码，从 1 开始
 	PageSize        int    // 每页条数，1–100
 	Keyword, Status string // 关键词模糊查询条件；状态过滤，须落在各接口给定的白名单内
+	StationID       uint64 // Optional device-list station filter, parsed and scope-checked by devices.
 }
 
 // Page[T] 是列表接口的统一响应体，额外带上权限清单供前端决定按钮可见性。

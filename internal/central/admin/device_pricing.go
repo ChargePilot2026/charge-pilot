@@ -3,6 +3,7 @@ package admin
 import (
 	"errors"
 
+	"github.com/ChargePilot2026/charge-pilot/internal/central/pricing"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/httpapi"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -21,6 +22,7 @@ import (
 // registerDevicePricing 挂载设备计费矩阵、设备回退到站点默认、站点策略三类路由，
 // 权限点分别是 pricing.read 与 pricing.rule.update。
 func (a ResourceAPI) registerDevicePricing(r *gin.Engine) {
+	r.GET("/api/v1/admin/stations/:id/configuration", a.Auth.Require("station.read"), a.Auth.Require("pricing.read"), a.stationConfiguration)
 	r.GET("/api/v1/admin/settings/device-pricing", a.Auth.Require("pricing.read"), a.devicePricingMatrix)
 	r.POST("/api/v1/admin/settings/device-pricing/reset", a.Auth.Require("pricing.rule.update"), a.resetDevicePricing)
 	r.GET("/api/v1/admin/settings/station-policies", a.Auth.Require("pricing.read"), a.stationPolicies)
@@ -45,10 +47,19 @@ func (a ResourceAPI) registerDevicePricing(r *gin.Engine) {
 // 却既看不到也改不了让它变成这样的那个事实。
 func (a ResourceAPI) devicePricingMatrix(c *gin.Context) {
 	ctx := c.Request.Context()
-	var station struct {
-		ID uint64 `gorm:"column:id"`
+	stationID, ok := queryStationID(c, true)
+	if !ok || !a.requireStationScope(c, stationID) {
+		return
 	}
-	if err := a.Store.AdminDB.WithContext(ctx).Table("station").Where("id=? AND deleted_at IS NULL", c.Query("station_id")).
+	scope, ok := a.stationScope(c)
+	if !ok {
+		return
+	}
+	var station struct {
+		ID     uint64 `gorm:"column:id"`
+		Status string
+	}
+	if err := a.Store.AdminDB.WithContext(ctx).Table("station").Where("id=? AND deleted_at IS NULL", stationID).
 		Take(&station).Error; err != nil {
 		resourceFailure(c, err)
 		return
@@ -57,7 +68,7 @@ func (a ResourceAPI) devicePricingMatrix(c *gin.Context) {
 	// 设备自己的规则优先；设备没有独立规则时继承站点默认，也就是 device_id 为空的那一行。
 	// SQL 里的 station_default 是"站点默认规则"这一侧的连接别名，输出字段 station_version
 	// 是站点默认规则的版本号（早先叫 yard/yard_version，现已统一为站点口径）。
-	err := a.Store.AdminDB.WithContext(ctx).Table("device_meta d").
+	query := a.Store.AdminDB.WithContext(ctx).Table("device_meta d").
 		Select(`d.device_id, d.model, d.status AS device_status,
 			d.charge_mode, d.reports_energy, d.reports_segmented_power,
 			COALESCE(own.name, station_default.name) AS template_name,
@@ -66,19 +77,27 @@ func (a ResourceAPI) devicePricingMatrix(c *gin.Context) {
 			own_latest.version AS own_latest_version,
 			COALESCE(own.spec_json, station_default.spec_json) AS spec_json,
 			COALESCE(own.device_id, station_default.device_id) AS effective_rule_device_id,
-			(SELECT COUNT(*) FROM charge_offer o
-			  WHERE o.station_id = d.station_id AND o.status='active'
-			    AND (o.device_id = d.device_id OR o.device_id IS NULL)) AS offer_count,
-			(SELECT GROUP_CONCAT(o.name ORDER BY o.price_cents SEPARATOR '、') FROM charge_offer o
-			  WHERE o.station_id = d.station_id AND o.status='active'
-			    AND (o.device_id = d.device_id OR o.device_id IS NULL)) AS offer_names`).
+				(SELECT COUNT(*) FROM charge_offer o
+				  WHERE o.station_id = d.station_id AND o.status='active' AND o.deleted_at IS NULL
+				    AND (o.device_id = d.device_id OR o.device_id IS NULL)
+				    AND (o.device_id = d.device_id OR o.package_template_id NOT IN (
+				      SELECT package_template_id FROM charge_offer WHERE station_id=d.station_id
+				      AND device_id=d.device_id AND status='active' AND deleted_at IS NULL))) AS offer_count,
+				(SELECT GROUP_CONCAT(o.name ORDER BY o.price_cents SEPARATOR '、') FROM charge_offer o
+				  WHERE o.station_id = d.station_id AND o.status='active' AND o.deleted_at IS NULL
+				    AND (o.device_id = d.device_id OR o.device_id IS NULL)
+				    AND (o.device_id = d.device_id OR o.package_template_id NOT IN (
+				      SELECT package_template_id FROM charge_offer WHERE station_id=d.station_id
+				      AND device_id=d.device_id AND status='active' AND deleted_at IS NULL))) AS offer_names`).
 		Joins(`LEFT JOIN pricing_rule own ON own.id = (
-				SELECT id FROM pricing_rule WHERE device_id = d.device_id AND status='active' AND deleted_at IS NULL
-				ORDER BY version DESC, id DESC LIMIT 1)`).
+					SELECT id FROM pricing_rule WHERE device_id = d.device_id AND status='active' AND deleted_at IS NULL
+					AND (effective_from IS NULL OR effective_from<=NOW(3)) AND (effective_to IS NULL OR effective_to>NOW(3))
+					ORDER BY version DESC, id DESC LIMIT 1)`).
 		Joins(`LEFT JOIN pricing_rule station_default ON station_default.id = (
 				SELECT id FROM pricing_rule WHERE station_id = d.station_id AND device_id IS NULL
-				  AND status='active' AND deleted_at IS NULL
-				ORDER BY version DESC, id DESC LIMIT 1)`).
+					  AND status='active' AND deleted_at IS NULL
+					  AND (effective_from IS NULL OR effective_from<=NOW(3)) AND (effective_to IS NULL OR effective_to>NOW(3))
+					ORDER BY version DESC, id DESC LIMIT 1)`).
 		// own_latest_version 故意不过滤 status：下发模板时的乐观锁读的是该范围
 		// 「最新一条」规则，不管它是不是还在生效（见 applyPricingTemplate）。
 		// 上面的 own_version 只看生效规则，两者口径不同，客户端要按前者回填版本号，
@@ -87,7 +106,8 @@ func (a ResourceAPI) devicePricingMatrix(c *gin.Context) {
 				SELECT id FROM pricing_rule WHERE device_id = d.device_id AND deleted_at IS NULL
 				ORDER BY version DESC, id DESC LIMIT 1)`).
 		Where("d.station_id=? AND d.deleted_at IS NULL", station.ID).
-		Order("d.device_id").Find(&rows).Error
+		Order("d.device_id")
+	err := scope.ApplyVendors(query, "d.vendor_id").Find(&rows).Error
 	if err != nil {
 		resourceFailure(c, err)
 		return
@@ -111,8 +131,9 @@ func (a ResourceAPI) devicePricingMatrix(c *gin.Context) {
 
 // resetDeviceInput 是"把某台设备交还给站点默认"的入参，只认站点加设备这一个组合。
 type resetDeviceInput struct {
-	StationID uint64 `json:"station_id"` // 所属站点 ID，必须为正整数
-	DeviceID  string `json:"device_id"`  // 设备 ID，须匹配 ^[A-Za-z0-9_-]{1,64}$
+	StationID        uint64 `json:"station_id"`         // 所属站点 ID，必须为正整数
+	DeviceID         string `json:"device_id"`          // 设备 ID，须匹配 ^[A-Za-z0-9_-]{1,64}$
+	KeepDeviceOffers bool   `json:"keep_device_offers"` // true only restores the tariff; false preserves the legacy reset behavior.
 }
 
 // resetDevicePricing 让一台设备回退到站点默认：停用它自己的计费规则和它独有的在售套餐，
@@ -131,32 +152,88 @@ func (a ResourceAPI) resetDevicePricing(c *gin.Context) {
 		httpapi.BadRequest(c, "请选择站点与设备")
 		return
 	}
+	if !a.requirePricingTargetScope(c, in.StationID, in.DeviceID) {
+		return
+	}
 	actor := c.MustGet("admin_profile").(Profile)
+	var switchTask uint64
 	err := a.Store.AdminDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
-		var device Station
+		// Serialize reset with publication of station and device rules.
+		var station Station
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id=? AND deleted_at IS NULL", in.StationID).Take(&station).Error; err != nil {
+			return err
+		}
+		var device deviceCapability
 		if err := tx.Table("device_meta").Clauses(clause.Locking{Strength: "UPDATE"}).
 			Where("device_id=? AND station_id=? AND deleted_at IS NULL", in.DeviceID, in.StationID).
 			Take(&device).Error; err != nil {
 			return err
+		}
+		var inherited pricing.Rule
+		if in.KeepDeviceOffers {
+			var err error
+			inherited, err = (pricing.Store{DB: tx}).ActiveStationRule(c.Request.Context(), in.StationID)
+			if errors.Is(err, pricing.ErrRuleUnavailable) || errors.Is(err, pricing.ErrInvalidPricing) {
+				httpapi.Write(c, 409, 1009, "站点没有有效的默认计费规则，无法恢复继承", nil)
+				return errAlreadyReported
+			}
+			if err != nil {
+				return err
+			}
+			if reason := capabilityBlock(inherited.Spec.Mode, device); reason != "" {
+				httpapi.Write(c, 409, 1009, reason, nil)
+				return errAlreadyReported
+			}
 		}
 		if err := tx.Table("pricing_rule").
 			Where("station_id=? AND device_id=? AND status='active'", in.StationID, in.DeviceID).
 			Update("status", "disabled").Error; err != nil {
 			return err
 		}
-		if err := tx.Table("charge_offer").
-			Where("station_id=? AND device_id=? AND status='active'", in.StationID, in.DeviceID).
-			Update("status", "disabled").Error; err != nil {
-			return err
+		if !in.KeepDeviceOffers {
+			if err := tx.Table("charge_offer").
+				Where("station_id=? AND device_id=? AND status='active'", in.StationID, in.DeviceID).
+				Update("status", "disabled").Error; err != nil {
+				return err
+			}
+		} else {
+			if err := tx.Table("device_meta").Where("device_id=? AND station_id=?", in.DeviceID, in.StationID).
+				Update("charge_mode", string(inherited.Spec.Mode)).Error; err != nil {
+				return err
+			}
+			if !inherited.Spec.Mode.ServerBilled() {
+				before := device.ChargeMode
+				if before == "" {
+					before = modeNeverSet
+				}
+				var err error
+				var source struct{ TemplateID uint64 }
+				if err := tx.Table("pricing_rule").Select("template_id").Where("id=?", inherited.ID).Take(&source).Error; err != nil {
+					return err
+				}
+				switchTask, err = a.planSwitchTask(tx, actor, in.StationID, source.TemplateID, inherited.Spec.Mode,
+					[]switchTarget{{DeviceID: in.DeviceID, Before: before, Cap: device}}, c)
+				if err != nil {
+					return err
+				}
+			}
 		}
 		return resourceAudit(tx, actor, "pricing.device.reset", "device_meta", 0, nil,
-			map[string]any{"station_id": in.StationID, "device_id": in.DeviceID}, c.ClientIP(), httpapi.RequestID(c))
+			map[string]any{"station_id": in.StationID, "device_id": in.DeviceID, "keep_device_offers": in.KeepDeviceOffers}, c.ClientIP(), httpapi.RequestID(c))
 	})
+	if errors.Is(err, errAlreadyReported) {
+		return
+	}
 	if err != nil {
 		resourceFailure(c, err)
 		return
 	}
-	httpapi.OK(c, gin.H{"station_id": in.StationID, "device_id": in.DeviceID, "reset": true})
+	response := gin.H{"station_id": in.StationID, "device_id": in.DeviceID, "reset": true, "keep_device_offers": in.KeepDeviceOffers}
+	if switchTask > 0 {
+		response["switch_task_id"] = switchTask
+		response["switch_pending"] = true
+	}
+	httpapi.OK(c, response)
 }
 
 // 站点策略管的是钱怎么走，而不是一次充电怎么计价：
@@ -200,19 +277,31 @@ func validStationPolicy(in stationPolicyInput) bool {
 // stationPolicies 是 GET /api/v1/admin/settings/station-policies 的处理函数：
 // 列出所有站点的充值与退款策略，按站点 ID 升序，一次性返回不分页。
 func (a ResourceAPI) stationPolicies(c *gin.Context) {
+	scope, ok := a.stationScope(c)
+	if !ok {
+		return
+	}
+	stationID, ok := queryStationID(c, false)
+	if !ok || stationID > 0 && !a.requireStationScope(c, stationID) {
+		return
+	}
 	rows := []map[string]any{}
-	err := a.Store.AdminDB.WithContext(c.Request.Context()).Table("station_policy p").
+	query := a.Store.AdminDB.WithContext(c.Request.Context()).Table("station_policy p").
 		Select("p.station_id, s.name AS station_name, p.force_recharge, p.min_balance_cents," +
 			"p.scan_refund_path, p.scan_refund_rule, p.card_refund_path, p.card_refund_rule," +
 			"p.timeout_start_refund, p.verify_phone_before_charge, p.version").
 		Joins("JOIN station s ON s.id = p.station_id AND s.deleted_at IS NULL").
-		Order("p.station_id").Find(&rows).Error
+		Where("p.deleted_at IS NULL")
+	if stationID > 0 {
+		query = query.Where("p.station_id=?", stationID)
+	}
+	err := scope.ApplyStations(query, "p.station_id").Order("p.station_id").Find(&rows).Error
 	if err != nil {
 		resourceFailure(c, err)
 		return
 	}
 	normalizeRows(rows)
-	httpapi.OK(c, gin.H{"items": rows, "permissions": c.MustGet("admin_profile").(Profile).Permissions})
+	httpapi.OK(c, gin.H{"items": rows, "permissions": c.MustGet("admin_profile").(Profile).Permissions, "can_manage_default": canManageStationDefault(scope)})
 }
 
 // saveStationPolicy 是 PUT /api/v1/admin/settings/station-policies/：id 的处理函数。
@@ -230,6 +319,9 @@ func (a ResourceAPI) saveStationPolicy(c *gin.Context) {
 	}
 	if !validStationPolicy(in) {
 		httpapi.BadRequest(c, "站点策略参数无效")
+		return
+	}
+	if !a.requirePricingTargetScope(c, stationID, "") {
 		return
 	}
 	actor := c.MustGet("admin_profile").(Profile)

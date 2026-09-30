@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "ChargePilot Go admin API",
-    "version": "2026-09-29",
+    "version": "2026-09-30",
     "description": "已接线的 Go 后台认证、仪表盘和现有 PC 页面接口。字段与工作流见 docs/api/go-admin-pages.md；不代表目标设计中的全部后台能力。"
   },
   "paths": {
@@ -1289,7 +1289,21 @@
           "503": {
             "description": "依赖服务不可用"
           }
-        }
+        },
+        "parameters": [
+          {
+            "name": "station_id",
+            "in": "query",
+            "required": false,
+            "description": "固定站点范围；必须为单个正整数，空值和重复参数返回 400。",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            }
+          }
+        ],
+        "description": "按 keyword/status/station_id 分页读取设备；同时应用当前账号站点与厂商范围。"
       }
     },
     "/api/v1/admin/devices/{id}": {
@@ -2064,7 +2078,8 @@
           "503": {
             "description": "依赖服务不可用"
           }
-        }
+        },
+        "description": " 新建、导入及重试均按当前账号站点与厂商范围检查全部设备，越界请求在调用 gateway 前返回 403。"
       }
     },
     "/api/v1/admin/device-imports/{import_id}/retry": {
@@ -2108,7 +2123,8 @@
               "type": "string"
             }
           }
-        ]
+        ],
+        "description": " 新建、导入及重试均按当前账号站点与厂商范围检查全部设备，越界请求在调用 gateway 前返回 403。"
       }
     },
     "/api/v1/admin/users": {
@@ -3010,123 +3026,6 @@
             "description": "数据库不可用"
           }
         }
-      },
-      "post": {
-        "summary": "发布站点计费新版本",
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ],
-        "x-permission": "pricing.rule.create",
-        "description": "UUID request_id 幂等，expected_version 乐观锁；自动停用同站点旧版，保留历史快照。",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "required": [
-                  "request_id",
-                  "name",
-                  "station_id",
-                  "expected_version",
-                  "mode",
-                  "time_of_use"
-                ],
-                "properties": {
-                  "request_id": {
-                    "type": "string",
-                    "format": "uuid"
-                  },
-                  "name": {
-                    "type": "string",
-                    "maxLength": 128
-                  },
-                  "station_id": {
-                    "type": "integer",
-                    "minimum": 1
-                  },
-                  "expected_version": {
-                    "type": "integer",
-                    "minimum": 0
-                  },
-                  "mode": {
-                    "type": "string",
-                    "enum": [
-                      "kwh",
-                      "minute",
-                      "mixed"
-                    ]
-                  },
-                  "time_of_use": {
-                    "type": "array",
-                    "minItems": 1,
-                    "maxItems": 48,
-                    "items": {
-                      "type": "object",
-                      "required": [
-                        "start",
-                        "end",
-                        "electric_price_cents"
-                      ],
-                      "properties": {
-                        "period": {
-                          "type": "string"
-                        },
-                        "start": {
-                          "type": "string"
-                        },
-                        "end": {
-                          "type": "string"
-                        },
-                        "electric_price_cents": {
-                          "type": "integer",
-                          "minimum": 0,
-                          "maximum": 1000000
-                        },
-                        "service_price_cents": {
-                          "type": "integer",
-                          "minimum": 0,
-                          "maximum": 1000000
-                        }
-                      }
-                    }
-                  },
-                  "service_fee_cents_per_kwh": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 1000000
-                  },
-                  "service_fee_cents_per_min": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 1000000
-                  },
-                  "min_charge_cents": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 1000000
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "data.id/version/replayed"
-          },
-          "400": {
-            "description": "时段/金额无效"
-          },
-          "403": {
-            "description": "无发布权限"
-          },
-          "409": {
-            "description": "当前版本或幂等内容冲突"
-          }
-        }
       }
     },
     "/api/v1/admin/billing/settlements": {
@@ -3762,6 +3661,823 @@
             "description": "存储不可用"
           }
         }
+      }
+    },
+    "/api/v1/admin/stations/{id}/configuration": {
+      "get": {
+        "summary": "读取站点工作区配置",
+        "tags": [
+          "站点配置"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "station.read AND pricing.read",
+        "description": "返回当前有效站点默认规则、整条站点规则链最新版本和未删除套餐副本（含下架记录）。零设备站点可正常读取。厂商受限账号仅看到通用套餐与本厂商设备套餐，can_manage_default=false。",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "enum": [
+                        0
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "type": "object",
+                      "required": [
+                        "station_id",
+                        "default_rule",
+                        "station_latest_version",
+                        "offers",
+                        "permissions",
+                        "can_manage_default"
+                      ],
+                      "properties": {
+                        "station_id": {
+                          "type": "integer",
+                          "minimum": 1
+                        },
+                        "default_rule": {
+                          "type": "object",
+                          "nullable": true,
+                          "description": "当前有效 active 默认规则快照，含 id/name/template_id/spec_json/version；不存在时为 null。"
+                        },
+                        "station_latest_version": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "description": "默认规则链最新版本，包括停用和未来生效版本；发布时的乐观锁。"
+                        },
+                        "offers": {
+                          "type": "array",
+                          "items": {
+                            "type": "object"
+                          },
+                          "description": "本站点未删除的套餐副本，device_id=null 为通用套餐。"
+                        },
+                        "permissions": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "can_manage_default": {
+                          "type": "boolean",
+                          "description": "数据范围是否允许整站操作；写入仍需对应操作权限。"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "会话失效"
+          },
+          "403": {
+            "description": "实时权限或站点/厂商数据范围不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "版本、业务状态或幂等内容冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/settings/device-pricing": {
+      "get": {
+        "summary": "读取站点设备计费矩阵",
+        "tags": [
+          "站点配置"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "pricing.read",
+        "description": "data.station_id/items/permissions/station_latest_version。items 包含当前有效 spec_json、own_rule_id/own_version/own_latest_version、station_version、effective_rule_device_id、offer_count/offer_names；计费当前有效版本与规则链乐观锁版本分别返回。套餐按设备覆盖同模板通用套餐后的有效集合计数。",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "会话失效"
+          },
+          "403": {
+            "description": "实时权限或站点/厂商数据范围不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "版本、业务状态或幂等内容冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        },
+        "parameters": [
+          {
+            "name": "station_id",
+            "in": "query",
+            "required": true,
+            "description": "固定站点范围；必须为单个正整数，空值和重复参数返回 400。",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/settings/pricing-template-candidates": {
+      "get": {
+        "summary": "读取当前目标可用计费模板",
+        "tags": [
+          "站点配置"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "pricing.read",
+        "description": "data.items/permissions。items 包含 spec、unavailable_reason、currently_applied/currently_applied_as。当前应用范围固定为站点默认或指定设备；能力校验目标与实际应用一致。",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "会话失效"
+          },
+          "403": {
+            "description": "实时权限或站点/厂商数据范围不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "版本、业务状态或幂等内容冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        },
+        "parameters": [
+          {
+            "name": "station_id",
+            "in": "query",
+            "required": false,
+            "description": "固定站点范围；必须为单个正整数，空值和重复参数返回 400。",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            }
+          },
+          {
+            "name": "device_id",
+            "in": "query",
+            "required": false,
+            "description": "本站点设备编号；省略表示站点默认。",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "preserve_device_overrides",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false
+            },
+            "description": "整站范围 true 时仅校验当前继承默认计费的设备；只接受 true/false。"
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/settings/pricing-templates/{id}/apply": {
+      "post": {
+        "summary": "为站点或设备应用计费模板",
+        "tags": [
+          "站点配置"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "pricing.rule.create",
+        "description": "模板复制成不可变计费规则。expected_version 使用相应站点/设备规则链最新版本。UUID 重试返回原 id/version/replayed；改变模板或请求内容返回 409。设备侧计费返回 switch_pending/switch_task_id 表示待下发，不能视为硬件已生效。",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "会话失效"
+          },
+          "403": {
+            "description": "实时权限或站点/厂商数据范围不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "版本、业务状态或幂等内容冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "station_id",
+                  "request_id",
+                  "expected_version"
+                ],
+                "properties": {
+                  "station_id": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "device_id": {
+                    "type": "string",
+                    "description": "空串或省略为站点默认；否则为本站设备。"
+                  },
+                  "request_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "expected_version": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "preserve_device_overrides": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "整站应用时保留当前独立规则设备，计量校验、模式更新和切换任务只针对继承设备。省略保持原行为。"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/settings/device-pricing/reset": {
+      "post": {
+        "summary": "恢复设备继承站点默认",
+        "tags": [
+          "站点配置"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "pricing.rule.update",
+        "description": "keep_device_offers=true 仅停用独立规则，保留设备套餐，并校验当前站点默认与设备能力；缺失默认或不兼容返回 409。省略保持规则与套餐一并停用的旧行为。设备侧默认可能返回 switch_pending/switch_task_id。",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "会话失效"
+          },
+          "403": {
+            "description": "实时权限或站点/厂商数据范围不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "版本、业务状态或幂等内容冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "station_id",
+                  "device_id"
+                ],
+                "properties": {
+                  "station_id": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "device_id": {
+                    "type": "string"
+                  },
+                  "keep_device_offers": {
+                    "type": "boolean",
+                    "default": false
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/settings/package-templates": {
+      "get": {
+        "summary": "读取套餐模板",
+        "tags": [
+          "站点配置"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "pricing.read",
+        "description": "data.items/permissions；模板和站点实际在售副本分别管理。",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "会话失效"
+          },
+          "403": {
+            "description": "实时权限或站点/厂商数据范围不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "版本、业务状态或幂等内容冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/settings/package-templates/{id}/apply": {
+      "post": {
+        "summary": "为站点或设备上架套餐",
+        "tags": [
+          "站点配置"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "pricing.rule.create",
+        "description": "目标由站点和可选设备固定。自然目标键已有 active 副本返回 offer_id/replayed=true；已下架时恢复旧条款并返回 relisted=true，不用模板的新价格覆盖历史副本。可选 request_id 仅为 UUID 关联编号。",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "会话失效"
+          },
+          "403": {
+            "description": "实时权限或站点/厂商数据范围不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "版本、业务状态或幂等内容冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "station_id"
+                ],
+                "properties": {
+                  "station_id": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "device_id": {
+                    "type": "string",
+                    "description": "空串或省略为站点通用。"
+                  },
+                  "request_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/settings/charge-offers": {
+      "get": {
+        "summary": "读取实际上架套餐副本",
+        "tags": [
+          "站点配置"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "pricing.read",
+        "description": "data.items/permissions；按站点与厂商范围过滤，包括通用与本厂商设备专属记录。",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "会话失效"
+          },
+          "403": {
+            "description": "实时权限或站点/厂商数据范围不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "版本、业务状态或幂等内容冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        },
+        "parameters": [
+          {
+            "name": "station_id",
+            "in": "query",
+            "required": false,
+            "description": "固定站点范围；必须为单个正整数，空值和重复参数返回 400。",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/settings/charge-offers/{id}/disable": {
+      "post": {
+        "summary": "下架所选套餐副本",
+        "tags": [
+          "站点配置"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "pricing.rule.update",
+        "description": "只停用该副本，不影响其他设备独立套餐或既有支付订单条款。厂商受限账号不能下架整站通用套餐。",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "会话失效"
+          },
+          "403": {
+            "description": "实时权限或站点/厂商数据范围不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "版本、业务状态或幂等内容冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/settings/station-policies": {
+      "get": {
+        "summary": "读取站点策略",
+        "tags": [
+          "站点配置"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "pricing.read",
+        "description": "data.items/permissions/can_manage_default；策略描述充值门槛和退款行为，与费率分别配置。",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "会话失效"
+          },
+          "403": {
+            "description": "实时权限或站点/厂商数据范围不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "版本、业务状态或幂等内容冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        },
+        "parameters": [
+          {
+            "name": "station_id",
+            "in": "query",
+            "required": false,
+            "description": "固定站点范围；必须为单个正整数，空值和重复参数返回 400。",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/settings/station-policies/{id}": {
+      "put": {
+        "summary": "保存站点策略",
+        "tags": [
+          "站点配置"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "pricing.rule.update",
+        "description": "以 expected_version 为乐观锁，0 表示创建；站点须运营中。厂商受限账号不能修改整站策略。字段见站点策略页面与 go-admin-pages.md。",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "会话失效"
+          },
+          "403": {
+            "description": "实时权限或站点/厂商数据范围不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "版本、业务状态或幂等内容冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/settings/switch-tasks": {
+      "get": {
+        "summary": "读取计费切换任务",
+        "tags": [
+          "站点配置"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "pricing.read",
+        "description": "data 为任务数组，最多 200 条。按站点及厂商设备范围过滤；厂商范围下 device_count 仅计可见设备。pending 表示尚未完成实际下发。",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "会话失效"
+          },
+          "403": {
+            "description": "实时权限或站点/厂商数据范围不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "版本、业务状态或幂等内容冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        },
+        "parameters": [
+          {
+            "name": "station_id",
+            "in": "query",
+            "required": false,
+            "description": "固定站点范围；必须为单个正整数，空值和重复参数返回 400。",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/settings/switch-tasks/{id}": {
+      "get": {
+        "summary": "读取计费切换任务设备明细",
+        "tags": [
+          "站点配置"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "pricing.read",
+        "description": "data.task/items。厂商受限账号只看到本范围设备明细与相应 device_count；没有可见设备返回 403。",
+        "responses": {
+          "200": {
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "会话失效"
+          },
+          "403": {
+            "description": "实时权限或站点/厂商数据范围不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "版本、业务状态或幂等内容冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            }
+          }
+        ]
       }
     }
   },

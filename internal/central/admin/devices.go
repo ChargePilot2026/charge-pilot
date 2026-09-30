@@ -40,9 +40,16 @@ const deviceColumns = "d.id,d.device_id,d.station_id,d.vendor_id,d.model,d.statu
 
 // Devices 分页查询设备，支持按状态过滤和按设备编号/型号/站点名模糊搜索（通配符已转义）。
 // 先 Count 再按内部主键倒序取当页。注意关键词不再匹配站点编码。
-func (s ResourceStore) Devices(ctx context.Context, q PageQuery) (Page[Device], error) {
+func (s ResourceStore) Devices(ctx context.Context, q PageQuery, scopes ...DataScope) (Page[Device], error) {
 	out := Page[Device]{Items: []Device{}, Page: q.Page, PageSize: q.PageSize}
 	query := s.deviceQuery(ctx)
+	if q.StationID > 0 {
+		query = query.Where("d.station_id=?", q.StationID)
+	}
+	if len(scopes) > 0 {
+		query = scopes[0].ApplyStations(query, "d.station_id")
+		query = scopes[0].ApplyVendors(query, "d.vendor_id")
+	}
 	if q.Status != "" {
 		query = query.Where("d.status = ?", q.Status)
 	}
@@ -64,7 +71,19 @@ func (a ResourceAPI) devices(c *gin.Context) {
 	if !ok {
 		return
 	}
-	out, err := a.Store.Devices(c.Request.Context(), q)
+	q.StationID, ok = queryStationID(c, false)
+	if !ok {
+		return
+	}
+	scope, ok := a.stationScope(c)
+	if !ok {
+		return
+	}
+	if q.StationID > 0 && !scope.AllowsStation(q.StationID) {
+		httpapi.Write(c, 403, 1003, "该站点不在您的数据范围内", nil)
+		return
+	}
+	out, err := a.Store.Devices(c.Request.Context(), q, scope)
 	if err != nil {
 		resourceFailure(c, err)
 		return
@@ -82,7 +101,12 @@ func (a ResourceAPI) device(c *gin.Context) {
 		return
 	}
 	var row Device
-	if err := a.Store.deviceQuery(c.Request.Context()).Select(deviceColumns).Where("d.device_id = ?", id).Take(&row).Error; err != nil {
+	scope, ok := a.stationScope(c)
+	if !ok {
+		return
+	}
+	query := scope.ApplyVendors(scope.ApplyStations(a.Store.deviceQuery(c.Request.Context()), "d.station_id"), "d.vendor_id")
+	if err := query.Select(deviceColumns).Where("d.device_id = ?", id).Take(&row).Error; err != nil {
 		resourceFailure(c, err)
 		return
 	}

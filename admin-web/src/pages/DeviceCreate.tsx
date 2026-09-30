@@ -21,9 +21,10 @@ type CreateJob = { import_id: string; status: string; last_error?: string | null
 const supportsVendor = (vendor: Vendor | undefined) => vendor?.adapter_class === 'dc589' && vendor.protocol === 'tcp';
 
 // 手动新建复用导入的开通流程，只有网关设备、端口与后台元数据均确认后才算成功。
-export default function DeviceCreate({ onComplete, canReadStations }: {
+export default function DeviceCreate({ onComplete, canReadStations, station }: {
   onComplete: () => void;
   canReadStations: boolean;
+  station?: StationChoice;
 }) {
   const [form] = Form.useForm<DeviceForm>();
   const [open, setOpen] = useState(false);
@@ -105,15 +106,15 @@ export default function DeviceCreate({ onComplete, canReadStations }: {
 
   const showEditor = () => {
     form.resetFields();
-    form.setFieldsValue({ port_count: 2, charge_mode: 'device_duration', reports_energy: false, reports_segmented_power: false });
+    form.setFieldsValue({ station_id: station?.id, port_count: 2, charge_mode: 'device_duration', reports_energy: false, reports_segmented_power: false });
     request.current = undefined;
     setError('');
     setVendorsError(''); setVendors([]);
     setStationsError('');
-    setStations([]);
+    setStations(station ? [station] : []);
     setOpen(true);
     void searchVendors('');
-    if (canReadStations) void searchStations('');
+    if (canReadStations && !station) void searchStations('');
   };
 
   const create = async () => {
@@ -190,9 +191,9 @@ export default function DeviceCreate({ onComplete, canReadStations }: {
             notFoundContent={vendorsLoading ? <Spin size="small" /> : vendorsError ? '厂商加载失败，请重试' : '没有匹配的已启用厂商，请先在厂商管理中新建'} />
         </Form.Item>
         {vendorsError && <LoadError title="厂商选项加载失败" detail={vendorsError} onRetry={() => void searchVendors(vendorKeyword.current)} />}
-        <Form.Item name="station_id" label="所属站点" extra={canReadStations ? '仅可选择运营中的站点。' : '填写运营中站点的 ID。'}
+        <Form.Item name="station_id" label="所属站点" extra={station ? '设备将创建在当前站点。' : canReadStations ? '仅可选择运营中的站点。' : '填写运营中站点的 ID。'}
           rules={[{ required: true, message: '请选择或填写所属站点' }, positiveID]}>
-          {canReadStations ? <Select showSearch allowClear filterOption={false} loading={stationsLoading}
+          {station ? <Select disabled options={[{ value: station.id, label: `${station.name} · ID ${station.id}` }]} /> : canReadStations ? <Select showSearch allowClear filterOption={false} loading={stationsLoading}
             placeholder="搜索站点名称或地址" options={stations.map(station => ({ value: station.id, label: `${station.name} · ID ${station.id}` }))}
             onSearch={keyword => {
               clearTimeout(stationSearchTimer.current);

@@ -22,8 +22,24 @@ func (a ResourceAPI) registerPricing(r *gin.Engine) {
 // pricingRules 返回站点维度生效的计费规则列表，左连站点带出站点名（站点被软删除时
 // 为空）。这里只读：规则的增删改都要通过"模板 + 应用到站点"完成。
 func (a ResourceAPI) pricingRules(c *gin.Context) {
+	scope, ok := a.stationScope(c)
+	if !ok {
+		return
+	}
+	stationID, ok := queryStationID(c, false)
+	if !ok || stationID > 0 && !a.requireStationScope(c, stationID) {
+		return
+	}
 	rows := []map[string]any{}
-	err := a.Store.AdminDB.WithContext(c.Request.Context()).Table("pricing_rule r").Select("r.id,r.name,r.station_id,s.name AS station_name,r.template_id,r.spec_json,r.channel,r.version,r.status,r.effective_from,r.effective_to").Joins("LEFT JOIN station s ON s.id=r.station_id AND s.deleted_at IS NULL").Where("r.deleted_at IS NULL").Order("r.id DESC").Find(&rows).Error
+	query := a.Store.AdminDB.WithContext(c.Request.Context()).Table("pricing_rule r").Select("r.id,r.name,r.station_id,r.device_id,s.name AS station_name,r.template_id,r.spec_json,r.channel,r.version,r.status,r.effective_from,r.effective_to").Joins("LEFT JOIN station s ON s.id=r.station_id AND s.deleted_at IS NULL").Where("r.deleted_at IS NULL")
+	if stationID > 0 {
+		query = query.Where("r.station_id=?", stationID)
+	}
+	if !canManageStationDefault(scope) {
+		query = query.Joins("LEFT JOIN device_meta rule_device ON rule_device.device_id=r.device_id AND rule_device.station_id=r.station_id AND rule_device.deleted_at IS NULL").
+			Where("(r.device_id IS NULL OR rule_device.vendor_id IN ?)", scope.VendorIDs)
+	}
+	err := scope.ApplyStations(query, "r.station_id").Order("r.id DESC").Find(&rows).Error
 	if err != nil {
 		resourceFailure(c, err)
 		return
@@ -42,11 +58,16 @@ func (a ResourceAPI) pricingTemplateUsage(c *gin.Context) {
 	if !ok {
 		return
 	}
+	scope, ok := a.stationScope(c)
+	if !ok {
+		return
+	}
 	rows := []map[string]any{}
-	err := a.Store.AdminDB.WithContext(c.Request.Context()).Table("pricing_rule r").
+	query := a.Store.AdminDB.WithContext(c.Request.Context()).Table("pricing_rule r").
 		Select("r.id AS rule_id,r.station_id,s.name AS station_name,r.version,r.status").
 		Joins("JOIN station s ON s.id=r.station_id AND s.deleted_at IS NULL").
-		Where("r.template_id=? AND r.deleted_at IS NULL", id).Order("r.station_id,r.version DESC").Find(&rows).Error
+		Where("r.template_id=? AND r.deleted_at IS NULL", id)
+	err := scope.ApplyStations(query, "r.station_id").Order("r.station_id,r.version DESC").Find(&rows).Error
 	if err != nil {
 		resourceFailure(c, err)
 		return
@@ -68,12 +89,16 @@ func (a ResourceAPI) disablePricing(c *gin.Context) {
 		ID        uint64 // 规则主键。
 		StationID uint64 // 规则所属站点 ID；0 表示未绑定站点。
 		Status    string // 规则当前状态：active 生效中、disabled 已停用。
+		DeviceID  string
 	}
 	if err := a.Store.AdminDB.WithContext(c.Request.Context()).Table("pricing_rule").Where("id=? AND deleted_at IS NULL", id).Take(&row).Error; err != nil {
 		resourceFailure(c, err)
 		return
 	}
 	p := c.MustGet("admin_profile").(Profile)
+	if !a.requirePricingTargetScope(c, row.StationID, row.DeviceID) {
+		return
+	}
 	err := a.Store.AdminDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
 		if row.StationID != 0 {
 			var station Station

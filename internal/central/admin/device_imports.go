@@ -65,6 +65,16 @@ func (a ResourceAPI) imports(c *gin.Context) {
 	httpapi.OK(c, rows)
 }
 
+func requireImportScope(c *gin.Context, scope DataScope, devices []ImportDevice) bool {
+	for _, device := range devices {
+		if !scope.AllowsStation(device.StationID) || !scope.AllowsVendor(device.VendorID) {
+			httpapi.Write(c, 403, 1003, "导入设备的站点或厂商不在您的数据范围内", nil)
+			return false
+		}
+	}
+	return true
+}
+
 // createImport 提交一批设备导入（1–100 台）。先逐行校验编号格式、站点归属、端口数和计费方式合法性，
 // 再在同一事务里做三重幂等与一致性检查：同 import_id 内容一致则原样返回；device_import_identity 保证
 // 同一设备编号的历史内容不被改写；只有真正新到的设备才校验计量能力。全部通过后落一条 pending 任务并立即执行。
@@ -95,6 +105,10 @@ func (a ResourceAPI) createImport(c *gin.Context) {
 			return
 		}
 		seen[key] = true
+	}
+	scope, ok := a.stationScope(c)
+	if !ok || !requireImportScope(c, scope, in.Devices) {
+		return
 	}
 	body, _ := json.Marshal(in.Devices)
 	p := c.MustGet("admin_profile").(Profile)
@@ -188,6 +202,10 @@ func (a ResourceAPI) retryImport(c *gin.Context) {
 // 已存在的设备不做任何改写，只在厂商或站点对不上时报冲突——导入是设备上线记录，不是重新分类。
 // 网关调用失败时把任务标成 failed 并记下原因，attempts +1，等待重试；已 completed 的任务直接原样返回。
 func (a ResourceAPI) runImport(c *gin.Context, id string) {
+	scope, ok := a.stationScope(c)
+	if !ok {
+		return
+	}
 	var result ImportJob
 	// 在这次有界的内部请求期间一直持着任务锁。崩溃会把元数据一起回滚，
 	// 重放则能安全地看到网关那边已经持久占用的设备身份。
@@ -195,12 +213,15 @@ func (a ResourceAPI) runImport(c *gin.Context, id string) {
 		if err := tx.Table("device_import").Clauses(clause.Locking{Strength: "UPDATE"}).Where("import_id=?", id).Take(&result).Error; err != nil {
 			return err
 		}
-		if result.Status == "completed" {
-			return nil
-		}
 		var devices []ImportDevice
 		if err := json.Unmarshal([]byte(result.RequestJSON), &devices); err != nil {
 			return err
+		}
+		if !requireImportScope(c, scope, devices) {
+			return errAlreadyReported
+		}
+		if result.Status == "completed" {
+			return nil
 		}
 		body, _ := json.Marshal(gin.H{"devices": devices})
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
@@ -263,6 +284,9 @@ func (a ResourceAPI) runImport(c *gin.Context, id string) {
 		}
 		return resourceAudit(tx, c.MustGet("admin_profile").(Profile), "complete", "device_import", 0, nil, gin.H{"import_id": id, "count": len(devices)}, c.ClientIP(), id)
 	})
+	if errors.Is(err, errAlreadyReported) {
+		return
+	}
 	if err != nil {
 		resourceFailure(c, err)
 		return

@@ -6,6 +6,7 @@ import (
 
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/httpapi"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -203,8 +204,9 @@ func (a ResourceAPI) disablePackageTemplate(c *gin.Context) {
 
 // applyPackageInput 是把套餐上架到某个目标的请求体。
 type applyPackageInput struct {
-	StationID uint64 `json:"station_id"` // 目标站点 id，必填
-	DeviceID  string `json:"device_id"`  // 目标设备号，空串表示整站上架；非空时必须是该站点下的设备
+	StationID uint64 `json:"station_id"`           // 目标站点 id，必填
+	DeviceID  string `json:"device_id"`            // 目标设备号，空串表示整站上架；非空时必须是该站点下的设备
+	RequestID string `json:"request_id,omitempty"` // Optional correlation UUID; natural target identity supplies replay semantics.
 }
 
 // applyPackageTemplate 把套餐上架到某个站点或某台设备。同一个套餐可以既整站在售、
@@ -223,6 +225,15 @@ func (a ResourceAPI) applyPackageTemplate(c *gin.Context) {
 	}
 	if in.StationID == 0 || in.DeviceID != "" && !deviceIDPattern.MatchString(in.DeviceID) {
 		httpapi.BadRequest(c, "请选择站点")
+		return
+	}
+	if in.RequestID != "" {
+		if _, err := uuid.Parse(in.RequestID); err != nil {
+			httpapi.BadRequest(c, "请求编号必须为 UUID")
+			return
+		}
+	}
+	if !a.requirePricingTargetScope(c, in.StationID, in.DeviceID) {
 		return
 	}
 	actor := c.MustGet("admin_profile").(Profile)
@@ -251,7 +262,7 @@ func (a ResourceAPI) applyPackageTemplate(c *gin.Context) {
 			return errAlreadyReported
 		}
 		var station Station
-		if err := tx.Where("id=? AND status='active' AND deleted_at IS NULL", in.StationID).Take(&station).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id=? AND status='active' AND deleted_at IS NULL", in.StationID).Take(&station).Error; err != nil {
 			return err
 		}
 		if in.DeviceID != "" {

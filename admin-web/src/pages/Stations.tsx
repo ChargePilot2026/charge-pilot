@@ -1,18 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
-import { Table, Typography, Space, Button, Modal, Form, Input, InputNumber, Select, message } from 'antd';
+import { useSearchParams } from 'react-router-dom';
+import { Table, Typography, Space, Button, Drawer, Modal, Form, Input, InputNumber, Select, Tag, message } from 'antd';
 import { PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import { apiGet, apiPost, http } from '../api/client';
 import { LoadError } from '../components/LoadError';
+import StationWorkspace, { stationStatuses, type StationRecord as Station } from './stations/StationWorkspace';
 
 const { Title } = Typography;
 
-interface Station {
-  id: number; name: string;
-  address?: string; longitude: number; latitude: number;
-  status: string; open_hours?: string; contact_phone?: string;
-}
-
 export default function StationsPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [data, setData] = useState<Station[]>([]);
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
@@ -26,12 +23,47 @@ export default function StationsPage() {
   const [total,setTotal]=useState(0);
   const [keyword,setKeyword]=useState('');
   const [status,setStatus]=useState('');
+  const [workspace, setWorkspace] = useState<Station | null>(null);
+  const [workspaceRevision, setWorkspaceRevision] = useState(0);
+  const [initialDeviceID, setInitialDeviceID] = useState<string | null>(null);
+  const linkedStationID = searchParams.get('station_id');
+  const linkedDeviceID = searchParams.get('device_id');
+  const linkGeneration = useRef(0);
+
+  useEffect(() => {
+    const current = ++linkGeneration.current;
+    if (!linkedStationID) return;
+    const id = Number(linkedStationID);
+    if (!/^\d+$/.test(linkedStationID) || !Number.isSafeInteger(id) || id <= 0) {
+      message.error('站点 ID 无效'); return;
+    }
+    setWorkspace(null);
+    void apiGet<Station>(`/api/v1/admin/stations/${id}`).then(station => {
+      if (current !== linkGeneration.current) return;
+      setInitialDeviceID(linkedDeviceID); setWorkspace(station);
+    }).catch(cause => {
+      if (current === linkGeneration.current) message.error(cause instanceof Error ? cause.message : '站点读取失败');
+    });
+    return () => { linkGeneration.current++; };
+  }, [linkedStationID, linkedDeviceID]);
+
+  const clearWorkspaceLink = () => {
+    if (linkedStationID || linkedDeviceID) {
+      const params = new URLSearchParams(searchParams);
+      params.delete('station_id'); params.delete('device_id');
+      setSearchParams(params, { replace: true });
+    }
+  };
+  const showWorkspace = (station: Station) => {
+    linkGeneration.current++; clearWorkspaceLink(); setInitialDeviceID(null); setWorkspace(station);
+  };
+  const closeWorkspace = () => { linkGeneration.current++; clearWorkspaceLink(); setWorkspace(null); setInitialDeviceID(null); };
 
   const load = async () => {
     const current = ++generation.current;
     setLoading(true); setError(''); setPermissions([]);
     try { const result = await apiGet<{items:Station[];permissions:string[];total:number}>('/api/v1/admin/stations',query); if(current === generation.current){setData(result.items);setPermissions(result.permissions);setTotal(result.total);} }
-    catch(e:any) { if(current === generation.current)setError(e?.response?.data?.message || e.message || '站点读取失败'); }
+    catch(e:any) { if(current === generation.current){setData([]);setTotal(0);setError(e?.response?.data?.message || e.message || '站点读取失败');} }
     finally { if(current === generation.current)setLoading(false); }
   };
   useEffect(() => { load(); return () => { generation.current++; }; }, [query]);
@@ -47,7 +79,12 @@ export default function StationsPage() {
       setSaving(true);
       if(editing) { const {code,...update}=values; await http.put('/api/v1/admin/stations/'+editing.id,update); }
       else await apiPost('/api/v1/admin/stations',values);
-      message.success(editing ? '已保存' : '已创建'); setOpen(false); if(editing)await load();else setQuery({...query,page:1});
+      message.success(editing ? '已保存' : '已创建'); setOpen(false);
+      if (editing) {
+        setWorkspace(current => current?.id === editing.id ? { ...editing, ...values } : current);
+        setWorkspaceRevision(value => value + 1);
+        await load();
+      } else setQuery({...query,page:1});
     } catch(e:any) { if(!e?.errorFields)message.error(e?.response?.data?.message || e.message || '保存失败'); }
     finally {setSaving(false);}
   };
@@ -70,16 +107,24 @@ export default function StationsPage() {
         rowKey="id"
         loading={loading}
         dataSource={data}
+        scroll={{ x: 900 }}
         pagination={{current:query.page,pageSize:query.page_size,total,showSizeChanger:true,pageSizeOptions:[10,20,50,100],showTotal:n=>`共 ${n} 个站点`,onChange:(page,page_size)=>setQuery({...query,page:page_size===query.page_size?page:1,page_size})}}
         columns={[
-          { title: '名称', dataIndex: 'name' },
+          { title: '名称', dataIndex: 'name', render: (name: string, station: Station) => <Button type="link" style={{ paddingInline: 0 }} onClick={() => showWorkspace(station)}>{name}</Button> },
           { title: '地址', dataIndex: 'address' },
-          { title: '经度', dataIndex: 'longitude', width: 120 },
-          { title: '纬度', dataIndex: 'latitude', width: 120 },
-          { title: '状态', dataIndex: 'status', width: 100, render:(value:string)=>({active:'运营中',disabled:'已停用',construction:'建设中'}[value] || value) },
-          { title:'操作',key:'actions',render:(_:unknown,station:Station)=><Button disabled={!permissions.includes('station.update')} onClick={()=>edit(station)}>编辑</Button> },
+          { title: '营业时间', dataIndex: 'open_hours', render: (value?: string) => value || '—' },
+          { title: '联系电话', dataIndex: 'contact_phone', render: (value?: string) => value || '—' },
+          { title: '状态', dataIndex: 'status', width: 100, render:(value:string)=><Tag color={stationStatuses[value]?.color}>{stationStatuses[value]?.label || value}</Tag> },
+          { title:'操作',key:'actions',width:180,render:(_:unknown,station:Station)=><Space>
+            <Button type="link" onClick={() => showWorkspace(station)}>工作区</Button>
+            {permissions.includes('station.update') && <Button type="link" onClick={()=>edit(station)}>编辑</Button>}
+          </Space> },
         ]}
       />
+      <Drawer title={workspace ? `${workspace.name} · 站点工作区` : '站点工作区'} open={!!workspace}
+        width="min(1120px, 100vw)" destroyOnClose onClose={closeWorkspace}>
+        {workspace && <StationWorkspace key={workspace.id} station={workspace} permissions={permissions} revision={workspaceRevision} initialDeviceId={initialDeviceID} onEdit={edit} />}
+      </Drawer>
       <Modal title={editing ? "编辑站点" : "新建站点"} open={open} confirmLoading={saving} closable={!saving} maskClosable={!saving} onCancel={() => {if(!saving)setOpen(false);}} onOk={onSave} okText="保存" cancelText="取消">
         <Form form={form} layout="vertical">
           <Form.Item name="name" label="名称" rules={[{ required: true, whitespace:true }]}><Input maxLength={128} /></Form.Item>

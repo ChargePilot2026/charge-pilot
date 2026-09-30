@@ -377,7 +377,8 @@ type applyTemplateInput struct {
 	RequestID string `json:"request_id"` // 发布请求的幂等编号（UUID）：同一次发布重试时靠它返回原结果，不会重复下发一版
 	// ExpectedVersion 是目标当前计费规则的版本号，乐观锁：两个运营
 	// 同时下发不同模板时只有一个能成功。
-	ExpectedVersion uint32 `json:"expected_version"`
+	ExpectedVersion         uint32 `json:"expected_version"`
+	PreserveDeviceOverrides bool   `json:"preserve_device_overrides,omitempty"`
 }
 
 // deviceIDPattern 是网关登记的设备编号格式
@@ -418,6 +419,9 @@ func (a ResourceAPI) applyPricingTemplate(c *gin.Context) {
 		return
 	}
 	actor := c.MustGet("admin_profile").(Profile)
+	if !a.requirePricingTargetScope(c, in.StationID, in.DeviceID) {
+		return
+	}
 	payload, _ := json.Marshal(in)
 	digest := sha256.Sum256(payload)
 	hash := hex.EncodeToString(digest[:])
@@ -441,6 +445,15 @@ func (a ResourceAPI) applyPricingTemplate(c *gin.Context) {
 		}
 		if found.RowsAffected > 0 {
 			if receipt.ActorID != actor.ID || receipt.PayloadHash != hash {
+				return errConflict
+			}
+			// The path template is part of the publication intent. Keep the legacy
+			// payload digest stable, and verify it against the published snapshot.
+			var publishedTemplateID uint64
+			if err := tx.Table("pricing_rule").Where("id=?", receipt.RuleID).Pluck("template_id", &publishedTemplateID).Error; err != nil {
+				return err
+			}
+			if publishedTemplateID != templateID {
 				return errConflict
 			}
 			id, version, replayed = receipt.RuleID, receipt.Version, true
@@ -484,7 +497,7 @@ func (a ResourceAPI) applyPricingTemplate(c *gin.Context) {
 		// 那道重复应用检查之前先解析出来，这
 		// 样拒绝时点名的是跑不了这份费率的板
 		// 子，而不是「已经在别处用着」的模板。
-		targets, err := resolveSwitchTargets(tx, in.StationID, in.DeviceID)
+		targets, err := resolvePublicationTargets(tx, in.StationID, in.DeviceID, in.PreserveDeviceOverrides)
 		if err != nil {
 			return err
 		}

@@ -78,9 +78,12 @@ func (input StationInput) valid() bool {
 
 // Stations 分页查询未删除的站点，支持按状态过滤和按名称/地址模糊搜索（通配符已转义），
 // 先 Count 再按 ID 倒序取当页，最后把分页信息原样带回给调用方组装响应。
-func (s ResourceStore) Stations(ctx context.Context, q PageQuery) (Page[Station], error) {
+func (s ResourceStore) Stations(ctx context.Context, q PageQuery, scopes ...DataScope) (Page[Station], error) {
 	out := Page[Station]{Items: []Station{}, Page: q.Page, PageSize: q.PageSize}
 	query := s.AdminDB.WithContext(ctx).Model(&Station{}).Where("deleted_at IS NULL")
+	if len(scopes) > 0 {
+		query = scopes[0].ApplyStations(query, "id")
+	}
 	if q.Status != "" {
 		query = query.Where("status = ?", q.Status)
 	}
@@ -102,7 +105,11 @@ func (a ResourceAPI) stations(c *gin.Context) {
 	if !ok {
 		return
 	}
-	out, err := a.Store.Stations(c.Request.Context(), q)
+	scope, ok := a.stationScope(c)
+	if !ok {
+		return
+	}
+	out, err := a.Store.Stations(c.Request.Context(), q, scope)
 	if err != nil {
 		resourceFailure(c, err)
 		return
@@ -115,6 +122,9 @@ func (a ResourceAPI) stations(c *gin.Context) {
 func (a ResourceAPI) station(c *gin.Context) {
 	id, ok := pathID(c)
 	if !ok {
+		return
+	}
+	if !a.requireStationScope(c, id) {
 		return
 	}
 	var row Station
@@ -141,6 +151,9 @@ func (a ResourceAPI) saveStation(c *gin.Context, create bool) {
 		var ok bool
 		id, ok = pathID(c)
 		if !ok {
+			return
+		}
+		if !a.requireStationScope(c, id) {
 			return
 		}
 	}

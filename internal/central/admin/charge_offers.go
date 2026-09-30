@@ -30,14 +30,25 @@ func (a ResourceAPI) registerChargeOffers(r *gin.Engine) {
 // 按站点、设备、计费方式、价格、主键排序便于人工比对。返回里没有 code 列——套餐靠
 // station_id + device_id 定位，不靠编码。
 func (a ResourceAPI) chargeOffers(c *gin.Context) {
+	scope, ok := a.stationScope(c)
+	if !ok {
+		return
+	}
+	stationID, ok := queryStationID(c, false)
+	if !ok || stationID > 0 && !a.requireStationScope(c, stationID) {
+		return
+	}
 	rows := []map[string]any{}
-	err := a.Store.AdminDB.WithContext(c.Request.Context()).Table("charge_offer o").
+	query := a.Store.AdminDB.WithContext(c.Request.Context()).Table("charge_offer o").
 		Select("o.id,o.station_id,s.name AS station_name,o.device_id,o.package_template_id," +
 			"o.name,o.mode,o.price_cents,o.duration_minutes,o.min_charge_cents," +
 			"o.show_remark,o.card_default,o.status,o.version").
 		Joins("JOIN station s ON s.id=o.station_id AND s.deleted_at IS NULL").
-		Where("o.deleted_at IS NULL").
-		Order("o.station_id,o.device_id,o.mode,o.price_cents,o.id").Find(&rows).Error
+		Where("o.deleted_at IS NULL")
+	if stationID > 0 {
+		query = query.Where("o.station_id=?", stationID)
+	}
+	err := scopedOffers(query, scope).Order("o.station_id,o.device_id,o.mode,o.price_cents,o.id").Find(&rows).Error
 	if err != nil {
 		resourceFailure(c, err)
 		return
@@ -60,6 +71,17 @@ func (a ResourceAPI) disableChargeOffer(c *gin.Context) {
 		return
 	}
 	profile := c.MustGet("admin_profile").(Profile)
+	var target struct {
+		StationID uint64
+		DeviceID  string
+	}
+	if err := a.Store.AdminDB.WithContext(c.Request.Context()).Table("charge_offer").Select("station_id,device_id").Where("id=? AND deleted_at IS NULL", id).Take(&target).Error; err != nil {
+		resourceFailure(c, err)
+		return
+	}
+	if !a.requirePricingTargetScope(c, target.StationID, target.DeviceID) {
+		return
+	}
 	err := a.Store.AdminDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
 		// 审计里只需要记录改之前的归属站点。
 		var before struct{ StationID uint64 } // 套餐所属站点 ID。

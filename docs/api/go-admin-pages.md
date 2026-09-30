@@ -16,8 +16,8 @@
 
 | 页面 | 路由 | 能力与限制 |
 | --- | --- | --- |
-| 站点 | GET/POST `/stations`；GET/PUT `/stations/{id}` | 新建、编辑、分页、keyword/status 筛选；代码保留唯一性、经纬度校验；当前页面无删除按钮，Go 未实现删除 |
-| 设备 | GET `/devices`、`/devices/{id}` | keyword/status/station_id/vendor_id 筛选；显示管理状态，不代表在线遥测 |
+| 站点 | GET/POST `/stations`；GET/PUT `/stations/{id}`；GET `/stations/{id}/configuration` | 新建、编辑、分页、keyword/status 筛选；从名称或行内工作区直接管理本站计费、套餐、设备及策略；经纬度放在基本信息中；不提供删除 |
+| 设备 | GET `/devices`、`/devices/{id}` | keyword/status/station_id 筛选；新建复用设备开通流程；从设备行直接进入所属站点的计费与套餐配置；显示管理状态，不代表在线遥测 |
 | 厂商 | GET/POST `/vendors`；GET/PUT `/vendors/{id}`；GET `/vendor-options` | 设备运维中的厂商管理：分页、编码/名称搜索、状态筛选、新建、编辑和启停；设备新建从可选厂商接口读取已启用厂商；不提供删除 |
 | 导入 | GET/POST `/device-imports`；POST `/device-imports/{import_id}/retry` | CSV 预览后提交 JSON，每批 1–100；gateway 幂等建档，再落 admin 元数据；失败保留批次供显式重试 |
 | 订单 | GET `/orders`、`/orders/{id}`、`/orders/{id}/timeline` | 分页及订单号、设备、站点、状态、时间筛选；从已有订单、计费和事件记录读取，不生成虚构计费 |
@@ -73,11 +73,21 @@
 
 `TestAdminPagesIntegration` 覆盖已注册页面列表、鉴权、分页/输入、站点、导入、优惠券、配置、反馈、报修、退款双签/拒绝/重试、发票审核和钱包风控。使用 `scripts/test-integration.sh -race` 在隔离 MySQL/Redis 上运行，避免默认跳过数据库测试。实际点击情况见 [页面验收记录](../testing/admin-pages-2026-09-29.md)。
 
-## 计费规则版本发布
+## 站点工作区与计费发布（2026-09-30）
 
-GET `/settings/charge-rules` 返回规则完整时段、站点、状态、版本及权限。POST 同路径要求 `pricing.rule.create`，body 包含 UUID `request_id`、`name`、`station_id`、`expected_version`、`mode`、`time_of_use`、`service_fee_cents_per_kwh`、`service_fee_cents_per_min`、`min_charge_cents`。每个时段含 `period/start/end/electric_price_cents`，可选 `service_price_cents`。时间使用北京时间 HH:mm，全部时段必须完整覆盖一天且不得重叠，结束可为 24:00，金额为 0–1000000 整数分。
+站点列表中的名称和「工作区」打开侧边工作区，关闭后保留搜索、分页与列表。工作区集中展示基本信息、计费与套餐、本站设备、站点策略与下发记录。设备页的所属站点和「计费与套餐」也能直接进入对应工作区；设备新建会锁定当前站点。
 
-站点行锁串行分配新版本；expected_version 必须与该站点最大版本一致。发布会在同一事务停用同站点旧规则、写新记录、幂等回执及审计，旧规则内容不改。相同账号及完全相同请求重放返回同一 ID/version，修改请求返回 409。POST `/{id}/disable` 需 `pricing.rule.update`，只停用指定记录，不恢复旧版本，不影响已创建支付快照。迁移 admin 0027。
+- `GET /stations/{id}/configuration` 同时需要 `station.read` 与 `pricing.read`，返回 `station_id,default_rule,station_latest_version,offers,permissions,can_manage_default`。`default_rule` 是当前有效时段内 active 的站点默认配置，可能为 `null`；停用站点仍可查阅配置，其运营状态决定是否可开充。`station_latest_version` 读取整站规则链最新版本，包括停用或未到生效时间的记录；零设备站点也可读取和配置默认计费。`offers` 只含本站点未删除的套餐副本，包含已下架记录。
+- `GET /settings/device-pricing?station_id={id}` 返回设备当前规则、独立/继承来源和各自规则链最新版本。套餐数量按用户侧口径计算：设备同模板的在售套餐覆盖对应通用套餐，其余通用套餐仍可选，不重复计数。
+- `GET /settings/pricing-template-candidates?station_id={id}&preserve_device_overrides=true` 返回模板候选及不可用原因。固定设备范围可传 `device_id`；能力不满足、模板停用或口径失效的选项不可选择。
+- `POST /settings/pricing-templates/{id}/apply` 需要 `pricing.rule.create`，请求包含 `station_id,device_id,request_id,expected_version`；设备为空串表示站点默认。`request_id` 为 UUID，同一次意图重试复用；`expected_version` 必须是相应规则链最新版本，不能用当前有效版本代替。`preserve_device_overrides:true` 只在整站发布时跳过当前有效独立规则设备：计量校验、设备模式更新与下发任务采用同一批继承设备。省略该字段保持旧应用语义。
+- `POST /settings/device-pricing/reset` 需要 `pricing.rule.update`，请求包含 `station_id,device_id,keep_device_offers:true`。恢复计费继承保留该设备套餐；默认规则不存在、口径失效或设备能力不兼容时返回 409，事务内不产生部分改动。省略 `keep_device_offers` 保持旧行为，设备独立规则与套餐会一起停用。
+- `POST /settings/package-templates/{id}/apply` 需要 `pricing.rule.create`，以 `station_id` 和可选 `device_id` 固定上架范围，接受可选 UUID `request_id`。精确目标已在售时返回 `replayed:true`；已下架时恢复原套餐副本并返回 `relisted:true`，不会复制模板后来修改的价格。工作区在确认中展示原副本条款。
+- `POST /settings/charge-offers/{id}/disable` 需要 `pricing.rule.update`，仅下架所选副本。工作区明确通用/设备独立范围；用户已有支付订单继续使用其原条款。
+
+站点与设备查询、配置读取及上述操作均检查实时权限和数据范围。厂商受限账号只能访问对应厂商的设备及设备专属套餐，不能修改全站默认配置；`can_manage_default:false` 用于禁用全站操作。设备新建/导入及重试也检查每台设备的站点与厂商范围，越界请求在调用 gateway 前拒绝。`station_id` 过滤要求单个正整数，空值、重复参数或非数字返回 400，不能退化为无过滤查询。
+
+发布成功说明规则已保存。设备侧计费如返回 `switch_pending:true`，表示仍需下发；重放结果也需在下发记录确认硬件状态。工作区不会把创建任务显示为下发成功。此轮没有新增表结构迁移，后端源码更新后需重启 central。GET `/settings/charge-rules` 只读；规则创建通过计费模板应用完成，不再提供同路径 POST。
 
 ## 实际计量核实
 

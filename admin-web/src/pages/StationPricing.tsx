@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Descriptions, Divider, Form, Input, InputNumber, Modal, Select, Space, Switch, Table, Tabs, Tag, Tooltip, message } from 'antd';
 import { apiGet, apiPost, apiPut } from '../api/client';
 import { fromCents, modeLabel, toCents, type Spec, type Station, type Template } from './pricing/model';
@@ -88,8 +88,23 @@ const ITEM_STATUS: Record<string, { label: string; color: string }> = {
   pending: { label: '待下发', color: 'default' }, succeeded: { label: '成功', color: 'green' }, failed: { label: '失败', color: 'red' },
 };
 
-export default function StationPricing() {
-  const [stationId, setStationId] = useState<number | null>(null);
+export interface StationPricingProps {
+  station?: { id: number; name: string; status: string };
+  embedded?: boolean;
+  hideDevices?: boolean;
+}
+
+export default function StationPricing({ station, embedded = false, hideDevices = false }: StationPricingProps = {}) {
+  const [selectedStationId, setStationId] = useState<number | null>(null);
+  const stationId = station?.id ?? selectedStationId;
+  const currentStation = useRef(stationId);
+  currentStation.current = stationId;
+  const generation = useRef(0);
+  const policyTarget = useRef<{ stationId: number; version: number } | null>(null);
+  const assignTarget = useRef<{ stationId: number; deviceId: string } | null>(null);
+  const assignIntent = useRef<{ key: string; requestId: string } | null>(null);
+  const confirmations = useRef<ReturnType<typeof Modal.confirm>[]>([]);
+  const taskGeneration = useRef(0);
   const [stations, setStations] = useState<Station[]>([]);
   const [stationsLoading, setStationsLoading] = useState(false);
   const [permissions, setPermissions] = useState<string[]>([]);
@@ -100,6 +115,7 @@ export default function StationPricing() {
   const [taskStatus, setTaskStatus] = useState('');
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [canManageDefault, setCanManageDefault] = useState(false);
   const [error, setError] = useState('');
 
   const [policyOpen, setPolicyOpen] = useState(false);
@@ -119,7 +135,7 @@ export default function StationPricing() {
 
   const canUpdate = permissions.includes('pricing.rule.update');
   const canCreate = permissions.includes('pricing.rule.create');
-  // 列表是按全部站点返回的，所以要从里面挑出本站点那一行，不要指望服务端已经按站点过滤过。
+  const canEditPolicy = canUpdate && canManageDefault && (!station || station.status === 'active');
   const policy = policies.find(p => p.station_id === stationId);
 
   const searchStations = async (keyword: string) => {
@@ -136,41 +152,54 @@ export default function StationPricing() {
   };
 
   const load = async () => {
+    const current = ++generation.current;
     setLoading(true);
     setError('');
+    setPolicies([]); setPermissions([]); setDevices([]); setTasks([]); setTemplates([]); setCanManageDefault(false);
     try {
-      const list = await apiGet<SwitchTask[]>('/api/v1/admin/settings/switch-tasks', {
-        station_id: stationId ?? undefined, status: taskStatus || undefined,
-      });
-      setTasks(Array.isArray(list) ? list : []);
-      const rules = await apiGet<{ items: StationPolicy[]; permissions: string[] }>('/api/v1/admin/settings/station-policies');
-      setPolicies((rules.items || []).filter(p => p.station_id === stationId));
-      setPermissions(rules.permissions || []);
-      if (stationId) {
-        const matrix = await apiGet<{ items: DeviceRow[] }>('/api/v1/admin/settings/device-pricing', { station_id: stationId });
-        setDevices(matrix.items || []);
-      } else {
-        setDevices([]);
-      }
+      const [list, rules, matrix] = await Promise.all([
+        apiGet<SwitchTask[]>('/api/v1/admin/settings/switch-tasks', { station_id: stationId ?? undefined, status: taskStatus || undefined }),
+        apiGet<{ items: StationPolicy[]; permissions: string[]; can_manage_default: boolean }>('/api/v1/admin/settings/station-policies', { station_id: stationId ?? undefined }),
+        stationId && !hideDevices ? apiGet<{ items: DeviceRow[] }>('/api/v1/admin/settings/device-pricing', { station_id: stationId }) : Promise.resolve(null),
+      ]);
+      if (current !== generation.current) return;
+      if (!Array.isArray(list) || !Array.isArray(rules?.items) || !Array.isArray(rules.permissions) || typeof rules.can_manage_default !== 'boolean' || matrix && !Array.isArray(matrix.items)) throw new Error('站点计费响应不完整，请重新加载');
       // 权限从这次响应里读，不要读 state：首次加载时它还是空的，会让模板池被静默跳过。
-      if (rules.permissions?.includes('pricing.rule.create')) {
+      let availableTemplates: Template[] = [];
+      if (!hideDevices && rules.permissions.includes('pricing.rule.create')) {
         const pool = await apiGet<{ items: Template[] }>('/api/v1/admin/settings/pricing-templates');
-        setTemplates((pool.items || []).filter(t => t.status === 'active'));
-      } else {
-        setTemplates([]);
+        if (!Array.isArray(pool?.items)) throw new Error('计费模板响应不完整，请重新加载');
+        availableTemplates = pool.items.filter(t => t.status === 'active');
       }
+      if (current !== generation.current) return;
+      setTasks(list); setPolicies(rules.items.filter(p => p.station_id === stationId)); setPermissions(rules.permissions);
+      setCanManageDefault(rules.can_manage_default);
+      setDevices(matrix?.items || []); setTemplates(availableTemplates);
     } catch (e: any) {
-      setError(e?.response?.data?.message || e.message || '计费配置读取失败');
+      if (current === generation.current) setError(e?.response?.data?.message || e.message || '计费配置读取失败');
     } finally {
-      setLoading(false);
+      if (current === generation.current) setLoading(false);
     }
   };
 
-  useEffect(() => { void searchStations(''); }, []);
-  useEffect(() => { void load(); }, [stationId, taskStatus]);
+  useEffect(() => { if (!station) void searchStations(''); }, [station?.id]);
+  useEffect(() => {
+    currentStation.current = stationId;
+    void load();
+    return () => {
+      generation.current++; taskGeneration.current++;
+      if (currentStation.current === stationId) currentStation.current = null;
+      confirmations.current.forEach(confirmation => confirmation.destroy()); confirmations.current = [];
+    };
+  }, [stationId, taskStatus, hideDevices]);
+  useEffect(() => {
+    setPolicyOpen(false); setAssigning(null); setTaskTarget(null); setDetail(null);
+    policyTarget.current = null; assignTarget.current = null; assignIntent.current = null;
+  }, [stationId]);
 
   const openPolicy = () => {
-    if (!stationId) return;
+    if (!stationId || !canEditPolicy || loading || saving) return;
+    policyTarget.current = { stationId, version: policy?.version || 0 };
     setPolicyError('');
     policyForm.resetFields();
     policyForm.setFieldsValue({
@@ -187,16 +216,19 @@ export default function StationPricing() {
   };
 
   const savePolicy = async () => {
+    const target = policyTarget.current;
+    if (!target || !canEditPolicy || saving) return;
     let values: any;
     try {
       values = await policyForm.validateFields();
     } catch {
       return;
     }
+    if (target.stationId !== currentStation.current) { setPolicyError('当前站点已变化，请重新打开策略编辑'); return; }
     setSaving(true);
     setPolicyError('');
     try {
-      await apiPut(`/api/v1/admin/settings/station-policies/${stationId}`, {
+      await apiPut(`/api/v1/admin/settings/station-policies/${target.stationId}`, {
         force_recharge: !!values.force_recharge,
         min_balance_cents: toCents(values.min_balance_yuan),
         scan_refund_rule: values.scan_refund_rule,
@@ -205,8 +237,9 @@ export default function StationPricing() {
         card_refund_path: values.card_refund_path,
         timeout_start_refund: !!values.timeout_start_refund,
         verify_phone_before_charge: !!values.verify_phone_before_charge,
-        expected_version: policy?.version || 0,
+        expected_version: target.version,
       });
+      if (target.stationId !== currentStation.current) return;
       message.success('站点策略已保存');
       setPolicyOpen(false);
       await load();
@@ -218,6 +251,8 @@ export default function StationPricing() {
   };
 
   const openAssign = (row: DeviceRow) => {
+    if (!stationId || !canCreate || loading || saving) return;
+    assignTarget.current = { stationId, deviceId: row.device_id }; assignIntent.current = null;
     setAssigning(row);
     setAssignError('');
     setAssignTemplate(null);
@@ -229,7 +264,9 @@ export default function StationPricing() {
   };
 
   const assign = async () => {
-    if (!assigning) return;
+    const target = assignTarget.current;
+    if (!assigning || !target || !canCreate || saving) return;
+    if (target.stationId !== currentStation.current) { setAssignError('当前站点已变化，请重新打开设备分配'); return; }
     if (!assignTemplate) {
       setAssignError('请选择要分配给该设备的计费模板');
       return;
@@ -243,12 +280,15 @@ export default function StationPricing() {
     setSaving(true);
     setAssignError('');
     try {
+      const key = JSON.stringify({ template_id: assignTemplate, station_id: target.stationId, device_id: target.deviceId, expected_version: expected });
+      if (assignIntent.current?.key !== key) assignIntent.current = { key, requestId: crypto.randomUUID() };
       await apiPost(`/api/v1/admin/settings/pricing-templates/${assignTemplate}/apply`, {
-        station_id: stationId,
-        device_id: assigning.device_id,
-        request_id: crypto.randomUUID(),
+        station_id: target.stationId,
+        device_id: target.deviceId,
+        request_id: assignIntent.current.requestId,
         expected_version: expected,
       });
+      if (target.stationId !== currentStation.current) return;
       message.success(`已为设备 ${assigning.device_id} 分配计费模板`);
       setAssigning(null);
       await load();
@@ -259,34 +299,45 @@ export default function StationPricing() {
     }
   };
 
-  const resetDevice = (row: DeviceRow) => Modal.confirm({
+  const resetDevice = (row: DeviceRow) => {
+    const targetStation = stationId;
+    if (!targetStation || !canUpdate || loading || saving) return;
+    const confirmation = Modal.confirm({
     title: '重置为站点默认',
     content: `将设备 ${row.device_id} 自己的计费规则停用、其设备级套餐下架，该设备回落到站点默认计费与套餐。已在充电的订单不受影响。`,
     okText: '重置',
     onOk: async () => {
-      await apiPost('/api/v1/admin/settings/device-pricing/reset', { station_id: stationId, device_id: row.device_id });
+      if (targetStation !== currentStation.current) throw new Error('当前站点已变化，请重新打开重置操作');
+      await apiPost('/api/v1/admin/settings/device-pricing/reset', { station_id: targetStation, device_id: row.device_id });
+      if (targetStation !== currentStation.current) return;
       message.success('已重置为站点默认');
       await load();
     },
-  });
+    });
+    confirmations.current.push(confirmation);
+    return confirmation;
+  };
 
   // 明细取不到时把弹窗留在屏上并显示 LoadError，运营可以原地重试；这里只读，
   // 不用担心误操作。
   const openTask = async (task: SwitchTask) => {
+    const expectedStation = currentStation.current;
+    const expectedGeneration = ++taskGeneration.current;
     setTaskTarget(task); setDetail(null); setTaskError(null);
     try {
-      setDetail(await apiGet<{ task: SwitchTask; items: SwitchItem[] }>(`/api/v1/admin/settings/switch-tasks/${task.id}`));
+      const result = await apiGet<{ task: SwitchTask; items: SwitchItem[] }>(`/api/v1/admin/settings/switch-tasks/${task.id}`);
+      if (expectedStation === currentStation.current && expectedGeneration === taskGeneration.current) setDetail(result);
     } catch (e: any) {
-      setTaskError(e?.message || '切换任务明细读取失败');
+      if (expectedStation === currentStation.current && expectedGeneration === taskGeneration.current) setTaskError(e?.message || '切换任务明细读取失败');
     }
   };
 
   return <div>
     <Space style={{ marginBottom: 12 }} wrap>
-      <Select showSearch allowClear aria-label="选择站点" placeholder="选择站点" style={{ width: 320 }}
+      {station ? !embedded && <span>{station.name}</span> : <Select showSearch allowClear aria-label="选择站点" placeholder="选择站点" style={{ width: 320 }}
         value={stationId ?? undefined} loading={stationsLoading} filterOption={false}
         onSearch={value => void searchStations(value)} onChange={value => setStationId(value ?? null)}
-        options={stations.map(s => ({ value: s.id, label: s.name }))} />
+        options={stations.map(s => ({ value: s.id, label: s.name }))} />}
       <Button onClick={() => void load()} loading={loading}>刷新</Button>
     </Space>
     {error && <LoadError title="站点计费配置加载失败" detail={error} onRetry={() => void load()} />}
@@ -315,7 +366,7 @@ export default function StationPricing() {
                 },
                 { key: 'timeout', label: '启动超时处理', span: 2, children: policy?.timeout_start_refund ? '自动退款' : '不自动退款' },
               ]} />
-              {canUpdate && <Button type="primary" onClick={openPolicy}>编辑站点策略</Button>}
+              {canEditPolicy && <Button type="primary" onClick={openPolicy} disabled={loading || !!error || saving}>编辑站点策略</Button>}
             </Space>}
         </>,
       },
@@ -395,9 +446,10 @@ export default function StationPricing() {
             ]} />
         </>,
       },
-    ]} />
+    ].filter(tab => !hideDevices || tab.key !== 'devices')} />
 
-    <Modal title="编辑站点策略" open={policyOpen} width={720} onCancel={() => setPolicyOpen(false)}
+    <Modal title="编辑站点策略" open={policyOpen} width={720} onCancel={() => { if (!saving) setPolicyOpen(false); }}
+      closable={!saving} maskClosable={!saving} keyboard={!saving} cancelButtonProps={{ disabled: saving }}
       onOk={() => void savePolicy()} confirmLoading={saving} okText="保存" destroyOnHidden>
       {policyError && <Alert type="error" showIcon message={policyError} style={{ marginBottom: 12 }} />}
       <Form form={policyForm} name="station_policy" layout="vertical">

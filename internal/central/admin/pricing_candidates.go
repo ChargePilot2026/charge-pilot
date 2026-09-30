@@ -38,8 +38,22 @@ func (a ResourceAPI) pricingTemplateCandidates(c *gin.Context) {
 		resourceFailure(c, err)
 		return
 	}
-	stationID := c.Query("station_id")
+	stationID, ok := queryStationID(c, false)
+	if !ok || stationID > 0 && !a.requireStationScope(c, stationID) {
+		return
+	}
+	preserve, ok := queryBool(c, "preserve_device_overrides")
+	if !ok {
+		return
+	}
 	deviceID := c.Query("device_id")
+	if deviceID != "" && (stationID == 0 || !deviceIDPattern.MatchString(deviceID)) {
+		httpapi.BadRequest(c, "请选择有效的站点与设备")
+		return
+	}
+	if stationID > 0 && !a.requirePricingTargetScope(c, stationID, deviceID) {
+		return
+	}
 	// 这里当前在跑的是什么，运营能看清自己将要替换掉的是哪一条，
 	// 而不是事后从拒绝提示里才知道。
 	inUse := map[uint64]string{}
@@ -48,15 +62,26 @@ func (a ResourceAPI) pricingTemplateCandidates(c *gin.Context) {
 	// 而不是先让它可以被选中，
 	// 等运营填完一整张表再把人挡在门外。
 	var targets []switchTarget
-	if stationID != "" {
-		resolved, err := resolveSwitchTargets(a.Store.AdminDB.WithContext(ctx), parseStationID(stationID), deviceID)
+	if stationID > 0 {
+		if deviceID != "" {
+			var known int64
+			if err := a.Store.AdminDB.WithContext(ctx).Table("device_meta").Where("station_id=? AND device_id=? AND deleted_at IS NULL", stationID, deviceID).Count(&known).Error; err != nil {
+				resourceFailure(c, err)
+				return
+			}
+			if known == 0 {
+				httpapi.Write(c, 404, 1004, "该设备不属于此站点", nil)
+				return
+			}
+		}
+		resolved, err := resolvePublicationTargets(a.Store.AdminDB.WithContext(ctx), stationID, deviceID, preserve)
 		if err != nil {
 			resourceFailure(c, err)
 			return
 		}
 		targets = resolved
 	}
-	if len(targets) > 0 {
+	if stationID > 0 {
 		// 已在该范围内生效的规则：device_id 为空表示站点默认规则，其余为设备级规则。
 		var rules []struct {
 			TemplateID uint64  `gorm:"column:template_id"` // 规则引用的模板 ID。
@@ -65,9 +90,11 @@ func (a ResourceAPI) pricingTemplateCandidates(c *gin.Context) {
 		}
 		query := a.Store.AdminDB.WithContext(ctx).Table("pricing_rule").
 			Select("template_id,name,device_id").
-			Where("station_id=? AND status='active' AND deleted_at IS NULL", stationID)
+			Where("station_id=?", stationID).Where(effectiveRuleSQL)
 		if deviceID != "" {
-			query = query.Where("device_id = ? OR device_id IS NULL", deviceID)
+			query = query.Where("device_id = ?", deviceID)
+		} else {
+			query = query.Where("device_id IS NULL")
 		}
 		if err := query.Find(&rules).Error; err != nil {
 			resourceFailure(c, err)

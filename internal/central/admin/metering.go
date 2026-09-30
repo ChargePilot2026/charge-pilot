@@ -95,7 +95,7 @@ func resolveSwitchTargets(tx *gorm.DB, stationID uint64, deviceID string) ([]swi
 			Select("device_id, charge_mode, reports_energy, reports_segmented_power").
 			Where("station_id=? AND device_id=? AND deleted_at IS NULL", stationID, deviceID)
 	}
-	if err := query.Order("device_id").Find(&rows).Error; err != nil {
+	if err := query.Clauses(clause.Locking{Strength: "SHARE"}).Order("device_id").Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	// running 按 device_meta.
@@ -108,9 +108,9 @@ func resolveSwitchTargets(tx *gorm.DB, stationID uint64, deviceID string) ([]swi
 		DeviceID *string `gorm:"column:device_id"` // 规则作用的设备号，NULL 表示这条是站点默认
 		SpecJSON []byte  `gorm:"column:spec_json"` // 计费口径 JSON，解析失败直接跳过这条规则
 	}{}
-	if err := tx.Table("pricing_rule").
+	if err := tx.Table("pricing_rule").Clauses(clause.Locking{Strength: "SHARE"}).
 		Select("device_id, spec_json").
-		Where("station_id=? AND status='active' AND deleted_at IS NULL", stationID).
+		Where("station_id=?", stationID).Where(effectiveRuleSQL).Order("version DESC,id DESC").
 		Find(&rules).Error; err != nil {
 		return nil, err
 	}
@@ -150,6 +150,31 @@ func resolveSwitchTargets(tx *gorm.DB, stationID uint64, deviceID string) ([]swi
 		targets = append(targets, switchTarget{DeviceID: row.DeviceID, Before: before, Cap: row})
 	}
 	return targets, nil
+}
+
+// resolvePublicationTargets preserves effective device rules during a station-default change.
+// The same target set drives candidate validation, capability checks, metadata and switch tasks.
+func resolvePublicationTargets(tx *gorm.DB, stationID uint64, deviceID string, preserve bool) ([]switchTarget, error) {
+	targets, err := resolveSwitchTargets(tx, stationID, deviceID)
+	if err != nil || !preserve || deviceID != "" {
+		return targets, err
+	}
+	ids := []string{}
+	if err := tx.Table("pricing_rule").Clauses(clause.Locking{Strength: "SHARE"}).Where("station_id=? AND device_id IS NOT NULL", stationID).
+		Where(effectiveRuleSQL).Pluck("device_id", &ids).Error; err != nil {
+		return nil, err
+	}
+	independent := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		independent[id] = true
+	}
+	filtered := make([]switchTarget, 0, len(targets))
+	for _, target := range targets {
+		if !independent[target.DeviceID] {
+			filtered = append(filtered, target)
+		}
+	}
+	return filtered, nil
 }
 
 // validDeviceChargeMode 校验设备上记录
@@ -223,6 +248,9 @@ func (a ResourceAPI) updateDeviceMetering(c *gin.Context) {
 	if in.StationID == 0 || !deviceIDPattern.MatchString(in.DeviceID) ||
 		in.ReportsEnergy == nil || in.ReportsSegmentedPower == nil {
 		httpapi.BadRequest(c, "请选择站点与设备，并同时声明电量与分段功率能力")
+		return
+	}
+	if !a.requirePricingTargetScope(c, in.StationID, in.DeviceID) {
 		return
 	}
 	// 充电类型是厂商协议里的一个取值，不是随便写的字符串。

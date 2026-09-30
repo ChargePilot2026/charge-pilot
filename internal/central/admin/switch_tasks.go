@@ -8,6 +8,7 @@ import (
 	"github.com/ChargePilot2026/charge-pilot/internal/central/pricing"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/httpapi"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
@@ -40,7 +41,7 @@ func (a ResourceAPI) registerSwitchTasks(r *gin.Engine) {
 // 而不是随事务回滚一起消失。
 func (a ResourceAPI) planSwitchTask(tx *gorm.DB, actor Profile, stationID uint64, templateID uint64, mode pricing.ChargeMode, targets []switchTarget, c *gin.Context) (uint64, error) {
 	// 任务号：SW + UTC 时间戳（秒）+ 站点 ID 后四位，人可读且便于按时间检索。
-	number := "SW" + time.Now().UTC().Format("20060102150405") + fmt.Sprintf("%04d", stationID%10000)
+	number := "SW" + time.Now().UTC().Format("20060102150405") + fmt.Sprintf("%04d", stationID%10000) + strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
 	row := map[string]any{
 		"task_no": number, "station_id": stationID, "template_id": templateID,
 		"mode_before": commonMode(targets, true), "mode_after": string(mode),
@@ -134,17 +135,32 @@ type switchTaskItemRow struct {
 // switchTasks 是 GET /api/v1/admin/settings/switch-tasks 的处理函数：
 // 列出切换任务，可按站点和状态过滤，按 ID 倒序，最多返回 200 条，不分页。
 func (a ResourceAPI) switchTasks(c *gin.Context) {
+	scope, ok := a.stationScope(c)
+	if !ok {
+		return
+	}
+	stationID, ok := queryStationID(c, false)
+	if !ok || stationID > 0 && !a.requireStationScope(c, stationID) {
+		return
+	}
 	rows := []switchTaskRow{}
 	query := a.Store.AdminDB.WithContext(c.Request.Context()).Table("pricing_switch_task t").
 		Select("t.id,t.task_no,t.station_id,s.name AS station_name,t.template_id,t.mode_before,t.mode_after,t.device_count,t.status,t.requested_by,t.created_at,t.completed_at").
 		Joins("LEFT JOIN station s ON s.id=t.station_id AND s.deleted_at IS NULL")
-	if id := c.Query("station_id"); id != "" {
-		query = query.Where("t.station_id=?", id)
+	if stationID > 0 {
+		query = query.Where("t.station_id=?", stationID)
 	}
 	if status := c.Query("status"); status != "" {
 		query = query.Where("t.status=?", status)
 	}
-	if err := query.Order("t.id DESC").Limit(200).Find(&rows).Error; err != nil {
+	if !canManageStationDefault(scope) {
+		visibleItems := a.Store.AdminDB.Table("pricing_switch_task_item vi").Select("1").
+			Joins("JOIN device_meta vd ON vd.device_id=vi.device_id AND vd.station_id=t.station_id AND vd.deleted_at IS NULL").
+			Where("vi.task_id=t.id AND vd.vendor_id IN ?", scope.VendorIDs)
+		query = query.Where("EXISTS (?)", visibleItems).
+			Select("t.id,t.task_no,t.station_id,s.name AS station_name,t.template_id,t.mode_before,t.mode_after,(SELECT COUNT(*) FROM pricing_switch_task_item ci JOIN device_meta cd ON cd.device_id=ci.device_id AND cd.station_id=t.station_id AND cd.deleted_at IS NULL WHERE ci.task_id=t.id AND cd.vendor_id IN ?) AS device_count,t.status,t.requested_by,t.created_at,t.completed_at", scope.VendorIDs)
+	}
+	if err := scope.ApplyStations(query, "t.station_id").Order("t.id DESC").Limit(200).Find(&rows).Error; err != nil {
 		resourceFailure(c, err)
 		return
 	}
@@ -170,12 +186,30 @@ func (a ResourceAPI) switchTaskDetail(c *gin.Context) {
 		resourceFailure(c, err)
 		return
 	}
+	if !a.requireStationScope(c, task.StationID) {
+		return
+	}
+	scope, ok := a.stationScope(c)
+	if !ok {
+		return
+	}
 	items := []switchTaskItemRow{}
-	if err := a.Store.AdminDB.WithContext(c.Request.Context()).Table("pricing_switch_task_item").
-		Select("id,device_id,mode_before,mode_after,status,offered_snapshot,error_msg").
-		Where("task_id=?", id).Order("device_id").Find(&items).Error; err != nil {
+	query := a.Store.AdminDB.WithContext(c.Request.Context()).Table("pricing_switch_task_item i").
+		Select("i.id,i.device_id,i.mode_before,i.mode_after,i.status,i.offered_snapshot,i.error_msg").Where("i.task_id=?", id)
+	if !canManageStationDefault(scope) {
+		query = query.Joins("JOIN device_meta d ON d.device_id=i.device_id AND d.station_id=? AND d.deleted_at IS NULL", task.StationID).
+			Where("d.vendor_id IN ?", scope.VendorIDs)
+	}
+	if err := query.Order("i.device_id").Find(&items).Error; err != nil {
 		resourceFailure(c, err)
 		return
+	}
+	if !canManageStationDefault(scope) {
+		if len(items) == 0 {
+			httpapi.Write(c, 403, 1003, "该任务设备不在您的厂商数据范围内", nil)
+			return
+		}
+		task.DeviceCount = len(items)
 	}
 	httpapi.OK(c, gin.H{"task": task, "items": items})
 }
