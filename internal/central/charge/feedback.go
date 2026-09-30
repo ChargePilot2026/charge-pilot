@@ -34,8 +34,21 @@ func (a UserAccountAPI) submitFeedback(c *gin.Context) {
 	}
 	orderID, err := strconv.ParseUint(c.Param("order_id"), 10, 64)
 	if err != nil || orderID == 0 {
-		httpapi.BadRequest(c, "订单号无效")
-		return
+		orderNo := strings.TrimSpace(c.Param("order_id"))
+		if orderNo == "" || len(orderNo) > 64 {
+			httpapi.BadRequest(c, "订单号无效")
+			return
+		}
+		var order ChargeOrderRecord
+		if err := a.UserDB.WithContext(c.Request.Context()).Select("id").Where("order_no=? AND user_id=? AND deleted_at IS NULL", orderNo, userID).Take(&order).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				httpapi.Write(c, 404, 1004, "订单不存在", nil)
+			} else {
+				resourceWriteFailure(c, err)
+			}
+			return
+		}
+		orderID = order.ID
 	}
 	var in struct {
 		Rating   int8     `json:"rating"`
@@ -84,7 +97,7 @@ func (a UserAccountAPI) submitFeedback(c *gin.Context) {
 			}
 			return err
 		}
-		if order.UserID != userID || order.Status != "completed" {
+		if order.UserID != userID || !oneOfStatus(order.Status, "completed refunding refunded") {
 			return errOrderNotReady
 		}
 		var existing int64

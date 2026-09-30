@@ -69,7 +69,7 @@ func (d DLQ) consumeStream(ctx context.Context, stream string, handler DLQHandle
 		limit = 100
 	}
 	entries, err := d.Stream.XReadGroup(ctx, &redis.XReadGroupArgs{
-		Group: d.Consumer, Consumer: d.Consumer, Streams: []string{stream, ">"}, Count: limit, Block: 0,
+		Group: d.Consumer, Consumer: d.Consumer, Streams: []string{stream, ">"}, Count: limit, Block: -1,
 	}).Result()
 	if errors.Is(err, redis.Nil) {
 		return 0, nil

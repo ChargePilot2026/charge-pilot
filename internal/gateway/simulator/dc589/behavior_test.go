@@ -81,6 +81,42 @@ func TestTwentyPortsQueriesAndAsyncCorrelation(t *testing.T) {
 		t.Fatalf("async B6 inherited correlation: %+v", f)
 	}
 }
+
+func TestDurationExpiryBetweenTicksReportsPurchasedMinute(t *testing.T) {
+	b, conn := capturedBoard(t, 1)
+	now := time.Date(2026, 10, 1, 0, 0, 0, 800000000, time.UTC)
+	b.clockOffset = now.Sub(time.Now())
+	if err := b.start(context.Background(), wire.StartCommand{Port: 1, Mode: wire.ByTime, Quantity: 1, ConsumerType: 2}); err != nil {
+		t.Fatal(err)
+	}
+	conn.frames(t)
+	base := now.Truncate(time.Second)
+	for i := 0; i < 60; i++ {
+		now = base.Add(time.Duration(i)*time.Second + 900*time.Millisecond)
+		b.clockOffset = now.Sub(time.Now())
+		b.advance()
+	}
+	if b.charging[1] == nil {
+		t.Fatal("first partial tick expired a minute purchase early")
+	}
+	now = now.Add(time.Second)
+	b.clockOffset = now.Sub(time.Now())
+	b.advance()
+	if b.charging[1] != nil {
+		t.Fatal("duration purchase did not expire")
+	}
+	for _, frame := range conn.frames(t) {
+		if frame.Command != wire.ChargeEnd {
+			continue
+		}
+		report, err := wire.ParseChargeEnd(frame)
+		if err != nil || report.ChargedSeconds != 60 {
+			t.Fatalf("duration end=%+v err=%v", report, err)
+		}
+		return
+	}
+	t.Fatal("missing end report")
+}
 func TestConfigRoundTripRejectsInvalidAndKeepsRawFields(t *testing.T) {
 	b, c := capturedBoard(t, 2)
 	frame, _ := wire.BuildSetConfig(factoryTable())

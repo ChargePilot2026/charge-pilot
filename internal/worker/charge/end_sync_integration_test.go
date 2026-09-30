@@ -17,6 +17,12 @@ import (
 )
 
 func TestEndKeepsPortOwnedUntilCentralAcceptsMeter(t *testing.T) {
+	for _, consumer := range []uint8{2, 3} {
+		t.Run(fmt.Sprint(consumer), func(t *testing.T) { testEndKeepsPortOwned(t, consumer) })
+	}
+}
+
+func testEndKeepsPortOwned(t *testing.T, consumer uint8) {
 	url := os.Getenv("TEST_GATEWAY_DATABASE_URL")
 	if url == "" {
 		t.Skip("set disposable gateway database URL")
@@ -54,7 +60,7 @@ func TestEndKeepsPortOwnedUntilCentralAcceptsMeter(t *testing.T) {
 	}
 	defer db.ExecContext(ctx, "DELETE FROM device_event WHERE device_id=?", deviceID)
 	eventKey := uuid.NewString()
-	event := protocol.Event{Protocol: "dc589", DeviceID: deviceID, Port: 1, Type: protocol.ChargeEnd, OrderNumber: fmt.Sprintf("%016d", chargeOrderID), ConsumerType: 2, EnergyMilliKWh: 125, ChargedSeconds: 600, StartedAt: start, EndedAt: start.Add(10 * time.Minute), ReceivedAt: start.Add(10 * time.Minute)}
+	event := protocol.Event{Protocol: "dc589", DeviceID: deviceID, Port: 1, Type: protocol.ChargeEnd, OrderNumber: fmt.Sprintf("%016d", chargeOrderID), ConsumerType: consumer, EnergyMilliKWh: 125, ChargedSeconds: 600, StartedAt: start, EndedAt: start.Add(10 * time.Minute), ReceivedAt: start.Add(10 * time.Minute)}
 	data, _ := json.Marshal(event)
 	if _, err := db.ExecContext(ctx, "INSERT INTO device_event (event_key,protocol_name,device_id,event_type,port_no,event_json,received_at) VALUES (?,'dc589',?,'charge_end',1,?,?)", eventKey, deviceID, data, event.ReceivedAt); err != nil {
 		t.Fatal(err)

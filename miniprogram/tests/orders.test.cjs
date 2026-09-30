@@ -1,3 +1,4 @@
+const { controllerPath, controllerSource, sessionSource } = require('./source.cjs');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -7,9 +8,9 @@ const { createRequire } = require('node:module');
 
 function page(name, app, wxOverride={}) {
   let definition;
-  const filename = path.resolve(__dirname, '../pages/charge', name + '.js');
+  const filename = controllerPath('pages/charge/'+name+'.js');
   const context = { getApp: () => app, Page: value => { definition = value; }, require: createRequire(filename), wx: { stopPullDownRefresh() {}, navigateTo() {},...wxOverride } };
-  vm.runInNewContext(fs.readFileSync(filename,'utf8'), context, { filename });
+  vm.runInNewContext(controllerSource(filename), context, { filename });
   const instance = { ...definition, data: JSON.parse(JSON.stringify(definition.data)), _generation: 0, _gone: false };
   instance.setData = data => Object.assign(instance.data, data);
   return instance;

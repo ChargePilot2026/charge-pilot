@@ -129,6 +129,9 @@ func (m terminalModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.send(Input{Type: "state"})
 	case stateMsg:
 		if v.State != nil {
+			if v.State.Online && !m.state.Online && m.notice == "等待网关注册；设备须先在后台创建" {
+				m.notice = "设备已在线，可通过操作菜单模拟物理操作"
+			}
 			m.state = *v.State
 			if int(m.port) > len(m.state.Ports) {
 				m.port = 1

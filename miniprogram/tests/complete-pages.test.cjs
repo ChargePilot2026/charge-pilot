@@ -1,3 +1,4 @@
+const { controllerPath, controllerSource, sessionSource } = require('./source.cjs');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -6,7 +7,8 @@ const vm = require('node:vm');
 
 function loadPage(relativePath, app, wx = {}) {
   let page;
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', relativePath), 'utf8'), {
+  vm.runInNewContext(controllerSource(controllerPath(relativePath)), {
+    require: require('node:module').createRequire(controllerPath(relativePath)),
     getApp: () => app,
     Page: value => { page = value; },
     wx: { showToast() {}, showModal({ success }) { success?.({ confirm: true }); }, navigateBack() {}, setClipboardData({ success }) { success?.(); }, openCustomerServiceChat() {}, ...wx },
@@ -18,14 +20,14 @@ function loadPage(relativePath, app, wx = {}) {
   return page;
 }
 
-test('every registered mini-program page has a script, WXML, and page configuration', () => {
+test('every registered Taro page has a React view, controller, and configuration', () => {
   const root = path.join(__dirname, '..');
-  const app = JSON.parse(fs.readFileSync(path.join(root, 'app.json'), 'utf8'));
+  const app = JSON.parse(fs.readFileSync(path.join(root, 'src/app-manifest.json'), 'utf8'));
   for (const name of app.pages) {
-    const base = path.join(root, name);
-    assert.ok(fs.existsSync(`${base}.wxml`), `${name} WXML missing`);
-    assert.ok(fs.existsSync(`${base}.json`), `${name} page config missing`);
-    assert.ok(fs.existsSync(`${base}.js`) || fs.existsSync(`${base}.ts`), `${name} script missing`);
+    const base = path.join(root, 'src', name);
+    assert.ok(fs.existsSync(`${base}.tsx`), `${name} React page missing`);
+    assert.ok(fs.existsSync(`${base}.config.ts`), `${name} page config missing`);
+    assert.ok(fs.existsSync(`${base}.controller.js`) || fs.existsSync(`${base}.controller.js`), `${name} script missing`);
   }
 });
 
@@ -64,7 +66,7 @@ test('invoice application derives the payable amount from the server order detai
     calls.push({ method, url, body });
     if (method === 'POST') return { invoice_no: 'INV-1' };
     if (url === '/user/charge/history') return { items: [{ order_id: 19, order_no: 'ORD-19', device_id: 'D-1', status: 'completed', total_fee_cents: 700 }] };
-    return { order_id: 19, order_no: 'ORD-19', status: 'completed', paid_fee_cents: 650, refunded_cents: 0 };
+    return { order_no: 'ORD-19', status: 'refunded', total_cents: 650, payment: {paid_cents:700,refunded_cents:50} };
   } };
   const page = loadPage('pages/invoice/apply.js', app);
   await page.loadOrders();
@@ -73,17 +75,18 @@ test('invoice application derives the payable amount from the server order detai
   page.onTitle({ detail: { value: '张三' } });
   await page.submit();
   const post = calls.find(call => call.method === 'POST');
-  assert.equal(post.body.biz_id, 19);
-  assert.equal(post.body.total_cents, 650);
+  assert.equal(post.body.order_no, 'ORD-19');
+  assert.match(post.body.request_id, /^[a-f0-9-]{36}$/);
+  assert.equal(post.body.total_cents, undefined);
   assert.equal(page.data.notice, '发票申请已提交，编号 INV-1');
 });
 
-test('invoice application blocks an order that has a refund', async () => {
-  const app = { globalData: { token: 'token' }, _generation: 1, request: async () => ({ order_id: 20, order_no: 'ORD-20', status: 'completed', paid_fee_cents: 650, refunded_cents: 1 }) };
+test('invoice application blocks an order with zero settled fees', async () => {
+  const app = { globalData: { token: 'token' }, _generation: 1, request: async () => ({ order_no: 'ORD-20', status: 'refunded', total_cents: 0, payment: {paid_cents:650,refunded_cents:650} }) };
   const page = loadPage('pages/invoice/apply.js', app);
   await page.loadOrderDetail({ order_id: 20 });
   assert.equal(page.data.selected, null);
-  assert.match(page.data.error, /退款/);
+  assert.match(page.data.error, /费用为零/);
 });
 
 test('customer service opens only with a configured WeChat entry', async () => {

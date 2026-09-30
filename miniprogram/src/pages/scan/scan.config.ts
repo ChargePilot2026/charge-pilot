@@ -1,0 +1,4 @@
+export default definePageConfig({
+  "navigationBarTitleText": "扫码找端口",
+  "enablePullDownRefresh": false
+})

@@ -95,8 +95,17 @@ func (a TelemetryAPI) curve(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
+	portNo := 0
+	if raw := c.Query("port_no"); raw != "" {
+		var err error
+		portNo, err = strconv.Atoi(raw)
+		if err != nil || portNo < 1 || portNo > 255 {
+			httpapi.BadRequest(c, "port_no 须为有效端口号")
+			return
+		}
+	}
 	granularity, table := chooseSource(from, to, limit)
-	series, err := a.read(ctx, deviceID, from, to, limit, table)
+	series, err := a.readPort(ctx, deviceID, portNo, from, to, limit, table)
 	if err != nil {
 		httpapi.Write(c, http.StatusServiceUnavailable, 5003, "telemetry unavailable", nil)
 		return
@@ -141,7 +150,7 @@ func (a TelemetryAPI) readPort(ctx context.Context, deviceID string, portNo int,
 			Select("ts, metric, value_num").
 			Where("device_id = ? AND ts >= ? AND ts <= ? AND value_num IS NOT NULL", deviceID, from, to)
 		if portNo > 0 {
-			query = query.Where("port_no = ?", portNo)
+			query = query.Where("port_no = ? OR (port_no IS NULL AND metric IN ('voltage_v','temperature_c'))", portNo)
 		}
 		if err := query.Order("ts DESC").Limit(limit * 8).Find(&rows).Error; err != nil {
 			return nil, err
@@ -151,7 +160,7 @@ func (a TelemetryAPI) readPort(ctx context.Context, deviceID string, portNo int,
 			Select("bucket_start AS ts, metric, avg_value AS value_num").
 			Where("device_id = ? AND bucket_start >= ? AND bucket_start <= ?", deviceID, from, to)
 		if portNo > 0 {
-			query = query.Where("port_no = ?", portNo)
+			query = query.Where("port_no = ? OR (port_no IS NULL AND metric IN ('voltage_v','temperature_c'))", portNo)
 		}
 		if err := query.Order("bucket_start DESC").Limit(limit * 8).Find(&rows).Error; err != nil {
 			return nil, err

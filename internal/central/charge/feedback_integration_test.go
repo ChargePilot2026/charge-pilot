@@ -79,6 +79,12 @@ func TestSubmitFeedbackRules(t *testing.T) {
 	}
 
 	// 一次合法提交会带着该订单的设备信息落库。
+	// Refunding a prepaid difference does not remove the user's right to
+	// review a completed charging session. H5 identifies it by order number.
+	var ownedOrderNo string
+	userDB.Table("charge_order").Where("id=?", orderID).Pluck("order_no", &ownedOrderNo)
+	userDB.Table("charge_order").Where("id=?", orderID).Update("status", "refunded")
+	path = "/api/v1/user/charge/" + ownedOrderNo + "/feedback"
 	if code, body := callJSON(t, router, "POST", path, map[string]any{
 		"rating": 4, "category": "complaint", "content": "充电枪有点松",
 		"images": []string{"https://cdn.example.com/a.jpg"},

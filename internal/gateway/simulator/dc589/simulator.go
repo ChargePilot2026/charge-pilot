@@ -219,9 +219,10 @@ type charge struct {
 	// 它；按时间计费的把上限放在 remaining 里。
 	targetMilliWh uint32
 	// remaining 是按时间计费的充电还剩多久。
-	remaining  time.Duration
-	stopReason byte
-	faultSent  bool
+	remaining    time.Duration
+	notBeforeEnd time.Time
+	stopReason   byte
+	faultSent    bool
 }
 
 // energyBilled 报告这笔订单的数量是电量而不是时长。
@@ -661,7 +662,10 @@ func (b *board) start(ctx context.Context, command dc589.StartCommand) error {
 		return nil
 	}
 	port := command.Port
-	running := &charge{port: port, orderBCD: command.OrderBCD, mode: command.Mode, startedAt: b.now(), consumer: command.ConsumerType, card: command.CardNumber, band: 1}
+	// Protocol timestamps and the device tick both have one-second precision.
+	// Align START so the first global tick cannot make a one-minute purchase
+	// report only 59 charged seconds when it expires.
+	running := &charge{port: port, orderBCD: command.OrderBCD, mode: command.Mode, startedAt: b.now().Truncate(time.Second), consumer: command.ConsumerType, card: command.CardNumber, band: 1}
 	// 数量在按时间下单时是分钟、在按电量下单时是瓦时，
 	// 所以一个字段同时承载两者，只有模式能说
 	// 明它到底是哪个。把电量数字当成秒数
@@ -671,6 +675,7 @@ func (b *board) start(ctx context.Context, command dc589.StartCommand) error {
 		running.targetMilliWh = uint32(command.Quantity) * 1000
 	} else {
 		running.remaining = time.Duration(command.Quantity) * time.Minute
+		running.notBeforeEnd = running.startedAt.Add(running.remaining)
 	}
 	b.mu.Lock()
 	b.charging[port] = running
@@ -810,7 +815,7 @@ func (b *board) advance() {
 			_ = b.sendFault(port, 0x35)
 			reason = 3
 		}
-		if reason == 255 && c.complete() && b.config.Scenario != ScenarioStopOnCommand {
+		if reason == 255 && c.complete() && (energyBilled(c.mode) || c.notBeforeEnd.IsZero() || !now.Before(c.notBeforeEnd)) && b.config.Scenario != ScenarioStopOnCommand {
 			reason = 0
 			if energyBilled(c.mode) {
 				reason = 10

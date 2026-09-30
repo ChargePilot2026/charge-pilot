@@ -1,10 +1,11 @@
+const { controllerPath, controllerSource, sessionSource } = require('./source.cjs');
 const test=require('node:test');
 const assert=require('node:assert/strict');
 const fs=require('node:fs');const path=require('node:path');const vm=require('node:vm');const {createRequire}=require('node:module');
 function setup(app){
  let definition;const timers=new Map();let id=0;const navigations=[];
- const filename=path.resolve(__dirname,'../pages/charge/charging.ts');
- vm.runInNewContext(fs.readFileSync(filename,'utf8'),{getApp:()=>app,Page:v=>definition=v,require:createRequire(filename),setTimeout:(fn,ms)=>{timers.set(++id,{fn,ms});return id;},clearTimeout:key=>timers.delete(key),wx:{stopPullDownRefresh(){},showModal:opts=>opts.success({confirm:true}),navigateTo:v=>navigations.push(v.url)}},{filename});
+ const filename=controllerPath('pages/charge/charging.ts');
+ vm.runInNewContext(controllerSource(filename),{getApp:()=>app,Page:v=>definition=v,require:createRequire(filename),setTimeout:(fn,ms)=>{timers.set(++id,{fn,ms});return id;},clearTimeout:key=>timers.delete(key),wx:{stopPullDownRefresh(){},showModal:opts=>opts.success({confirm:true}),navigateTo:v=>navigations.push(v.url)}},{filename});
  const p={...definition,data:structuredClone(definition.data)};p.setData=v=>Object.assign(p.data,v);p.onLoad({order_no:'ORD:1'});return {p,timers,navigations};
 }
 const snap=status=>({order_id:1,order_no:'ORD:1',status,poll_continue:['paid','charging','pending_payment'].includes(status),next_poll_after_ms:5000,current_power_w:null,current_fee_cents:null,elapsed_seconds:null});

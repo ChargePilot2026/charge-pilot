@@ -1,3 +1,4 @@
+const { controllerPath, controllerSource, sessionSource } = require('./source.cjs');
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const vm=require('node:vm');
@@ -6,7 +7,7 @@ const {stripTypeScriptTypes}=require('node:module');
 function setup(handler) {
   let app; const storage=new Map();
   const wx={getStorageSync:k=>storage.get(k),setStorageSync:(k,v)=>storage.set(k,v),removeStorageSync:k=>storage.delete(k),request:handler};
-  vm.runInNewContext(stripTypeScriptTypes(fs.readFileSync(require.resolve('../app.ts'),'utf8')),{wx,App:value=>{app=value;}});
+  vm.runInNewContext(sessionSource(),{wx,App:value=>{app=value;}});
   app.saveSession({token:'old-access',refresh_token:'old-refresh'});
   return {app,storage};
 }

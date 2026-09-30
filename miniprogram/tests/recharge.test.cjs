@@ -1,9 +1,10 @@
+const { controllerPath, controllerSource, sessionSource } = require('./source.cjs');
 const {test}=require('node:test');const assert=require('node:assert/strict');const vm=require('node:vm');const fs=require('node:fs');
 function fixture(){
  const storage=new Map(),posts=[];let page;
  const app={_generation:1,globalData:{token:'token'},request:async(method,path,body)=>{if(method==='GET')return {user_id:'7',items:[]};posts.push({...body});if(app.failure)throw Error('offline');return {request_id:body.request_id,amount_cents:body.amount_cents,can_pay:true,payment_params:{timeStamp:'123',nonceStr:'n',paySign:'s',signType:'RSA',package:'prepay_id=test'}};}};
  const wx={getStorageSync:key=>storage.get(key),setStorageSync:(key,v)=>storage.set(key,{...v}),removeStorageSync:key=>storage.delete(key),requestPayment:opts=>opts.fail({errMsg:'requestPayment:fail cancel'})};
- function create(){vm.runInNewContext(fs.readFileSync(require.resolve('../pages/wallet/recharge.js'),'utf8'),{getApp:()=>app,Page:p=>page=p,wx,require:()=>require('../utils/payment')});page.setData=v=>Object.assign(page.data,v);page._seq=0;return page;}
+ function create(){vm.runInNewContext(controllerSource(controllerPath('pages/wallet/recharge.js')),{getApp:()=>app,Page:p=>page=p,wx,require:()=>require('../src/utils/payment')});page.setData=v=>Object.assign(page.data,v);page._seq=0;return page;}
  return {app,wx,posts,storage,create};
 }
 test('recharge cancellation and network failure retain the same request across page recreation',async()=>{

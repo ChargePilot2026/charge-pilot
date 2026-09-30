@@ -1,9 +1,6 @@
 package admin
 
 import (
-	"crypto/sha256"
-	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strconv"
@@ -173,58 +170,11 @@ func (a ResourceAPI) reviewWalletRisk(c *gin.Context) {
 // 只能挑全额实付、且有微信交易号的充值单；每笔还要扣掉已有 pending/processing 退款和已退金额。
 // 任一环节凑不齐申请金额就整笔回滚（errConflict），不留下半截退款。
 func reserveWalletRefund(tx *gorm.DB, req riskRequest) error {
-	var w riskWallet
-	if err := tx.Table("wallet_account").Clauses(clause.Locking{Strength: "UPDATE"}).Where("user_id=? AND deleted_at IS NULL", req.UserID).Take(&w).Error; err != nil {
-		return err
-	}
-	if req.AmountCents <= 0 || w.BalanceCents < w.FrozenCents || req.AmountCents > w.BalanceCents-w.FrozenCents {
+	err := charge.ReserveWalletRefund(tx, charge.WalletRefundReservation{RequestID: req.RequestID, UserID: req.UserID, AmountCents: req.AmountCents, Reason: "wallet risk approved"})
+	if errors.Is(err, charge.ErrRefundConflict) {
 		return errConflict
 	}
-	var existing int64
-	if err := tx.Table("wallet_refund_part").Where("request_id=?", req.RequestID).Count(&existing).Error; err != nil {
-		return err
-	}
-	if existing != 0 {
-		return errConflict
-	}
-	var payments []charge.PaymentOrderRecord
-	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("user_id=? AND biz_type='wallet_recharge' AND pay_method='wechat' AND status IN ('paid','partial_refunded') AND deleted_at IS NULL", req.UserID).Order("id").Find(&payments).Error; err != nil {
-		return err
-	}
-	left := req.AmountCents
-	now := time.Now().UTC()
-	for _, pay := range payments {
-		if !pay.WechatTransactionID.Valid || pay.PaidCents != pay.TotalCents {
-			continue
-		}
-		var reserved int64
-		if err := tx.Table("refund_record").Select("COALESCE(SUM(refund_cents),0)").Where("payment_order_id=? AND status IN ('pending','processing') AND deleted_at IS NULL", pay.ID).Scan(&reserved).Error; err != nil {
-			return err
-		}
-		amount := min(left, pay.PaidCents-pay.RefundedCents-reserved)
-		if amount <= 0 {
-			continue
-		}
-		sum := sha256.Sum256([]byte(req.RequestID + ":" + strconv.FormatUint(pay.ID, 10)))
-		r := charge.RefundRecord{RefundNo: "WR" + hex.EncodeToString(sum[:16]), PaymentOrderID: pay.ID, UserID: req.UserID, BizType: "wallet_recharge", BizID: pay.BizID, RefundCents: amount, Reason: sql.NullString{String: "wallet risk approved", Valid: true}, Status: "pending", ExecutionPolicy: "automatic", NextAttemptAt: now, CreatedMonth: time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)}
-		if err := tx.Create(&r).Error; err != nil {
-			return err
-		}
-		if err := tx.Table("wallet_refund_part").Create(map[string]any{"refund_record_id": r.ID, "request_id": req.RequestID, "wallet_account_id": w.ID, "amount_cents": amount, "settled": false}).Error; err != nil {
-			return err
-		}
-		left -= amount
-		if left == 0 {
-			break
-		}
-	}
-	if left != 0 {
-		return errConflict
-	}
-	if err := tx.Table("wallet_account").Where("id=?", w.ID).Updates(map[string]any{"frozen_cents": gorm.Expr("frozen_cents+?", req.AmountCents), "version": gorm.Expr("version+1")}).Error; err != nil {
-		return err
-	}
-	return nil
+	return err
 }
 
 // releaseWalletRisk 解除一笔风控请求带来的冻结，由客户财务执行。

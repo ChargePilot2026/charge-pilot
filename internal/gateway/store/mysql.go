@@ -20,6 +20,12 @@ var ErrDeviceNotProvisioned = errors.New("device is not provisioned for this pro
 
 type MySQLSink struct{ DB *gorm.DB }
 
+type cardDeliveryRow struct {
+	EventKey string `gorm:"column:event_key;primaryKey"`
+}
+
+func (cardDeliveryRow) TableName() string { return "card_event_delivery" }
+
 func (s MySQLSink) Register(ctx context.Context, registration protocol.Registration) error {
 	if s.DB == nil {
 		return errors.New("gateway database is unavailable")
@@ -95,7 +101,7 @@ func (s MySQLSink) Record(ctx context.Context, event protocol.Event) error {
 			return fmt.Errorf("persist device event: %w", inserted.Error)
 		}
 		if event.Type == protocol.CardSwipe || event.Type == protocol.CardBalanceQuery {
-			if err := tx.Table("card_event_delivery").Clauses(clause.OnConflict{DoNothing: true}).Create(map[string]any{"event_key": key}).Error; err != nil {
+			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&cardDeliveryRow{EventKey: key}).Error; err != nil {
 				return err
 			}
 		}
@@ -262,10 +268,8 @@ func insertMeasurements(ctx context.Context, tx *gorm.DB, event protocol.Event) 
 	}
 	for _, port := range event.ChargingPorts {
 		id := sql.NullInt16{Int16: int16(port.Port), Valid: true}
-		if port.ChargedMWh != 0 {
-			if err := insert(id, "meter_kwh", decimal.NewFromInt(int64(port.ChargedMWh)).Shift(-6).StringFixed(6)); err != nil {
-				return err
-			}
+		if err := insert(id, "meter_kwh", decimal.NewFromInt(int64(port.ChargedMWh)).Shift(-6).StringFixed(6)); err != nil {
+			return err
 		}
 		if err := insert(id, "power_w", decimal.NewFromInt(int64(port.PowerDeciWatts)).Shift(-1).StringFixed(1)); err != nil {
 			return err

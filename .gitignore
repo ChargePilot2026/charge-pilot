@@ -5,6 +5,9 @@ target/
 node_modules/
 .tmp/
 admin-web/dist/
+miniprogram/dist/
+miniprogram/.taro/
+miniprogram/.swc/
 
 # macOS
 .DS_Store

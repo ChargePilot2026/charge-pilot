@@ -1,6 +1,6 @@
 # ChargePilot
 
-二轮车充电运营平台。后端正在按[需求分析](docs/需求分析.md)从头用 Go 重建。当前代码**不能用于生产**；用户、订单、支付、退款、后台运营和财务闭环尚未完成。全部规划功能与外部联调完成后才一次切换。
+二轮车充电运营平台。Go 后端、PC 后台与 Taro 用户端已具备本地双设备联调环境，支持模拟登录、支付、充电、结算与退款。正式发布仍需微信商户、实机协议与外部平台验收，具体范围见[需求分析](docs/需求分析.md)和[Go 重建清单](docs/migration/go-rebuild.md)。
 
 ## 结构
 
@@ -15,13 +15,15 @@ internal/worker/   异步任务
 internal/platform/ 配置、数据库、鉴权、HTTP 基础设施
 migrations/        五个 MySQL schema 的 init SQL
 admin-web/         PC 前端
-miniprogram/       微信小程序
+miniprogram/       Taro + React 用户端（H5 / 微信小程序）
 docs/              需求、接口、数据库和迁移验收记录
 ```
 
 `dc589` 对应当前提供的设备协议 PDF。新协议应实现 `internal/gateway/protocol.Adapter`，可以在新 TCP 端口监听。MQTT 当前暂缓。
 
 ## 本地验证
+
+明早测试入口见[双模拟器本地验收](docs/local-test-guide.md)。运行 `./scripts/start-dev.ps1`，在两个终端分别运行 `./scripts/start-simulator.ps1 -Number 1` 和 `-Number 2`。后台在 `5173`，用户 H5 在 `5174`。
 
 后端格式化使用 gofmt，lint 使用 go vet。首次克隆后执行 `./scripts/install-hooks.ps1`（PowerShell）或 `sh scripts/install-hooks.sh`，启用仓库 pre-commit；提交前强制检查工作区及已暂存 Go 源码格式，再运行 go vet，失败则阻止提交。CI 使用同一检查入口。
 

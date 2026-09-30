@@ -1,0 +1,56 @@
+export default defineAppConfig({
+  "pages": [
+    "pages/index/index",
+    "pages/scan/scan",
+    "pages/scan-result/scan-result",
+    "pages/charge/charging",
+    "pages/charge/history",
+    "pages/charge/detail",
+    "pages/stations/nearby",
+    "pages/stations/detail",
+    "pages/wallet/wallet",
+    "pages/wallet/refund",
+    "pages/wallet/recharge",
+    "pages/wallet/txns",
+    "pages/coupons/my",
+    "pages/invoice/apply",
+    "pages/invoice/my",
+    "pages/profile/profile",
+    "pages/profile/phone",
+    "pages/announcement/list",
+    "pages/cs/chat",
+    "pages/dev/fault",
+    "pages/wallet/cards"
+  ],
+  "window": {
+    "backgroundTextStyle": "light",
+    "navigationBarBackgroundColor": "#1677ff",
+    "navigationBarTitleText": "ChargePilot 充电",
+    "navigationBarTextStyle": "white",
+    "enablePullDownRefresh": true
+  },
+  "tabBar": {
+    "color": "#999",
+    "selectedColor": "#1677ff",
+    "list": [
+      {
+        "pagePath": "pages/index/index",
+        "text": "首页"
+      },
+      {
+        "pagePath": "pages/profile/profile",
+        "text": "我的"
+      }
+    ]
+  },
+  "permission": {
+    "scope.userLocation": {
+      "desc": "用于显示附近充电站点"
+    }
+  },
+  "requiredPrivateInfos": [
+    "getLocation"
+  ],
+  "lazyCodeLoading": "requiredComponents",
+  "sitemapLocation": "sitemap.json"
+})

@@ -1,3 +1,4 @@
+const { controllerPath, controllerSource, sessionSource } = require('./source.cjs');
 const test=require('node:test');
 const assert=require('node:assert/strict');
 const fs=require('node:fs');
@@ -6,8 +7,8 @@ const vm=require('node:vm');
 const {createRequire}=require('node:module');
 
 function page(name,app,wx={}){
- const filename=path.resolve(__dirname,`../pages/${name}/${name}.js`);let definition;
- vm.runInNewContext(fs.readFileSync(filename,'utf8'),{getApp:()=>app,Page:value=>definition=value,require:createRequire(filename),wx:{stopPullDownRefresh(){},...wx}},{filename});
+ const filename=controllerPath(`pages/${name}/${name}.js`);let definition;
+ vm.runInNewContext(controllerSource(filename),{getApp:()=>app,Page:value=>definition=value,require:createRequire(filename),wx:{stopPullDownRefresh(){},...wx}},{filename});
  const p={...definition,data:structuredClone(definition.data)};p.setData=value=>Object.assign(p.data,value);p.onLoad({code:'DEV00001%3A1'});return p;
 }
 const port=(n,status='idle')=>({port_id:`DEV00001:${n}`,port_code:`DEV00001:${n}`,device_id:'DEV00001',port_no:n,port_status:status,device_status:'enabled',online:true,available:status==='idle'});
@@ -75,7 +76,7 @@ test('operation change when selecting a port disables all device ports',async()=
  assert.equal(p.data.deviceStatusLabel,'已禁用');assert.ok(p.data.ports.every(p=>!p.selectable));assert.equal(p.data.offers.length,0);
 });
 test('offline ports show offline even if physical status is idle',()=>{
- const {portView}=require('../utils/scan');const p=portView({...port(1),device_status:'enabled',online:false,available:true});
+ const {portView}=require('../src/utils/scan');const p=portView({...port(1),device_status:'enabled',online:false,available:true});
  assert.equal(p.statusLabel,'离线');assert.equal(p.selectable,false);
 });
 test('missing or inconsistent operating status cannot default to enabled',async()=>{

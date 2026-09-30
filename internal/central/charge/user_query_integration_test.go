@@ -102,10 +102,11 @@ func TestUserCurveReadsTelemetryValues(t *testing.T) {
 	// 两个时间桶，每个桶带的指标子集还不一样。
 	first := time.Now().UTC().Add(-18 * time.Minute).Truncate(time.Second)
 	second := first.Add(8 * time.Minute)
-	gateway := fakeGateway([]map[string]any{
+	points := []map[string]any{
 		{"ts": first.Format(time.RFC3339), "power_w": 1500.0, "voltage_v": 220.0, "meter_kwh": 0.1},
 		{"ts": second.Format(time.RFC3339), "power_w": 2400.0, "voltage_v": 219.0, "meter_kwh": 0.9},
-	})
+	}
+	gateway := fakeGateway(points)
 	defer gateway.Close()
 
 	// 需要真实会话：
@@ -182,6 +183,30 @@ func TestUserCurveReadsTelemetryValues(t *testing.T) {
 	}
 	if envelope.Data.Series[1].PowerW == nil || *envelope.Data.Series[1].PowerW != 2400 {
 		t.Fatalf("second power_w = %v", envelope.Data.Series[1].PowerW)
+	}
+	// A snapshot must reject stale readings, then expose a fresh reading
+	// and elapsed time rather than relying on the final settlement columns.
+	snapshot := func() map[string]any {
+		req := httptest.NewRequest("GET", "/api/v1/user/charge/ongoing/snapshot?order_id="+orderNo, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		res := httptest.NewRecorder()
+		router.ServeHTTP(res, req)
+		var body struct {
+			Data map[string]any `json:"data"`
+		}
+		if res.Code != 200 || json.Unmarshal(res.Body.Bytes(), &body) != nil {
+			t.Fatalf("snapshot: %s", res.Body.String())
+		}
+		return body.Data
+	}
+	stale := snapshot()
+	if stale["telemetry_available"] != false || stale["elapsed_seconds"].(float64) < 1190 {
+		t.Fatalf("stale snapshot: %+v", stale)
+	}
+	points[1]["ts"] = time.Now().UTC().Add(-time.Second).Format(time.RFC3339)
+	fresh := snapshot()
+	if fresh["telemetry_available"] != true || fresh["current_power_w"] != float64(2400) || fresh["charged_kwh"] != float64(0.9) {
+		t.Fatalf("fresh snapshot: %+v", fresh)
 	}
 }
 

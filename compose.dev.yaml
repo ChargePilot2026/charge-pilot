@@ -20,6 +20,7 @@ x-go: &go
     WECHAT_APPID: wx_local_dev
     WECHAT_SECRET: local-dev-placeholder
     PAYMENT_MODE: simulation
+    LOGIN_MODE: development
     PHONE_ENCRYPTION_KEY: local-dev-phone-key-32-bytes-xxx
     REDIS_CACHE_URL: redis://redis-cache:6379/0
     REDIS_STREAM_URL: redis://redis-stream:6379/0
@@ -142,6 +143,23 @@ services:
     depends_on:
       central: { condition: service_started }
 
+  user-h5:
+    image: node:24-bookworm-slim
+    init: true
+    working_dir: /workspace/miniprogram
+    command: ["sh", "-c", "npm ci --legacy-peer-deps --no-audit --no-fund && exec npm run dev:h5"]
+    environment:
+      DEV_API_PROXY_TARGET: http://central:8080
+      TARO_APP_API_BASE: /api/v1
+      TARO_APP_LOGIN_MODE: development
+    ports: ["127.0.0.1:5174:5174"]
+    volumes:
+      - ./miniprogram:/workspace/miniprogram
+      - user-node-modules:/workspace/miniprogram/node_modules
+      - npm-cache:/root/.npm
+    depends_on:
+      central: { condition: service_started }
+
 volumes:
   mysql-data:
   redis-stream-data:
@@ -150,3 +168,4 @@ volumes:
   node-modules:
   npm-cache:
   export-files:
+  user-node-modules:

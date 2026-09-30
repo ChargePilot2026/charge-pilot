@@ -1,9 +1,10 @@
+const { controllerPath, controllerSource, sessionSource } = require('./source.cjs');
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const vm=require('node:vm');
 const fs=require('node:fs');
 function page(name,app,wxOverrides={}){
-  let p;vm.runInNewContext(fs.readFileSync(require.resolve('../pages/wallet/'+name+'.js'),'utf8'),{
+  let p;vm.runInNewContext(controllerSource(controllerPath('pages/wallet/'+name+'.js')),{
     getApp:()=>app,Page:value=>p=value,wx:{stopPullDownRefresh(){},navigateTo(){},...wxOverrides},
   });
   p._generation=0;p._gone=false;p.setData=value=>Object.assign(p.data,value);return p;

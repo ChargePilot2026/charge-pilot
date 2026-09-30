@@ -54,6 +54,35 @@ func TestChargeEndReplayStoresOneMeterAndOutboxEvent(t *testing.T) {
 	}
 }
 
+func TestNativeCardEventPersistsDeliveryAndReplayOnce(t *testing.T) {
+	url := os.Getenv("TEST_GATEWAY_DATABASE_URL")
+	if url == "" {
+		t.Skip("set a disposable gateway database URL")
+	}
+	ctx := context.Background()
+	db, err := dbconn.Open(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	e := protocol.Event{Protocol: "dc589", DeviceID: "card-" + uuid.NewString(), Type: protocol.CardSwipe, EventID: uuid.NewString(), Port: 1, CardNumber: 100001, ReceivedAt: time.Now().UTC()}
+	defer db.ExecContext(ctx, "DELETE FROM device_event WHERE event_key=?", e.EventID)
+	defer db.ExecContext(ctx, "DELETE FROM event_outbox WHERE event_id=?", e.EventID)
+	defer db.ExecContext(ctx, "DELETE FROM card_event_delivery WHERE event_key=?", e.EventID)
+	for range 2 {
+		if err := (MySQLSink{DB: testGORMDB(t, db)}).Record(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var count int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM card_event_delivery WHERE event_key=? AND status='pending'", e.EventID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("delivery rows=%d, want one", count)
+	}
+}
+
 // outbox 是设备事件离开 gateway 的唯一通道，
 // 而每个消费方都按全平台统一的那种信封来读它。
 // 直接发裸事件的话，消费方要找的类型字段根本不存在——事件把它叫作

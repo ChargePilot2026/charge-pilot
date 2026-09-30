@@ -1,5 +1,6 @@
+const { controllerPath, controllerSource, sessionSource } = require('./source.cjs');
 const test=require('node:test'),assert=require('node:assert/strict');
-const {offerView,confirmationLabel}=require('../utils/scheme');
+const {offerView,confirmationLabel}=require('../src/utils/scheme');
 test('all three configured modes explain the actual rights and refunds',()=>{
  const common={id:1,name:'套餐',price_cents:300};
  assert.match(offerView({...common,mode:'amount',max_minutes:600}).ruleText,/10 小时/);

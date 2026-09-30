@@ -133,7 +133,11 @@ func run(ctx context.Context) error {
 		}
 	}()
 	admin.Dashboard{UserDB: userORM, AdminDB: adminORM}.Register(router, adminAPI)
-	identity.API{WeChat: identity.MiniProgram{SDK: wechat}, Users: identity.UserStore{DB: userORM}, Sessions: identity.Sessions{Redis: cache}, JWT: jwt}.Register(router)
+	var loginExchanger identity.CodeExchanger = identity.MiniProgram{SDK: wechat}
+	if cfg.LoginMode == "development" {
+		loginExchanger = identity.DevelopmentExchanger{}
+	}
+	identity.API{WeChat: loginExchanger, Users: identity.UserStore{DB: userORM}, Sessions: identity.Sessions{Redis: cache}, JWT: jwt}.Register(router)
 	charge.StartAuthorization{DB: userORM, ServiceToken: cfg.ServiceToken}.Register(router)
 	charge.StartResultAPI{Store: charge.StartResultStore{DB: userORM}, ServiceToken: cfg.ServiceToken}.Register(router)
 	charge.EndResultAPI{Store: charge.EndResultStore{DB: userORM}, ServiceToken: cfg.ServiceToken}.Register(router)
@@ -147,6 +151,7 @@ func run(ctx context.Context) error {
 		prepay = payment.Simulator{}
 		refundProvider = payment.Simulator{}
 		charge.SimulationCallbackAPI{DB: userORM, Store: charge.PaymentCallbackStore{DB: userORM, ExpectedProvider: "simulation", ExpectedMerchantID: "local-simulation", ExpectedAppID: cfg.WeChatAppID}, ServiceToken: cfg.ServiceToken}.Register(router)
+		charge.DevelopmentPaymentAPI{Auth: identity.SessionAuthenticator{JWT: jwt, Sessions: identity.Sessions{Redis: cache}, Users: identity.UserStore{DB: userORM}}, DB: userORM, Store: charge.PaymentCallbackStore{DB: userORM, ExpectedProvider: "simulation", ExpectedMerchantID: "local-simulation", ExpectedAppID: cfg.WeChatAppID}}.Register(router)
 	case "wechat_direct":
 		direct, err := payment.NewWechatDirect(ctx, payment.Config{AppID: cfg.WeChatAppID, MerchantID: cfg.WechatMchID,
 			CertificateSerial: cfg.WechatCertSerial, APIv3Key: cfg.WechatAPIv3Key,
@@ -163,7 +168,18 @@ func run(ctx context.Context) error {
 		Auth:   identity.SessionAuthenticator{JWT: jwt, Sessions: identity.Sessions{Redis: cache}, Users: identity.UserStore{DB: userORM}},
 		UserDB: userORM, AdminDB: adminORM, GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken,
 		Gateway: serviceclient.Client{Timeout: 8 * time.Second}, Prepay: prepay,
-		PhoneKey: []byte(cfg.PhoneEncryptionKey),
+		PhoneKey:         []byte(cfg.PhoneEncryptionKey),
+		DevelopmentPhone: cfg.LoginMode == "development",
+		PhoneExchange: func(ctx context.Context, code string) (string, error) {
+			result, err := wechat.GetPhoneNumber(ctx, code)
+			if err != nil {
+				return "", err
+			}
+			if result == nil || result.Errcode != 0 || result.PhoneInfo == nil {
+				return "", errors.New("invalid phone authorization")
+			}
+			return result.PhoneInfo.PurePhoneNumber, nil
+		},
 	}.Register(router)
 	charge.BillHTTP{Auth: identity.SessionAuthenticator{JWT: jwt, Sessions: identity.Sessions{Redis: cache}, Users: identity.UserStore{DB: userORM}},
 		Bills: charge.BillStore{DB: userORM}}.Register(router)

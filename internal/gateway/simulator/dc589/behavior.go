@@ -74,6 +74,7 @@ type ChargeState struct {
 	Peak           uint32
 	FloatSeconds   uint32
 	RemovedSeconds uint32
+	NotBeforeEnd   time.Time
 }
 
 // ControlHandler is intended for a loopback listener. All inputs are serialized
@@ -425,12 +426,15 @@ func (b *board) applyInput(in Input) error {
 		if p.Card != 0 {
 			return fmt.Errorf("remove the current card first")
 		}
-		p.Card = in.Card
 		d := make([]byte, 10)
 		d[0] = in.Port
 		binary.LittleEndian.PutUint32(d[1:5], in.Card)
 		d[5] = byte(b.configTable.CardAmountCents / 10)
-		return b.writer.send(wire.Frame{Command: wire.OnlineCardSwipe, Data: d})
+		if err := b.writer.send(wire.Frame{Command: wire.OnlineCardSwipe, Data: d}); err != nil {
+			return err
+		}
+		p.Card = in.Card
+		return nil
 	case "balance":
 		if in.Card == 0 {
 			return fmt.Errorf("card must be nonzero")
@@ -452,7 +456,8 @@ func (b *board) applyInput(in Input) error {
 				quantity = b.configTable.LocalCardTime
 			}
 		}
-		c := &charge{port: in.Port, startedAt: b.now(), mode: wire.ByTime, remaining: time.Duration(quantity) * time.Minute, consumer: in.Consumer, card: in.Card, band: 1}
+		c := &charge{port: in.Port, startedAt: b.now().Truncate(time.Second), mode: wire.ByTime, remaining: time.Duration(quantity) * time.Minute, consumer: in.Consumer, card: in.Card, band: 1}
+		c.notBeforeEnd = c.startedAt.Add(c.remaining)
 		if b.configTable.RunMode == 3 || b.configTable.RunMode == 4 {
 			c.mode = wire.ByEnergy
 			c.targetMilliWh = uint32(quantity) * 10000
@@ -512,7 +517,7 @@ func (b *board) snapshot() Snapshot {
 		s.Ports[byte(i)] = &v
 	}
 	for _, c := range b.charging {
-		s.Charging = append(s.Charging, ChargeState{c.port, c.orderBCD, c.mode, c.startedAt, c.wattDeciSeconds, c.targetMilliWh, c.remaining, c.consumer, c.card, c.band, c.peak, c.floatSeconds, c.removedSeconds})
+		s.Charging = append(s.Charging, ChargeState{c.port, c.orderBCD, c.mode, c.startedAt, c.wattDeciSeconds, c.targetMilliWh, c.remaining, c.consumer, c.card, c.band, c.peak, c.floatSeconds, c.removedSeconds, c.notBeforeEnd})
 	}
 	sort.Slice(s.Charging, func(i, j int) bool { return s.Charging[i].Port < s.Charging[j].Port })
 	return s
@@ -579,7 +584,7 @@ func (b *board) restore() error {
 		if v.Port == 0 || int(v.Port) > b.config.PortCount {
 			return fmt.Errorf("saved port out of range")
 		}
-		b.charging[v.Port] = &charge{port: v.Port, orderBCD: v.Order, mode: v.Mode, startedAt: v.Started, wattDeciSeconds: v.Energy, targetMilliWh: v.Target, remaining: v.Remaining, consumer: v.Consumer, card: v.Card, band: v.Band, peak: v.Peak, floatSeconds: v.FloatSeconds, removedSeconds: v.RemovedSeconds}
+		b.charging[v.Port] = &charge{port: v.Port, orderBCD: v.Order, mode: v.Mode, startedAt: v.Started, wattDeciSeconds: v.Energy, targetMilliWh: v.Target, remaining: v.Remaining, consumer: v.Consumer, card: v.Card, band: v.Band, peak: v.Peak, floatSeconds: v.FloatSeconds, removedSeconds: v.RemovedSeconds, notBeforeEnd: v.NotBeforeEnd}
 	}
 	return nil
 }
@@ -651,6 +656,9 @@ func (b *board) updateBand(c *charge) error {
 	}
 	if !energyBilled(c.mode) {
 		c.remaining = time.Duration(int64(c.remaining) * int64(next) / int64(previous))
+		if next != previous {
+			c.notBeforeEnd = b.now().Add(c.remaining)
+		}
 	} else {
 		c.targetMilliWh = c.chargedMilliWh() + uint32(uint64(c.remainingMilliWh())*uint64(next)/uint64(previous))
 	}

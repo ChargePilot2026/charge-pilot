@@ -55,7 +55,7 @@ func (s EndSynchronizer) SyncBatch(ctx context.Context) (int, error) {
 		return 0, errors.New("invalid central URL")
 	}
 	var events []workerDeviceEventRow
-	err = s.GatewayDB.WithContext(ctx).Where("event_type = 'charge_end' AND processed_at IS NULL AND JSON_EXTRACT(event_json, '$.ConsumerType') = 2").
+	err = s.GatewayDB.WithContext(ctx).Where("event_type = 'charge_end' AND processed_at IS NULL AND JSON_EXTRACT(event_json, '$.ConsumerType') IN (2,3)").
 		Order("id").Limit(50).Find(&events).Error
 	if err != nil {
 		return 0, err
@@ -75,7 +75,7 @@ func (s EndSynchronizer) SyncBatch(ctx context.Context) (int, error) {
 			continue
 		}
 		orderID, err := strconv.ParseUint(event.OrderNumber, 10, 64)
-		if err != nil || orderID == 0 || event.ConsumerType != 2 || event.EndedAt.IsZero() {
+		if err != nil || orderID == 0 || (event.ConsumerType != 2 && event.ConsumerType != 3) || event.EndedAt.IsZero() {
 			if first == nil {
 				first = errors.New("invalid dc589 charge end event")
 			}

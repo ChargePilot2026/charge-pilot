@@ -1,0 +1,68 @@
+/* ChargePilot Mini Program · 全局样式 */
+
+page, body, .taro_page {
+  --primary: #1677ff;
+  --success: #52c41a;
+  --warning: #faad14;
+  --danger: #ff4d4f;
+  --text: #333;
+  --text-secondary: #666;
+  --bg: #f5f5f5;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 28px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
+}
+
+.container { padding: 16rpx 24rpx; }
+
+.card {
+  background: #fff;
+  border-radius: 12rpx;
+  padding: 32rpx 24rpx;
+  margin-bottom: 16rpx;
+  box-shadow: 0 2rpx 8rpx rgba(0,0,0,.04);
+}
+
+.btn-primary {
+  background: var(--primary);
+  color: #fff;
+  border-radius: 8rpx;
+  padding: 20rpx 0;
+  text-align: center;
+  font-size: 32px;
+}
+
+.text-secondary { color: var(--text-secondary); font-size: 24px; }
+
+.tag {
+  display: inline-block;
+  padding: 4rpx 12rpx;
+  border-radius: 6rpx;
+  font-size: 24px;
+  margin-right: 8rpx;
+}
+.tag-blue { background: #e6f4ff; color: #1677ff; }
+.tag-green { background: #f6ffed; color: #52c41a; }
+.tag-red { background: #fff1f0; color: #ff4d4f; }
+.tag-grey { background: #f5f5f5; color: #999; }
+.tag-orange { background: #fff7e6; color: #fa8c16; }
+
+.field { padding: 18rpx 0; color: var(--text); }
+.error { color: var(--danger); margin: 12rpx 0; }
+.success { color: #389e0d; margin: 12rpx 0; }
+
+.development-panel { border: 2px solid #91caff; background: #f0f7ff; }
+.development-panel text, .map-summary text { display: block; margin-bottom: 16rpx; }
+.development-panel input { background: #fff; border: 2px solid #d9d9d9; padding: 16rpx; margin: 16rpx 0; }
+.heading { font-weight: 600; }
+.map-summary { background: #f0f7ff; padding: 24rpx; border-radius: 12rpx; }
+button { margin-top: 16rpx; }
+/* H5 custom elements render disabled="false" as an attribute; it must not
+   inherit the component's disabled appearance merely because it is present. */
+taro-button-core { margin-top: 16rpx; color: var(--text); }
+taro-button-core[type="primary"] { background: var(--primary); color: #fff; }
+taro-button-core[disabled="false"] { color: var(--text) !important; }
+taro-button-core[type="primary"][disabled="false"] { color: #fff !important; background: var(--primary) !important; }
+taro-button-core[disabled="true"] { background: #f5f5f5; color: #999; }
+input, textarea { box-sizing: border-box; padding: 16rpx; }

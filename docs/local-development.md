@@ -1,16 +1,16 @@
 # Go 本地开发
 
-当前后端仍在重建，不应以开发容器启动成功作为业务功能验收。设备协议端口 `9100/TCP`、`central` 的 `8080/HTTP`、`gateway` 内部端口 `8083`、`worker` 健康端口 `8085` 均只绑定本机。PC 前端在 `5173`。
+设备协议端口 `9100/TCP`、`central` 的 `8080/HTTP`、`gateway` 内部端口 `8083`、`worker` 健康端口 `8085` 均只绑定本机。PC 后台在 `5173`，Taro 用户 H5 在 `5174`。完整启动与测试顺序见 [双模拟器本地验收](local-test-guide.md)。
 
 ## 首次启动
 
 使用 MySQL 8.4、Redis 8 和 Go 1.27。Compose 的测试密码仅用于本机。迁移程序要求空数据库或已有 Goose 记录；若本机仍是旧代码创建的测试库，应先备份需要保留的内容并清空测试卷，再运行：
 
 ```bash
-docker compose -f compose.dev.yaml up --build
+./scripts/start-dev.ps1
 ```
 
-本次用户已确认 MySQL 中只有测试数据、允许重建。`docker compose -f compose.dev.yaml down -v` 会删除该开发栈的所有数据库和 Redis 卷，执行前确认没有需要保留的本地测试结果。
+开发库尚未发布。需要从修改后的 init 重建时执行 `./scripts/reset-dev-db.ps1 -ResetDevelopmentData`；脚本先备份五个 schema，再重建表并重新初始化。不要把增量 migration 或 ALTER 加回当前初始化目录。
 
 ## 单独验证
 
@@ -28,7 +28,7 @@ TEST_REDIS_URL='redis://127.0.0.1:6379/14' \
 go test -count=1 ./internal/central/identity
 ```
 
-微信小程序登录需要真实 `WECHAT_APPID` 和 `WECHAT_SECRET` 才能与微信联调；开发占位值只允许用假交换器执行本地 HTTP 集成测试。支付、OTA 实机及完整运营页面仍处于待实现或待联调状态，以 [Go 重建清单](migration/go-rebuild.md) 为准。
+Compose 显式配置 `LOGIN_MODE=development`、`PAYMENT_MODE=simulation`。H5 使用 `dev:<账号>` 登录，后端返回真实本地用户会话；模拟支付仍经过支付订单、确认回调、启动、结算及退款链路。开发登录只能与模拟支付配合开启。正式微信登录需要真实 AppID/Secret，正式支付与 OTA 实机仍需外部验收。
 
 ## 后台登录（Go）
 
@@ -37,10 +37,9 @@ go test -count=1 ./internal/central/identity
 `ADMIN_BOOTSTRAP_USER` / `ADMIN_BOOTSTRAP_PASSWORD` 覆盖。初始化只在后台账号表为空时执行，
 重启服务不会重置已有密码。生产 Compose 没有默认密码，切换门禁仍关闭。
 
-已有开发库升级（保留数据）：
+仅重启应用（保留当前 init 数据）：
 
 ```bash
-docker compose -f compose.dev.yaml run --rm migrate
 docker compose -f compose.dev.yaml up -d --no-deps --force-recreate central gateway worker
 ```
 

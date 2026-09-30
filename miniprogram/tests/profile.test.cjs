@@ -1,3 +1,4 @@
+const { controllerPath, controllerSource, sessionSource } = require('./source.cjs');
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const vm=require('node:vm');
@@ -5,7 +6,7 @@ const fs=require('node:fs');
 const {stripTypeScriptTypes}=require('node:module');
 function page(app) {
   let p;
-  vm.runInNewContext(stripTypeScriptTypes(fs.readFileSync(require.resolve('../pages/profile/profile.ts'),'utf8')),{
+  vm.runInNewContext(controllerSource(controllerPath('pages/profile/profile.ts')),{
     getApp:()=>app,Page:value=>p=value,wx:{stopPullDownRefresh(){},showModal:({success})=>success({confirm:true})},
   });
   p.setData=value=>Object.assign(p.data,value); return p;

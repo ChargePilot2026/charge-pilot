@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ChargePilot2026/charge-pilot/internal/central/identity"
+	"github.com/ChargePilot2026/charge-pilot/internal/central/payment"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/auth"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/dbconn"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/phonecrypto"
@@ -67,8 +68,10 @@ func accountRouter(t *testing.T, userDB, adminDB *gorm.DB, userID uint64) http.H
 	UserAccountAPI{
 		Auth:   identity.SessionAuthenticator{JWT: jwt, Sessions: identity.Sessions{Redis: client}, Users: identity.UserStore{DB: userDB}},
 		UserDB: userDB, AdminDB: adminDB, Gateway: serviceclient.Client{},
-		PhoneKey: []byte("account-test-phone-key-32-bytes!"),
+		PhoneKey:         []byte("account-test-phone-key-32-bytes!"),
+		DevelopmentPhone: true, Prepay: payment.Simulator{},
 	}.Register(router)
+	DevelopmentPaymentAPI{Auth: identity.SessionAuthenticator{JWT: jwt, Sessions: identity.Sessions{Redis: client}, Users: identity.UserStore{DB: userDB}}, DB: userDB, Store: PaymentCallbackStore{DB: userDB, ExpectedProvider: "simulation", ExpectedMerchantID: "local-simulation", ExpectedAppID: "wx_local_dev"}}.Register(router)
 	// gin 的 Use 只对其后注册的路由生效，
 	// 所以 bearer token 改由这个 wrapper 打到每个请求上。
 	return &authenticatedRouter{Engine: router, token: token}
@@ -163,7 +166,13 @@ func TestWalletRefundFreezesBalanceOnClaim(t *testing.T) {
 	userDB := openAccountDB(t, "TEST_USER_DATABASE_URL")
 	adminDB := openAccountDB(t, "TEST_ADMIN_DATABASE_URL")
 	userID := createUserWithWallet(t, userDB, 50000)
+	if err := userDB.Exec("INSERT INTO payment_order(order_no,biz_type,biz_id,user_id,pay_method,total_cents,paid_cents,status,wechat_transaction_id,created_month) VALUES(?,'wallet_recharge',0,?,'wechat',50000,50000,'paid',?,?)", "qa-refund-"+uuid.NewString(), userID, uuid.NewString(), utcDate()).Error; err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() {
+		userDB.Exec("DELETE p FROM wallet_refund_part p JOIN refund_record r ON r.id=p.refund_record_id WHERE r.user_id=?", userID)
+		userDB.Exec("DELETE FROM refund_record WHERE user_id=?", userID)
+		userDB.Exec("DELETE FROM payment_order WHERE user_id=?", userID)
 		userDB.Exec("DELETE FROM wallet_refund_request WHERE user_id = ?", userID)
 		userDB.Exec("DELETE FROM wallet_account WHERE user_id = ?", userID)
 		userDB.Exec("DELETE FROM user WHERE id = ?", userID)

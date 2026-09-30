@@ -1,6 +1,8 @@
 package charge
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"math"
@@ -33,7 +35,9 @@ type UserAccountAPI struct {
 	// PhoneKey 用来加密落库的手机号。
 	// 手机号不能以明文躺在库里，
 	// 而且每个要读它们的部署都必须提供同一把密钥。
-	PhoneKey []byte
+	PhoneKey         []byte
+	DevelopmentPhone bool
+	PhoneExchange    func(context.Context, string) (string, error)
 }
 
 // Register 挂载账户相关路由。每个处理器都自己做鉴权，
@@ -117,11 +121,7 @@ func (a UserAccountAPI) walletTxns(c *gin.Context) {
 			httpapi.BadRequest(c, "收支方向无效")
 			return
 		}
-		if direction == "in" {
-			query = query.Where("amount_cents > 0")
-		} else {
-			query = query.Where("amount_cents < 0")
-		}
+		query = query.Where("direction = ?", direction)
 	}
 	var total int64
 	if err := query.Session(&gorm.Session{}).Count(&total).Error; err != nil {
@@ -137,44 +137,42 @@ func (a UserAccountAPI) walletTxns(c *gin.Context) {
 	httpapi.OK(c, gin.H{"items": rows, "total": total, "page": page, "page_size": pageSize})
 }
 
+// Wallet requests use owner-scoped UUIDs. The payment and frozen funds are
+// recorded atomically; channel calls can be retried against the same order.
 func (a UserAccountAPI) walletRecharges(c *gin.Context) {
-	userID, ok := a.userID(c)
+	user, ok := a.userID(c)
 	if !ok {
 		return
 	}
-	page, pageSize, ok := readPaging(c)
+	page, size, ok := readPaging(c)
 	if !ok {
 		return
 	}
-	base := a.UserDB.WithContext(c.Request.Context()).Table("wallet_recharge_request").Where("wallet_recharge_request.user_id = ?", userID)
+	q := a.UserDB.WithContext(c.Request.Context()).Table("wallet_recharge_request r").Where("r.user_id=?", user)
 	var total int64
-	if err := base.Session(&gorm.Session{}).Count(&total).Error; err != nil {
-		httpapi.Write(c, 503, 5003, "充值记录暂时无法读取", nil)
+	if err := q.Session(&gorm.Session{}).Count(&total).Error; err != nil {
+		resourceWriteFailure(c, err)
 		return
 	}
-	// 请求行本身没有状态，状态在关联的支付订单上。
 	rows := []struct {
-		RequestID     string    `gorm:"column:request_id" json:"request_id"`
-		AmountCents   int64     `gorm:"column:amount_cents" json:"amount_cents"`
-		PrepayID      *string   `gorm:"column:prepay_id" json:"-"`
-		CreatedAt     time.Time `gorm:"column:created_at" json:"created_at"`
-		PaymentStatus *string   `gorm:"column:payment_status" json:"payment_status"`
-		PaymentPaid   *int64    `gorm:"column:paid_cents" json:"paid_cents"`
+		RequestID   string     `json:"request_id"`
+		AmountCents int64      `json:"amount_cents"`
+		Status      string     `json:"status"`
+		ExpiredAt   *time.Time `json:"expires_at"`
+		CreatedAt   time.Time  `json:"created_at"`
+		CanPay      bool       `json:"can_pay" gorm:"-"`
 	}{}
-	if err := base.Select("wallet_recharge_request.request_id, wallet_recharge_request.amount_cents, wallet_recharge_request.prepay_id, wallet_recharge_request.created_at, p.status AS payment_status, p.paid_cents").
-		Joins("LEFT JOIN payment_order AS p ON p.id = wallet_recharge_request.payment_order_id").
-		Order("wallet_recharge_request.created_at DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&rows).Error; err != nil {
-		httpapi.Write(c, 503, 5003, "充值记录暂时无法读取", nil)
+	if err := q.Select("r.request_id,r.amount_cents,r.created_at,p.status,p.expired_at").Joins("JOIN payment_order p ON p.id=r.payment_order_id").Order("r.created_at DESC,r.request_id").Offset((page - 1) * size).Limit(size).Find(&rows).Error; err != nil {
+		resourceWriteFailure(c, err)
 		return
 	}
-	httpapi.OK(c, gin.H{"items": rows, "total": total, "page": page, "page_size": pageSize})
+	for i := range rows {
+		rows[i].CanPay = rows[i].Status == "initiated" && rows[i].ExpiredAt != nil && rows[i].ExpiredAt.After(time.Now())
+	}
+	httpapi.OK(c, gin.H{"user_id": strconv.FormatUint(user, 10), "items": rows, "total": total, "page": page, "page_size": size})
 }
-
-// walletRecharge 开一笔充值订单。
-// 金额取自请求但有上下界，
-// 同一个请求号会重放已有订单，而不是重复扣一次款。
 func (a UserAccountAPI) walletRecharge(c *gin.Context) {
-	userID, ok := a.userID(c)
+	user, ok := a.userID(c)
 	if !ok {
 		return
 	}
@@ -182,163 +180,104 @@ func (a UserAccountAPI) walletRecharge(c *gin.Context) {
 		RequestID   string `json:"request_id"`
 		AmountCents int64  `json:"amount_cents"`
 	}
-	if c.ShouldBindJSON(&in) != nil {
-		httpapi.BadRequest(c, "充值请求无效")
-		return
-	}
-	if uuid.Validate(in.RequestID) != nil {
-		httpapi.BadRequest(c, "请提供 UUID 格式的请求号")
-		return
-	}
-	// 上下界防止一个输错的金额在渠道侧创建出荒谬的订单。
-	if in.AmountCents < 100 || in.AmountCents > 5000000 {
-		httpapi.BadRequest(c, "充值金额须在 1 元至 50000 元之间")
+	if c.ShouldBindJSON(&in) != nil || uuid.Validate(in.RequestID) != nil || in.AmountCents < 100 || in.AmountCents > 5000000 {
+		httpapi.BadRequest(c, "充值金额须在 1 元至 50000 元之间，并提供有效请求号")
 		return
 	}
 	ctx := c.Request.Context()
-	var identityRow struct {
-		OpenID string `gorm:"column:openid"`
-	}
-	openid := ""
-	if err := a.UserDB.WithContext(ctx).Table("user").Select("openid").Where("id = ?", userID).Take(&identityRow).Error; err == nil {
-		openid = identityRow.OpenID
-	}
-	if openid == "" {
-		httpapi.Write(c, 409, 2009, "账号缺少微信身份，无法发起充值", nil)
+	var openid string
+	if err := a.UserDB.WithContext(ctx).Table("user").Where("id=? AND deleted_at IS NULL", user).Pluck("openid", &openid).Error; err != nil || openid == "" {
+		httpapi.Write(c, 409, 2009, "账号身份不可用", nil)
 		return
 	}
-	// 请求行以客户端的 UUID 为键，
-	// 重试会复用它，而不是再扣一次款。
-	var existing struct {
-		RequestID      string  `gorm:"column:request_id"`
-		PaymentOrderID *uint64 `gorm:"column:payment_order_id"`
-		PrepayID       *string `gorm:"column:prepay_id"`
-		AmountCents    int64   `gorm:"column:amount_cents"`
-	}
-	found := a.UserDB.WithContext(ctx).Table("wallet_recharge_request").Where("request_id = ?", in.RequestID).Take(&existing)
-	priorExists := found.Error == nil
-	if found.Error != nil && !errors.Is(found.Error, gorm.ErrRecordNotFound) {
-		httpapi.Write(c, 503, 5003, "充值记录暂时无法读取", nil)
-		return
-	}
-	if priorExists {
-		if existing.AmountCents != in.AmountCents {
-			httpapi.Write(c, 409, 2009, "同一请求号不能变更金额", nil)
-			return
-		}
-		if existing.PaymentOrderID != nil {
-			httpapi.OK(c, gin.H{"request_id": existing.RequestID, "payment_order_id": *existing.PaymentOrderID, "amount_cents": existing.AmountCents, "replayed": true})
-			return
-		}
-	}
-	var paymentOrderID uint64
+	var order PaymentOrderRecord
 	err := a.UserDB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Table("payment_order").Create(map[string]any{
-			"order_no": rechargeOrderNo(in.RequestID), "biz_type": "wallet_recharge",
-			"biz_id": 0, "user_id": userID, "pay_method": "wechat", "total_cents": in.AmountCents,
-			"paid_cents": 0, "status": "initiated", "created_month": utcDate(),
-		}).Error; err != nil {
+		// Serialize all wallet requests for one owner, including simultaneous retries.
+		var owner struct{ ID uint64 }
+		if err := tx.Table("user").Clauses(clause.Locking{Strength: "UPDATE"}).Where("id=? AND deleted_at IS NULL", user).Take(&owner).Error; err != nil {
 			return err
 		}
-		if err := tx.Raw("SELECT LAST_INSERT_ID()").Scan(&paymentOrderID).Error; err != nil {
+		var wallet struct {
+			ID     uint64
+			Status string
+		}
+		err := tx.Table("wallet_account").Clauses(clause.Locking{Strength: "UPDATE"}).Where("user_id=? AND deleted_at IS NULL", user).Take(&wallet).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			if err = tx.Table("wallet_account").Create(map[string]any{"user_id": user, "balance_cents": 0, "frozen_cents": 0, "status": "active"}).Error; err != nil {
+				return err
+			}
+		} else if err != nil {
+			return err
+		} else if wallet.Status != "active" {
+			return errWalletFrozen
+		}
+		var prior struct {
+			UserID         uint64
+			AmountCents    int64
+			PaymentOrderID uint64
+		}
+		err = tx.Table("wallet_recharge_request").Where("request_id=?", in.RequestID).Take(&prior).Error
+		if err == nil {
+			if prior.UserID != user || prior.AmountCents != in.AmountCents {
+				return ErrPaymentIntentConflict
+			}
+			return tx.Where("id=?", prior.PaymentOrderID).Take(&order).Error
+		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return err
 		}
-		// 请求行以客户端 UUID 为键，
-		// 更新语句建不出这一行，所以已有行是更新、没有才插入。
-		if priorExists {
-			return tx.Table("wallet_recharge_request").Where("request_id = ?", in.RequestID).
-				Update("payment_order_id", paymentOrderID).Error
+		now := time.Now().UTC()
+		order = PaymentOrderRecord{OrderNo: rechargeOrderNo(in.RequestID), BizType: "wallet_recharge", UserID: user, PayMethod: "wechat", TotalCents: in.AmountCents, Status: "initiated", ExpiredAt: sql.NullTime{Time: now.Add(30 * time.Minute), Valid: true}, CreatedMonth: time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)}
+		if err := tx.Create(&order).Error; err != nil {
+			return err
 		}
-		return tx.Table("wallet_recharge_request").Create(map[string]any{
-			"request_id": in.RequestID, "user_id": userID, "amount_cents": in.AmountCents,
-			"payment_order_id": paymentOrderID, "request_json": mustJSON(map[string]any{"amount_cents": in.AmountCents}),
-		}).Error
+		return tx.Table("wallet_recharge_request").Create(map[string]any{"request_id": in.RequestID, "user_id": user, "amount_cents": in.AmountCents, "payment_order_id": order.ID, "request_json": mustJSON(in)}).Error
 	})
+	if errors.Is(err, ErrPaymentIntentConflict) || errors.Is(err, errWalletFrozen) {
+		httpapi.Write(c, 409, 2009, "请求号冲突或钱包已冻结", nil)
+		return
+	}
 	if err != nil {
 		resourceWriteFailure(c, err)
 		return
 	}
-	params, err := a.Prepay.Prepay(ctx, payment.PrepayRequest{
-		MerchantOrderNo: rechargeOrderNo(in.RequestID),
-		OpenID:          openid, AmountCents: in.AmountCents, ExpiresAt: time.Now().Add(30 * time.Minute),
-	})
-	if err != nil {
-		httpapi.Write(c, 503, 5003, "支付渠道暂不可用，请稍后重试", nil)
-		return
-	}
-	_ = a.UserDB.WithContext(ctx).Table("wallet_recharge_request").
-		Where("request_id = ?", in.RequestID).Updates(map[string]any{"prepay_id": params.PrepayID}).Error
-	httpapi.OK(c, gin.H{"request_id": in.RequestID, "payment_order_id": paymentOrderID, "amount_cents": in.AmountCents, "payment_params": params})
-}
-
-// refundReview 是运营对一笔钱包退款申领做出的裁决。
-type refundReview struct {
-	Status  string  `gorm:"column:status" json:"status"`
-	Comment *string `gorm:"column:comment" json:"comment"`
-}
-
-func (a UserAccountAPI) walletRefunds(c *gin.Context) {
-	userID, ok := a.userID(c)
-	if !ok {
-		return
-	}
-	page, pageSize, ok := readPaging(c)
-	if !ok {
-		return
-	}
-	rows := []struct {
-		RequestID   string        `gorm:"column:request_id" json:"request_id"`
-		AmountCents int64         `gorm:"column:amount_cents" json:"amount_cents"`
-		Reason      *string       `gorm:"column:reason" json:"reason"`
-		CreatedAt   time.Time     `gorm:"column:created_at" json:"created_at"`
-		Review      *refundReview `json:"review" gorm:"-"`
-	}{}
-	// 退款申请本身只是一条申领，
-	// 运营的裁决在 wallet_risk_review 行上，所以两者分开读取。
-	if err := a.UserDB.WithContext(c.Request.Context()).Table("wallet_refund_request").
-		Where("wallet_refund_request.user_id = ?", userID).
-		Order("created_at DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&rows).Error; err != nil {
-		httpapi.Write(c, 503, 5003, "退款记录暂时无法读取", nil)
-		return
-	}
-	if len(rows) > 0 {
-		ids := make([]string, 0, len(rows))
-		for _, row := range rows {
-			ids = append(ids, row.RequestID)
-		}
-		var reviews []struct {
-			RequestID string  `gorm:"column:request_id"`
-			Status    string  `gorm:"column:status"`
-			Comment   *string `gorm:"column:comment"`
-		}
-		if err := a.UserDB.WithContext(c.Request.Context()).Table("wallet_risk_review").
-			Where("request_id IN ?", ids).Find(&reviews).Error; err == nil {
-			byRequest := map[string]struct {
-				Status  string
-				Comment *string
-			}{}
-			for _, review := range reviews {
-				byRequest[review.RequestID] = struct {
-					Status  string
-					Comment *string
-				}{review.Status, review.Comment}
+	canPay := order.Status == "initiated" && order.ExpiredAt.Valid && order.ExpiredAt.Time.After(time.Now())
+	response := gin.H{"request_id": in.RequestID, "payment_order_id": order.ID, "merchant_order_no": order.OrderNo, "amount_cents": order.TotalCents, "status": order.Status, "can_pay": canPay}
+	if canPay {
+		var stored ChargePrepayRecord
+		var params payment.PrepayParams
+		err := a.UserDB.WithContext(ctx).Where("payment_order_id=?", order.ID).Take(&stored).Error
+		if err == nil {
+			err = json.Unmarshal(stored.ParamsJSON, &params)
+		} else if errors.Is(err, gorm.ErrRecordNotFound) {
+			if a.Prepay == nil {
+				httpapi.Write(c, 503, 5003, "支付渠道未配置", nil)
+				return
 			}
-			for i := range rows {
-				if review, present := byRequest[rows[i].RequestID]; present {
-					rows[i].Review = &refundReview{review.Status, review.Comment}
+			params, err = a.Prepay.Prepay(ctx, payment.PrepayRequest{MerchantOrderNo: order.OrderNo, OpenID: openid, AmountCents: order.TotalCents, ExpiresAt: order.ExpiredAt.Time})
+			if err == nil {
+				encoded, _ := json.Marshal(params)
+				stored = ChargePrepayRecord{PaymentOrderID: order.ID, ParamsJSON: encoded, PrepayID: sql.NullString{String: params.PrepayID, Valid: params.PrepayID != ""}}
+				err = a.UserDB.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&stored).Error
+				if err == nil {
+					err = a.UserDB.WithContext(ctx).Where("payment_order_id=?", order.ID).Take(&stored).Error
+				}
+				if err == nil {
+					err = json.Unmarshal(stored.ParamsJSON, &params)
 				}
 			}
 		}
+		if err != nil {
+			httpapi.Write(c, 503, 5003, "支付渠道暂不可用，请重试同一充值单", nil)
+			return
+		}
+		response["payment_params"] = params
 	}
-	total := int64(len(rows))
-	httpapi.OK(c, gin.H{"items": rows, "total": total, "page": page, "page_size": pageSize})
+	httpapi.OK(c, response)
 }
 
-// walletRefund 针对钱包余额提交一笔申领。
-// 钱立刻被冻结，
-// 以免它同时又被拿去充电；真正打款要等运营批准风控复核之后。
 func (a UserAccountAPI) walletRefund(c *gin.Context) {
-	userID, ok := a.userID(c)
+	user, ok := a.userID(c)
 	if !ok {
 		return
 	}
@@ -347,37 +286,39 @@ func (a UserAccountAPI) walletRefund(c *gin.Context) {
 		AmountCents int64  `json:"amount_cents"`
 		Reason      string `json:"reason"`
 	}
-	if c.ShouldBindJSON(&in) != nil {
-		httpapi.BadRequest(c, "退款申请无效")
+	if c.ShouldBindJSON(&in) != nil || uuid.Validate(in.RequestID) != nil || in.AmountCents <= 0 || in.AmountCents > 5000000 || len([]rune(in.Reason)) > 255 {
+		httpapi.BadRequest(c, "退款金额、原因或请求号无效")
 		return
 	}
-	if uuid.Validate(in.RequestID) != nil {
-		httpapi.BadRequest(c, "请提供 UUID 格式的请求号")
-		return
-	}
-	reason := strings.TrimSpace(in.Reason)
-	if in.AmountCents <= 0 || in.AmountCents > 5000000 || reason == "" || len([]rune(reason)) > 255 {
-		httpapi.BadRequest(c, "退款金额或原因无效")
-		return
-	}
-	ctx := c.Request.Context()
-	err := a.UserDB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var prior struct {
-			RequestID string `gorm:"column:request_id"`
-		}
-		if found := tx.Table("wallet_refund_request").Where("request_id = ?", in.RequestID).Take(&prior); found.Error == nil {
-			return nil
-		} else if !errors.Is(found.Error, gorm.ErrRecordNotFound) {
-			return found.Error
-		}
+	in.Reason = strings.TrimSpace(in.Reason)
+	var response map[string]any
+	err := a.UserDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
 		var wallet struct {
-			ID           uint64 `gorm:"column:id"`
-			BalanceCents int64  `gorm:"column:balance_cents"`
-			FrozenCents  int64  `gorm:"column:frozen_cents"`
-			Status       string `gorm:"column:status"`
+			ID                        uint64
+			BalanceCents, FrozenCents int64
+			Status                    string
 		}
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Table("wallet_account").
-			Where("user_id = ? AND deleted_at IS NULL", userID).Take(&wallet).Error; err != nil {
+		if err := tx.Table("wallet_account").Clauses(clause.Locking{Strength: "UPDATE"}).Where("user_id=? AND deleted_at IS NULL", user).Take(&wallet).Error; err != nil {
+			return err
+		}
+		var prior struct {
+			UserID       uint64
+			AmountCents  int64
+			Reason       *string
+			ResponseJSON string
+		}
+		err := tx.Table("wallet_refund_request").Where("request_id=?", in.RequestID).Take(&prior).Error
+		if err == nil {
+			reason := ""
+			if prior.Reason != nil {
+				reason = *prior.Reason
+			}
+			if prior.UserID != user || prior.AmountCents != in.AmountCents || reason != in.Reason {
+				return ErrRefundConflict
+			}
+			return json.Unmarshal([]byte(prior.ResponseJSON), &response)
+		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return err
 		}
 		if wallet.Status != "active" {
@@ -386,30 +327,132 @@ func (a UserAccountAPI) walletRefund(c *gin.Context) {
 		if wallet.BalanceCents-wallet.FrozenCents < in.AmountCents {
 			return ErrInsufficientBalance
 		}
-		if err := tx.Table("wallet_account").Where("id = ?", wallet.ID).
-			Updates(map[string]any{"frozen_cents": wallet.FrozenCents + in.AmountCents}).Error; err != nil {
+		if err := tx.Table("wallet_refund_request").Create(map[string]any{"request_id": in.RequestID, "user_id": user, "amount_cents": in.AmountCents, "reason": in.Reason}).Error; err != nil {
 			return err
 		}
-		if err := tx.Table("wallet_refund_request").Create(map[string]any{
-			"request_id": in.RequestID, "user_id": userID, "amount_cents": in.AmountCents, "reason": reason,
-		}).Error; err != nil {
+		var count int64
+		if err := tx.Table("wallet_refund_request").Where("user_id=? AND created_at>=?", user, time.Now().UTC().Add(-5*time.Minute)).Count(&count).Error; err != nil {
 			return err
 		}
-		// 分账行以打款记录为键，
-		// 所以等运营批准、钱真的出去时才写；
-		// 在这里就申领会凭空造出一笔还不存在的退款记录。
-		return nil
+		status := "accepted"
+		if count >= 3 {
+			status = "manual_review"
+			if err := tx.Table("risk_freeze_log").Create(map[string]any{"user_id": user, "trigger_rule": "wallet_refund_frequency", "frozen_action": "wallet"}).Error; err != nil {
+				return err
+			}
+			var id uint64
+			if err := tx.Raw("SELECT LAST_INSERT_ID()").Scan(&id).Error; err != nil {
+				return err
+			}
+			if err := tx.Table("wallet_risk_freeze_link").Create(map[string]any{"request_id": in.RequestID, "freeze_id": id}).Error; err != nil {
+				return err
+			}
+			if err := tx.Table("wallet_account").Where("id=?", wallet.ID).Updates(map[string]any{"status": "frozen", "version": gorm.Expr("version+1")}).Error; err != nil {
+				return err
+			}
+		} else if err := ReserveWalletRefund(tx, WalletRefundReservation{RequestID: in.RequestID, UserID: user, AmountCents: in.AmountCents, Reason: in.Reason}); err != nil {
+			return err
+		}
+		response = map[string]any{"request_id": in.RequestID, "status": status, "refund_cents": in.AmountCents}
+		b, _ := json.Marshal(response)
+		return tx.Table("wallet_refund_request").Where("request_id=?", in.RequestID).Update("response_json", string(b)).Error
 	})
 	switch {
 	case errors.Is(err, ErrInsufficientBalance):
 		httpapi.Write(c, 409, 2009, "可用余额不足", nil)
+	case errors.Is(err, ErrRefundConflict):
+		httpapi.Write(c, 409, 2009, "申请冲突或原充值可退额度不足", nil)
 	case errors.Is(err, errWalletFrozen):
-		httpapi.Write(c, 409, 2009, "钱包已被冻结，无法申请退款", nil)
+		httpapi.Write(c, 409, 2009, "钱包已冻结，请等待审核", nil)
 	case err != nil:
 		resourceWriteFailure(c, err)
 	default:
-		httpapi.OK(c, gin.H{"request_id": in.RequestID, "review_status": "pending", "reserved_cents": in.AmountCents})
+		httpapi.OK(c, response)
 	}
+}
+
+func (a UserAccountAPI) walletRefunds(c *gin.Context) {
+	user, ok := a.userID(c)
+	if !ok {
+		return
+	}
+	page, size, ok := readPaging(c)
+	if !ok {
+		return
+	}
+	q := a.UserDB.WithContext(c.Request.Context()).Table("wallet_refund_request").Where("user_id=?", user)
+	var total int64
+	if err := q.Session(&gorm.Session{}).Count(&total).Error; err != nil {
+		resourceWriteFailure(c, err)
+		return
+	}
+	rows := []struct {
+		RequestID   string
+		AmountCents int64
+		Reason      *string
+		CreatedAt   time.Time
+	}{}
+	if err := q.Order("created_at DESC,request_id").Offset((page - 1) * size).Limit(size).Find(&rows).Error; err != nil {
+		resourceWriteFailure(c, err)
+		return
+	}
+	items := []gin.H{}
+	for _, row := range rows {
+		parts := []struct {
+			RefundNo      string     `json:"refund_no"`
+			RefundCents   int64      `json:"refund_cents"`
+			Status        string     `json:"status"`
+			FailureReason *string    `json:"failure_reason"`
+			CompletedAt   *time.Time `json:"completed_at"`
+		}{}
+		if err := a.UserDB.WithContext(c.Request.Context()).Table("wallet_refund_part p").Select("r.refund_no,r.refund_cents,r.status,r.failure_reason,r.completed_at").Joins("JOIN refund_record r ON r.id=p.refund_record_id").Where("p.request_id=?", row.RequestID).Order("r.id").Find(&parts).Error; err != nil {
+			resourceWriteFailure(c, err)
+			return
+		}
+		status := "pending"
+		var refunded int64
+		for _, part := range parts {
+			switch part.Status {
+			case "success":
+				refunded += part.RefundCents
+			case "failed", "needs_review":
+				status = "needs_review"
+			case "processing":
+				if status != "needs_review" {
+					status = "processing"
+				}
+			}
+		}
+		if refunded == row.AmountCents {
+			status = "success"
+		}
+		var review struct {
+			Approved bool   `json:"approved"`
+			Comment  string `json:"comment"`
+			ActorID  uint64 `json:"actor_id"`
+		}
+		reviewErr := a.UserDB.WithContext(c.Request.Context()).Table("wallet_risk_review").Where("request_id=?", row.RequestID).Take(&review).Error
+		if reviewErr != nil && !errors.Is(reviewErr, gorm.ErrRecordNotFound) {
+			resourceWriteFailure(c, reviewErr)
+			return
+		}
+		var linked int64
+		if err := a.UserDB.WithContext(c.Request.Context()).Table("wallet_risk_freeze_link").Where("request_id=?", row.RequestID).Count(&linked).Error; err != nil {
+			resourceWriteFailure(c, err)
+			return
+		}
+		if linked > 0 && errors.Is(reviewErr, gorm.ErrRecordNotFound) {
+			status = "manual_review"
+		} else if reviewErr == nil && !review.Approved {
+			status = "rejected"
+		}
+		item := gin.H{"request_id": row.RequestID, "amount_cents": row.AmountCents, "refunded_cents": refunded, "status": status, "reason": row.Reason, "created_at": row.CreatedAt, "refund_orders": parts}
+		if reviewErr == nil {
+			item["review"] = review
+		}
+		items = append(items, item)
+	}
+	httpapi.OK(c, gin.H{"user_id": strconv.FormatUint(user, 10), "items": items, "total": total, "page": page, "page_size": size})
 }
 
 // ---- 优惠券 ----
@@ -417,6 +460,15 @@ func (a UserAccountAPI) walletRefund(c *gin.Context) {
 func (a UserAccountAPI) myCoupons(c *gin.Context) {
 	userID, ok := a.userID(c)
 	if !ok {
+		return
+	}
+	page, size, ok := readPaging(c)
+	if !ok {
+		return
+	}
+	status := c.Query("status")
+	if status != "" && !oneOfStatus(status, "unused used expired") {
+		httpapi.BadRequest(c, "优惠券状态无效")
 		return
 	}
 	rows := []CouponGrant{}
@@ -433,6 +485,12 @@ func (a UserAccountAPI) myCoupons(c *gin.Context) {
 	now := time.Now().UTC()
 	out := []gin.H{}
 	for _, row := range rows {
+		if row.Status == "unused" && !row.ExpiresAt.After(now) {
+			row.Status = "expired"
+		}
+		if status != "" && row.Status != status {
+			continue
+		}
 		usable := row.Status == "unused" && row.ExpiresAt.After(now)
 		if onlyUsable && !usable {
 			continue
@@ -441,10 +499,13 @@ func (a UserAccountAPI) myCoupons(c *gin.Context) {
 			"coupon_id": row.CouponID, "name": row.Name, "grant_id": row.GrantID,
 			"discount_type": row.Type, "discount_value_cents": row.Amount,
 			"discount_percent": row.Percent, "min_charge_cents": row.MinCharge,
-			"status": row.Status, "expires_at": row.ExpiresAt, "usable": usable,
+			"status": row.Status, "expired_at": row.ExpiresAt, "expires_at": row.ExpiresAt, "usable": usable,
 		})
 	}
-	httpapi.OK(c, gin.H{"items": out, "count": len(out)})
+	total := len(out)
+	start := min((page-1)*size, total)
+	end := min(start+size, total)
+	httpapi.OK(c, gin.H{"items": out[start:end], "count": total, "total": total, "page": page, "page_size": size})
 }
 
 // ---- 公告与客服 ----
@@ -529,6 +590,15 @@ func (a UserAccountAPI) nearbyStations(c *gin.Context) {
 	if !ok {
 		return
 	}
+	radius := 50.0
+	if raw := c.Query("radius_km"); raw != "" {
+		var err error
+		radius, err = strconv.ParseFloat(raw, 64)
+		if err != nil || math.IsNaN(radius) || math.IsInf(radius, 0) || radius < 1 || radius > 50 {
+			httpapi.BadRequest(c, "搜索半径须为1至50公里")
+			return
+		}
+	}
 	ctx := c.Request.Context()
 	type station struct {
 		ID         uint64   `gorm:"column:id"`
@@ -544,16 +614,16 @@ func (a UserAccountAPI) nearbyStations(c *gin.Context) {
 	// 这样排序和分页都发生在结果被截断之前。
 	rows := []station{}
 	err := a.AdminDB.WithContext(ctx).Raw(`
-		SELECT id, name, address,
+		SELECT * FROM (SELECT id, name, address,
 		       CAST(longitude AS CHAR) AS longitude, CAST(latitude AS CHAR) AS latitude,
 		       status, contact_phone,
 		       ROUND(6371 * ACOS(LEAST(1, COS(RADIANS(?)) * COS(RADIANS(latitude)) * COS(RADIANS(longitude) - RADIANS(?))
 		         + SIN(RADIANS(?)) * SIN(RADIANS(latitude)))), 3) AS distance_km
 		FROM station
-		WHERE deleted_at IS NULL AND status = 'active'
+		WHERE deleted_at IS NULL AND status = 'active') nearby WHERE distance_km <= ?
 		ORDER BY distance_km ASC, id ASC
 		LIMIT ? OFFSET ?`,
-		latitude, longitude, latitude, pageSize*4, (page-1)*pageSize).Scan(&rows).Error
+		latitude, longitude, latitude, radius, pageSize, (page-1)*pageSize).Scan(&rows).Error
 	if err != nil {
 		httpapi.Write(c, 503, 5003, "站点暂时无法读取", nil)
 		return
@@ -624,6 +694,22 @@ func (a UserAccountAPI) bindPhone(c *gin.Context) {
 		httpapi.BadRequest(c, "手机号请求无效")
 		return
 	}
+	if !a.DevelopmentPhone {
+		if in.Code == "" || in.Phone != "" {
+			httpapi.BadRequest(c, "请使用微信手机号授权凭证")
+			return
+		}
+		if a.PhoneExchange == nil {
+			httpapi.Write(c, 503, 5003, "手机号授权暂不可用", nil)
+			return
+		}
+		phone, err := a.PhoneExchange(c.Request.Context(), in.Code)
+		if err != nil {
+			httpapi.Write(c, 400, 1004, "手机号授权失败，请重新授权", nil)
+			return
+		}
+		in.Phone = phone
+	}
 	if !phonecrypto.Valid(in.Phone) {
 		httpapi.BadRequest(c, "请输入有效的中国大陆手机号")
 		return
@@ -673,7 +759,7 @@ func (a UserAccountAPI) unbindPhone(c *gin.Context) {
 		resourceWriteFailure(c, err)
 		return
 	}
-	httpapi.OK(c, gin.H{"bound": false})
+	httpapi.OK(c, gin.H{"bound": false, "unbound": true})
 }
 
 // ---- 报修 ----

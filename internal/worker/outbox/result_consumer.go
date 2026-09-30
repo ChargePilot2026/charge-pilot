@@ -72,7 +72,7 @@ func (c ResultConsumer) ConsumeOnce(ctx context.Context) (int, error) {
 	group := c.consumerGroup()
 	processed, firstErr := 0, error(nil)
 	for _, stream := range c.streams() {
-		if err := c.Stream.XGroupCreateMkStream(ctx, stream, group, "$").Err(); err != nil && !isBusyGroup(err) {
+		if err := c.Stream.XGroupCreateMkStream(ctx, stream, group, "0").Err(); err != nil && !isBusyGroup(err) {
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -80,6 +80,9 @@ func (c ResultConsumer) ConsumeOnce(ctx context.Context) (int, error) {
 		}
 		batches, err := c.Stream.XReadGroup(ctx, &redis.XReadGroupArgs{
 			Group: group, Consumer: group, Streams: append([]string{stream}, ">"), Count: int64(c.batchSize()),
+			// go-redis's default zero sends BLOCK 0 (wait forever). This
+			// scheduled batch must return when empty so billing/refunds run again.
+			Block: -1,
 		}).Result()
 		if errors.Is(err, redis.Nil) {
 			continue

@@ -135,12 +135,40 @@ func (a UserQueryAPI) snapshot(c *gin.Context) {
 		httpapi.Write(c, 503, 5003, "订单方案及确认状态暂不可读取", nil)
 		return
 	}
-	var port struct {
-		Data any `json:"data"`
-	}
-	if err := a.Gateway.GetJSON(c.Request.Context(), a.GatewayURL, a.ServiceToken,
-		"/api/v1/internal/devices/"+order.DeviceID+"/ports/"+fmt.Sprint(order.PortNo), &port); err == nil {
-		payload["port"] = port.Data
+	payload["telemetry_available"] = false
+	if order.Status == "charging" && order.StartedAt.Valid {
+		now := time.Now().UTC()
+		payload["elapsed_seconds"] = max(int64(0), int64(now.Sub(order.StartedAt.Time).Seconds()))
+		from := now.Add(-2 * time.Minute)
+		if order.StartedAt.Time.After(from) {
+			from = order.StartedAt.Time
+		}
+		var telemetry gatewayTelemetry
+		path := fmt.Sprintf("/api/v1/internal/devices/%s/telemetry?port_no=%d&from=%s&to=%s", url.PathEscape(order.DeviceID), order.PortNo, url.QueryEscape(from.Format(time.RFC3339Nano)), url.QueryEscape(now.Format(time.RFC3339Nano)))
+		if err := a.Gateway.GetJSON(ctx, a.GatewayURL, a.ServiceToken, path, &telemetry); err == nil {
+			for _, point := range telemetry.Data.Series {
+				ts, err := time.Parse(time.RFC3339Nano, point.TS)
+				if err != nil || ts.Before(from) || ts.After(now) {
+					continue
+				}
+				if point.PowerW != nil || point.MeterKWh != nil {
+					payload["telemetry_available"] = true
+				}
+				payload["telemetry_at"] = ts
+				if point.PowerW != nil {
+					payload["current_power_w"] = *point.PowerW
+				}
+				if point.VoltageV != nil {
+					payload["voltage_v"] = *point.VoltageV
+				}
+				if point.TemperatureC != nil {
+					payload["temperature_c"] = *point.TemperatureC
+				}
+				if point.MeterKWh != nil {
+					payload["charged_kwh"] = *point.MeterKWh
+				}
+			}
+		}
 	}
 	httpapi.OK(c, payload)
 }
@@ -184,8 +212,8 @@ func (a UserQueryAPI) curve(c *gin.Context) {
 	// 那边的故障就如实报出来，而不是被抹平成一条空曲线。
 	var telemetry gatewayTelemetry
 	if err := a.Gateway.GetJSON(ctx, a.GatewayURL, a.ServiceToken,
-		fmt.Sprintf("/api/v1/internal/devices/%s/telemetry?from=%s&to=%s",
-			order.DeviceID, window.From.UTC().Format(time.RFC3339), time.Now().UTC().Format(time.RFC3339)),
+		fmt.Sprintf("/api/v1/internal/devices/%s/telemetry?port_no=%d&from=%s&to=%s",
+			url.PathEscape(order.DeviceID), order.PortNo, window.From.UTC().Format(time.RFC3339), time.Now().UTC().Format(time.RFC3339)),
 		&telemetry); err != nil {
 		httpapi.Write(c, 503, 5003, "充电曲线暂时无法读取，请稍后重试", nil)
 		return

@@ -76,6 +76,15 @@ func (d WebhookDeliverer) PublishBatch(ctx context.Context) (int, error) {
 	if d.AdminDB == nil || d.Stream == nil {
 		return 0, errors.New("webhook deliverer is not configured")
 	}
+	// No active subscriptions means no delivery work. Leave shared streams
+	// untouched for their business consumers and future subscriptions.
+	var active int64
+	if err := d.AdminDB.WithContext(ctx).Table("webhook_subscription").Where("enabled=1 AND deleted_at IS NULL").Count(&active).Error; err != nil {
+		return 0, err
+	}
+	if active == 0 {
+		return 0, nil
+	}
 	streams, err := d.streams(ctx)
 	if err != nil {
 		return 0, err
