@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
-import { Alert, Button, Collapse, Descriptions, Divider, Dropdown, Form, Input, InputNumber, Modal, Select, Space, Spin, Steps, Switch, Table, Tag, message } from 'antd';
+import { Alert, Button, Collapse, Descriptions, Divider, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Spin, Steps, Switch, Table, Tag, message } from 'antd';
 import { apiGet, apiPost, apiPut } from '../api/client';
 import { LoadError } from '../components/LoadError';
 import PeriodTimeInput from './pricing/PeriodTimeInput';
+import PricingPreview, { type PreviewDraft } from './pricing/PricingPreview';
 import {
   DEFAULT_DISPLAY, MODE_META, MODE_OPTIONS, SERVICE_OPTIONS, blankPeriod, describeDisplay, describeSpec, defaultSpecForm,
   canInsertTier, clockToMinute, convertLegacyPowerForm, effectiveTierElectricCents, formToSpec, insertTier, isLegacyPowerPricing, isServerBilled, minuteToClock, modeLabel, removePeriod, removeTier,
@@ -34,6 +35,7 @@ export default function PricingTemplates() {
   const [timeErrors, setTimeErrors] = useState<Record<number, string>>({});
   const [periodAction, setPeriodAction] = useState<{ key: number; kind: 'split' | 'delete'; time: string } | null>(null);
   const [splitError, setSplitError] = useState('');
+  const [previewDraft, setPreviewDraft] = useState<PreviewDraft | null>(null);
 
   const [viewing, setViewing] = useState<Template | null>(null);
   const [viewError, setViewError] = useState<string | null>(null);
@@ -51,11 +53,11 @@ export default function PricingTemplates() {
   const [scopeDevices, setScopeDevices] = useState<ScopeDevice[]>([]);
 
   const [form] = Form.useForm();
-  const mode = Form.useWatch<ChargeMode>('mode', form) || 'server_realtime_power';
-  const serviceBasis = Form.useWatch<string>('service_basis', form) || 'none';
+  const mode = Form.useWatch<ChargeMode>('mode', { form, preserve: true }) || 'server_realtime_power';
+  const serviceBasis = Form.useWatch<string>('service_basis', { form, preserve: true }) || 'none';
   const tierPriceBasis = Form.useWatch<SpecForm['tier_price_basis']>('tier_price_basis', { form, preserve: true }) || 'per_kwh';
-  const multiplierOn = !!Form.useWatch('multiplier_on', form);
-  const showFeeSplit = !!Form.useWatch(['display', 'show_fee_split'], form);
+  const multiplierOn = !!Form.useWatch('multiplier_on', { form, preserve: true });
+  const showFeeSplit = !!Form.useWatch(['display', 'show_fee_split'], { form, preserve: true });
   // preserve 必须为 true：默认取值走 getFieldsValue()，那份对象只由「已挂载的
   // Form.Item」拼出来。periods 的长度决定了要渲染几张时段卡片，于是形成死锁——
   // 新增的第二段没有卡片就没有字段注册，没有注册 useWatch 就只还回第一段，
@@ -288,7 +290,7 @@ export default function PricingTemplates() {
   };
 
   const stepOne = (
-    <Form form={form} name="pricing_mode" layout="vertical">
+    <>
       <Space align="start" wrap>
         <Form.Item name="name" label="模板名称" rules={[{ required: true, whitespace: true, max: 64 }]}>
           <Input maxLength={64} placeholder="如：二轮标准梯度价" style={{ width: 240 }} />
@@ -305,7 +307,7 @@ export default function PricingTemplates() {
         />
       </Form.Item>
       <Alert type="info" showIcon message={MODE_META[mode]?.hint} />
-    </Form>
+    </>
   );
 
   const renderPeriods = () => {
@@ -335,7 +337,7 @@ export default function PricingTemplates() {
         const endError = timeErrors[field.key];
         const closeAction = () => { setPeriodAction(null); setSplitError(''); };
         const tiers = period.tiers || [];
-        const insertionPositions = [tiers.length, ...tiers.map((_, i) => i)].filter(at => canInsertTier(tiers, at));
+        const canAppendTier = canInsertTier(tiers, tiers.length);
         const tierEditor = <div className="pricing-tier-editor">
           <div className="pricing-tier-heading"><strong>功率档位 · {tiers.length} 档</strong>
             <span>{serviceBasis === 'minute_power' ? '电费与服务费一起填写' : '填写各档电费单价'}</span></div>
@@ -368,16 +370,11 @@ export default function PricingTemplates() {
             </table>
           </div>
           <div className="pricing-tier-footer">
-            <Dropdown trigger={['click']} menu={{
-              items: insertionPositions.map(at => ({ key: String(at), label: at === tiers.length ? '在末尾追加' : at === 0 ? '在第 1 档前插入' : `在第 ${at} 档后插入` })),
-              onClick: ({ key }) => {
-                const current: TierForm[] = form.getFieldValue(['periods', pi, 'tiers']) || [];
-                if (canInsertTier(current, Number(key))) setTiers(pi, insertTier(current, Number(key)));
-              },
-            }} disabled={legacyPricing || !insertionPositions.length}>
-              <Button disabled={legacyPricing || !insertionPositions.length}>＋ 新增档位 ▾</Button>
-            </Dropdown>
-            <span className="pricing-period-hint">{tiers.length >= 8 ? '已达到 8 档上限。' : !insertionPositions.length ? '请先填写有效的递增上限，并留出新增范围。' : '只填上限，下限自动衔接；新增保留已有费率。最多 8 档，最高 9990 瓦。'}</span>
+            <Button disabled={legacyPricing || !canAppendTier} onClick={() => {
+              const current: TierForm[] = form.getFieldValue(['periods', pi, 'tiers']) || [];
+              if (canInsertTier(current, current.length)) setTiers(pi, insertTier(current, current.length));
+            }}>＋ 新增档位</Button>
+            <span className="pricing-period-hint">{tiers.length >= 8 ? '已达到 8 档上限。' : !canAppendTier ? '请先填写有效的递增上限，并在末档之后留出新增范围。' : '新增档位追加至尾部，保留已有费率。只填上限，下限自动衔接。最多 8 档，最高 9990 瓦。'}</span>
           </div>
         </div>;
         return <div key={field.key} className="pricing-period-item">
@@ -397,23 +394,39 @@ export default function PricingTemplates() {
               <InputNumber min={0} max={10000} step={0.01} precision={2} addonBefore="¥" style={{ width: '100%' }} />
             </Form.Item>}
             <Space className="pricing-period-actions" wrap>
-              <Button type="link" disabled={list.length >= 48 || duration < 2 || hasTimeErrors} onClick={() => {
-                const minute = suggestedSplitMinute(form.getFieldValue('periods'), pi);
-                if (minute === undefined) return;
-                setPeriodAction({ key: field.key, kind: 'split', time: minuteToClock(minute) }); setSplitError('');
-              }}>拆分此时段</Button>
-              <Button type="link" danger disabled={list.length <= 1 || hasTimeErrors} onClick={() => {
-                setPeriodAction({ key: field.key, kind: 'delete', time: '' }); setSplitError('');
-              }}>删除时段</Button>
-            </Space>
-          </div>
-          {activeAction && <div className="pricing-period-confirm">
-            {activeAction.kind === 'split' ? <>
-              <label htmlFor={`period-split-${field.key}`}>拆分时间</label>
-              <Space wrap>
-                <Input id={`period-split-${field.key}`} aria-label="拆分时间" value={activeAction.time} placeholder="HH:mm" maxLength={5} style={{ width: 120 }} status={splitError ? 'error' : undefined}
-                  onChange={e => { setPeriodAction({ ...activeAction, time: e.target.value }); setSplitError(''); }} />
-                <Button type="primary" disabled={hasTimeErrors} onClick={() => {
+              <Popconfirm title={`拆分第 ${pi + 1} 段时段`}
+                open={activeAction?.kind === 'split'}
+                disabled={list.length >= 48 || duration < 2 || hasTimeErrors}
+                okText="确认拆分" cancelText="取消"
+                okButtonProps={{ disabled: hasTimeErrors || !!splitError }}
+                description={<div style={{ maxWidth: 320 }}>
+                  <label htmlFor={`period-split-${field.key}`}>拆分时间</label>
+                  <div>
+                    <Input id={`period-split-${field.key}`} aria-label="拆分时间" value={activeAction?.kind === 'split' ? activeAction.time : ''} placeholder="HH:mm" maxLength={5} style={{ width: 120 }} status={splitError ? 'error' : undefined}
+                      onChange={e => {
+                        if (activeAction?.kind !== 'split') return;
+                        const time = e.target.value;
+                        setPeriodAction({ ...activeAction, time });
+                        try {
+                          const minute = clockToMinute(time.trim());
+                          if (minute === undefined) throw new Error('请输入有效时间，例如 08:00。');
+                          splitPeriod(form.getFieldValue('periods'), pi, minute);
+                          setSplitError('');
+                        } catch (error) { setSplitError(error instanceof Error ? error.message : '拆分时间无效。'); }
+                      }} />
+                  </div>
+                  <div className="pricing-period-hint">新时段复制本段全部费率，你可以继续修改。</div>
+                  {splitError && <div className="pricing-time-error" role="alert">{splitError}</div>}
+                </div>}
+                onOpenChange={visible => {
+                  if (visible) {
+                    const minute = suggestedSplitMinute(form.getFieldValue('periods'), pi);
+                    if (minute === undefined) return;
+                    setPeriodAction({ key: field.key, kind: 'split', time: minuteToClock(minute) }); setSplitError('');
+                  } else if (activeAction?.kind === 'split') closeAction();
+                }}
+                onConfirm={() => {
+                  if (activeAction?.kind !== 'split' || hasTimeErrors || splitError) return;
                   const minute = clockToMinute(activeAction.time.trim());
                   try {
                     if (minute === undefined) throw new Error('请输入有效时间，例如 08:00。');
@@ -423,22 +436,31 @@ export default function PricingTemplates() {
                     closeAction(); setLocalErrors([]); setFormError('');
                     requestAnimationFrame(() => form.scrollToField(['periods', pi + 1, 'end_minute'], { focus: true, block: 'nearest' }));
                   } catch (error) { setSplitError(error instanceof Error ? error.message : '拆分时间无效。'); }
-                }}>确认拆分</Button>
-                <Button onClick={closeAction}>取消</Button>
-              </Space>
-              <div className="pricing-period-hint">新时段复制本段全部费率，你可以继续修改。</div>
-              {splitError && <div className="pricing-time-error" role="alert">{splitError}</div>}
-            </> : <>
-              <div>{isLast ? `删除后，第 ${pi} 段将延长至 24:00，使用第 ${pi} 段费率。`
-                : `删除后，第 ${pi + 2} 段将从 ${minuteToClock(startMinute)} 开始，使用第 ${pi + 2} 段费率。`}</div>
-              <Space><Button danger disabled={hasTimeErrors} onClick={() => {
-                const next = removePeriod(form.getFieldValue('periods'), pi);
-                remove(pi);
-                form.setFieldValue(['periods', next.length - 1, 'end_minute'], next[next.length - 1].end_minute);
-                closeAction(); setLocalErrors([]); setFormError('');
-              }}>确认删除</Button><Button onClick={closeAction}>取消</Button></Space>
-            </>}
-          </div>}
+                }}>
+                <Button type="link" disabled={list.length >= 48 || duration < 2 || hasTimeErrors}>拆分此时段</Button>
+              </Popconfirm>
+              <Popconfirm title={`删除第 ${pi + 1} 段时段？`}
+                description={isLast ? `删除后，第 ${pi} 段将延长至 24:00，使用第 ${pi} 段费率。`
+                  : `删除后，第 ${pi + 2} 段将从 ${minuteToClock(startMinute)} 开始，使用第 ${pi + 2} 段费率。`}
+                open={activeAction?.kind === 'delete'}
+                disabled={list.length <= 1 || hasTimeErrors}
+                okText="确认删除" cancelText="取消" okButtonProps={{ danger: true, disabled: hasTimeErrors }}
+                onOpenChange={visible => {
+                  if (visible) {
+                    setPeriodAction({ key: field.key, kind: 'delete', time: '' }); setSplitError('');
+                  } else if (activeAction?.kind === 'delete') closeAction();
+                }}
+                onConfirm={() => {
+                  if (hasTimeErrors || list.length <= 1) return;
+                  const next = removePeriod(form.getFieldValue('periods'), pi);
+                  remove(pi);
+                  form.setFieldValue(['periods', next.length - 1, 'end_minute'], next[next.length - 1].end_minute);
+                  closeAction(); setLocalErrors([]); setFormError('');
+                }}>
+                <Button type="link" danger disabled={list.length <= 1 || hasTimeErrors}>删除时段</Button>
+              </Popconfirm>
+            </Space>
+          </div>
           {!energyBasis && tierEditor}
           {endError && <span className="pricing-period-hint">覆盖预览仍显示上一次有效时间。</span>}
         </div>;
@@ -447,8 +469,27 @@ export default function PricingTemplates() {
     </>;
   };
 
+  const preview = async () => {
+    if (periodAction || Object.keys(timeErrors).length) {
+      setFormError('请先完成当前时段操作并修正时间，再预览方案。'); return;
+    }
+    try {
+      await form.validateFields(form.getFieldsError().map(field => field.name).filter(name => name[0] !== 'name' && name[0] !== 'remark'));
+    } catch (error: any) {
+      setLocalErrors((error.errorFields || []).flatMap((field: { errors: string[] }) => field.errors));
+      setFormError('请完善填写内容后再预览，可返回对应步骤修改。'); return;
+    }
+    const values = form.getFieldsValue(true);
+    const specForm: SpecForm = { ...specToForm({ mode }), ...values, mode, service_basis: serviceBasis, tier_price_basis: tierPriceBasis, periods };
+    const errors = validateSpecForm(specForm);
+    setLocalErrors(errors);
+    if (errors.length) { setFormError('请完善费率配置后再预览。'); return; }
+    setFormError('');
+    setPreviewDraft({ name: values.name || '', spec: formToSpec(specForm), display: values.display || DEFAULT_DISPLAY });
+  };
+
   const stepTwo = (
-    <Form form={form} name="pricing_spec" layout="vertical">
+    <>
       {server ? <>
         {legacyPricing && <Alert type="warning" showIcon style={{ marginBottom: 12 }} message="这是旧版电价，请先转换后编辑"
           description="下表列出原填写值与实际等效电价。转换将沿用原实际收费水平，不按“元/小时”的旧文字重新定价。保存只更新模板，已应用的站点规则和历史订单保持原样。"
@@ -464,9 +505,6 @@ export default function PricingTemplates() {
         <div className="pricing-billing-controls" role="region" aria-label="收费口径与服务费">
           <div className="pricing-billing-title"><strong>电费怎么收</strong><Tag color="blue">{mode === 'server_max_power' ? '按最高功率分档 · 元/小时' : energyBasis ? '统一电价 · 元/度' : '按实时功率分档 · 元/度'}</Tag></div>
           <div className="pricing-billing-explanation">{MODE_META[mode].hint}</div>
-          {!legacyPricing && <div className="pricing-billing-example">{mode === 'server_max_power'
-            ? '电费示例：最高功率 200 瓦，所在档位 1 元/小时，充电 1 小时 → 电费 1.00 元。'
-            : '电费示例：200 瓦充电 1 小时，用电 0.2 度；电价 1 元/度 → 电费 0.20 元。'}</div>}
           <Divider style={{ margin: '12px 0' }} />
           <div className="pricing-billing-fields">
             <Form.Item name="service_basis" label="服务费口径" rules={[{ required: true }]}>
@@ -489,7 +527,19 @@ export default function PricingTemplates() {
         <Divider orientation="left" plain>时段费率</Divider>
         {renderPeriods()}
 
-        <Collapse ghost style={{ marginTop: 8 }} items={[{ key: 'extra', label: '全局策略与封顶（点击展开）', children: <Space direction="vertical" style={{ width: '100%' }}>
+      </> : <>
+        <Alert type="info" showIcon style={{ marginBottom: 12 }}
+          message="设备计费没有电价：费用在用户支付时已收取，设备按获准的时长/电量/功率自行执行。服务端不再计算金额，本模板不保存任何费率。" />
+        <Alert type="warning" showIcon style={{ marginTop: 8 }}
+          message="套餐按自己的价格结算，与费率无关，请在「模板 → 套餐模板」页签维护后单独上架。" />
+      </>}
+
+    </>
+  );
+
+  const stepConfig = <>
+    {server ? <>
+        <Collapse ghost style={{ marginTop: 8 }} defaultActiveKey={['extra']} items={[{ key: 'extra', label: '全局策略与封顶', children: <Space direction="vertical" style={{ width: '100%' }}>
           <Form.Item name="loss_percent" label="电损率（%）" extra="按此比例放大可计费电量，弥补线路损耗。">
             <InputNumber min={0} max={10} step={0.1} precision={2} addonAfter="%" style={{ width: 200 }} />
           </Form.Item>
@@ -513,9 +563,7 @@ export default function PricingTemplates() {
             <Form.Item name="card_bp" label="刷卡费率（基点）" rules={[{ required: true }]}><InputNumber min={0} max={100000} step={100} style={{ width: 200 }} /></Form.Item>
           </Space>}
         </Space> }]} />
-      </> : <>
-        <Alert type="info" showIcon style={{ marginBottom: 12 }}
-          message="设备计费没有电价：费用在用户支付时已收取，设备按获准的时长/电量/功率自行执行。服务端不再计算金额，本模板不保存任何费率。" />
+    </> : <>
         {mode === 'device_duration' && <>
           <Divider orientation="left" plain>时长策略</Divider>
           <Form.Item name={['time_charge', 'stop_when_full']} label="充满后自动结束" valuePropName="checked"
@@ -532,11 +580,8 @@ export default function PricingTemplates() {
             </Form.Item>
           </Space>
         </>}
-        <Alert type="warning" showIcon style={{ marginTop: 8 }}
-          message="套餐按自己的价格结算，与费率无关，请在「模板 → 套餐模板」页签维护后单独上架。" />
-      </>}
-
-      <Collapse ghost style={{ marginTop: 8 }} items={[{ key: 'common', label: '刷卡与下单（点击展开）', children: <Space align="start" wrap>
+    </>}
+      <Collapse ghost style={{ marginTop: 8 }} defaultActiveKey={['common']} items={[{ key: 'common', label: '刷卡与下单', children: <Space align="start" wrap>
         <Form.Item name="card_max_minutes" label="刷卡订单最长时长（分钟）" extra="0 表示不限制。固件上限 999 分钟。">
           <InputNumber min={0} max={999} style={{ width: 200 }} />
         </Form.Item>
@@ -545,6 +590,9 @@ export default function PricingTemplates() {
         </Form.Item>
       </Space> }]} />
 
+  </>;
+
+  const stepDisplay = (<>
       <Divider orientation="left" plain>用户界面展示</Divider>
       <div className="pricing-display-grid">
         <section className="pricing-display-group" aria-label="充电信息展示">
@@ -572,7 +620,7 @@ export default function PricingTemplates() {
           </Form.Item>
         </section>
       </div>
-    </Form>
+    </>
   );
 
   return <>
@@ -608,7 +656,8 @@ export default function PricingTemplates() {
       confirmLoading={saving}
       footer={[
         <Button key="cancel" onClick={() => setOpen(false)}>取消</Button>,
-        step > 0 && <Button key="back" onClick={() => { setLocalErrors([]); setFormError(''); setStep(step - 1); }}>上一步</Button>,
+        step > 0 && <Button key="back" onClick={() => { setLocalErrors([]); setFormError(''); setPeriodAction(null); setSplitError(''); setStep(step - 1); }}>上一步</Button>,
+        <Button key="preview" disabled={saving} onClick={() => void preview()}>预览</Button>,
         <Button key="next" type="primary" loading={saving} disabled={step === 1 && server && (legacyPricing || Object.keys(timeErrors).length > 0 || !!periodAction)} onClick={async () => {
           if (step === 0) {
             try {
@@ -619,19 +668,33 @@ export default function PricingTemplates() {
             setStep(1);
             return;
           }
+          if (step < 3) {
+            const rateFields = ['periods', 'service_basis', 'service_kwh_yuan', 'service_minute_yuan', 'service_session_yuan', 'tier_price_basis'];
+            try { await form.validateFields(form.getFieldsError().map(field => field.name).filter(name => step === 1 ? rateFields.includes(String(name[0])) : !rateFields.includes(String(name[0])) && name[0] !== 'name' && name[0] !== 'remark')); } catch { return; }
+            const values = form.getFieldsValue(true);
+            const current = step === 1 ? Object.fromEntries(rateFields.map(key => [key, values[key]])) : values;
+            const errors = validateSpecForm({ ...specToForm({ mode }), ...current, mode, service_basis: serviceBasis, tier_price_basis: tierPriceBasis, periods });
+            setLocalErrors(errors);
+            if (errors.length) { setFormError('请修正配置后继续。'); return; }
+            setFormError(''); setStep(step + 1); return;
+          }
           await save();
-        }}>{step === 1 ? '保存' : '下一步'}</Button>,
+        }}>{step === 3 ? '保存' : '下一步'}</Button>,
       ]}
       destroyOnHidden
     >
       {formError && <Alert type="error" showIcon message={formError} style={{ marginBottom: 12 }}
         description={localErrors.length ? <ul style={{ margin: 0, paddingLeft: 18 }}>{localErrors.map(e => <li key={e}>{e}</li>)}</ul> : undefined} />}
-      <Steps current={step} size="small" style={{ marginBottom: 16 }} items={[{ title: '基本信息与计费方式' }, { title: '费率与展示' }]} />
-      <Collapse activeKey={[step === 0 ? 'mode' : 'spec']} ghost items={[
-        { key: 'mode', label: '基本信息与计费方式', children: stepOne },
-        { key: 'spec', label: '费率与展示', children: stepTwo },
-      ]} />
+      <Steps current={step} size="small" style={{ marginBottom: 16 }} items={[{ title: '基本信息' }, { title: '费率' }, { title: '配置' }, { title: '用户界面展示' }]} />
+      <Form form={form} name="pricing_template" layout="vertical">
+        <div hidden={step !== 0}>{stepOne}</div>
+        <div hidden={step !== 1}>{stepTwo}</div>
+        <div hidden={step !== 2}>{stepConfig}</div>
+        <div hidden={step !== 3}>{stepDisplay}</div>
+      </Form>
     </Modal>
+
+    {previewDraft && <PricingPreview draft={previewDraft} onClose={() => setPreviewDraft(null)} />}
 
     <Modal title={viewing ? `计费模板详情 · ${viewing.name}` : '计费模板详情'} open={!!viewing} width={860}
       onCancel={() => setViewing(null)} footer={<Button onClick={() => setViewing(null)}>关闭</Button>}>

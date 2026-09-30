@@ -61,6 +61,7 @@ func (a ResourceAPI) registerPricingTemplates(r *gin.Engine) {
 	r.GET("/api/v1/admin/settings/pricing-templates", a.Auth.Require("pricing.read"), a.pricingTemplates)
 	r.GET("/api/v1/admin/settings/pricing-templates/:id", a.Auth.Require("pricing.read"), a.pricingTemplateDetail)
 	r.POST("/api/v1/admin/settings/pricing-templates", a.Auth.Require("pricing.rule.create"), a.createPricingTemplate)
+	r.POST("/api/v1/admin/settings/pricing-templates/preview", a.Auth.Require("pricing.read"), a.previewPricingTemplate)
 	r.PUT("/api/v1/admin/settings/pricing-templates/:id", a.Auth.Require("pricing.rule.update"), a.updatePricingTemplate)
 	r.POST("/api/v1/admin/settings/pricing-templates/:id/disable", a.Auth.Require("pricing.rule.update"), a.disablePricingTemplate)
 	// 停用必须能撤回来：否则一次误停用就让这份模板永久
