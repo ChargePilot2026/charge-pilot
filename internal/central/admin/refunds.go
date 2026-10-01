@@ -55,7 +55,7 @@ func (a ResourceAPI) manualRefund(c *gin.Context) {
 	refundNo := "MR" + hex.EncodeToString(sum[:16])
 	created := false
 	var auditPending []auditEntry
-	err := a.Store.UserDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+	err := a.auditedTransaction(c, a.Store.UserDB, &auditPending, func(tx *gorm.DB) error {
 		var order charge.ChargeOrderRecord
 		if err := tx.Where("id=? AND deleted_at IS NULL", id).Take(&order).Error; err != nil {
 			return err
@@ -113,11 +113,10 @@ func (a ResourceAPI) manualRefund(c *gin.Context) {
 		resourceFailure(c, err)
 		return
 	}
-	a.flushAudit(c, auditPending)
 	httpapi.OK(c, gin.H{"created": created, "refund_no": refundNo, "request_id": in.RequestID})
 }
 
-// refundReview 是人工退款的双人复核记录（user_db.refund_review 表），一条退款单至多一条。
+// refundReview 是人工退款的双人复核记录（central_db.refund_review 表），一条退款单至多一条。
 // 复核采用"两人两签"：第一审核人只能把单子推进到 awaiting_second，第二位不同的审核人签字后才转 approved 并放行执行；
 // snapshot_json 冻结第一签时的退款要素，第二签必须对得上，避免两次签之间金额或对象被改动。
 type refundReview struct {
@@ -223,7 +222,7 @@ func (a ResourceAPI) reviewRefund(c *gin.Context) {
 	}
 	status := "rejected"
 	var auditPending []auditEntry
-	err := a.Store.UserDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+	err := a.auditedTransaction(c, a.Store.UserDB, &auditPending, func(tx *gorm.DB) error {
 		var r charge.RefundRecord
 		if err := tx.Where("refund_no=? AND deleted_at IS NULL", c.Param("refund_no")).Take(&r).Error; err != nil {
 			return err
@@ -287,7 +286,6 @@ func (a ResourceAPI) reviewRefund(c *gin.Context) {
 		resourceFailure(c, err)
 		return
 	}
-	a.flushAudit(c, auditPending)
 	httpapi.OK(c, gin.H{"review_status": status})
 }
 
@@ -306,7 +304,7 @@ func (a ResourceAPI) retryRefund(c *gin.Context) {
 		return
 	}
 	var auditPending []auditEntry
-	err := a.Store.UserDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+	err := a.auditedTransaction(c, a.Store.UserDB, &auditPending, func(tx *gorm.DB) error {
 		var r charge.RefundRecord
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("refund_no=? AND deleted_at IS NULL", c.Param("refund_no")).Take(&r).Error; err != nil {
 			return err
@@ -324,6 +322,5 @@ func (a ResourceAPI) retryRefund(c *gin.Context) {
 		resourceFailure(c, err)
 		return
 	}
-	a.flushAudit(c, auditPending)
 	httpapi.OK(c, gin.H{"scheduled": true})
 }

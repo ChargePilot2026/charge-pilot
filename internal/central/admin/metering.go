@@ -3,14 +3,11 @@ package admin
 import (
 	"encoding/json"
 	"errors"
-	"strings"
-
 	"github.com/ChargePilot2026/charge-pilot/internal/central/pricing"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
+	"strings"
 )
 
-// 设备能力由创建时选定的通信协议自动确定。
 type deviceCapability struct {
 	ProtocolAdapter       string `gorm:"column:protocol_adapter"`
 	DeviceID              string `gorm:"column:device_id"`   // 设备号，全网唯一，是这块板子的标识
@@ -19,12 +16,6 @@ type deviceCapability struct {
 	ReportsSegmentedPower bool   `gorm:"-"`                  // 是否上报分段功率表，决定能否按功率计费
 }
 
-// capabilityBlock 给出这块设备跑
-// 不了这个计费方式的原因，能跑时返回空串。时长计
-// 费永远放行——板子自己计分钟数、自己停，不需要
-// 平台测到什么；其余四种都落在电量或分段功率上。
-// 拒绝理由是写给运营看的：只回一句「不支持」的拒
-// 绝，会被人当成检查太严，直接把检查关掉绕过去。
 func capabilityBlock(mode pricing.ChargeMode, cap deviceCapability) string {
 	abilities, err := pricing.ProtocolCapabilities(cap.ProtocolAdapter)
 	if err != nil {
@@ -48,137 +39,10 @@ func capabilityBlock(mode pricing.ChargeMode, cap deviceCapability) string {
 	return ""
 }
 
-// modeNeverSet 标记
-// 「改这次费率之前既没有计费规则、
-// 没有声明过充电类型」的设备。它只
-// 是任务日志里的一个值，不是计费方
-// 式，永远不会下发到设备协议里去。
-const modeNeverSet = "none"
-
-// switchTarget 是一次
-// 费率切换要下发到的一台设备，连同
-// 它现在跑的计费方式和它能测到什
-// 么。能力随行携带而不是二次查询，
-// 证能力校验和任务日志说的是同一批
-// 板子、同一时刻读到的快照。
-type switchTarget struct {
-	DeviceID string           // 设备号
-	Before   string           // 切换前实际生效的计费方式；从未设定过时为 modeNeverSet
-	Cap      deviceCapability // 该设备的计量能力声明
-}
-
-// resolveSwitchTargets 列出这
-// 次发布范围内受影响的设备，以及每台当前正在跑的计
-// 费方式。deviceID 为空表示整个站点，否则
-// 只看这一台。设备级规则优先，没有自己的规则就落在
-// 站点默认规则上，所以 before 是站点默认的
-// 计费方式而不是空值；连规则都没有时退回设备上自己
-// 声明的充电类型，再没有才标成modeNeverSet。
-func resolveSwitchTargets(tx *gorm.DB, stationID uint64, deviceID string) ([]switchTarget, error) {
-	rows := []deviceCapability{}
-	query := tx.Table("device_meta").
-		Select("device_id, charge_mode, protocol_adapter").
-		Where("station_id=? AND deleted_at IS NULL", stationID)
-	if deviceID != "" {
-		query = tx.Table("device_meta").
-			Select("device_id, charge_mode, protocol_adapter").
-			Where("station_id=? AND device_id=? AND deleted_at IS NULL", stationID, deviceID)
-	}
-	if err := query.Clauses(clause.Locking{Strength: "SHARE"}).Order("device_id").Find(&rows).Error; err != nil {
-		return nil, err
-	}
-	// running 按 device_meta.
-	// device_id 的写法索引当前生效
-	// 的计费方式，这样跑在站点默认上的设备也
-	// 能报出这个默认值，而不是空值。
-	running := map[string]string{}
-	// rules 是站点下所有生效中的计费规则：device_id 为 NULL 表示站点默认规则。
-	rules := []struct {
-		DeviceID *string `gorm:"column:device_id"` // 规则作用的设备号，NULL 表示这条是站点默认
-		SpecJSON []byte  `gorm:"column:spec_json"` // 计费口径 JSON，解析失败直接跳过这条规则
-	}{}
-	if err := tx.Table("pricing_rule").Clauses(clause.Locking{Strength: "SHARE"}).
-		Select("device_id, spec_json").
-		Where("station_id=?", stationID).Where(effectiveRuleSQL).Order("version DESC,id DESC").
-		Find(&rules).Error; err != nil {
-		return nil, err
-	}
-	stationMode := ""
-	for _, rule := range rules {
-		var spec pricing.Spec
-		if unmarshalSpec(rule.SpecJSON, &spec) != nil {
-			continue
-		}
-		if rule.DeviceID == nil {
-			if stationMode == "" {
-				stationMode = string(spec.Mode)
-			}
-			continue
-		}
-		if _, seen := running[*rule.DeviceID]; !seen {
-			running[*rule.DeviceID] = string(spec.Mode)
-		}
-	}
-	targets := make([]switchTarget, 0, len(rows))
-	for _, row := range rows {
-		before := running[row.DeviceID]
-		if before == "" {
-			before = stationMode
-		}
-		if before == "" {
-			// 没有任何规则覆盖这台设备。运营在设备上
-			// 自己声明的充电类型是次优答案；一台从没
-			// 被归过类的设备拿到的是一个标记，而不是
-			// 马上要设上去的计费方式——否则第一次应
-			// 用就会看起来像是从它自己改成了它自己。
-			before = row.ChargeMode
-		}
-		if before == "" {
-			before = modeNeverSet
-		}
-		targets = append(targets, switchTarget{DeviceID: row.DeviceID, Before: before, Cap: row})
-	}
-	return targets, nil
-}
-
-// resolvePublicationTargets preserves effective device rules during a station-default change.
-// The same target set drives candidate validation, capability checks, metadata and switch tasks.
-func resolvePublicationTargets(tx *gorm.DB, stationID uint64, deviceID string, preserve bool) ([]switchTarget, error) {
-	targets, err := resolveSwitchTargets(tx, stationID, deviceID)
-	if err != nil || !preserve || deviceID != "" {
-		return targets, err
-	}
-	ids := []string{}
-	if err := tx.Table("pricing_rule").Clauses(clause.Locking{Strength: "SHARE"}).Where("station_id=? AND device_id IS NOT NULL", stationID).
-		Where(effectiveRuleSQL).Pluck("device_id", &ids).Error; err != nil {
-		return nil, err
-	}
-	independent := make(map[string]bool, len(ids))
-	for _, id := range ids {
-		independent[id] = true
-	}
-	filtered := make([]switchTarget, 0, len(targets))
-	for _, target := range targets {
-		if !independent[target.DeviceID] {
-			filtered = append(filtered, target)
-		}
-	}
-	return filtered, nil
-}
-
-// validDeviceChargeMode 校验设备上记录
-// 的充电类型是否属于
-// 「服务端计费/设备计费」两类的六种
-// 计费方式之一。协议里叫得出名字、但
-// 计费引擎算不出价的类型，在这里就拒
-// 掉，而不是先存下来，等到要出账、要
-// 产出结算的那天才发现。
 func validDeviceChargeMode(mode string) bool {
 	return pricing.ChargeMode(strings.TrimSpace(mode)).Valid()
 }
 
-// unmarshalSpec 解析 pricing_rule.spec_json 这段计费口径；口径为空或不是合法 JSON
-// 一律当解析失败，调用方据此跳过这条规则而不是用一个半截口径继续算钱。
 func unmarshalSpec(raw []byte, spec *pricing.Spec) error {
 	if len(raw) == 0 {
 		return errors.New("计费口径为空")
@@ -186,28 +50,6 @@ func unmarshalSpec(raw []byte, spec *pricing.Spec) error {
 	return json.Unmarshal(raw, spec)
 }
 
-// checkMetering 挑出跑
-// 不了这个计费方式的目标设备，每台都
-// 带上设备号和原因——整站发布时如果
-// 悄悄跳过三块没有电表的板子，就会有
-// 三个桩还按旧费率在充，而任何一份日
-// 志里都没有一句话说得清这件事。
-func checkMetering(mode pricing.ChargeMode, targets []switchTarget) []string {
-	blocked := []string{}
-	for _, target := range targets {
-		reason := capabilityBlock(mode, target.Cap)
-		if reason == "" {
-			continue
-		}
-		blocked = append(blocked, target.DeviceID+"："+reason)
-	}
-	return blocked
-}
-
-// stationModeOf 取出站点默认规则
-// 当前生效的计费方式；站点还没有生效的默认规则
-// 时返回 false，口径 JSON 解析不出
-// 来也按「没有」处理，宁可让上层跳过这次校验。
 func stationModeOf(tx *gorm.DB, stationID uint64) (pricing.ChargeMode, bool, error) {
 	// row 只取 spec_json 一列；口径为空时下面 unmarshalSpec 会返回错误。
 	row := struct{ SpecJSON []byte }{}
@@ -228,18 +70,6 @@ func stationModeOf(tx *gorm.DB, stationID uint64) (pricing.ChargeMode, bool, err
 	return spec.Mode, true, nil
 }
 
-// checkImportAgainstStation 在导入设备时校
-// 验：设备要加入的站点
-// 若已按电量或功率计费，这块板子必须声
-// 明了对应的计量能力，否则直接报错。能
-// 力检查必须放在设备进门的地方做，因为
-// 发布时那次只覆盖了当时已存在的板子，
-// 而硬件到位前就先定好价钱的站点是常
-// 事，半年后才到货的那块板子从没经过那
-// 检查——不在这儿拦下来，站点就会按它
-// 压根测不到的费率收钱。
-//
-// 站点默认计费方式按站点缓存，一批导入里同一站点只查一次。
 func checkImportAgainstStation(tx *gorm.DB, devices []ImportDevice) error {
 	cache := map[uint64]pricing.ChargeMode{}
 	for _, d := range devices {
@@ -269,9 +99,6 @@ func checkImportAgainstStation(tx *gorm.DB, devices []ImportDevice) error {
 	return nil
 }
 
-// errMeteringBlocked 表示这台设备进不了这个站点：站点在跑的
-// 计费方式它测不了。这条消息会原样送到运营眼前，所以必须点明
-// 是哪台设备、该怎么处理。
 type errMeteringBlocked struct {
 	device  string             // 进不去的设备号
 	station uint64             // 目标站点 id
@@ -279,15 +106,10 @@ type errMeteringBlocked struct {
 	reason  string             // 缺哪项能力的中文说明
 }
 
-// Error 拼出直接展示给运营的拒绝理由，点明是哪台设备、缺什么能力。
 func (e *errMeteringBlocked) Error() string {
 	return "设备 " + e.device + " 无法执行该站点的计费方式：" + e.reason
 }
 
-// newDevicesOnly 只留
-// 下库里还没有的设备：已经在站的设备
-// 不会因为这次导入改变计费方式，不该
-// 被「能不能跑这个费率」的校验拦下来。
 func newDevicesOnly(tx *gorm.DB, devices []ImportDevice) ([]ImportDevice, error) {
 	if len(devices) == 0 {
 		return nil, nil

@@ -18,11 +18,11 @@ import (
 // 唯一索引里的每个 NULL 都视为互不相同，两个存活站点可以同时 code = NULL 而谁也
 // 拦不住；真正兜底的是 station_code_identity 注册表。
 //
-// 迁移 admin_db/0044 同时删掉了 code 列和这张注册表，站点现在统一用主键 ID 寻址。
+// 迁移 central_db/0044 同时删掉了 code 列和这张注册表，站点现在统一用主键 ID 寻址。
 // StationInput.Code 仍然保留，但它的用途已经变成"拦截旧客户端"：仍在提交 code 的
 // 客户端会拿到一句明确的提示，而不是让这个值在解码时被静默丢弃。
 
-// Station 是站点的对外模型，映射 admin_db 的 station 表。站点是整套计费配置的
+// Station 是站点的对外模型，映射 central_db 的 station 表。站点是整套计费配置的
 // 挂载点——分账模板、计费规则、充电套餐都挂在站点 ID 上。站点已无独立的业务编码
 // 字段，列表、详情和所有下级配置的引用一律使用主键 ID。
 type Station struct {
@@ -36,7 +36,7 @@ type Station struct {
 	SplitTemplateID *uint64 `json:"split_template_id" gorm:"column:split_template_id"` // 已绑定的分账模板 ID，可空表示未绑定；只能在独立的绑定接口里改，不随站点编辑变更。
 }
 
-// TableName 指定 Station 落在 admin_db 的 station 表上。
+// TableName 指定 Station 落在 central_db 的 station 表上。
 func (Station) TableName() string { return "station" }
 
 // StationInput 是站点新建/编辑的请求体。经度、纬度用指针是为了区分"没传"和

@@ -51,7 +51,6 @@ type Profile struct {
 	Permissions []string `json:"permissions"`   // 权限码列表，按 code 排序；前端用它决定按钮可见性
 }
 
-// Store 是后台自身的数据库句柄，只连 admin_db；业务模块的库由 ResourceStore 分别持有。
 type Store struct{ DB *gorm.DB }
 
 // Bootstrap 在全新安装时创建第一个后台账号。

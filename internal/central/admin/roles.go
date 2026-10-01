@@ -35,14 +35,14 @@ var roleCodePattern = regexp.MustCompile(`^[a-z][a-z0-9_]{2,63}$`)
 // RoleRow 是角色列表接口返回的一行：一个角色（一份权限的命名打包），
 // 加上运营侧做判断要用的附带信息——绑定的权限编码、已挂账号数、内置标记。
 type RoleRow struct {
-	ID          uint64   `json:"id"`          // 角色主键
-	Code        string   `json:"code"`        // 角色编码，小写字母开头 3–64 位；账号记录的是 id，这里用于展示与自检
-	Name        string   `json:"name"`        // 角色名称，必填，最多 128 字符
-	Description *string  `json:"description"` // 角色说明，可空，最多 255 字符
-	IsBuiltin   bool     `json:"is_builtin"`  // 是否内置角色：内置角色的权限集合锁定，不可改也不可删
-	ActiveCode  *string  `json:"active_code"` // 未删除时的角色编码（由 code 派生的生成列），软删除后为 NULL
-	Permissions []string `json:"permissions"` // 该角色持有的权限编码，按字典序；无权限时返回 [] 而不是 null
-	UserCount   int64    `json:"user_count"`  // 仍挂在这个角色上的未删除账号数，大于 0 时不允许删除该角色
+	ID          uint64   `json:"id"`                   // 角色主键
+	Code        string   `json:"code"`                 // 角色编码，小写字母开头 3–64 位；账号记录的是 id，这里用于展示与自检
+	Name        string   `json:"name"`                 // 角色名称，必填，最多 128 字符
+	Description *string  `json:"description"`          // 角色说明，可空，最多 255 字符
+	IsBuiltin   bool     `json:"is_builtin"`           // 是否内置角色：内置角色的权限集合锁定，不可改也不可删
+	ActiveCode  *string  `json:"active_code"`          // 未删除时的角色编码（由 code 派生的生成列），软删除后为 NULL
+	Permissions []string `json:"permissions" gorm:"-"` // 该角色持有的权限编码，按字典序；无权限时返回 [] 而不是 null
+	UserCount   int64    `json:"user_count"`           // 仍挂在这个角色上的未删除账号数，大于 0 时不允许删除该角色
 }
 
 // PermissionRow 是权限字典的一行，角色编辑器勾选权限时读的就是这张表。
@@ -101,7 +101,7 @@ func withoutRetiredPermissions(codes []string) []string {
 
 func retiredPermission(code string) bool {
 	return strings.HasPrefix(code, "customer_service.") || strings.HasPrefix(code, "ota.") ||
-		strings.HasPrefix(code, "alert.rule.") || strings.HasPrefix(code, "alert.subscription.") || code == "settings.ota.update"
+		strings.HasPrefix(code, "alert.rule.") || strings.HasPrefix(code, "alert.subscription.") || code == "settings.ota.update" || code == "membership.create" || code == "alert.risk_config.update" || code == "pricing.template.create"
 }
 
 // listRoles 列出未删除的角色，按 id 升序。权限编码和账号数逐行另查后填进同一行，
@@ -214,7 +214,7 @@ func (a ResourceAPI) createRole(c *gin.Context) {
 	}
 	var id uint64
 	var auditPending []auditEntry
-	err = a.Store.AdminDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+	err = a.auditedTransaction(c, a.Store.AdminDB, &auditPending, func(tx *gorm.DB) error {
 		if err := tx.Table("role").Create(map[string]any{
 			"code": in.Code, "name": in.Name, "description": in.Description, "is_builtin": false,
 		}).Error; err != nil {
@@ -233,7 +233,6 @@ func (a ResourceAPI) createRole(c *gin.Context) {
 		resourceFailure(c, err)
 		return
 	}
-	a.flushAudit(c, auditPending)
 	httpapi.OK(c, gin.H{"id": id})
 }
 
@@ -272,7 +271,7 @@ func (a ResourceAPI) updateRole(c *gin.Context) {
 	// 权限集合，就等于让最后一个管理员把所有人都锁
 	// 在门外，所以名称和说明还能改，授权不能改。
 	var auditPending []auditEntry
-	err = a.Store.AdminDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+	err = a.auditedTransaction(c, a.Store.AdminDB, &auditPending, func(tx *gorm.DB) error {
 		if before.IsBuiltin {
 			if err := tx.Table("role").Where("id = ?", id).
 				Updates(map[string]any{"name": in.Name, "description": in.Description}).Error; err != nil {
@@ -295,7 +294,6 @@ func (a ResourceAPI) updateRole(c *gin.Context) {
 		resourceFailure(c, err)
 		return
 	}
-	a.flushAudit(c, auditPending)
 	httpapi.OK(c, gin.H{"id": id, "permissions_locked": before.IsBuiltin})
 }
 
@@ -369,7 +367,7 @@ func (a ResourceAPI) deleteRole(c *gin.Context) {
 		return
 	}
 	var auditPending []auditEntry
-	err := a.Store.AdminDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+	err := a.auditedTransaction(c, a.Store.AdminDB, &auditPending, func(tx *gorm.DB) error {
 		changed := tx.Table("role").Where("id = ? AND deleted_at IS NULL", id).
 			Updates(map[string]any{"deleted_at": time.Now().UTC()})
 		if changed.Error != nil {
@@ -388,6 +386,5 @@ func (a ResourceAPI) deleteRole(c *gin.Context) {
 		resourceFailure(c, err)
 		return
 	}
-	a.flushAudit(c, auditPending)
 	httpapi.OK(c, gin.H{"id": id})
 }

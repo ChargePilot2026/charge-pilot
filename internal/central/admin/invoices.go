@@ -72,9 +72,8 @@ func (a ResourceAPI) reviewInvoice(c *gin.Context) {
 		return
 	}
 	status := "rejected"
-	// 审核表在 user_db，审计在 admin_db，所以审计记录先攒在事务外，事务提交后再落。
 	var auditPending []auditEntry
-	err := a.Store.UserDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+	err := a.auditedTransaction(c, a.Store.UserDB, &auditPending, func(tx *gorm.DB) error {
 		// 申请单本体：只用到审核状态和已有的发票链接。
 		var invoice struct {
 			ReviewStatus string  // 申请单当前审核状态，必须是 pending 才允许本次操作。
@@ -135,6 +134,5 @@ func (a ResourceAPI) reviewInvoice(c *gin.Context) {
 		resourceFailure(c, err)
 		return
 	}
-	a.flushAudit(c, auditPending)
 	httpapi.OK(c, gin.H{"review_status": status})
 }

@@ -32,7 +32,6 @@ type Profile struct {
 		FrozenCents    int64 `json:"frozen_cents"`
 	} `json:"wallet"`
 	CouponUnusedCount int64 `json:"coupon_unused_count"`
-	MembershipCard    any   `json:"membership_card"`
 }
 
 type UserStore struct{ DB *gorm.DB }
@@ -126,8 +125,7 @@ func (s UserStore) Profile(ctx context.Context, id uint64) (Profile, error) {
 	var row profileRow
 	result := s.DB.WithContext(ctx).Raw(`SELECT u.id, u.nickname, u.avatar_url, u.phone_hash, u.first_seen_at,
 		w.balance_cents, w.frozen_cents,
-		(SELECT COUNT(*) FROM coupon_grant AS g WHERE g.user_id = u.id AND g.status = 'unused' AND g.expired_at > NOW(3) AND g.deleted_at IS NULL) AS coupon_unused_count,
-		COALESCE(CAST((SELECT card_type FROM membership_card AS m WHERE m.user_id = u.id AND m.status = 'active' AND m.end_at > NOW(3) AND m.deleted_at IS NULL ORDER BY m.end_at DESC LIMIT 1) AS CHAR(16)), '') AS card_type
+		(SELECT COUNT(*) FROM coupon_grant AS g WHERE g.user_id = u.id AND g.status = 'unused' AND g.expired_at > NOW(3) AND g.deleted_at IS NULL) AS coupon_unused_count
 		FROM user AS u JOIN wallet_account AS w ON w.user_id = u.id AND w.deleted_at IS NULL
 		WHERE u.id = ? AND u.status = 'active' AND u.deleted_at IS NULL LIMIT 1`, id).Scan(&row)
 	if result.Error != nil {
@@ -139,10 +137,6 @@ func (s UserStore) Profile(ctx context.Context, id uint64) (Profile, error) {
 	profile := Profile{UserID: row.ID, Nickname: row.Nickname.String, AvatarURL: row.AvatarURL.String, PhoneBound: row.PhoneHash.Valid, RegisteredAt: row.FirstSeenAt.UTC(), CouponUnusedCount: row.CouponUnusedCount}
 	profile.Wallet.AvailableCents = row.BalanceCents
 	profile.Wallet.FrozenCents = row.FrozenCents
-	cardType := row.CardType
-	if cardType != "" {
-		profile.MembershipCard = map[string]string{"card_type": cardType}
-	}
 	return profile, nil
 }
 
@@ -178,5 +172,4 @@ type profileRow struct {
 	BalanceCents      int64
 	FrozenCents       int64
 	CouponUnusedCount int64
-	CardType          string
 }

@@ -527,7 +527,7 @@ type SessionActual struct {
 
 ## 8. 落地顺序与当前进度
 
-> 状态以 2026-09-29 为准。**已完成**的项已在本轮实现并通过 `go vet` / `gofmt` / 全量单测 / `./scripts/test-integration.sh -race`；**未完成**项不在本轮范围内，登记在 `docs/migration/go-rebuild.md` 的未完成事项总表。
+> 状态以 2026-09-29 为准。**已完成**的项已在本轮实现并通过 `go vet` / `gofmt` / 全量单测 / `./scripts/test/integration.sh -race`；**未完成**项不在本轮范围内，登记在 `docs/migration/go-rebuild.md` 的未完成事项总表。
 
 | # | 步骤 | 状态 |
 | --- | --- | --- |

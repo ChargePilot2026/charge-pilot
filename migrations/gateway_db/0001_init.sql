@@ -242,27 +242,6 @@ CREATE TABLE `event_outbox` (
   KEY `idx_status_sched` (`status`,`scheduled_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='与业务事务一起写入的待投递事件';
 
--- raw_frame_log：TCP/MQTT 原始帧日志(排障)
-CREATE TABLE `raw_frame_log` (
-  `id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT '记录主键 ID',
-  `device_id` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '设备全局唯一编号',
-  `session_id` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '设备协议会话标识',
-  `direction` enum('in','out') COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '协议帧方向；in 设备上行、out 平台下行',
-  `frame_hex` varbinary(2048) NOT NULL COMMENT '原始协议帧的十六进制编码',
-  `parsed_json` json DEFAULT NULL COMMENT '原始协议帧的解析结果 JSON',
-  `parse_status` enum('ok','error') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'ok' COMMENT '原始协议帧的解析状态；取值 ok / error',
-  `error_msg` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '执行错误信息',
-  `ts` datetime(3) NOT NULL COMMENT '数据采集时间',
-  `created_month` date NOT NULL COMMENT '月分区归属日期，取对应月份第一天',
-  PRIMARY KEY (`id`,`created_month`),
-  KEY `idx_device_ts` (`device_id`,`ts`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='TCP/MQTT 原始帧日志(排障)'
-/*!50100 PARTITION BY RANGE (to_days(`created_month`))
-(PARTITION p_init VALUES LESS THAN (740255) ENGINE = InnoDB,
- PARTITION p_2026m10 VALUES LESS THAN (740286) ENGINE = InnoDB,
- PARTITION p_2026m11 VALUES LESS THAN (740316) ENGINE = InnoDB,
- PARTITION p_2026m12 VALUES LESS THAN (740347) ENGINE = InnoDB,
- PARTITION p_max VALUES LESS THAN MAXVALUE ENGINE = InnoDB) */;
 
 -- telemetry：设备遥测原始记录(按 ts 分区,1 月保留)
 CREATE TABLE `telemetry` (
@@ -289,6 +268,7 @@ CREATE TABLE `telemetry_aggregate_15min` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT '记录主键 ID',
   `device_id` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '设备全局唯一编号',
   `port_no` tinyint unsigned DEFAULT NULL COMMENT '聚合所属端口号，为 NULL 时表示设备级指标',
+  `port_key` tinyint unsigned GENERATED ALWAYS AS (COALESCE(`port_no`,0)) STORED COMMENT '聚合唯一键端口；设备级 NULL 映射为 0，实际端口从 1 开始',
   `metric` varchar(32) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '指标名称',
   `bucket_start` datetime(3) NOT NULL COMMENT '聚合桶起点',
   `bucket_month` date NOT NULL COMMENT '分区字段',
@@ -297,7 +277,7 @@ CREATE TABLE `telemetry_aggregate_15min` (
   `max_value` decimal(18,6) NOT NULL COMMENT '聚合桶内有效样本的最大值，单位随指标',
   `count` int unsigned NOT NULL COMMENT '聚合桶内有效样本数量',
   PRIMARY KEY (`id`,`bucket_month`),
-  UNIQUE KEY `uk_bucket` (`device_id`,`port_no`,`metric`,`bucket_start`,`bucket_month`),
+  UNIQUE KEY `uk_bucket` (`device_id`,`port_key`,`metric`,`bucket_start`,`bucket_month`),
   KEY `idx_metric_time` (`metric`,`bucket_start`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='遥测 15 分钟聚合'
 /*!50100 PARTITION BY RANGE (to_days(`bucket_month`))
@@ -316,6 +296,7 @@ CREATE TABLE `telemetry_aggregate_hourly` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT '记录主键 ID',
   `device_id` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '设备全局唯一编号',
   `port_no` tinyint unsigned DEFAULT NULL COMMENT '聚合所属端口号，为 NULL 时表示设备级指标',
+  `port_key` tinyint unsigned GENERATED ALWAYS AS (COALESCE(`port_no`,0)) STORED COMMENT '聚合唯一键端口；设备级 NULL 映射为 0，实际端口从 1 开始',
   `metric` varchar(32) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '指标名称',
   `bucket_start` datetime(3) NOT NULL COMMENT '聚合桶起始时间',
   `bucket_month` date NOT NULL COMMENT '月分区归属日期，取对应月份第一天',
@@ -324,7 +305,7 @@ CREATE TABLE `telemetry_aggregate_hourly` (
   `max_value` decimal(18,6) NOT NULL COMMENT '聚合桶内有效样本的最大值，单位随指标',
   `count` int unsigned NOT NULL COMMENT '聚合桶内有效样本数量',
   PRIMARY KEY (`id`,`bucket_month`),
-  UNIQUE KEY `uk_bucket` (`device_id`,`port_no`,`metric`,`bucket_start`,`bucket_month`),
+  UNIQUE KEY `uk_bucket` (`device_id`,`port_key`,`metric`,`bucket_start`,`bucket_month`),
   KEY `idx_metric_time` (`metric`,`bucket_start`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='遥测小时聚合'
 /*!50100 PARTITION BY RANGE (to_days(`bucket_month`))
@@ -366,7 +347,6 @@ DROP TABLE IF EXISTS `vendor`;
 DROP TABLE IF EXISTS `telemetry_aggregate_hourly`;
 DROP TABLE IF EXISTS `telemetry_aggregate_15min`;
 DROP TABLE IF EXISTS `telemetry`;
-DROP TABLE IF EXISTS `raw_frame_log`;
 DROP TABLE IF EXISTS `event_outbox`;
 DROP TABLE IF EXISTS `device_session`;
 DROP TABLE IF EXISTS `device_provision`;

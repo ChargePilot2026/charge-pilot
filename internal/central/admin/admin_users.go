@@ -17,7 +17,7 @@ import (
 )
 
 // AdminUserRow 是 PC 后台管理员账号（admin_user_role 表）的列表行映射。
-// 账号归属 admin_db，与终端用户 user_db.user 分开存放；一个账号一个主角色，权限由 role 展开。
+// 账号归属 central_db，与终端用户 central_db.user 分开存放；一个账号一个主角色，权限由 role 展开。
 type AdminUserRow struct {
 	ID            uint64  `json:"id"`                 // 账号主键
 	Username      string  `json:"username"`           // 登录用户名，全局唯一；本接口只读，不提供新建

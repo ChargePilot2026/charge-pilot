@@ -116,7 +116,7 @@ func (a ResourceAPI) reviewWalletRisk(c *gin.Context) {
 	}
 	var response map[string]any
 	var auditPending []auditEntry
-	err := a.Store.UserDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+	err := a.auditedTransaction(c, a.Store.UserDB, &auditPending, func(tx *gorm.DB) error {
 		var req riskRequest
 		if err := tx.Table("wallet_refund_request").Clauses(clause.Locking{Strength: "UPDATE"}).Where("request_id=?", c.Param("request_id")).Take(&req).Error; err != nil {
 			return err
@@ -161,7 +161,6 @@ func (a ResourceAPI) reviewWalletRisk(c *gin.Context) {
 		resourceFailure(c, err)
 		return
 	}
-	a.flushAudit(c, auditPending)
 	httpapi.OK(c, response)
 }
 
@@ -198,7 +197,7 @@ func (a ResourceAPI) releaseWalletRisk(c *gin.Context) {
 	}
 	var response map[string]any
 	var auditPending []auditEntry
-	err := a.Store.UserDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+	err := a.auditedTransaction(c, a.Store.UserDB, &auditPending, func(tx *gorm.DB) error {
 		var req riskRequest
 		if err := tx.Table("wallet_refund_request").Clauses(clause.Locking{Strength: "UPDATE"}).Where("request_id=?", c.Param("request_id")).Take(&req).Error; err != nil {
 			return err
@@ -267,6 +266,5 @@ func (a ResourceAPI) releaseWalletRisk(c *gin.Context) {
 		resourceFailure(c, err)
 		return
 	}
-	a.flushAudit(c, auditPending)
 	httpapi.OK(c, response)
 }

@@ -17,12 +17,10 @@ type Gateway struct {
 }
 
 type Central struct {
+	DatabaseURL            string `env:"DATABASE_URL_CENTRAL,required"`
 	AdminBootstrapUser     string `env:"ADMIN_BOOTSTRAP_USER"`
 	AdminBootstrapPassword string `env:"ADMIN_BOOTSTRAP_PASSWORD"`
 	HTTPAddr               string `env:"CENTRAL_HTTP_ADDR" envDefault:":8080"`
-	UserDatabaseURL        string `env:"DATABASE_URL_USER,required"`
-	AdminDatabaseURL       string `env:"DATABASE_URL_ADMIN,required"`
-	BillingDatabaseURL     string `env:"DATABASE_URL_BILLING,required"`
 	RedisCacheURL          string `env:"REDIS_CACHE_URL,required"`
 	RedisStreamURL         string `env:"REDIS_STREAM_URL,required"`
 	JWTSecret              string `env:"JWT_SECRET,required"`
@@ -44,11 +42,10 @@ type Central struct {
 }
 
 type Worker struct {
+	CentralDatabaseURL string `env:"DATABASE_URL_CENTRAL,required"`
 	HTTPAddr           string `env:"WORKER_HTTP_ADDR" envDefault:":8085"`
 	DatabaseURL        string `env:"DATABASE_URL,required"`
 	GatewayDatabaseURL string `env:"DATABASE_URL_GATEWAY,required"`
-	UserDatabaseURL    string `env:"DATABASE_URL_USER,required"`
-	AdminDatabaseURL   string `env:"DATABASE_URL_ADMIN,required"`
 	RedisStreamURL     string `env:"REDIS_STREAM_URL,required"`
 	ServiceToken       string `env:"SERVICE_TOKEN,required"`
 	CentralInternalURL string `env:"CENTRAL_INTERNAL_URL" envDefault:"http://central:8080"`

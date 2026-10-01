@@ -43,6 +43,15 @@ type executionLog struct {
 
 func (executionLog) TableName() string { return "task_execution_log" }
 
+// CleanupHistory retains empty successful polls for one day and other finished
+// executions for 30 days. Running executions are recovered by execute, not deleted.
+func (s Scheduler) CleanupHistory(ctx context.Context) error {
+	return s.DB.WithContext(ctx).Exec(`DELETE FROM task_execution_log
+		WHERE (status='success' AND affected_rows=0 AND finished_at<DATE_SUB(UTC_TIMESTAMP(3),INTERVAL 1 DAY))
+		OR (status IN ('success','failed','partial') AND finished_at<DATE_SUB(UTC_TIMESTAMP(3),INTERVAL 30 DAY))
+		LIMIT 1000`).Error
+}
+
 var parser = cron.NewParser(cron.SecondOptional | cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor)
 
 func (s Scheduler) RunDue(ctx context.Context) error {

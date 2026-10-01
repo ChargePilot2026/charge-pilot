@@ -47,40 +47,6 @@ func TestUnclassifiedDeviceIsRefusedEveryMeteredMode(t *testing.T) {
 
 // 每块被拒的板子都要点名。只说「有些设备不支持」的拒绝，会让运营去猜是哪几块；
 // 而没被点名的那些，就会继续按旧费率充电，日志里什么都不留。
-func TestCheckMeteringNamesEveryBlockedDevice(t *testing.T) {
-	targets := []switchTarget{
-		{DeviceID: "A", Cap: deviceCapability{DeviceID: "A"}},
-		{DeviceID: "B", Cap: deviceCapability{DeviceID: "B", ProtocolAdapter: "dc589"}},
-		{DeviceID: "C", Cap: deviceCapability{DeviceID: "C"}},
-	}
-	blocked := checkMetering(pricing.ModeServerEnergy, targets)
-	if len(blocked) != 2 {
-		t.Fatalf("blocked %d devices, want 2: %v", len(blocked), blocked)
-	}
-	if blocked[0][:1] != "A" || blocked[1][:1] != "C" {
-		t.Fatalf("blocked = %v, want the offenders in device order", blocked)
-	}
-	if got := checkMetering(pricing.ModeDeviceDuration, targets); len(got) != 2 {
-		t.Fatalf("a duration tariff blocked %v, want unsupported protocols blocked", got)
-	}
-}
-
-func TestCommonModeCollapsesOnlyWhenTheBoardsAgree(t *testing.T) {
-	agree := []switchTarget{{DeviceID: "A", Before: "server_energy"}, {DeviceID: "B", Before: "server_energy"}}
-	if got := commonMode(agree, true); got != "server_energy" {
-		t.Fatalf("commonMode = %v, want the shared mode", got)
-	}
-	mixed := []switchTarget{{DeviceID: "A", Before: "server_energy"}, {DeviceID: "B", Before: "device_energy"}}
-	if got := commonMode(mixed, true); got != "mixed" {
-		t.Fatalf("commonMode = %v, want a marker rather than one board's mode", got)
-	}
-	// 还没有任何板子被计过费，所以没有「变更前」的数字可报。
-	// 拿即将设置的计费方式填进汇总，会让首次下发看起来像是从自己变到自己。
-	never := []switchTarget{{DeviceID: "A", Before: modeNeverSet}}
-	if got := commonMode(never, true); got != modeNeverSet {
-		t.Fatalf("commonMode = %v, want %q", got, modeNeverSet)
-	}
-}
 
 // 站点在硬件到货之前就先定好费率是常事，而后来才出现的那块板子
 // 从没经过发布时那次能力校验。这就是拦住它的那道检查。

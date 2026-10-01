@@ -31,7 +31,7 @@ type state struct {
 
 func (state) TableName() string { return "snowflake_state" }
 
-// Next must run inside the caller's transaction in user_db. The singleton row
+// Next must run inside the caller's transaction in central_db. The singleton row
 // is provisioned by database initialization, rather than created on each call.
 func Next(tx *gorm.DB) (uint64, error) {
 	var current state

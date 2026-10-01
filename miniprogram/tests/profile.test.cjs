@@ -11,7 +11,7 @@ function page(app) {
   });
   p.setData=value=>Object.assign(p.data,value); return p;
 }
-const profile={user_id:'7',nickname:'测试',wallet:{available_cents:4123,frozen_cents:100},registered_at:'2026-09-26T00:00:00Z',membership_card:null};
+const profile={user_id:'7',nickname:'测试',wallet:{available_cents:4123,frozen_cents:100},registered_at:'2026-09-26T00:00:00Z'};
 test('anonymous profile offers login without requesting data or navigating to a missing page',async()=>{
   const p=page({globalData:{token:''},request:()=>{throw Error('unexpected request');}});
   await p.refresh(); assert.equal(p.data.needsLogin,true); assert.equal(p.data.profile,null);

@@ -46,18 +46,18 @@ func (a ResourceAPI) resolveMeterAmount(c *gin.Context) {
 	httpapi.OK(c, gin.H{"queued": true})
 }
 
-// meterReviews 分页返回人工定价兜底单（billing_db.manual_fee_review），状态只接受
-// pending/resolved，关键词按订单号搜索。兜底单在 billing_db，核实记录在 user_db，
+// meterReviews 分页返回人工定价兜底单（central_db.manual_fee_review），状态只接受
+// pending/resolved，关键词按订单号搜索。兜底单在 central_db，核实记录在 central_db，
 // 因此这里先分页取出兜底单，再按 charge_order_id 逐行补上该订单的核实记录。
 func (a ResourceAPI) meterReviews(c *gin.Context) {
 	q, ok := parsePage(c, "pending resolved")
 	if !ok {
 		return
 	}
-	// entry 是列表行的临时结构：兜底单本体来自 billing_db，reviews 来自 user_db，
+	// entry 是列表行的临时结构：兜底单本体来自 central_db，reviews 来自 central_db，
 	// 两者拼在一行里返回，避免前端为了看核实记录再发一次请求。
 	type entry struct {
-		ChargeOrderID uint64               `json:"charge_order_id"`  // 计费订单主键（user_db），核实记录靠它关联。
+		ChargeOrderID uint64               `json:"charge_order_id"`  // 计费订单主键（central_db），核实记录靠它关联。
 		OrderNo       string               `json:"order_no"`         // 订单号，列表关键词搜索的就是它。
 		Reason        string               `json:"reason"`           // 兜底原因：自动计费为什么没能算出费用，供人工核实参考。
 		Status        string               `json:"status"`           // 兜底单状态：pending 待核实、resolved 已处置。
@@ -179,7 +179,7 @@ func (a ResourceAPI) decideMeter(c *gin.Context) {
 	if !ok {
 		return
 	}
-	// 裁决入参：review_id 指向 user_db.charge_meter_review 里待裁决的那条记录。
+	// 裁决入参：review_id 指向 central_db.charge_meter_review 里待裁决的那条记录。
 	var in struct {
 		ReviewID uint64 `json:"review_id"` // 待裁决的核实记录主键，必须属于本订单。
 		Approve  *bool  `json:"approve"`   // 是否通过；指针是为了把"没传"和 false 区分开，拒绝时必须另填原因。

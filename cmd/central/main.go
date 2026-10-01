@@ -42,7 +42,7 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	db, err := dbconn.Open(ctx, cfg.UserDatabaseURL)
+	db, err := dbconn.Open(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
 	}
@@ -51,24 +51,8 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	adminDB, err := dbconn.Open(ctx, cfg.AdminDatabaseURL)
-	if err != nil {
-		return err
-	}
-	defer adminDB.Close()
-	adminORM, err := dbconn.WrapGORM(adminDB)
-	if err != nil {
-		return err
-	}
-	billingDB, err := dbconn.Open(ctx, cfg.BillingDatabaseURL)
-	if err != nil {
-		return err
-	}
-	defer billingDB.Close()
-	billingORM, err := dbconn.WrapGORM(billingDB)
-	if err != nil {
-		return err
-	}
+	adminDB := db
+	adminORM, billingORM := userORM, userORM
 	redisOptions, err := redis.ParseURL(cfg.RedisCacheURL)
 	if err != nil {
 		return err
@@ -97,7 +81,7 @@ func run(ctx context.Context) error {
 	router.GET("/health/ready", func(c *gin.Context) {
 		check, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
 		defer cancel()
-		if db.PingContext(check) != nil || adminDB.PingContext(check) != nil || billingDB.PingContext(check) != nil || cache.Ping(check).Err() != nil {
+		if db.PingContext(check) != nil || cache.Ping(check).Err() != nil {
 			httpapi.Write(c, http.StatusServiceUnavailable, 5003, "storage unavailable", nil)
 			return
 		}

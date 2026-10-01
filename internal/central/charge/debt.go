@@ -46,7 +46,7 @@ func (d Debt) Outstanding() int64 {
 	return d.DebtCents - d.PaidCents
 }
 
-// DebtStore 负责 user_db 里的欠款生命周期，
+// DebtStore 负责 central_db 里的欠款生命周期，
 // 与它引用的充电记录、支付记录放在同一处。
 type DebtStore struct{ DB *gorm.DB }
 

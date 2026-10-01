@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# 把每个 ChargePilot 的库都备份进同一个压缩包，并验证它能被读回来。
+# 没人恢复过的备份不算备份，所以归档读不出来时这个脚本会直接报错退出，
+# 而不是报告成功。
+#
+# 用法：
+#   scripts/db/backup.sh <output-dir>
+#   MYSQL_HOST=... MYSQL_PORT=... MYSQL_USER=... MYSQL_PASSWORD=... scripts/db/backup.sh out/
+set -euo pipefail
+cd "$(dirname "$0")/../.."
+
+out_dir="${1:-./backups}"
+stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+host="${MYSQL_HOST:-127.0.0.1}"
+port="${MYSQL_PORT:-3306}"
+user="${MYSQL_USER:-root}"
+schemas=(gateway_db central_db worker_db)
+
+if [[ ! -d "$out_dir" ]]; then
+  echo "create output directory: $out_dir" >&2
+  exit 1
+fi
+
+# MySQL 客户端可能只存在于数据库容器里，所以所有调用都走这个包装；
+# MYSQL_CLIENT_DOCKER 指定用哪个容器。
+mysql_cli=()
+if command -v mysql >/dev/null 2>&1; then
+  mysql_cli=(mysql -h"$host" -P"$port" -u"$user")
+elif [[ -n "${MYSQL_CLIENT_CONTAINER:-}" ]]; then
+  mysql_cli=(docker exec -e MYSQL_PWD="$MYSQL_PASSWORD" "$MYSQL_CLIENT_CONTAINER" mysql -h127.0.0.1 -u"$user")
+else
+  echo "no mysql client available; set MYSQL_CLIENT_CONTAINER to the database container" >&2
+  exit 1
+fi
+
+mysqldump_cli=()
+if command -v mysqldump >/dev/null 2>&1; then
+  mysqldump_cli=(mysqldump -h"$host" -P"$port" -u"$user")
+elif [[ -n "${MYSQL_CLIENT_CONTAINER:-}" ]]; then
+  mysqldump_cli=(docker exec -e MYSQL_PWD="$MYSQL_PASSWORD" "$MYSQL_CLIENT_CONTAINER" mysqldump -h127.0.0.1 -u"$user")
+else
+  echo "no mysqldump available; set MYSQL_CLIENT_CONTAINER to the database container" >&2
+  exit 1
+fi
+
+# mysqldump 遇到缺表就会拒绝继续，所以还没建出来的库不能被悄悄跳过。
+existing=()
+for schema in "${schemas[@]}"; do
+  if "${mysql_cli[@]}" -N \
+      -e "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME='${schema}'" \
+      | grep -q .; then
+    existing+=("$schema")
+  else
+    echo "schema $schema does not exist; refusing to produce a partial backup" >&2
+    exit 1
+  fi
+done
+
+archive="${out_dir%/}/chargepilot-${stamp}.sql.gz"
+dump_args=(--single-transaction --routines --triggers --events --set-gtid-purged=OFF
+           --column-statistics=0 --no-tablespaces)
+
+{
+  echo "-- ChargePilot backup ${stamp}"
+  echo "-- schemas: ${existing[*]}"
+  for schema in "${existing[@]}"; do
+    echo "-- ---- ${schema} ----"
+    # 告诉 mysqldump 不要写 USE 时它就不写，所以这里显式声明目标库；
+    # 靠猜的恢复会写进错误的库。
+    echo "USE \`${schema}\`;"
+   "${mysqldump_cli[@]}" "${dump_args[@]}" "$schema"
+  done
+} | gzip -9 > "$archive"
+
+# 靠完整解压来验证；被截断的 dump 不应该算通过。
+if ! gzip -t "$archive"; then
+  echo "backup archive failed integrity check: $archive" >&2
+  exit 1
+fi
+
+size="$(wc -c < "$archive" | tr -d ' ')"
+if [[ "$size" -lt 1024 ]]; then
+  echo "backup is suspiciously small (${size} bytes); refusing to report success" >&2
+  exit 1
+fi
+
+echo "$archive"
+echo "verified: ${size} bytes, schemas: ${existing[*]}"

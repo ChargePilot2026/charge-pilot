@@ -93,7 +93,7 @@ docs/
                      │                                  │
                      │                                  └──→ 决定 ──→ cross-reference.md
    法规 / 合规 ──────┘                                          │
-                                                                  └──→ 守护 ──→ tools/check-api-consistency.ts
+                                                                  └──→ 核对 ──→ 当前 Go 路由与初始化 SQL
 
 runbook/  ← 技术规格 § 9.1 § 14.4 引用
 diagrams/ ← 跨多文档缝合(状态机 / 数据血缘)

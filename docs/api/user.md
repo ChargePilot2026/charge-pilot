@@ -1518,7 +1518,7 @@ Wechatpay-Nonce: ...
 
 - 修改本文件需在 PR 标题写 `api(user): <简短描述>`,并在 PR 描述中说明影响哪些端点
 - 任何新增 / 删除 / 修改端点必须同步更新 `internal/central/` 的 Gin 路由、接口契约与本文件
-- CI 检查:OpenAPI 规范与本文件端点清单必须一致(脚本 `tools/check-api-consistency.ts`)
+- 文档核对：以当前 Go 路由和 OpenAPI 为准，退役的文档检查器不再用于 CI。
 
 ### 当前扫码读取实现（2026-09-26）
 

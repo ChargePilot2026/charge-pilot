@@ -17,10 +17,10 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// Device 是充电桩（设备）的列表/详情模型，取自 admin_db.device_meta 并左连站点带出
+// Device 是充电桩（设备）的列表/详情模型，取自 central_db.device_meta 并左连站点带出
 // 站点名。站点统一用主键 ID 关联，列表不再返回站点编码，关键词搜索也不再匹配站点编码。
 type Device struct {
-	ID               uint64             `json:"id"`           // 设备在 admin_db 的内部主键，仅用于列表排序。
+	ID               uint64             `json:"id"`           // 设备在 central_db 的内部主键，仅用于列表排序。
 	DeviceID         string             `json:"device_id"`    // 设备编号（device_id），最长 64 字符，是设备对外的业务标识，也是详情接口的寻址键。
 	StationID        *uint64            `json:"station_id"`   // 所属站点 ID，可空表示尚未归属站点。
 	StationName      *string            `json:"station_name"` // 所属站点名称，联表带出；站点被软删除时为空。
@@ -60,7 +60,7 @@ func (s ResourceStore) deviceQuery(ctx context.Context) *gorm.DB {
 	return s.AdminDB.WithContext(ctx).Table("device_meta AS d").Joins("LEFT JOIN station AS s ON s.id=d.station_id AND s.deleted_at IS NULL").Where("d.deleted_at IS NULL")
 }
 
-// deviceColumns 是设备列表与详情共用的列清单。刻意不含站点编码——迁移 admin_db/0044
+// deviceColumns 是设备列表与详情共用的列清单。刻意不含站点编码——迁移 central_db/0044
 // 之后 station 表已经没有 code 列了。
 const deviceColumns = "d.id,d.device_id,d.station_id,d.vendor_id,d.model,d.serial_no,d.status,d.warranty_until,d.tags_json,d.updated_at,d.charge_mode,d.protocol_adapter,s.name AS station_name"
 

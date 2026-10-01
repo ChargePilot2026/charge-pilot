@@ -1,3 +1,5 @@
+> 2026-10-01 更新：本领域已合并到 central_db。以下为旧五库结构的历史设计，字段、表清单及实现状态请以 [当前数据库及精简清单](central.md) 和 [central 初始化 SQL](../../migrations/central_db/0001_init.sql) 为准。
+
 # billing_db 数据库表设计
 
 **所属服务**:billing(对内 HTTP,纯计算 + 异步编排)

@@ -31,7 +31,6 @@ export default defineController({
       if (!this._gone && generation===this._generation) this.setData({profile:{...p,
         balanceText:(p.wallet.available_cents/100).toFixed(2),frozenText:(p.wallet.frozen_cents/100).toFixed(2),
         registeredText:p.registered_at.slice(0,10),
-        membershipText:p.membership_card ? ({month:'月卡',quarter:'季卡',year:'年卡'}       )[p.membership_card.card_type] || '会员卡' : '暂无有效会员卡',
       }});
     } catch (e     ) {
       if(!this._gone && generation===this._generation) this.setData({error:e.message || '资料读取失败',needsLogin:!app.globalData.token});

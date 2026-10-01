@@ -15,6 +15,7 @@ func TestRetiredAdminRoutesAreRemoved(t *testing.T) {
 	router := gin.New()
 	(ResourceAPI{}).Register(router)
 	for _, endpoint := range []struct{ method, path string }{
+		{http.MethodPut, "/api/v1/admin/risk-config"},
 		{http.MethodGet, "/api/v1/admin/customer-service"},
 		{http.MethodPost, "/api/v1/admin/customer-service"},
 		{http.MethodPut, "/api/v1/admin/customer-service/1"},
@@ -50,7 +51,7 @@ func TestRetiredAdminRoutesAreRemoved(t *testing.T) {
 			t.Fatalf("retained route %s returned %d", path, response.Code)
 		}
 	}
-	for _, path := range []string{"risk-config", "alerts/1/ack"} {
+	for _, path := range []string{"alerts/1/ack"} {
 		method := http.MethodPut
 		if path == "alerts/1/ack" {
 			method = http.MethodPost
@@ -79,8 +80,9 @@ func TestRetiredPermissionsPreserveFeedbackWalletAndDeviceAlerts(t *testing.T) {
 		"customer_service.read", "feedback.read", "customer_service.create", "feedback.reply", "customer_service.update", "wallet.read", "customer_service.delete",
 		"ota.read", "ota.package.create", "ota.package.delete", "ota.schedule.create", "ota.schedule.trigger", "settings.ota.update",
 		"alert.rule.create", "alert.rule.update", "alert.rule.delete", "alert.subscription.create", "alert.read", "alert.ack", "alert.risk_config.update",
+		"membership.create", "pricing.template.create",
 	}
-	want := []string{"feedback.read", "feedback.reply", "wallet.read", "alert.read", "alert.ack", "alert.risk_config.update"}
+	want := []string{"feedback.read", "feedback.reply", "wallet.read", "alert.read", "alert.ack"}
 	if got := withoutRetiredPermissions(codes); !reflect.DeepEqual(got, want) {
 		t.Fatalf("visible permissions = %v, want %v", got, want)
 	}

@@ -32,22 +32,3 @@ func TestStationFilterValidation(t *testing.T) {
 		})
 	}
 }
-
-func TestPreserveOverridesQueryValidation(t *testing.T) {
-	for _, tc := range []struct {
-		query        string
-		value, valid bool
-	}{
-		{"", false, true}, {"?preserve_device_overrides=true", true, true}, {"?preserve_device_overrides=false", false, true},
-		{"?preserve_device_overrides=1", false, false}, {"?preserve_device_overrides=", false, false},
-		{"?preserve_device_overrides=true&preserve_device_overrides=false", false, false},
-	} {
-		w := httptest.NewRecorder()
-		c, _ := gin.CreateTestContext(w)
-		c.Request = httptest.NewRequest("GET", "/"+tc.query, nil)
-		value, valid := queryBool(c, "preserve_device_overrides")
-		if value != tc.value || valid != tc.valid {
-			t.Fatalf("%s: got (%v,%v)", tc.query, value, valid)
-		}
-	}
-}

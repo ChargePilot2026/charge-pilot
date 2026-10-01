@@ -88,7 +88,7 @@ func (a ResourceAPI) replyFeedback(c *gin.Context) {
 	}
 	p := c.MustGet("admin_profile").(Profile)
 	var auditPending []auditEntry
-	err := a.Store.UserDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+	err := a.auditedTransaction(c, a.Store.UserDB, &auditPending, func(tx *gorm.DB) error {
 		var row struct{ Status string } // 反馈当前状态：pending 待处理 / processed 已回复 / closed 已关闭
 		if err := tx.Table("feedback").Clauses(clause.Locking{Strength: "UPDATE"}).Where("id=? AND deleted_at IS NULL", id).Take(&row).Error; err != nil {
 			return err
@@ -113,7 +113,6 @@ func (a ResourceAPI) replyFeedback(c *gin.Context) {
 		resourceFailure(c, err)
 		return
 	}
-	a.flushAudit(c, auditPending)
 	httpapi.OK(c, gin.H{"saved": true})
 }
 
@@ -187,7 +186,7 @@ func (a ResourceAPI) dispatchFault(c *gin.Context) {
 	}
 	p := c.MustGet("admin_profile").(Profile)
 	var auditPending []auditEntry
-	err = a.Store.UserDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+	err = a.auditedTransaction(c, a.Store.UserDB, &auditPending, func(tx *gorm.DB) error {
 		var row faultRow
 		if err := tx.Table("device_fault_report").Clauses(clause.Locking{Strength: "UPDATE"}).Where("id=? AND deleted_at IS NULL", id).Take(&row).Error; err != nil {
 			return err
@@ -215,7 +214,6 @@ func (a ResourceAPI) dispatchFault(c *gin.Context) {
 		resourceFailure(c, err)
 		return
 	}
-	a.flushAudit(c, auditPending)
 	httpapi.OK(c, gin.H{"assigned_to": in.AssignedTo, "status": "dispatched"})
 }
 
@@ -240,7 +238,7 @@ func (a ResourceAPI) resolveFault(c *gin.Context) {
 	}
 	p := c.MustGet("admin_profile").(Profile)
 	var auditPending []auditEntry
-	err := a.Store.UserDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+	err := a.auditedTransaction(c, a.Store.UserDB, &auditPending, func(tx *gorm.DB) error {
 		var row faultRow
 		if err := tx.Table("device_fault_report").Clauses(clause.Locking{Strength: "UPDATE"}).Where("id=? AND deleted_at IS NULL", id).Take(&row).Error; err != nil {
 			return err
@@ -267,6 +265,5 @@ func (a ResourceAPI) resolveFault(c *gin.Context) {
 		resourceFailure(c, err)
 		return
 	}
-	a.flushAudit(c, auditPending)
 	httpapi.OK(c, gin.H{"status": in.Status})
 }

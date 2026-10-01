@@ -18,7 +18,7 @@
 | POST | `/api/v1/admin/membership` | `api::membership::create` | 同上(本就固定返回"功能尚未开放") |
 | POST | `/api/v1/internal/withdraw-requests` | `billing::withdraw_create` | 同上(本就固定 503,无 list/review 承接点) |
 
-**连带移除**:`migrations/admin_db_views.sql` 整体删除,`docker/dev/init-mysql.sh` 不再创建
+**连带移除**:`migrations/admin_db_views.sql` 整体删除,`docker/mysql/init-databases.sh` 不再创建
 `withdraw_request` / `membership_card` 两个跨库视图。
 
 > 提现与会员卡功能如将来要上,应重新设计后实现,**不是恢复旧实现**。

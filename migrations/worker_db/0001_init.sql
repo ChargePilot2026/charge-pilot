@@ -67,21 +67,6 @@ CREATE TABLE `dlq_replay_cursor` (
   KEY `idx_updated` (`updated_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='DLQ 重放滑动游标(D21)';
 
--- retry_queue：重试队列(Webhook / 支付)
-CREATE TABLE `retry_queue` (
-  `id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT '记录主键 ID',
-  `queue_name` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'webhook_retry / pay_retry',
-  `payload_json` json NOT NULL COMMENT '任务执行或投递载荷 JSON',
-  `run_at` datetime(3) NOT NULL COMMENT '重试任务计划执行时间',
-  `attempt_count` int unsigned NOT NULL DEFAULT '0' COMMENT '已尝试执行次数',
-  `max_attempts` int unsigned NOT NULL DEFAULT '5' COMMENT '最多允许的执行尝试次数',
-  `last_error` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '最近一次执行错误信息',
-  `status` enum('pending','running','done','failed') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'pending' COMMENT '当前业务状态；取值 pending / running / done / failed',
-  `created_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '记录创建时间',
-  `updated_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) COMMENT '记录更新时间',
-  PRIMARY KEY (`id`),
-  KEY `idx_queue_run` (`queue_name`,`run_at`,`status`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='重试队列(Webhook / 支付)';
 
 -- scheduled_task：定时任务定义
 CREATE TABLE `scheduled_task` (
@@ -134,7 +119,6 @@ INSERT INTO `scheduled_task` (`id`,`task_code`,`name`,`cron_expr`,`enabled`,`las
 -- 仅供一次性开发/测试库回退；删除当前库全部业务表。
 DROP TABLE IF EXISTS `task_execution_log`;
 DROP TABLE IF EXISTS `scheduled_task`;
-DROP TABLE IF EXISTS `retry_queue`;
 DROP TABLE IF EXISTS `dlq_replay_cursor`;
 DROP TABLE IF EXISTS `dlq_log`;
 DROP TABLE IF EXISTS `comp_tx_log`;

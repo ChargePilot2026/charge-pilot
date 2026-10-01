@@ -2,7 +2,7 @@
 
 > **引用**:`docs/技术规格.md` § 14.4(备份策略)
 > **触发场景**:MySQL 数据丢失 / 误操作 / 机房级故障需要从备份恢复
-> **前置**:`examples/docker-compose.yml` 已采用 `chargepilot-mysql` 容器名 + 启用 binlog(§ 7 校验通过)
+> **配置来源**：根目录 docker-compose.yml。恢复前实际核验 binlog 开启状态、位置与同步情况，不能仅凭示例文档认定可进行时间点恢复。
 > **部署目录假设**:将 Compose 文件放在 `/opt/chargepilot/` 并从该目录启动,因此 `./mysql/binlog` 与 `./mysql/conf.d` 分别对应宿主机 `/opt/chargepilot/mysql/binlog/`、`/opt/chargepilot/mysql/conf.d/`;若实际目录不同,下文宿主机路径必须同步修改。
 > **密钥来源**:MySQL 容器已由 Compose 注入 `MYSQL_ROOT_PASSWORD`;以下自动脚本在容器内读取该变量。手工命令若在宿主机使用 `$MYSQL_ROOT_PASSWORD`,需先从受限权限的密钥存储加载,不要把真实密码写进 runbook 或提交仓库。
 
@@ -49,7 +49,7 @@
 docker exec chargepilot-mysql mysql -uroot -p"$MYSQL_ROOT_PASSWORD" \
   -e "SHOW DATABASES;"
 docker exec chargepilot-mysql mysql -uroot -p"$MYSQL_ROOT_PASSWORD" \
-  -e "SELECT COUNT(*) FROM user_db.charge_order WHERE deleted_at IS NULL;"
+  -e "SELECT COUNT(*) FROM central_db.charge_order WHERE deleted_at IS NULL;"
 
 # 2. 列本机 mysqldump 备份(7 天滚动)
 ls -la /var/backup/mysql/ | head -20
@@ -137,10 +137,10 @@ done
 ```bash
 # 校验关键表行数
 docker exec mysql-restore mysql -uroot -prestore_temp_pwd -e "
-  SELECT 'charge_order' AS tbl, COUNT(*) AS n FROM user_db.charge_order WHERE deleted_at IS NULL;
-  SELECT 'refund_record', COUNT(*) FROM user_db.refund_record;
-  SELECT 'payment_order', COUNT(*) FROM user_db.payment_order;
-  SELECT 'fee_calculation', COUNT(*) FROM billing_db.fee_calculation;
+  SELECT 'charge_order' AS tbl, COUNT(*) AS n FROM central_db.charge_order WHERE deleted_at IS NULL;
+  SELECT 'refund_record', COUNT(*) FROM central_db.refund_record;
+  SELECT 'payment_order', COUNT(*) FROM central_db.payment_order;
+  SELECT 'fee_calculation', COUNT(*) FROM central_db.fee_calculation;
   SELECT 'device', COUNT(*) FROM gateway_db.device;
 "
 
@@ -169,7 +169,7 @@ docker exec chargepilot-mysql mysqlbinlog \
 # 2. 提取反向 SQL(只支持 UPDATE / DELETE;INSERT 不可逆 → 必须用全量回滚)
 docker exec chargepilot-mysql mysqlbinlog \
   --start-datetime="2026-09-25 22:00:00" --stop-datetime="2026-09-25 22:30:00" \
-  -vv --database=user_db \
+  -vv --database=central_db \
   /var/lib/mysql/binlog/mysql-bin.000123 > /tmp/binlog_v.sql
 
 # 3. 人工核对后跑反向 SQL
@@ -184,7 +184,7 @@ docker exec -i chargepilot-mysql mysql -uroot -p"$MYSQL_ROOT_PASSWORD" < /tmp/re
 # /etc/cron.d/chargepilot-backup
 
 # 1. 每日 02:00 mysqldump 全量(保留 7 天;必须带 --source-data=2 位点)
-0 2 * * * root /opt/chargepilot/scripts/backup-mysqldump.sh
+0 2 * * * root /opt/chargepilot/scripts/db/backup.sh /var/backup/mysql
 
 # 2. 每日 03:00 rclone 同步到异地 OSS(先确认当天 dump 存在,再复制 dump + 已关闭 binlog + config)
 0 3 * * * root /opt/chargepilot/scripts/sync-to-oss.sh

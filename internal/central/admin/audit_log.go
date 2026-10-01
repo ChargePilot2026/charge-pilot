@@ -9,30 +9,11 @@ import (
 	"gorm.io/gorm"
 )
 
-// auditToAdmin 通过 AdminDB 写一条审计，供 user_db 等其他库的业务在事务提交
-// 后补记；失败只打 error 日志、不影响请求返回，理由见下方三段。
-//
-// audit_log 表建在 admin_db，而优惠券、退款、发票、分账和工单这些资源的
-// 数据在 user_db：一个处理函数先改了 user_db 的数据，再拿自己的事务顺手
-// 写审计，审计就会落进 user_db.audit_log 而不是 admin_db.audit_log。
-// 两边的行互相看不见，一次资金操作的轨迹就落在没人看的地方。
-//
-// 这个方法是 user_db 侧业务记录动作的唯一受支持入口。它走 AdminDB 写，
-// 并且排在业务事务提交之后：把两件事并进同一次写就是跨 schema 写，
-// 而本项目不做跨 schema 写。
-//
-// 失败语义是刻意选的：审计执行的时候业务变更已经落库，此时让响应判失败，
-// 等于告诉运营一件已经发生的事没有发生；而重试一次退款或一次打款，比少
-// 一行日志更糟。所以审计写失败时只按 error 级别带着完整上下文记日志，
-// 请求照常成功。写失败只打日志、不影响返回这个取舍记在
-// docs/migration/go-rebuild.md 里，不是一句没写下来的默认行为。
+// Gateway changes have already committed remotely, so their audit is written
+// after the gateway response. Central business changes use auditedTransaction.
 func (a ResourceAPI) auditToAdmin(c *gin.Context, action, target string, id uint64, before, after any, requestID string) {
-	err := resourceAudit(a.Store.AdminDB.WithContext(c.Request.Context()),
-		c.MustGet("admin_profile").(Profile), action, target, id, before, after,
-		c.ClientIP(), firstNonEmpty(requestID, httpapi.RequestID(c)))
-	if err != nil {
-		log.Printf("AUDIT WRITE FAILED action=%s target=%s id=%d actor=%v: %v",
-			action, target, id, c.MustGet("admin_profile").(Profile).Username, err)
+	if err := resourceAudit(a.Store.AdminDB.WithContext(c.Request.Context()), c.MustGet("admin_profile").(Profile), action, target, id, before, after, c.ClientIP(), firstNonEmpty(requestID, httpapi.RequestID(c))); err != nil {
+		log.Printf("gateway audit failed action=%s target=%s id=%d: %v", action, target, id, err)
 	}
 }
 
@@ -47,7 +28,7 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-// auditRow 是 admin_db.audit_log 的一行，即审计查询的返回结构。
+// auditRow 是 central_db.audit_log 的一行，即审计查询的返回结构。
 // 多数列可空（未带请求号、未取到客户端 IP 等），所以用指针表达"可能没有"。
 type auditRow struct {
 	ID         uint64  `json:"id"`          // 审计记录主键
@@ -157,11 +138,7 @@ func (a ResourceAPI) listAuditLogs(c *gin.Context) {
 	httpapi.OK(c, out)
 }
 
-// auditEntry 是一条待补写的审计：它替 user_db 的事务把一条审计记录带
-// 出去，等那个事务提交之后再写进 admin_db。
-//
-// user_db 的业务在事务内攒下这些条目，事务提交后由 flushAudit 逐条写进
-// admin_db.audit_log。字段含义与 resourceAudit 相同。
+// auditEntry is committed in the same central_db transaction as its business change.
 type auditEntry struct {
 	action    string // 动作，如 create / update / grant
 	target    string // 目标类型，同时也是所属模块，如 coupon
@@ -171,10 +148,18 @@ type auditEntry struct {
 	requestID string // 关联请求号，可为空
 }
 
-// flushAudit 在业务事务提交后把攒下的审计条目逐条写入 admin_db。
-// 单条写失败只记日志、不影响已提交的业务结果。
-func (a ResourceAPI) flushAudit(c *gin.Context, entries []auditEntry) {
-	for _, entry := range entries {
-		a.auditToAdmin(c, entry.action, entry.target, entry.id, entry.before, entry.after, entry.requestID)
-	}
+// auditedTransaction rolls back the business change if its audit cannot be stored.
+func (a ResourceAPI) auditedTransaction(c *gin.Context, db *gorm.DB, entries *[]auditEntry, apply func(*gorm.DB) error) error {
+	return db.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+		if err := apply(tx); err != nil {
+			return err
+		}
+		p := c.MustGet("admin_profile").(Profile)
+		for _, entry := range *entries {
+			if err := resourceAudit(tx, p, entry.action, entry.target, entry.id, entry.before, entry.after, c.ClientIP(), firstNonEmpty(entry.requestID, httpapi.RequestID(c))); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }

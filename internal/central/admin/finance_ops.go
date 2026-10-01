@@ -128,9 +128,9 @@ func (a ResourceAPI) createWithdraw(c *gin.Context) {
 			BankName   *string `gorm:"column:bank_name"`         // 开户行(可空)
 			TemplateID uint64  `gorm:"column:split_template_id"` // 绑定的分账模板 ID,模板已删除或非 active 时不允许提现
 		}
-		// 参与方身份放在 admin_db，靠它自己的连接去查，而不是联进计费库那个事务里。
+		// 参与方身份与计费共享 central_db，在同一事务中核对。
 		// split_party 没有 deleted_at：下线这件事记在父级模板上。
-		if err := a.Store.AdminDB.WithContext(c.Request.Context()).Table("split_party").
+		if err := tx.Table("split_party").
 			Select("id, party_code, party_name, bank_account, bank_name, split_template_id").
 			Where("id = ?", in.PartyID).Take(&party).Error; err != nil {
 			return err
@@ -139,7 +139,7 @@ func (a ResourceAPI) createWithdraw(c *gin.Context) {
 			Status  string  `gorm:"column:status"`     // 分账模板状态,只有 active 允许提现
 			Deleted *string `gorm:"column:deleted_at"` // 分账模板软删时间(可空),非空表示已下线
 		}
-		if err := a.Store.AdminDB.WithContext(c.Request.Context()).Table("split_template").
+		if err := tx.Table("split_template").
 			Select("status, deleted_at").Where("id = ?", party.TemplateID).Take(&template).Error; err != nil {
 			return err
 		}
@@ -159,18 +159,10 @@ func (a ResourceAPI) createWithdraw(c *gin.Context) {
 		}).Error; err != nil {
 			return err
 		}
-		return nil
-	})
-	if err != nil {
-		resourceFailure(c, err)
-		return
-	}
-	// 提现动的是真金白银，所以审计流水是必须的。它落在 admin_db，写在校验库
-	// 那个事务提交之后，而不是塞在事务里面。
-	if err := a.Store.AdminDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
 		return resourceAudit(tx, profile, "create", "withdraw", in.PartyID, nil,
 			gin.H{"withdraw_no": no, "party_id": in.PartyID, "amount_cents": in.AmountCents}, c.ClientIP(), c.GetHeader("X-Request-ID"))
-	}); err != nil {
+	})
+	if err != nil {
 		resourceFailure(c, err)
 		return
 	}
@@ -195,13 +187,11 @@ func (a ResourceAPI) decideWithdraw(c *gin.Context) {
 	}
 	profile := c.MustGet("admin_profile").(Profile)
 	action := "approve"
-	var withdrawID uint64
 	err := a.Store.BillingDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
 		var row WithdrawRow
 		if err := tx.Table("withdraw_request").Clauses(clause.Locking{Strength: "UPDATE"}).Where("withdraw_no = ?", no).Take(&row).Error; err != nil {
 			return err
 		}
-		withdrawID = row.ID
 		values := map[string]any{"reviewed_by": profile.ID, "reviewed_at": gorm.Expr("UTC_TIMESTAMP(3)")}
 		if in.Reason != nil && utf8Count(*in.Reason) > 255 {
 			return errConflict
@@ -234,13 +224,12 @@ func (a ResourceAPI) decideWithdraw(c *gin.Context) {
 			// approve=false 却不给理由，就没法说清为什么驳回。
 			return errConflict
 		}
-		return tx.Table("withdraw_request").Where("withdraw_no = ? AND status = ?", no, row.Status).Updates(values).Error
+		if err := tx.Table("withdraw_request").Where("withdraw_no = ? AND status = ?", no, row.Status).Updates(values).Error; err != nil {
+			return err
+		}
+		return resourceAudit(tx, profile, action, "withdraw", row.ID, nil, gin.H{"withdraw_no": no}, c.ClientIP(), c.GetHeader("X-Request-ID"))
 	})
 	if err != nil {
-		resourceFailure(c, err)
-		return
-	}
-	if err := a.auditFinance(c, profile, action, "withdraw", withdrawID, gin.H{"withdraw_no": no}); err != nil {
 		resourceFailure(c, err)
 		return
 	}
@@ -261,13 +250,11 @@ func (a ResourceAPI) payWithdraw(c *gin.Context) {
 		httpapi.BadRequest(c, "提现单号无效")
 		return
 	}
-	var withdrawID uint64
 	err := a.Store.BillingDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
 		var row WithdrawRow
 		if err := tx.Table("withdraw_request").Clauses(clause.Locking{Strength: "UPDATE"}).Where("withdraw_no = ?", no).Take(&row).Error; err != nil {
 			return err
 		}
-		withdrawID = row.ID
 		if row.Status == "paid" {
 			// 已经打款过：只回报已记录的状态，不再出一次款。
 			return nil
@@ -290,13 +277,12 @@ func (a ResourceAPI) payWithdraw(c *gin.Context) {
 		} else if in.Note != nil {
 			values["note"] = *in.Note
 		}
-		return tx.Table("withdraw_request").Where("withdraw_no = ? AND status = 'approved'", no).Updates(values).Error
+		if err := tx.Table("withdraw_request").Where("withdraw_no = ? AND status = 'approved'", no).Updates(values).Error; err != nil {
+			return err
+		}
+		return resourceAudit(tx, c.MustGet("admin_profile").(Profile), "pay", "withdraw", row.ID, nil, gin.H{"withdraw_no": no}, c.ClientIP(), c.GetHeader("X-Request-ID"))
 	})
 	if err != nil {
-		resourceFailure(c, err)
-		return
-	}
-	if err := a.auditFinance(c, c.MustGet("admin_profile").(Profile), "pay", "withdraw", withdrawID, gin.H{"withdraw_no": no}); err != nil {
 		resourceFailure(c, err)
 		return
 	}
@@ -528,13 +514,6 @@ func (a ResourceAPI) resolveReconcile(c *gin.Context) {
 		return
 	}
 	httpapi.OK(c, gin.H{"id": id, "resolved": in.Resolved})
-}
-
-// auditFinance 在管理库写一条审计流水，凡是动钱的动作（提现、对账、Webhook 重发）都走这里。
-func (a ResourceAPI) auditFinance(c *gin.Context, p Profile, action, target string, id uint64, detail any) error {
-	return a.Store.AdminDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
-		return resourceAudit(tx, p, action, target, id, nil, detail, c.ClientIP(), c.GetHeader("X-Request-ID"))
-	})
 }
 
 // validUUID 判断字符串是不是合法 UUID，用于提现、导出等接口的请求号幂等校验。
@@ -785,21 +764,22 @@ func (a ResourceAPI) retryWebhookDelivery(c *gin.Context) {
 		resourceFailure(c, err)
 		return
 	}
-	if err := a.Store.AdminDB.WithContext(c.Request.Context()).Create(&eventOutboxRow{
-		EventID: envelope["event_id"].(string), Stream: "charge_events_stream", EnvelopeJSON: payload,
-	}).Error; err != nil {
-		resourceFailure(c, err)
-		return
-	}
-	if err := a.auditFinance(c, profile, "retry", "webhook", id, gin.H{"event_id": eventID, "subscription_id": id}); err != nil {
+	if err := a.Store.AdminDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&eventOutboxRow{
+			EventID: envelope["event_id"].(string), Stream: "charge_events_stream", EnvelopeJSON: payload,
+		}).Error; err != nil {
+			return err
+		}
+		return resourceAudit(tx, profile, "retry", "webhook", id, nil, gin.H{"event_id": eventID, "subscription_id": id}, c.ClientIP(), c.GetHeader("X-Request-ID"))
+	}); err != nil {
 		resourceFailure(c, err)
 		return
 	}
 	httpapi.OK(c, gin.H{"event_id": eventID, "requeued": true})
 }
 
-// TableName 指定 GORM 写入管理库 event_outbox 表（事件流投递队列）。
-func (eventOutboxRow) TableName() string { return "event_outbox" }
+// TableName 指定 GORM 写入central_db.admin_event_outbox 表（事件流投递队列）。
+func (eventOutboxRow) TableName() string { return "admin_event_outbox" }
 
 // eventOutboxRow 是发往事件流的信封，手动重发 Webhook 时用它把事件重新排队。
 type eventOutboxRow struct {

@@ -15,7 +15,7 @@ import (
 	"github.com/pressly/goose/v3"
 )
 
-var schemas = []string{"gateway_db", "user_db", "admin_db", "billing_db", "worker_db"}
+var schemas = []string{"gateway_db", "central_db", "worker_db"}
 
 func main() {
 	selected := flag.String("schema", "all", "schema name or all")

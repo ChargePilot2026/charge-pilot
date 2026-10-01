@@ -27,7 +27,6 @@ return (<><View className="container"><DevelopmentAccount />{!!(needsLogin) && (
 <View>{"可用优惠券："}
 {profile?.coupon_unused_count}
 {" 张"}</View>
-<View>{profile?.membershipText}</View>
 <View className="text-secondary">{"注册日期 "}
 {profile?.registeredText}</View></View>)}
 <View className="card"><View style={inlineStyle({"display": "flex", "justifyContent": "space-between", "padding": "16rpx 0"})} onClick={event("goWallet", {})}><Text>{"我的余额与充值"}</Text>

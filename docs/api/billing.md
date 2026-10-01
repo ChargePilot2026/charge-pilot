@@ -499,7 +499,7 @@ pub struct PartyAmount {
 - 新增 HTTP 端点必须同步更新 `internal/central/` 的 Gin 路由、接口契约与本文件
 - **Stream 名必须从 § 5.1 8 个真实 Stream 中选**,新增 Stream 必须先在技术规格登记
 - **计费 / 分账引擎的输入输出结构变更**(影响 `fee_calculation.calculation_detail` JSON 格式)→ 必须同步更新本文档 § 七 + `docs/db/billing.md` 表结构 + 写数据库 migration 兼容老数据
-- CI 检查:OpenAPI 规范与本文件端点清单一致(脚本 `tools/check-api-consistency.ts`)
+- 文档核对：以当前 Go 路由和 OpenAPI 为准，退役的文档检查器不再用于 CI。
 
 ### 当前报价实现（2026-09-26）
 

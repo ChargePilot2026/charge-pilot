@@ -14,7 +14,7 @@ import (
 
 var ErrNoSplitTemplate = errors.New("站点未配置分账模板，无法生成分账")
 
-// SplitTemplate 解析站点生效的分账契约。admin_db 归 central 所有，
+// SplitTemplate 解析站点生效的分账契约。central_db 归 central 所有，
 // 所以模板直接在那里读取，绝不走跨库 SQL。
 type SplitTemplate struct {
 	ID      uint64
@@ -27,7 +27,7 @@ type SplitTemplate struct {
 	IDs map[string]uint64
 }
 
-// SplitResolver 代表计费模块读取 admin_db。
+// SplitResolver 代表计费模块读取 central_db。
 type SplitResolver struct{ AdminDB *gorm.DB }
 
 // Resolve 返回绑定在该站点上的生效模板。
@@ -181,7 +181,7 @@ func (s Store) Settle(ctx context.Context, calculationID uint64, template SplitT
 }
 
 // SettlementsDue 列出还没有结算的已算出 fee。
-// 计费与结算共用同一个 billing_db，所以这里不跨库。
+// 计费与结算共用同一个 central_db，所以这里不跨库。
 func (s Store) SettlementsDue(ctx context.Context, limit int) ([]PendingSettlement, error) {
 	if limit <= 0 {
 		limit = 50

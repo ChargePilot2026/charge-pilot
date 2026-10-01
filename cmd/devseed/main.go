@@ -1,5 +1,5 @@
 // Command devseed 为充电用户控制台（充电用户列表）写入与清除本地示例数据。
-// 它的存在是因为在一台全新机器上后台根本没法看：user_db 出厂没有用户，
+// 它的存在是因为在一台全新机器上后台根本没法看：central_db 出厂没有用户，
 // 那个页面上的每个数字——订单数、消费额、钱包余额——都是 0，
 // 这会掩盖页面到底有没有读到正确的行。
 //
@@ -11,7 +11,7 @@
 //	go run ./cmd/devseed          # 写入示例数据
 //	go run ./cmd/devseed -clean   # 删除示例数据
 //
-// DSN 取自 DATABASE_URL_USER / DATABASE_URL_ADMIN（与服务用的是同一组变量），
+// DSN 取自 DATABASE_URL_CENTRAL（与服务用的是同一组变量），
 // 手机号密钥取自 PHONE_ENCRYPTION_KEY。
 package main
 
@@ -156,7 +156,6 @@ func main() {
 		fail(err)
 	}
 	defer userDB.Close()
-	defer adminDB.Close()
 
 	if *clean {
 		remove(ctx, userDB, adminDB)
@@ -166,21 +165,8 @@ func main() {
 }
 
 func openDatabases(ctx context.Context) (*sql.DB, *sql.DB, error) {
-	userURL := os.Getenv("DATABASE_URL_USER")
-	adminURL := os.Getenv("DATABASE_URL_ADMIN")
-	if userURL == "" || adminURL == "" {
-		return nil, nil, fmt.Errorf("需要设置 DATABASE_URL_USER 与 DATABASE_URL_ADMIN")
-	}
-	userDB, err := dbconn.Open(ctx, userURL)
-	if err != nil {
-		return nil, nil, fmt.Errorf("连接 user_db: %w", err)
-	}
-	adminDB, err := dbconn.Open(ctx, adminURL)
-	if err != nil {
-		userDB.Close()
-		return nil, nil, fmt.Errorf("连接 admin_db: %w", err)
-	}
-	return userDB, adminDB, nil
+	db, err := dbconn.Open(ctx, os.Getenv("DATABASE_URL_CENTRAL"))
+	return db, db, err
 }
 
 func seed(ctx context.Context, userDB, adminDB *sql.DB) {

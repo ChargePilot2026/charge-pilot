@@ -55,7 +55,10 @@ func TestRefreshAggregatesFoldsSamplesIntoBuckets(t *testing.T) {
 	}
 	// 再加一个不带端口的设备级指标，
 	// 它必须落在 NULL 端口下，而不是端口 0。
-	samples = append(samples, AggregateSample{DeviceID: deviceID, Metric: "signal", Value: "80", TS: base})
+	samples = append(samples,
+		AggregateSample{DeviceID: deviceID, Metric: "signal", Value: "80", TS: base},
+		AggregateSample{DeviceID: deviceID, Metric: "signal", Value: "60", TS: base.Add(5 * time.Minute)},
+	)
 
 	if err := orm.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		for _, s := range samples {
@@ -104,6 +107,20 @@ func TestRefreshAggregatesFoldsSamplesIntoBuckets(t *testing.T) {
 	}
 	if signalPort != nil {
 		t.Fatalf("device-level metric stored with port %d, want NULL", *signalPort)
+	}
+	for _, table := range []string{"telemetry_aggregate_15min", "telemetry_aggregate_hourly"} {
+		var signal bucket
+		var rows int64
+		query := orm.Table(table).Where("device_id=? AND metric='signal' AND port_no IS NULL", deviceID)
+		if err := query.Count(&rows).Error; err != nil || rows != 1 {
+			t.Fatalf("%s device-level bucket rows=%d err=%v", table, rows, err)
+		}
+		if err := query.Select("CAST(avg_value AS CHAR) avg, CAST(min_value AS CHAR) mn, CAST(max_value AS CHAR) mx, count").Take(&signal).Error; err != nil {
+			t.Fatal(err)
+		}
+		if signal.Count != 2 || signal.Avg != "70.000000" || signal.Min != "60.000000" || signal.Max != "80.000000" {
+			t.Fatalf("%s device-level aggregate=%+v", table, signal)
+		}
 	}
 
 	// 小时汇总覆盖的是同样那三个样本。

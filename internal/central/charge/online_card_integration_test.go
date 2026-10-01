@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"github.com/ChargePilot2026/charge-pilot/internal/central/billing"
 	"github.com/ChargePilot2026/charge-pilot/internal/central/pricing"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/dbconn"
@@ -150,7 +149,7 @@ func TestCardServerExtensionDebitsOnceAndRefundsUnusedMinutes(t *testing.T) {
 	if err != nil || fee.TotalCents != 250 {
 		t.Fatalf("%+v %v", fee, err)
 	}
-	receipt := billing.Result{CalculationNo: fmt.Sprintf("FEE%020d", order.ID), Source: source, ActualFee: fee}
+	receipt := billing.Result{CalculationNo: billing.CalculationNumber(order.OrderNo, order.ID), Source: source, ActualFee: fee}
 	for i := 0; i < 2; i++ {
 		if err := orders.Apply(ctx, receipt); err != nil {
 			t.Fatal(err)

@@ -12,9 +12,9 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// couponRow 是优惠券模板（user_db.coupon）的一行，列表、创建入参、审计快照共用它。
+// couponRow 是优惠券模板（central_db.coupon）的一行，列表、创建入参、审计快照共用它。
 // 注意这里没有 Code 字段：券不再有业务编码，以主键 id 唯一标识
-// （迁移 user_db/0037 删除了 coupon.code 与 active_code，并给 coupon_redemption 补了 coupon_id）。
+// （迁移 central_db/0037 删除了 coupon.code 与 active_code，并给 coupon_redemption 补了 coupon_id）。
 // 三种优惠形式互斥，且各自的取值字段只有一个非空：
 // amount 填 DiscountValueCents，percentage 填 DiscountPercent，time_free 填 FreeMinutes。
 type couponRow struct {
@@ -81,7 +81,7 @@ func (a ResourceAPI) createCoupon(c *gin.Context) {
 	}
 	in.Status = "active"
 	var auditPending []auditEntry
-	err := a.Store.UserDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+	err := a.auditedTransaction(c, a.Store.UserDB, &auditPending, func(tx *gorm.DB) error {
 		if err := tx.Table("coupon").Create(&in).Error; err != nil {
 			return err
 		}
@@ -92,7 +92,6 @@ func (a ResourceAPI) createCoupon(c *gin.Context) {
 		resourceFailure(c, err)
 		return
 	}
-	a.flushAudit(c, auditPending)
 	httpapi.OK(c, in)
 }
 
@@ -116,7 +115,7 @@ func (a ResourceAPI) updateCoupon(c *gin.Context) {
 		return
 	}
 	var auditPending []auditEntry
-	err := a.Store.UserDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+	err := a.auditedTransaction(c, a.Store.UserDB, &auditPending, func(tx *gorm.DB) error {
 		var before couponRow
 		if err := tx.Table("coupon").Clauses(clause.Locking{Strength: "UPDATE"}).Where("id=? AND deleted_at IS NULL", id).Take(&before).Error; err != nil {
 			return err
@@ -131,7 +130,6 @@ func (a ResourceAPI) updateCoupon(c *gin.Context) {
 		resourceFailure(c, err)
 		return
 	}
-	a.flushAudit(c, auditPending)
 	httpapi.OK(c, in)
 }
 
@@ -196,7 +194,7 @@ func (a ResourceAPI) grantCoupon(c *gin.Context) {
 	}
 	var grantID uint64
 	var auditPending []auditEntry
-	err := a.Store.UserDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+	err := a.auditedTransaction(c, a.Store.UserDB, &auditPending, func(tx *gorm.DB) error {
 		var coupon couponRow
 		if err := tx.Table("coupon").Clauses(clause.Locking{Strength: "UPDATE"}).Where("id=? AND deleted_at IS NULL", id).Take(&coupon).Error; err != nil {
 			return err
@@ -254,6 +252,5 @@ func (a ResourceAPI) grantCoupon(c *gin.Context) {
 		resourceFailure(c, err)
 		return
 	}
-	a.flushAudit(c, auditPending)
 	httpapi.OK(c, gin.H{"coupon_grant_id": grantID, "request_id": in.RequestID})
 }

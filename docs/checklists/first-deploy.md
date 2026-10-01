@@ -20,13 +20,13 @@
 - [ ] 拷贝交付物:`docker-compose.yml` + `docker/Caddyfile` + `.env.example`，保持 `docker/` 相对路径
 - [ ] 复制 `.env.example` 为 `.env`,填数据库密码、`REDIS_PASSWORD`、**不同值的** `REDIS_STREAM_PASSWORD`、`JWT_SECRET`、服务令牌与微信支付凭证
 - [ ] `chmod 600 .env`(权限隔离,不入 Git)
-- [ ] 生产切换门禁开放后运行 `bash scripts/check-deploy-config.sh` 并检查退出码
+- [ ] 业务与外部联调验收通过后运行 `node scripts/ops/check-deploy.mjs` 并检查退出码
 
 ## 三、启动基础设施
 
 - [ ] `docker compose up -d chargepilot-mysql chargepilot-redis-cache chargepilot-redis-stream`
 - [ ] 等待 MySQL `healthy`(`docker ps` 看 STATUS)
-- [ ] 检查 schema 列表:`docker exec chargepilot-mysql mysql -uroot -e "SHOW DATABASES;"` 应该看到 5 个业务 schema(需使用受限密钥方式提供密码)
+- [ ] 检查 schema 列表:`docker exec chargepilot-mysql mysql -uroot -e "SHOW DATABASES;"` 应该看到 gateway_db、central_db、worker_db 三个业务 schema(需使用受限密钥方式提供密码)
 - [ ] 自动 migration 验证:看 `user` 容器日志是否有 `applied migration` 提示
 
 ## 四、启动 5 个应用服务

@@ -28,7 +28,7 @@ type activityRuleRow struct {
 	Name            string    `json:"name"`              // 活动名称，运营可读，不参与业务判定
 	TriggerType     string    `json:"trigger_type"`      // 触发类型：first_recharge 首充、invite_reward 邀请有奖、threshold_redeem 满减、holiday 节日
 	CouponID        uint64    `json:"coupon_id"`         // 活动发放的券 ID
-	CouponName      string    `json:"coupon_name"`       // 关联券的名称，从 user_db.coupon 联查出来只用于展示
+	CouponName      string    `json:"coupon_name"`       // 关联券的名称，从 central_db.coupon 联查出来只用于展示
 	InviterCouponID *uint64   `json:"inviter_coupon_id"` // 邀请人奖励券 ID，指针为 nil 表示该活动不是邀请有奖类型
 	ThresholdCents  int64     `json:"threshold_cents"`   // 触发门槛，单位分；满减类必填，其余类型必须为 0
 	MaxGrants       int       `json:"max_grants"`        // 活动总发放上限，0 表示不限；用于控制活动成本
@@ -83,7 +83,7 @@ func (a ResourceAPI) listActivityRules(c *gin.Context) {
 	}
 	out := Page[activityRuleRow]{Items: []activityRuleRow{}, Page: page.Page, PageSize: page.PageSize}
 	query := a.Store.UserDB.WithContext(c.Request.Context()).Table("coupon_activity_rule AS r").
-		Joins("LEFT JOIN user_db.coupon AS c ON c.id = r.coupon_id").
+		Joins("LEFT JOIN coupon AS c ON c.id = r.coupon_id").
 		Where("r.deleted_at IS NULL")
 	if page.Status != "" {
 		query = query.Where("r.status = ?", page.Status)
@@ -185,7 +185,6 @@ func (in *activityRuleInput) validate() (time.Time, time.Time, error) {
 var errActivityInput = errors.New("invalid activity rule")
 
 // createActivityRule 新建一个券活动。校验通过且所引用的券都可用后写入 coupon_activity_rule。
-// 规则落在 user_db 而审计日志落在 admin_db，跨库不能同事务，因此提交后再通过 AdminDB 单独补写审计。
 func (a ResourceAPI) createActivityRule(c *gin.Context) {
 	var in activityRuleInput
 	if !decodeResource(c, &in) {
@@ -219,16 +218,15 @@ func (a ResourceAPI) createActivityRule(c *gin.Context) {
 		}).Error; err != nil {
 			return err
 		}
-		return tx.Raw("SELECT LAST_INSERT_ID()").Scan(&id).Error
+		if err := tx.Raw("SELECT LAST_INSERT_ID()").Scan(&id).Error; err != nil {
+			return err
+		}
+		return resourceAudit(tx, c.MustGet("admin_profile").(Profile), "create", "coupon_activity", id, nil, in, c.ClientIP(), httpapi.RequestID(c))
 	})
 	if err != nil {
 		resourceFailure(c, err)
 		return
 	}
-	// 规则在 user_db，audit_log 在 admin_db。把两者放进同一个事务
-	// 就是跨 schema 写入，本项目不这么做，
-	// 所以等改动提交之后再经 AdminDB 单独补写审计。
-	a.auditToAdmin(c, "create", "coupon_activity", id, nil, in, "")
 	httpapi.OK(c, gin.H{"id": id})
 }
 
@@ -278,13 +276,12 @@ func (a ResourceAPI) updateActivityRule(c *gin.Context) {
 		if changed.RowsAffected != 1 {
 			return gorm.ErrRecordNotFound
 		}
-		return nil
+		return resourceAudit(tx, c.MustGet("admin_profile").(Profile), "update", "coupon_activity", id, before, in, c.ClientIP(), httpapi.RequestID(c))
 	})
 	if err != nil {
 		resourceFailure(c, err)
 		return
 	}
-	a.auditToAdmin(c, "update", "coupon_activity", id, before, in, "")
 	httpapi.OK(c, gin.H{"id": id})
 }
 

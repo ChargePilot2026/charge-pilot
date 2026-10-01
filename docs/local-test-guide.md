@@ -7,14 +7,14 @@
 在项目根目录执行（Docker Desktop 必须已经运行）：
 
 ```powershell
-./scripts/start-dev.ps1
+./scripts/dev/start.ps1
 ```
 
 分别打开两个 PowerShell 终端，各执行一条命令。TUI 会占用当前终端：
 
 ```powershell
-./scripts/start-simulator.ps1 -Number 1
-./scripts/start-simulator.ps1 -Number 2
+./scripts/dev/simulator.ps1 -Number 1
+./scripts/dev/simulator.ps1 -Number 2
 ```
 
 首次编译需要 Go 1.27。默认每台两个端口；可追加 `-Ports 10`，但后台导入时的端口数也要一致。两个模拟器拥有独立设备编号、状态文件和控制端口，不能用相同编号同时连接。启动脚本保留已有数据。
@@ -31,7 +31,7 @@
 
 H5 默认账号 `tester-1`。「我的」中的本地测试账号可以切换到 `tester-2` 等账号，切换后重新登录；两个浏览器配置文件可同时使用不同用户。模拟充值入口先输入金额，再确认模拟付款。本次已经为 `tester-1` 模拟充值 10 元，并测试了刷卡扣费与退款。
 
-新机器或重建数据库后，可运行 `node scripts/prepare-local-test.mjs` 创建同样的厂商、站点、两台设备和测试方案。该脚本通过正常后台 API 创建，只补齐缺失项目，不覆盖已经编辑的配置。绑定在线卡需要先让对应用户登录，再在后台按用户 ID 绑定。
+新机器或重建数据库后，可运行 `node scripts/dev/prepare.mjs` 创建同样的厂商、站点、两台设备和测试方案。该脚本通过正常后台 API 创建，只补齐缺失项目，不覆盖已经编辑的配置。绑定在线卡需要先让对应用户登录，再在后台按用户 ID 绑定。
 
 ## 先测试后台
 
@@ -66,18 +66,18 @@ H5 默认账号 `tester-1`。「我的」中的本地测试账号可以切换到
 数据库尚未发布，修改五个 `0001_init.sql` 的原始建表语句即可，不增加 ALTER 或增量迁移。主动重建开发库时执行：
 
 ```powershell
-./scripts/reset-dev-db.ps1 -ResetDevelopmentData
-node scripts/prepare-local-test.mjs
+./scripts/db/reset-dev.ps1 -ResetDevelopmentData
+node scripts/dev/prepare.mjs
 ```
 
 重建脚本先备份，再清空项目的五个开发 schema 和专用 Redis；旧联调记录会被替换。本次重建前备份位于 `.tmp/dev-db-before-reset-20261001-034902.sql`。
 
 ```powershell
-./scripts/install-hooks.ps1
+./scripts/git/install-hooks.ps1
 go run ./tools/backend-check -fix -fmt-only
 go run ./tools/backend-check
 ```
 
-提交 hook 强制检查 Go 格式与 `go vet`，检查失败不能提交。完整集成测试使用隔离数据库；Linux/Git Bash 可运行 `scripts/test-integration.sh`。用户端在 `miniprogram` 执行 `npm run typecheck`、`npm test`、`npm run build:h5` 与 `npm run build:weapp`。
+提交 hook 强制检查 Go 格式与 `go vet`，检查失败不能提交。完整集成测试使用隔离数据库；Linux/Git Bash 可运行 `scripts/test/integration.sh`。用户端在 `miniprogram` 执行 `npm run typecheck`、`npm test`、`npm run build:h5` 与 `npm run build:weapp`。
 
 本轮已实际验证两台模拟器同时 TCP 在线、H5 登录/充值/下单、一分钟套餐完整 60 秒到期结算、金额支付启动/停止/自动结算退款、电量套餐故障停机/自动退款、刷卡启动/移卡重刷加时及刷卡结束结算。协议指令与故障分支还有自动化测试覆盖。Go 全量测试（含隔离 MySQL/Redis 集成测试）、后端 fmt/vet、后台 43 项测试、用户端 51 项测试及 Taro H5/小程序构建通过。微信正式登录/商户支付与实机计量需要外部环境验收；2026-10-01 已移除 OTA 固件管理、升级计划与协议升级控制，保留模拟器烟雾等设备故障上报告警。双口扩展八档固件变体的额外指令需要对应扩展协议，当前覆盖文档内通用五档指令。

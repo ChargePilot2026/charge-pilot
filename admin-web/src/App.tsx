@@ -44,8 +44,8 @@ export default function App() {
         <Route path="vendors" element={<VendorsPage />} />
         <Route path="stations" element={<StationsPage />} />
         <Route path="templates" element={<TemplatesPage />} />
-        <Route path="pricing-templates" element={<Navigate to="/templates?tab=pricing" replace />} />
-        <Route path="package-templates" element={<Navigate to="/templates?tab=packages" replace />} />
+        <Route path="pricing-templates" element={<Navigate to="/templates" replace />} />
+        <Route path="package-templates" element={<Navigate to="/templates" replace />} />
 
         <Route path="users" element={<UsersPage />} />
         <Route path="alerts" element={<AlertsPage />} />

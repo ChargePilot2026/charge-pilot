@@ -16,11 +16,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// ResourceStore 通过各自 schema 的连接读写中台的每个模块。
-// 这里既不写跨 schema SQL，也不碰网关的数据库。
-//
-// ResourceStore 持有各业务模块自己的库连接：AdminDB 站点/设备/定价，UserDB 用户与订单，
-// BillingDB 计费与分账。三个句柄分开是为了不出现跨库 SQL。
+// ResourceStore contains domain views of the same central database handle.
 type ResourceStore struct{ AdminDB, UserDB, BillingDB *gorm.DB }
 
 // ResourceAPI 是除登录鉴权外全部后台业务接口的处理器，聚合了数据句柄、鉴权中间件
@@ -57,7 +53,6 @@ func (a ResourceAPI) Register(r *gin.Engine) {
 	a.registerVendors(r)
 	a.registerFinanceOps(r)
 	a.registerWebhookDelivery(r)
-	a.registerRiskConfig(r)
 	a.registerAdminUsers(r)
 	ExportTask{Store: a.Store, Auth: a.Auth, ExportDir: a.ExportDir}.register(r)
 	r.GET("/api/v1/admin/stations", a.Auth.Require("station.read"), a.stations)
@@ -184,7 +179,6 @@ func decodeResource(c *gin.Context, dst any) bool {
 
 // resourceAudit 写一条审计记录：把变更前后的快照序列化成 JSON，一并记下操作人、
 // 对象、客户端 IP 和请求号。必须传业务事务的 tx 才能与业务改动同生共死；
-// 跨库的业务需改用 audit_log.go 里的 auditToAdmin / flushAudit。
 func resourceAudit(tx *gorm.DB, p Profile, action, target string, id uint64, before, after any, ip, requestID string) error {
 	old, err := json.Marshal(before)
 	if err != nil {
@@ -200,3 +194,5 @@ func resourceAudit(tx *gorm.DB, p Profile, action, target string, id uint64, bef
 	}
 	return tx.Table("audit_log").Create(map[string]any{"actor_id": p.ID, "actor_name": p.Username, "module": target, "action": action, "target_type": target, "target_id": strconv.FormatUint(id, 10), "before_json": string(old), "after_json": string(next), "client_ip": ip, "request_id": requestID, "created_month": time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)}).Error
 }
+
+func normalizeBool(value bool) bool { return value }

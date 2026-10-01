@@ -4,6 +4,6 @@
 
 Go 源码使用根模块和 `cmd/`、`internal/` 结构。当前 `internal/central/identity` 已实现部分登录与资料接口；其余领域进度见 [Go 重建清单](migration/go-rebuild.md)。不应将三进程启动成功理解为全部功能合并完成。
 
-五个 MySQL schema 暂按原领域保留：`gateway_db`、`user_db`、`admin_db`、`billing_db`、`worker_db`。`central` 通过 `DATABASE_URL_USER`、`DATABASE_URL_ADMIN`、`DATABASE_URL_BILLING` 分别连接三个领域库。迁移由 `cmd/migrate` 独立执行，生产切换须等待完整业务及外部联调验收。
+MySQL 使用三个 schema：gateway_db、central_db、worker_db。central 的用户、运营及计费模块通过 DATABASE_URL_CENTRAL 共用一个连接池。迁移由 cmd/migrate 独立执行；旧开发库保留数据的合并方式见 [数据库精简清单](db/central.md)。
 
 跨服务共用的配置、鉴权、数据库连接与 HTTP 包装放在 `internal/platform`；领域规则保留在对应目录。新增设备协议实现 `internal/gateway/protocol.Adapter`，可使用独立 TCP 端口。当前 `dc589` 默认使用 `:9100`，MQTT 暂缓。

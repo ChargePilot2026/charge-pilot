@@ -18,5 +18,4 @@ export interface ChargeUserProfile {
   registered_at: string;
   wallet: { available_cents: number; frozen_cents: number };
   coupon_unused_count: number;
-  membership_card: { card_type: string } | null;
 }

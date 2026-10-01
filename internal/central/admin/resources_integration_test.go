@@ -63,9 +63,15 @@ func TestAdminPagesIntegration(t *testing.T) {
 	// 到了哪里，就能只删掉本轮写下去的那些行，而且不碰本来就存在的行，这比
 	// 去猜它的命名规则要稳健得多。
 	floors := map[*gorm.DB]int64{}
+	outboxTable := func(db *gorm.DB) string {
+		if db == adb {
+			return "admin_event_outbox"
+		}
+		return "event_outbox"
+	}
 	for _, db := range []*gorm.DB{adb, udb, gdb} {
 		var floor int64
-		if e := db.Raw("SELECT COALESCE(MAX(id),0) FROM event_outbox").Row().Scan(&floor); e == nil {
+		if e := db.Raw("SELECT COALESCE(MAX(id),0) FROM " + outboxTable(db)).Row().Scan(&floor); e == nil {
 			floors[db] = floor
 		}
 	}
@@ -79,7 +85,6 @@ func TestAdminPagesIntegration(t *testing.T) {
 			pagesUsers     = "openid LIKE 'pages%'"
 			pagesDevices   = "device_id LIKE 'PAGES%'"
 			pagesTemplates = "name IN ('集成计费模板','坏时段','空档位','设备计费带费率','模式与费率不符','改价后的模板','模板副本','并发模板','已绑定模板','名称可更新','分页站点','更新站点','上下架套餐','旧版单位测试模板','旧版单位测试副本')"
-			pagesPackages  = "name = '上下架套餐'"
 			pagesPayment   = "order_no LIKE 'PAGES_%' OR wechat_transaction_id LIKE 'SIMPAGES%'"
 		)
 		// 本轮没建出站点时（测试提前失败）退化成 id = 0，删不到任何东西，
@@ -104,16 +109,11 @@ func TestAdminPagesIntegration(t *testing.T) {
 				// 上架动作把套餐模板复制成一条按站点售卖的 charge_offer。两者都不
 				// 清就会一版版攒起来：套餐模板池里堆着几十条同名模板，售卖记录还
 				// 指向早就删掉的站点，变成后台再也查不出来的孤儿。
-				"DELETE FROM charge_offer WHERE station_id IN (SELECT id FROM station WHERE " + pagesStations + ") OR package_template_id IN (SELECT id FROM pricing_package_template WHERE " + pagesPackages + ")",
-				"DELETE FROM station_recharge_package WHERE station_id IN (SELECT id FROM station WHERE " + pagesStations + ")",
-				"DELETE FROM pricing_package_template WHERE " + pagesPackages,
-				"DELETE FROM station_policy WHERE station_id IN (SELECT id FROM station WHERE " + pagesStations + ")",
 				"DELETE FROM station WHERE " + pagesStations,
 				// 一条没被这次清理掉、活过了清理时机的计费规则会保留着它的版本计数，
 				// 于是下一轮的 apply 就会被当成版本冲突拒掉——这种报错读起来像是一个
 				// 产品缺陷，其实并不是。
 				"DELETE FROM pricing_publication WHERE rule_id IN (SELECT id FROM pricing_rule WHERE template_id IN (SELECT id FROM pricing_template WHERE " + pagesTemplates + "))",
-				"DELETE FROM pricing_switch_task WHERE template_id IN (SELECT id FROM pricing_template WHERE " + pagesTemplates + ")",
 				// 这条没绑定的历史遗留规则既不属于任何一个模板，也不属于任何一个站点，
 				// 所以只能直接按名字点名删——它是这里唯一一个两处引用都够不着的夹具。
 				"DELETE FROM pricing_rule WHERE name = 'legacy unbound' OR template_id IN (SELECT id FROM pricing_template WHERE " + pagesTemplates + ") OR station_id IN (SELECT id FROM station WHERE " + pagesStations + ")",
@@ -176,8 +176,10 @@ func TestAdminPagesIntegration(t *testing.T) {
 					t.Logf("cleanup failed: %v :: %s", e, stmt)
 				}
 			}
-			if e := group.db.Exec("DELETE FROM event_outbox WHERE id > ?", floors[group.db]).Error; e != nil {
-				t.Logf("cleanup failed: %v :: outbox rows this run wrote", e)
+			if floor, ok := floors[group.db]; ok {
+				if e := group.db.Exec("DELETE FROM "+outboxTable(group.db)+" WHERE id > ?", floor).Error; e != nil {
+					t.Logf("cleanup failed: %v :: outbox rows this run wrote", e)
+				}
 			}
 		}
 	})

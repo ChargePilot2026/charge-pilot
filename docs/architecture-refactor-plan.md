@@ -724,7 +724,7 @@ P4 改 `common-redis` 影响全部 5 个服务的消费者，**不能只跑 bill
 | `6a440fd` · `75e267e` | 分段计量与跨分时电价结算 + 兜底单表 | **D16** |
 | `123cd59` | 文档同步 | — |
 
-**当前闸口（全部实跑）**：V1 **零 error**；V2 `cargo test --workspace` **363 passed / 0 failed / 53 ignored**（实施前 273，+90 个新护栏，**零回归**）；`node tools/check-api-consistency.ts` 通过。
+**当前闸口（全部实跑）**：V1 **零 error**；V2 `cargo test --workspace` **363 passed / 0 failed / 53 ignored**（实施前 273，+90 个新护栏，**零回归**）；`旧文档一致性检查（已退役）` 通过。
 
 ### 🔴 新发现：D24 —— 停机回写从未命中，计费链整条从未跑通
 

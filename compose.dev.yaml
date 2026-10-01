@@ -1,5 +1,4 @@
-# 用完即弃的 Go 开发栈。Rust 时代遗留的数据卷必须先删掉或重建，
-# Goose 才能初始化迁移历史。
+# 本地 Go 开发栈。保留现有数据；结构重建使用 scripts/db/reset-dev.ps1。
 name: chargepilot-dev
 
 x-go: &go
@@ -35,16 +34,15 @@ services:
     image: mysql:8.4
     environment:
       MYSQL_ROOT_PASSWORD: chargepilot_root_dev
-      MYSQL_DATABASE: chargepilot
       MYSQL_USER: chargepilot
       MYSQL_PASSWORD: chargepilot_dev
     command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
     ports: ["127.0.0.1:3306:3306"]
     volumes:
       - mysql-data:/var/lib/mysql
-      - ./docker/dev/init-mysql.sh:/docker-entrypoint-initdb.d/10-chargepilot.sh:ro
+      - ./docker/mysql/init-databases.sh:/docker-entrypoint-initdb.d/10-chargepilot.sh:ro
     healthcheck:
-      test: ["CMD-SHELL", "MYSQL_PWD=$$MYSQL_PASSWORD mysql --protocol=TCP -h 127.0.0.1 -u chargepilot -D chargepilot -e 'SELECT 1'"]
+      test: ["CMD-SHELL", "MYSQL_PWD=$$MYSQL_PASSWORD mysql --protocol=TCP -h 127.0.0.1 -u chargepilot -e 'SELECT 1'"]
       interval: 5s
       timeout: 5s
       retries: 30
@@ -82,9 +80,7 @@ services:
     environment:
       GOPROXY: https://goproxy.cn,direct
       DATABASE_URL_GATEWAY: mysql://chargepilot:chargepilot_dev@mysql:3306/gateway_db
-      DATABASE_URL_USER: mysql://chargepilot:chargepilot_dev@mysql:3306/user_db
-      DATABASE_URL_ADMIN: mysql://chargepilot:chargepilot_dev@mysql:3306/admin_db
-      DATABASE_URL_BILLING: mysql://chargepilot:chargepilot_dev@mysql:3306/billing_db
+      DATABASE_URL_CENTRAL: mysql://chargepilot:chargepilot_dev@mysql:3306/central_db
       DATABASE_URL_WORKER: mysql://chargepilot:chargepilot_dev@mysql:3306/worker_db
     depends_on:
       mysql: { condition: service_healthy }
@@ -108,9 +104,7 @@ services:
       - export-files:/var/lib/chargepilot/exports
     environment:
       <<: *go-env
-      DATABASE_URL_USER: mysql://chargepilot:chargepilot_dev@mysql:3306/user_db
-      DATABASE_URL_ADMIN: mysql://chargepilot:chargepilot_dev@mysql:3306/admin_db
-      DATABASE_URL_BILLING: mysql://chargepilot:chargepilot_dev@mysql:3306/billing_db
+      DATABASE_URL_CENTRAL: mysql://chargepilot:chargepilot_dev@mysql:3306/central_db
       EXPORT_DIR: /var/lib/chargepilot/exports
       ADMIN_BOOTSTRAP_USER: ${ADMIN_BOOTSTRAP_USER:-admin}
       ADMIN_BOOTSTRAP_PASSWORD: ${ADMIN_BOOTSTRAP_PASSWORD:-ChangeMe!Admin2026}
@@ -123,8 +117,7 @@ services:
       <<: *go-env
       DATABASE_URL: mysql://chargepilot:chargepilot_dev@mysql:3306/worker_db
       DATABASE_URL_GATEWAY: mysql://chargepilot:chargepilot_dev@mysql:3306/gateway_db
-      DATABASE_URL_USER: mysql://chargepilot:chargepilot_dev@mysql:3306/user_db
-      DATABASE_URL_ADMIN: mysql://chargepilot:chargepilot_dev@mysql:3306/admin_db
+      DATABASE_URL_CENTRAL: mysql://chargepilot:chargepilot_dev@mysql:3306/central_db
       REGULATORY_MODE: simulation
     ports: ["127.0.0.1:8085:8085"]
 

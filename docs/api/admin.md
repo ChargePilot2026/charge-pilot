@@ -1447,7 +1447,7 @@ user 服务在单库事务中锁定模板，校验用户有效、模板处于发
 
 - 修改本文件需在 PR 标题写 `api(admin): <简短描述>`,并在 PR 描述中说明影响哪些端点
 - 任何新增 / 删除 / 修改端点必须同步更新 `internal/central/` 的 Gin 路由、接口契约与本文件
-- CI 检查:OpenAPI 规范与本文件端点清单必须一致(脚本 `tools/check-api-consistency.ts`)
+- 文档核对：以当前 Go 路由和 OpenAPI 为准，退役的文档检查器不再用于 CI。
 - **跨服务一致性**:admin 通过 HTTP 调 user / gateway / billing / worker 的内部接口命名,必须与对应服务 API 文档一致;新增 admin 端点若依赖其他服务接口,必须先在对方服务的 API 文档中落地路径
 - **审计一致性**:任何 admin 写端点都应检查审计记录与权限映射；Go 模块落地时建立相应权限矩阵
 - **导出任务**:当前由 central 的 `admin_db.export_task` 承载，文件由 central 生成；worker 旧设计仅供历史参考。

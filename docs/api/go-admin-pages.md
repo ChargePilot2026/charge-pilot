@@ -134,7 +134,7 @@
 
 ## 验证
 
-`TestAdminPagesIntegration` 覆盖已注册页面列表、鉴权、分页/输入、站点、导入、优惠券、配置、反馈、报修、退款双签/拒绝/重试、发票审核和钱包风控。使用 `scripts/test-integration.sh -race` 在隔离 MySQL/Redis 上运行，避免默认跳过数据库测试。实际点击情况见 [页面验收记录](../testing/admin-pages-2026-09-29.md)。
+`TestAdminPagesIntegration` 覆盖已注册页面列表、鉴权、分页/输入、站点、导入、优惠券、配置、反馈、报修、退款双签/拒绝/重试、发票审核和钱包风控。使用 `scripts/test/integration.sh -race` 在隔离 MySQL/Redis 上运行，避免默认跳过数据库测试。实际点击情况见 [页面验收记录](../testing/admin-pages-2026-09-29.md)。
 
 ## 套餐售价与结算（2026-09-30）
 

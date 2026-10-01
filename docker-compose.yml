@@ -1,10 +1,9 @@
-# 生产拓扑。scripts/start.sh 会拦着不发版，直到迁移清单完成、
-# 且第三方支付与设备验收已经记录在案。
+# 生产拓扑。部署前完成 docs/migration/go-rebuild.md 中的业务与外部验收。
 name: chargepilot
 
 x-go-build: &go-build
   context: .
-  dockerfile: docker/go.Dockerfile
+  dockerfile: docker/Dockerfile
 
 services:
   chargepilot-mysql:
@@ -12,15 +11,14 @@ services:
     restart: unless-stopped
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?required}
-      MYSQL_DATABASE: chargepilot
       MYSQL_USER: chargepilot
       MYSQL_PASSWORD: ${DB_PASSWORD:?required}
     command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
     volumes:
       - mysql-data:/var/lib/mysql
-      - ./docker/dev/init-mysql.sh:/docker-entrypoint-initdb.d/10-chargepilot.sh:ro
+      - ./docker/mysql/init-databases.sh:/docker-entrypoint-initdb.d/10-chargepilot.sh:ro
     healthcheck:
-      test: ["CMD-SHELL", "MYSQL_PWD=$$MYSQL_PASSWORD mysql --protocol=TCP -h 127.0.0.1 -u chargepilot -D chargepilot -e 'SELECT 1'"]
+      test: ["CMD-SHELL", "MYSQL_PWD=$$MYSQL_PASSWORD mysql --protocol=TCP -h 127.0.0.1 -u chargepilot -e 'SELECT 1'"]
       interval: 10s
       timeout: 5s
       retries: 20
@@ -55,9 +53,7 @@ services:
     restart: "no"
     environment:
       DATABASE_URL_GATEWAY: mysql://chargepilot:${DB_PASSWORD}@chargepilot-mysql:3306/gateway_db
-      DATABASE_URL_USER: mysql://chargepilot:${DB_PASSWORD}@chargepilot-mysql:3306/user_db
-      DATABASE_URL_ADMIN: mysql://chargepilot:${DB_PASSWORD}@chargepilot-mysql:3306/admin_db
-      DATABASE_URL_BILLING: mysql://chargepilot:${DB_PASSWORD}@chargepilot-mysql:3306/billing_db
+      DATABASE_URL_CENTRAL: mysql://chargepilot:${DB_PASSWORD}@chargepilot-mysql:3306/central_db
       DATABASE_URL_WORKER: mysql://chargepilot:${DB_PASSWORD}@chargepilot-mysql:3306/worker_db
     depends_on:
       chargepilot-mysql: { condition: service_healthy }
@@ -85,9 +81,7 @@ services:
     volumes:
       - export-files:/var/lib/chargepilot/exports
     environment:
-      DATABASE_URL_USER: mysql://chargepilot:${DB_PASSWORD}@chargepilot-mysql:3306/user_db
-      DATABASE_URL_ADMIN: mysql://chargepilot:${DB_PASSWORD}@chargepilot-mysql:3306/admin_db
-      DATABASE_URL_BILLING: mysql://chargepilot:${DB_PASSWORD}@chargepilot-mysql:3306/billing_db
+      DATABASE_URL_CENTRAL: mysql://chargepilot:${DB_PASSWORD}@chargepilot-mysql:3306/central_db
       EXPORT_DIR: /var/lib/chargepilot/exports
       REDIS_CACHE_URL: redis://:${REDIS_PASSWORD}@chargepilot-redis-cache:6379/0
       REDIS_STREAM_URL: redis://:${REDIS_STREAM_PASSWORD}@chargepilot-redis-stream:6379/0
@@ -112,8 +106,7 @@ services:
     environment:
       DATABASE_URL: mysql://chargepilot:${DB_PASSWORD}@chargepilot-mysql:3306/worker_db
       DATABASE_URL_GATEWAY: mysql://chargepilot:${DB_PASSWORD}@chargepilot-mysql:3306/gateway_db
-      DATABASE_URL_USER: mysql://chargepilot:${DB_PASSWORD}@chargepilot-mysql:3306/user_db
-      DATABASE_URL_ADMIN: mysql://chargepilot:${DB_PASSWORD}@chargepilot-mysql:3306/admin_db
+      DATABASE_URL_CENTRAL: mysql://chargepilot:${DB_PASSWORD}@chargepilot-mysql:3306/central_db
       REDIS_STREAM_URL: redis://:${REDIS_STREAM_PASSWORD}@chargepilot-redis-stream:6379/0
       SERVICE_TOKEN: ${SERVICE_TOKEN:?required}
       CENTRAL_INTERNAL_URL: http://chargepilot-central:8080

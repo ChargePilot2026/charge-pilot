@@ -73,16 +73,12 @@ func (s Store) Calculate(ctx context.Context, source Source) (Result, error) {
 		}
 		month := time.Date(source.Meter.EndedAt.Year(), source.Meter.EndedAt.Month(), 1, 0, 0, 0, 0, time.UTC)
 		resultJSON, _ := json.Marshal(out)
-		ruleJSON, _ := json.Marshal(source.Rule)
 		row := map[string]any{"calculation_no": out.CalculationNo, "order_no": source.OrderNo, "charge_order_id": source.ChargeOrderID, "user_id": source.UserID, "station_id": source.Rule.StationID, "pricing_rule_id": source.Rule.ID, "pricing_rule_version": source.Rule.Version, "charged_kwh": fmt.Sprintf("%d.%03d", source.Meter.ChargedWh/1000, source.Meter.ChargedWh%1000), "charged_seconds": source.Meter.ChargedSeconds, "electric_cents": fee.ElectricCents, "service_cents": fee.ServiceCents, "total_cents": fee.TotalCents, "breakdown_json": string(resultJSON), "created_month": month}
 		if err := tx.Table("fee_calculation").Create(row).Error; err != nil {
 			return err
 		}
 		var id uint64
 		if err := tx.Raw("SELECT LAST_INSERT_ID()").Scan(&id).Error; err != nil {
-			return err
-		}
-		if err := tx.Table("pricing_tier_snapshot").Create(map[string]any{"fee_calculation_id": id, "pricing_rule_id": source.Rule.ID, "version": source.Rule.Version, "snapshot_json": string(ruleJSON)}).Error; err != nil {
 			return err
 		}
 		if err := tx.Table("fee_receipt").Where("charge_order_id=?", source.ChargeOrderID).Updates(map[string]any{"calculation_id": id, "calculation_no": out.CalculationNo}).Error; err != nil {

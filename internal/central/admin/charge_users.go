@@ -10,7 +10,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// 充电用户（charge user）是 user_db.user 里的 C 端用户，和 admin_db 的后台管理员账号是两回事。
+// 充电用户（charge user）是 central_db.user 里的 C 端用户，和 central_db 的后台管理员账号是两回事。
 //
 // 此前后台能看到订单、反馈、报障，但每处都只带一个裸的 user_id：客服接到投诉时
 // 无从知道这个人是谁、怎么联系他，运营想核对一个用户的消费也只能挨个翻订单。
@@ -42,7 +42,7 @@ type ChargeUserRow struct {
 	LastOrderAt  *string `json:"last_order_at" gorm:"-"` // 最近一次下单时间；指针，从未下过单为 null
 }
 
-// TableName 把这个结构体指回 user_db.user。
+// TableName 把这个结构体指回 central_db.user。
 //
 // 不能省。GORM 默认按结构体名推导表名，ChargeUserRow 会被推成 charge_user_rows，
 // 而真实表名是 user——少了这一行，列表和详情都会以"表不存在"失败，而报错信息

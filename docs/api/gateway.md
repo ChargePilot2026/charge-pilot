@@ -581,7 +581,7 @@ TCP 状态帧与告警帧会先写入 gateway 自有 `event_outbox`，再由发�
 - **协议 adapter 新增 / 修改**必须同步更新 `docs/db/gateway.md`(`vendor` 表)
 - 新增 HTTP 端点必须同步更新 `services/gateway/src/openapi.rs`
 - **Stream 名必须从 § 5.1 8 个真实 Stream 中选**,新增 Stream 必须先在技术规格登记
-- CI 检查:OpenAPI 规范与本文件端点清单一致(脚本 `tools/check-api-consistency.ts`)
+- 文档核对：以当前 Go 路由和 OpenAPI 为准，退役的文档检查器不再用于 CI。
 
 
 ### 当前 TCP 启动与确认协议（2026-09-26）
@@ -611,7 +611,7 @@ TCP 状态帧与告警帧会先写入 gateway 自有 `event_outbox`，再由发�
 
 恢复任务周期扫描未报告指令，不依赖 Stream 是否已进入死信。当前连接表为单网关进程内存表；跨实例设备路由尚未实现。扫码结果在数据库状态 idle 但已有启动占用时返回 reserved，前端显示“启动处理中”且不可选。
 
-开发验证：`scripts/test-charge-start.ps1` 使用真实 MySQL/Redis、user/gateway HTTP 与模拟 TCP 设备；加 `-RestartGateway` 会在未确认 START 后重启开发网关并验证重连后的 STOP 补偿。无真实付款或实体设备控制。
+开发验证：运行 scripts/test/integration.ps1（Windows）或 scripts/test/integration.sh，在隔离 MySQL/Redis 中验证网关控制、指令重试、订单同步及协议适配器；双设备交互使用 scripts/dev/simulator.ps1。
 
 
 ### 主动停止与最终读数（2026-09-26）

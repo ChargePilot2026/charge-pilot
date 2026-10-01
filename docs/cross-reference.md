@@ -1,14 +1,14 @@
 # API ↔ DB ↔ Stream 一致性对账文档
 
 > **目的**:防止三个层次的文档(API / DB / Stream)漂移。任何新增 / 修改 / 删除必须**同步更新本文档对应行**,否则 CI 拒绝合并。
-> **维护工具**:`tools/check-api-consistency.ts`(检查端点路径、Stream 名、表名是否在文档中一致出现)
+> **状态**：历史设计总账，旧文档检查器已退役。当前表结构见 docs/db/central.md，后端代码检查使用 tools/backend-check；接口和事件映射按当前 Go 实现人工核对。
 > **最近一次同步**:2026-10-01(移除客服坐席、用户在线客服、告警配置与 OTA；反馈报修归设备运维)
 
 > **Redis 实例拆分(P0-3 固化)**:业务缓存与事件流分两个 Redis 容器,避免 allkeys-lru 误淘汰 Stream 事件:
 > - `chargepilot-redis-cache`:DB 0,`allkeys-lru`,业务缓存(`snapshot:{order_id}` 等)
 > - `chargepilot-redis-stream`:DB 0,**`noeviction`**(Stream 不能被 LRU 淘汰),事件流(`device_event_stream` 等 10 个)
 > 两个 Redis **独立 `REDIS_PASSWORD`**,网络层走同一 `internal` docker network。
-> 详见 `docs/技术规格.md` § 4.7 + `examples/docker-compose.yml`。
+> 详见 `docs/技术规格.md` § 4.7 + `docker-compose.yml`。
 
 > **MySQL 8.4 分区约束(P0-2 固化)**:所有按月分区表,**主键 + 所有 UNIQUE 索引都必须包含分区字段**(否则 `ERROR 1503`)。
 > 分区字段统一用 generated column 命名:
@@ -285,7 +285,7 @@
    - 禁止裸 `§ X.Y` 引用 —— 必须使用 `文档名 § X.Y` 形式(如 `技术规格 § 5.1`、`需求分析 § 3.1`)
    - 原因:同节号在多份文档含义不同(例:`§ 5.5` 在需求分析 / 技术规格 / 本文档含义各异),裸引用必歧义
    - 内部指向本文件 § X.Y 可保留裸形式,需紧邻段落注明"见上 § X"
-6. **CI 检查**:`tools/check-api-consistency.ts` 自动扫以下不变量:
+6. **人工核对**：按当前 Go 实现检查以下不变量：
    - `api/*.md` 中出现的所有 `_stream` 名都在 § 1 列表内
    - `db/*.md` 中出现的所有表名都在 § 2 列表内
    - 写端点(POST/PUT/DELETE)都有对应表承接(§ 4)

@@ -20,8 +20,8 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// WebhookDeliverer 给管理端事件订阅签名并投递。订阅存在 admin_db 里，
-// 而 admin_db 本来就归 worker 管。
+// WebhookDeliverer 给管理端事件订阅签名并投递，直接读取 central_db 的
+// 订阅并记录投递日志。
 type WebhookDeliverer struct {
 	AdminDB   *gorm.DB
 	Stream    *redis.Client

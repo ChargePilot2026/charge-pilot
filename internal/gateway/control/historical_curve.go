@@ -11,7 +11,7 @@ import (
 )
 
 // historicalCurve 接受一个由 central 从它自己拥有的充电订单推导出来的时间窗。
-// gateway 拿不到 user_db，所以订单归属必须在 central 那一侧先证明，
+// gateway 拿不到 central_db，所以订单归属必须在 central 那一侧先证明，
 // 才能调到这个内部接口。
 func (a TelemetryAPI) historicalCurve(c *gin.Context) {
 	if !a.authorized(c) {

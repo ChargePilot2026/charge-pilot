@@ -42,7 +42,7 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	databaseURLs := map[string]string{"gateway": cfg.GatewayDatabaseURL, "user": cfg.UserDatabaseURL, "admin": cfg.AdminDatabaseURL, "worker": cfg.DatabaseURL}
+	databaseURLs := map[string]string{"gateway": cfg.GatewayDatabaseURL, "central": cfg.CentralDatabaseURL, "worker": cfg.DatabaseURL}
 	databases := make(map[string]*sql.DB, len(databaseURLs))
 	orms := make(map[string]*gorm.DB, len(databaseURLs))
 	for name, url := range databaseURLs {
@@ -58,6 +58,8 @@ func run(ctx context.Context) error {
 		}
 		orms[name] = orm
 	}
+	databases["user"], databases["admin"] = databases["central"], databases["central"]
+	orms["user"], orms["admin"] = orms["central"], orms["central"]
 	streamOptions, err := redis.ParseURL(cfg.RedisStreamURL)
 	if err != nil {
 		return err
@@ -81,8 +83,8 @@ func run(ctx context.Context) error {
 			httpapi.Write(c, http.StatusServiceUnavailable, 5003, "stream unavailable", nil)
 			return
 		}
-		for _, db := range databases {
-			if db.PingContext(check) != nil {
+		for name := range databaseURLs {
+			if databases[name].PingContext(check) != nil {
 				httpapi.Write(c, http.StatusServiceUnavailable, 5003, "database unavailable", nil)
 				return
 			}
@@ -132,11 +134,18 @@ func run(ctx context.Context) error {
 	go func() {
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
+		nextCleanup := time.Now()
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				if time.Now().After(nextCleanup) {
+					if err := scheduler.CleanupHistory(ctx); err != nil && !errors.Is(err, context.Canceled) {
+						log.Printf("scheduled history cleanup: %v", err)
+					}
+					nextCleanup = time.Now().Add(time.Hour)
+				}
 				if err := scheduler.RunDue(ctx); err != nil && !errors.Is(err, context.Canceled) {
 					log.Printf("scheduled tasks: %v", err)
 				}

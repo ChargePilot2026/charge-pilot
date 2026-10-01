@@ -37,7 +37,7 @@
 
 ## 自动验证
 
-- `scripts/test-integration.sh` 与 `scripts/test-integration.sh -race`：五个 schema 从空库迁移，MySQL/Redis 集成测试通过，包括新增后台页面和钱包退款终态失败释放预留。
+- `scripts/test/integration.sh` 与 `scripts/test/integration.sh -race`：五个 schema 从空库迁移，MySQL/Redis 集成测试通过，包括新增后台页面和钱包退款终态失败释放预留。
 - `go vet ./...`、`go build ./cmd/...` 通过。
 - 前端 11 项测试通过（含会话刷新、账号切换及并发测试）；TypeScript/Vite 生产构建通过（仅依赖 chunk 体积提示）。
 - `git diff --check` 通过。
@@ -63,7 +63,7 @@
 已退 ¥1.75、部分退款、订单已完成及 `fee_calculated` 时间线。
 [页面证据](screenshots/actual-billing-refund.png)。该 fixture 从结束记录起验证，未连接真实硬件。
 
-完整隔离 MySQL/Redis `scripts/test-integration.sh -race`、`go vet ./...`、`go build ./cmd/...` 通过。
+完整隔离 MySQL/Redis `scripts/test/integration.sh -race`、`go vet ./...`、`go build ./cmd/...` 通过。
 新增内部计费接口拒绝空/错误服务令牌的测试；凭证无效时不得触及数据库。
 跨费率缺少分段的人工核实、欠费补缴仍未完成，不将相关页面记作通过。
 用户暂时无法操作管理员新密码表单，该浏览器提交仍待本人接管，不阻断其它工作。

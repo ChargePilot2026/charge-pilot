@@ -13,7 +13,7 @@ import (
 
 // OrderView 是后台订单列表与详情共用的行模型。
 //
-// 数据主体是 user_db 的充电订单，独立读取持久化业务、支付状态，
+// 数据主体是 central_db 的充电订单，独立读取持久化业务、支付状态，
 // 并联出支付单的实际金额、退款进度和支付意图的站点资料。
 type OrderView struct {
 	Live                *charge.LiveMeterView `json:"live,omitempty" gorm:"-"`
@@ -52,13 +52,13 @@ type OrderView struct {
 }
 
 // OrderBilling 是订单详情附带的结算视图。订单本身不含金额去向，金额怎么分在
-// billing_db，需要按订单号二次查询后挂在这里。
+// central_db，需要按订单号二次查询后挂在这里。
 type OrderBilling struct {
 	CalculationNo *string          `json:"calculation_no"` // 计费单号；指针，尚未完成计费为 null
 	Settlements   []SettlementView `json:"settlements"`    // 该订单产生的分账汇总列表
 }
 
-// SettlementView 是 billing_db 中一条分账汇总，映射自 settlement 表。
+// SettlementView 是 central_db 中一条分账汇总，映射自 settlement 表。
 type SettlementView struct {
 	SettlementID   uint64      `json:"settlement_id" gorm:"column:id"`                  // 分账汇总主键（表主键列名是 id）
 	SettlementNo   string      `json:"settlement_no" gorm:"column:settlement_no"`       // 分账单号
@@ -68,7 +68,7 @@ type SettlementView struct {
 	Parties        []PartyView `json:"parties" gorm:"-"`                                // 各参与方金额；gorm:"-" 表示不参与扫描，由调用方逐条回填
 }
 
-// PartyView 是分账中的一个参与方及其应得金额，映射自 billing_db.settlement_party_amount。
+// PartyView 是分账中的一个参与方及其应得金额，映射自 central_db.settlement_party_amount。
 // 名称与比例都是结算当时的快照，之后改分账模板不会回溯这张表。
 type PartyView struct {
 	PartyID     uint64 `json:"party_id" gorm:"column:party_id"`         // 参与方 ID
@@ -148,7 +148,6 @@ func (s ResourceStore) Orders(ctx context.Context, q OrderQuery) (Page[OrderView
 }
 
 // orderStations 按订单行里的站点 ID 批量补上站点名称。
-// 站点名在 admin_db、订单在 user_db，两个库之间不做 JOIN，只能取回后在内存里回填；
 // 查不到已删除站点的行保留 nil，不报错。
 func (s ResourceStore) orderStations(ctx context.Context, rows []OrderView) error {
 	ids := []uint64{}
@@ -227,7 +226,7 @@ func (a ResourceAPI) orders(c *gin.Context) {
 }
 
 // order 是 GET /api/v1/admin/orders/：id 的处理函数：返回订单详情，并补上
-// billing_db 里的计费单号、分账汇总和各参与方金额。
+// central_db 里的计费单号、分账汇总和各参与方金额。
 // RefundApplicantID 只有当操作人持有 order.refund.create 权限时才回填，
 // 前端据此显示退款入口；它不参与后端退款权限校验，只影响界面是否展示按钮。
 func (a ResourceAPI) order(c *gin.Context) {

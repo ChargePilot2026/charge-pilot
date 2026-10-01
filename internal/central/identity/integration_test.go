@@ -85,7 +85,7 @@ func TestLoginAndRefreshIntegration(t *testing.T) {
 		t.Fatalf("wallet count=%d err=%v", count, err)
 	}
 	profile, err := store.Profile(ctx, users[0].ID)
-	if err != nil || profile.UserID != users[0].ID || profile.Wallet.AvailableCents != 0 || profile.MembershipCard != nil {
+	if err != nil || profile.UserID != users[0].ID || profile.Wallet.AvailableCents != 0 {
 		t.Fatalf("profile=%+v err=%v", profile, err)
 	}
 	sessions := Sessions{Redis: cache}
