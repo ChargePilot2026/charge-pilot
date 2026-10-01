@@ -8,11 +8,11 @@ import DeviceCreate from './DeviceCreate';
 import DeviceEdit from './DeviceEdit';
 import { LoadError } from '../components/LoadError';
 import { DEFAULT_PAGE_SIZE, TABLE_PAGINATION } from '../utils/tablePagination';
-import { portStatusText, signalStrengthText } from '../utils/deviceTelemetry';
+import { lastOnlineText, portStatusText, signalStrengthText } from '../utils/deviceTelemetry';
 
 interface Device {
   id: number; device_id: string; station_id?: number; station_name?: string;
-  vendor_id?: number; vendor_name?: string; last_heartbeat_at?: string; runtime_available?: boolean; model?: string; status: string;
+  vendor_id?: number; vendor_name?: string; last_heartbeat_at?: string | null; runtime_available?: boolean; model?: string; status: string;
   signal_strength?: number | null; signal_at?: string | null;
   ports?: { port_no: number; status_code: number | null; status_at: string | null }[] | null;
 }
@@ -25,6 +25,13 @@ const sampledAt = (value: string | null | undefined) => value ? `采样时间：
 const deviceSignal = (device: Device) => device.runtime_available === false ? '暂不可读取'
   : device.signal_strength == null ? '—'
     : <Tooltip title={sampledAt(device.signal_at)}><span>{signalStrengthText(device.signal_strength)}</span></Tooltip>;
+const deviceLastOnline = (device: Device, now: number) => {
+  if (device.runtime_available === false) return '暂不可读取';
+  const text = lastOnlineText(device.last_heartbeat_at, now);
+  const reportedAt = device.last_heartbeat_at ? new Date(device.last_heartbeat_at) : null;
+  if (!reportedAt || !Number.isFinite(reportedAt.getTime())) return text;
+  return <Tooltip title={reportedAt.toLocaleString()} trigger={['hover', 'focus']}><span tabIndex={0}>{text}</span></Tooltip>;
+};
 const devicePorts = (device: Device) => device.runtime_available === false ? '暂不可读取'
   : !device.ports?.length ? '—'
     : <div style={{ display: 'inline-grid', gridTemplateColumns: 'repeat(10, 28px)', gap: 4 }}>
@@ -44,6 +51,7 @@ export default function DevicesPage({ station, embedded = false, onConfigure }: 
 } = {}) {
   const navigate = useNavigate();
   const [data,setData]=useState<Device[]>([]);
+  const [now,setNow]=useState(Date.now);
   const [loading,setLoading]=useState(false);
   const [error,setError]=useState('');
   const [permissions,setPermissions]=useState<string[]>([]);
@@ -67,16 +75,24 @@ export default function DevicesPage({ station, embedded = false, onConfigure }: 
     }catch(e:any){if(current===generation.current&&session===adminSession.epoch())message.error(e?.response?.data?.message||e.message||'运营状态保存失败');}
     finally{operatingRef.current=false;setOperating(undefined);}
   };
-  const load=async()=>{
+  const load=async(background = false)=>{
     const current=++generation.current;
-    setLoading(true);setError('');setData([]);setTotal(0);setPermissions([]);
+    setError('');
+    if (!background) { setLoading(true);setData([]);setTotal(0);setPermissions([]); }
     try {
       const result=await apiGet<{items:Device[];total:number;permissions:string[]}>('/api/v1/admin/devices',{...query, station_id:station?.id});
-      if(current===generation.current){setData(result.items);setTotal(result.total);setPermissions(result.permissions);}
+      if(current===generation.current){setData(result.items);setTotal(result.total);setPermissions(result.permissions);setNow(Date.now());}
     } catch(e:any){if(current===generation.current)setError(e?.response?.data?.message || e.message || '设备读取失败');}
     finally{if(current===generation.current)setLoading(false);}
   };
-  useEffect(()=>{load();return()=>{generation.current++;};},[query,station?.id]);
+  useEffect(()=>{
+    void load();
+    const timer = window.setInterval(() => {
+      setNow(Date.now());
+      if (!operatingRef.current) void load(true);
+    }, 60_000);
+    return()=>{generation.current++;window.clearInterval(timer);};
+  },[query,station?.id]);
   const search=()=>setQuery({...query,page:1,keyword,status});
   const openStation = (device: Device, configure = false) => {
     if (!device.station_id) return;
@@ -91,7 +107,7 @@ export default function DevicesPage({ station, embedded = false, onConfigure }: 
   return <div className={embedded ? 'station-devices' : 'page-container'}>
     {embedded && <Space wrap style={{marginBottom:12}}>
       <Typography.Title level={5} style={{margin:0}}>{station ? '本站设备' : '设备'}</Typography.Title>
-      <Button icon={<ReloadOutlined/>} onClick={load}>刷新</Button>
+      <Button icon={<ReloadOutlined/>} onClick={() => void load()}>刷新</Button>
       {createActions}
     </Space>}
     <div className="list-search-row"><Space wrap>
@@ -114,7 +130,7 @@ export default function DevicesPage({ station, embedded = false, onConfigure }: 
         {title:'运营状态',dataIndex:'status',render:(s:string)=><Tag color={statuses[s]?.color || 'default'}>{statuses[s]?.label || s}</Tag>},
         {title:'信号强度',key:'signal',render:(_:unknown,d:Device)=>deviceSignal(d)},
         {title:'端口状态',key:'ports',width:348,render:(_:unknown,d:Device)=>devicePorts(d)},
-        {title:'最后在线时间',key:'heartbeat',render:(_:unknown,d:Device)=>d.runtime_available===false?'暂不可读取':d.last_heartbeat_at?new Date(d.last_heartbeat_at).toLocaleString():'尚无心跳'},
+        {title:'最后在线时间',key:'heartbeat',render:(_:unknown,d:Device)=>deviceLastOnline(d,now)},
         ...(permissions.includes('device.operate') || permissions.includes('pricing.read') && (onConfigure || permissions.includes('station.read')) ? [{title:'操作',key:'configuration',render:(_:unknown,d:Device)=><Space>
           {permissions.includes('device.operate')&&<Button type="link" onClick={() => setEditing(d.device_id)}>编辑</Button>}
           {permissions.includes('pricing.read')&&(onConfigure||permissions.includes('station.read'))&&<Button type="link" disabled={!d.station_id}

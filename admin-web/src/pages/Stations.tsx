@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Table, Space, Button, Drawer, Modal, Form, Input, InputNumber, Select, Tag, message } from 'antd';
+import { Table, Space, Button, Modal, Form, Input, InputNumber, Select, Tag, message } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import { apiGet, apiPost } from '../api/client';
 import { LoadError } from '../components/LoadError';
-import StationWorkspace, { stationStatuses, type StationRecord as Station } from './stations/StationWorkspace';
+import { stationStatuses, type StationRecord as Station } from './stations/StationWorkspace';
+import StationDetailsDrawer from './stations/StationDetailsDrawer';
 import { DEFAULT_PAGE_SIZE, TABLE_PAGINATION } from '../utils/tablePagination';
 
 export default function StationsPage() {
@@ -106,10 +107,8 @@ export default function StationsPage() {
           { title:'操作',key:'actions',width:100,render:(_:unknown,station:Station)=><Button type="link" onClick={() => showWorkspace(station)}>管理</Button> },
         ]}
       />
-      <Drawer title={workspace ? `${workspace.name} · 站点管理` : '站点管理'} open={!!workspace}
-        width="min(1120px, 100vw)" destroyOnClose onClose={closeWorkspace}>
-        {workspace && <StationWorkspace key={workspace.id} station={workspace} permissions={permissions} initialDeviceId={initialDeviceID} onSaved={updated => { setWorkspace(current => current?.id === updated.id ? updated : current); void load(); }} />}
-      </Drawer>
+      <StationDetailsDrawer station={workspace} permissions={permissions} initialDeviceId={initialDeviceID} onClose={closeWorkspace}
+        onSaved={updated => { setWorkspace(current => current?.id === updated.id ? updated : current); void load(); }} />
       <Modal title="新建站点" open={open} confirmLoading={saving} closable={!saving} maskClosable={!saving} onCancel={() => {if(!saving)setOpen(false);}} onOk={onSave} okText="保存" cancelText="取消">
         <Form form={form} layout="vertical">
           <Form.Item name="name" label="名称" rules={[{ required: true, whitespace:true }]}><Input maxLength={128} /></Form.Item>

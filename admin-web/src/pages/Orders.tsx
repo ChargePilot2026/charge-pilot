@@ -11,6 +11,8 @@ import OrderPackageDetails, { type SelectedPackage } from './orders/OrderPackage
 import OrderStationSelect from './orders/OrderStationSelect';
 import OrderPowerCurve from './orders/OrderPowerCurve';
 import ChargeUserProfileDrawer from './chargeUsers/ChargeUserProfileDrawer';
+import StationDetailsDrawer, { type StationReference } from './stations/StationDetailsDrawer';
+import type { StationRecord } from './stations/StationWorkspace';
 import { businessStatuses, businessStatusInfo, paymentStatuses, paymentStatusInfo, paymentStatusColors, chargingDuration, refundedAmount } from './orders/presentation';
 import { DEFAULT_PAGE_SIZE, TABLE_PAGINATION } from '../utils/tablePagination';
 
@@ -100,11 +102,11 @@ const startSourceIcons = { payment: <QrcodeOutlined />, balance: <WalletOutlined
 const startSourceTag = (source: Order['start_source']) => source && startSources[source]
   ? <Tag icon={startSourceIcons[source]}>{startSources[source]}</Tag> : '—';
 function initialFilters(orderNo?: string): Filters { return { station_id: 0, order_no: orderNo }; }
-function canReadChargeUserProfile(): boolean {
+function cachedPermissions(): string[] {
   try {
     const permissions = JSON.parse(localStorage.getItem('cp_admin') || 'null')?.permissions;
-    return Array.isArray(permissions) && permissions.includes('charge_user.read');
-  } catch { return false; }
+    return Array.isArray(permissions) ? permissions.filter((permission): permission is string => typeof permission === 'string') : [];
+  } catch { return []; }
 }
 
 export default function OrdersPage() {
@@ -133,11 +135,15 @@ export default function OrdersPage() {
   const [timeline, setTimeline] = useState<OrderTimeline | null>(null);
   const [detailTab, setDetailTab] = useState('basic');
   const [profileUser, setProfileUser] = useState<{ orderID: number; userID: number } | null>(null);
-  const [canReadChargeUsers, setCanReadChargeUsers] = useState(canReadChargeUserProfile);
+  const [permissions, setPermissions] = useState(cachedPermissions);
+  const canReadChargeUsers = permissions.includes('charge_user.read');
+  const canReadStations = permissions.includes('station.read');
+  const [listStation, setListStation] = useState<StationReference | null>(null);
+  const [orderStation, setOrderStation] = useState<{ orderID: number; station: StationReference } | null>(null);
 
-  useEffect(() => { setDetailTab('basic'); setProfileUser(null); }, [selected]);
+  useEffect(() => { setDetailTab('basic'); setProfileUser(null); setOrderStation(null); }, [selected]);
   useEffect(() => {
-    const updatePermissions = () => setCanReadChargeUsers(canReadChargeUserProfile());
+    const updatePermissions = () => setPermissions(cachedPermissions());
     window.addEventListener('cp-session', updatePermissions);
     window.addEventListener('storage', updatePermissions);
     return () => {
@@ -198,6 +204,19 @@ export default function OrdersPage() {
     return () => controller.abort();
   }, [selected, detailReload]);
 
+  const stationLink = (row: Order, inOrderDetail = false) => {
+    const name = row.station_name || (row.station_id ? `站点 #${row.station_id}` : '未关联站点');
+    if (!canReadStations || !row.station_id || !Number.isSafeInteger(row.station_id) || row.station_id <= 0) return name;
+    const station = { id: row.station_id, name: row.station_name };
+    return <Button type="link" style={{ padding: 0, height: 'auto' }} aria-label={`查看${name}详情`}
+      onClick={() => inOrderDetail ? setOrderStation({ orderID: row.order_id, station }) : setListStation(station)}>{name}</Button>;
+  };
+  const stationSaved = (updated: StationRecord) => {
+    setListStation(current => current?.id === updated.id ? updated : current);
+    setOrderStation(current => current?.station.id === updated.id ? { ...current, station: updated } : current);
+    setReload(value => value + 1); setDetailReload(value => value + 1);
+  };
+
   return <div className="page-container">
     <Form form={form} initialValues={initialFilters(linkedOrderNo)} layout="inline" style={{ display: 'block', marginBottom: 20 }}
       onFinish={values => { setFilters(values); setPagination(value => ({ ...value, page: 1 })); }}>
@@ -233,7 +252,7 @@ export default function OrdersPage() {
         onChange: (page, page_size) => setPagination({ page: page_size !== pagination.page_size ? 1 : page, page_size }) }}
       columns={[
         { title: '订单号', dataIndex: 'order_no', fixed: 'left', onCell: () => ({ style: { whiteSpace: 'nowrap' } }), render: (value, row) => <Button type="link" style={{ padding: 0 }} onClick={() => setSelected(row.order_id)}>{value}</Button> },
-        { title: '站点', dataIndex: 'station_name', width: 180, render: value => value || '未关联站点' },
+        { title: '站点', dataIndex: 'station_name', width: 180, render: (_, row) => stationLink(row) },
         { title: '设备', dataIndex: 'device_id', onCell: () => ({ style: { whiteSpace: 'nowrap' } }) },
         { title: '端口', dataIndex: 'port_no', width: 80 },
         { title: '启动来源', dataIndex: 'start_source', width: 130, render: startSourceTag },
@@ -265,7 +284,7 @@ export default function OrdersPage() {
             ? <Button type="link" style={{ padding: 0, height: 'auto' }} aria-label={`查看用户 ${detail.user_id} 档案`}
               onClick={() => setProfileUser({ orderID: detail.order_id, userID: detail.user_id })}>{detail.user_id}</Button>
             : detail.user_id },
-          { key: 'station', label: '站点', children: detail.station_name || '未关联站点' },
+          { key: 'station', label: '站点', children: stationLink(detail, true) },
           { key: 'device', label: '设备 / 端口', children: `${detail.device_id} / ${detail.port_no}` },
           { key: 'created', label: '创建时间', children: time(detail.created_at), span: 2 },
           { key: 'started', label: '开始时间', children: time(detail.started_at), span: 2 },
@@ -315,6 +334,10 @@ export default function OrdersPage() {
       </Space>}
       <ChargeUserProfileDrawer userID={canReadChargeUsers && profileUser?.orderID === selected ? profileUser.userID : null}
         onClose={() => setProfileUser(null)} />
+      <StationDetailsDrawer station={canReadStations && orderStation?.orderID === selected ? orderStation.station : null}
+        permissions={permissions} onClose={() => setOrderStation(null)} onSaved={stationSaved} />
     </Drawer>
+    <StationDetailsDrawer station={canReadStations ? listStation : null} permissions={permissions}
+      onClose={() => setListStation(null)} onSaved={stationSaved} />
   </div>;
 }

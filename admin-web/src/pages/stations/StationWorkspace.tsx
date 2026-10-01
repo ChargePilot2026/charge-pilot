@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Card, Col, Descriptions, Form, Input, InputNumber, Row, Select, Space, Spin, Tabs, Tag, Typography, message } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
-import { apiGet, http, type ApiEnvelope } from '../../api/client';
+import { adminSession, http, type ApiEnvelope } from '../../api/client';
 import { LoadError } from '../../components/LoadError';
 import DevicesPage from '../Devices';
 import AppliedScheme from '../schemes/AppliedScheme';
@@ -18,7 +18,7 @@ export const stationStatuses: Record<string, { label: string; color: string }> =
 };
 
 export default function StationWorkspace({ station, permissions, revision = 0, initialDeviceId = null, onSaved }: {
-  station: StationRecord;
+  station: Pick<StationRecord, 'id'>;
   permissions: string[];
   revision?: number;
   initialDeviceId?: string | null;
@@ -35,20 +35,29 @@ export default function StationWorkspace({ station, permissions, revision = 0, i
   const [tab, setTab] = useState(permissions.includes('pricing.read') ? 'pricing' : 'devices');
   const [deviceID, setDeviceID] = useState<string | null>(initialDeviceId);
   const generation = useRef(0);
+  const loadRequest = useRef<AbortController>();
 
   const load = async () => {
     const current = ++generation.current;
+    loadRequest.current?.abort();
+    const controller = new AbortController();
+    loadRequest.current = controller;
+    const session = adminSession.epoch();
+    const valid = () => current === generation.current && !controller.signal.aborted && session === adminSession.epoch();
     setLoading(true); setError(''); setDetail(null);
     try {
-      const result = await apiGet<StationRecord>(`/api/v1/admin/stations/${station.id}`);
-      if (current === generation.current) setDetail(result);
+      const response = await http.get<ApiEnvelope<StationRecord>>(`/api/v1/admin/stations/${station.id}`, { signal: controller.signal });
+      if (!valid()) return;
+      const result = response.data.data;
+      if (!result || result.id !== station.id) throw new Error('站点详情响应不完整，请重新读取');
+      setDetail(result);
     } catch (cause: unknown) {
-      if (current === generation.current) setError(cause instanceof Error ? cause.message : '站点详情读取失败');
+      if (valid()) setError(cause instanceof Error ? cause.message : '站点详情读取失败');
     } finally {
-      if (current === generation.current) setLoading(false);
+      if (valid()) setLoading(false);
     }
   };
-  useEffect(() => { void load(); return () => { generation.current++; }; }, [station.id, revision, refresh]);
+  useEffect(() => { void load(); return () => { generation.current++; loadRequest.current?.abort(); }; }, [station.id, revision, refresh]);
   useEffect(() => { setDeviceID(initialDeviceId); if (initialDeviceId) setTab('pricing'); }, [initialDeviceId]);
 
   if (loading) return <div style={{ padding: 48, textAlign: 'center' }}><Spin tip="加载站点管理"><div style={{ minHeight: 48 }} /></Spin></div>;
@@ -61,15 +70,20 @@ export default function StationWorkspace({ station, permissions, revision = 0, i
   };
   const save = async () => {
     if (saving || !permissions.includes('station.update')) return;
+    const current = generation.current;
+    const session = adminSession.epoch();
+    const valid = () => current === generation.current && session === adminSession.epoch() && !loadRequest.current?.signal.aborted;
     try {
       const values = await form.validateFields();
+      if (!valid()) return;
       setSaving(true); setSaveError('');
       const response = await http.put<ApiEnvelope<StationRecord>>(`/api/v1/admin/stations/${detail.id}`, values);
+      if (!valid()) return;
       const updated = response.data.data || { ...detail, ...values };
       setDetail(updated); setEditing(false); message.success('已保存'); onSaved(updated);
     } catch (cause: any) {
-      if (!cause?.errorFields) setSaveError(cause instanceof Error ? cause.message : '保存失败');
-    } finally { setSaving(false); }
+      if (valid() && !cause?.errorFields) setSaveError(cause instanceof Error ? cause.message : '保存失败');
+    } finally { if (valid()) setSaving(false); }
   };
 
   const configureDevice = (id: string) => { setDeviceID(id); setTab('pricing'); };
