@@ -9,7 +9,7 @@ import { LoadError } from '../components/LoadError';
 import ManualRefund from './ManualRefund';
 import OrderPackageDetails, { type SelectedPackage } from './orders/OrderPackageDetails';
 import OrderStationSelect from './orders/OrderStationSelect';
-import { businessStatuses, businessStatusInfo, paymentStatuses, paymentStatusInfo, chargingDuration, refundedAmount } from './orders/presentation';
+import { businessStatuses, businessStatusInfo, paymentStatuses, paymentStatusInfo, paymentStatusColors, chargingDuration, refundedAmount } from './orders/presentation';
 import { DEFAULT_PAGE_SIZE, TABLE_PAGINATION } from '../utils/tablePagination';
 
 interface Order {
@@ -27,6 +27,8 @@ interface Order {
   payment_status: string;
   payment_order_status?: string | null;
   start_source: 'payment' | 'balance' | 'card' | null;
+  selected_scheme_name: string | null;
+  selected_package_name: string | null;
   created_at: string;
   started_at: string | null;
   ended_at: string | null;
@@ -65,7 +67,6 @@ interface Filters {
 }
 const refunds: Record<string, string> = { none: '无退款', processing: '退款中', refunded: '已全额退款', partial_refunded: '部分退款' };
 const businessStatusColors: Record<string, string> = { pending_start: '#ffa940', charging: '#4096ff' };
-const paymentStatusColors: Record<string, string> = { pending: '#ffa940', paid: '#73d13d', refunded: '#ff4d4f', partial_refunded: '#ff7a45' };
 const time = (value: string | null) => value ? dayjs(value).format('YYYY-MM-DD HH:mm:ss') : '—';
 const money = (value: number | null) => value == null ? '待结算' : `¥${(value / 100).toFixed(2)}`;
 const statusTag = (row: Order, kind: 'business' | 'payment') => {
@@ -214,6 +215,8 @@ export default function OrdersPage() {
         { title: '设备', dataIndex: 'device_id', onCell: () => ({ style: { whiteSpace: 'nowrap' } }) },
         { title: '端口', dataIndex: 'port_no', width: 80 },
         { title: '启动来源', dataIndex: 'start_source', width: 130, render: startSourceTag },
+        { title: '所选套餐', key: 'selected_package', onCell: () => ({ style: { whiteSpace: 'nowrap' } }), render: (_, row) => row.selected_scheme_name && row.selected_package_name
+          ? `${row.selected_scheme_name}（${row.selected_package_name}）` : row.selected_scheme_name || row.selected_package_name || '—' },
         { title: '业务状态', width: 110, render: (_, row) => statusTag(row, 'business') },
         { title: '支付状态', width: 130, render: (_, row) => statusTag(row, 'payment') },
         { title: '充电时间', width: 160, render: (_, row) => orderDuration(row) },

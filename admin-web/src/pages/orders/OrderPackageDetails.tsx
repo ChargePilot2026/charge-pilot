@@ -24,7 +24,10 @@ export default function OrderPackageDetails({ value }: { value: SelectedPackage 
   const amount = offer.mode === 'amount' ? scheme?.amount : undefined;
   const energy = offer.mode === 'energy' ? scheme?.energy : undefined;
   return <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-    <Typography.Text type="secondary">以下价格、权益和规则取自下单时的快照，后续修改站点方案不会改变本订单。</Typography.Text>
+    <Alert type="info" showIcon message={offer.mode === 'amount'
+      ? '支付金额作为充电预算，预算耗尽或达到最长时长停止。免费时长内结束不计费，超出后整段计费；最低电费不含服务费。'
+      : offer.mode === 'duration' ? '按实际完整分钟结算，提前结束按未使用时长退还余额。'
+        : '按实际计量电量结算，提前结束退还未使用电量对应的金额。'} />
     <Descriptions title="用户所选套餐" bordered column={{ xs: 1, sm: 2, md: 2, lg: 2, xl: 2, xxl: 2 }} items={[
       { key: 'name', label: '套餐名称', children: offer.name, span: 2 },
       { key: 'mode', label: '充电模式', children: modes[offer.mode] || offer.mode },
@@ -63,9 +66,5 @@ export default function OrderPackageDetails({ value }: { value: SelectedPackage 
     {scheme && <Descriptions bordered column={1} items={[
       { key: 'full', label: '满充停止', children: <Tag style={scheme.stop.stop_when_full ? { color: '#389e0d' } : undefined}>{scheme.stop.stop_when_full ? '启用' : '关闭'}</Tag> },
     ]} />}
-    <Alert type="info" showIcon message={offer.mode === 'amount'
-      ? '支付金额作为充电预算，预算耗尽或达到最长时长停止。免费时长内结束不计费，超出后整段计费；最低电费不含服务费。'
-      : offer.mode === 'duration' ? '按实际完整分钟结算，提前结束按未使用时长退还余额。'
-        : '按实际计量电量结算，提前结束退还未使用电量对应的金额。'} />
   </Space>;
 }

@@ -66,6 +66,7 @@
 | `business_status` | `pending_start` 待启动、`charging` 充电中、`completed` 已完成；由 `charge_order.business_status` 读取，不受退款进度影响 |
 | `payment_status` | `pending` 待支付、`paid` 已支付、`refunded` 全额退款、`partial_refunded` 部分退款；由充电订单的独立持久字段读取，仅实际支付确认或退款成功后同步 |
 | `start_source` | `payment` 扫码支付、`balance` 余额支付、`card` 在线卡；先按在线卡会话判定 `card`，再按支付方式判定 `balance` 或 `payment`，无有效来源凭据时为 `null` |
+| `selected_scheme_name` / `selected_package_name` | 只读可空字符串，分别来自订单冻结快照的 `rule.spec.scheme.name` / `offer.name`；列表启动来源后的“所选套餐”列及详情组合显示“方案名称（套餐名称）”，例如“金额模式（1元）”。缺一项时显示可用名称，两项都无时显示“—”；不读取当前站点配置 |
 | `payment_order_status` | 关联支付订单的原始流转状态，可为 `null`；与规范的四态 `payment_status` 分开 |
 | `refunded_cents` | 已成功退款的累计金额，单位分；有效关联支付单未退时为 0，没有可见的未删除支付记录时为 `null` |
 | `status` / `failure_reason` | 原内部生命周期与异常原因；取消、失败和退款流转在业务状态上归入已完成，界面通过原流程提示及详情辨明原因 |

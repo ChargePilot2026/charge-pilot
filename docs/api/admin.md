@@ -1471,6 +1471,8 @@ user 服务在单库事务中锁定模板，校验用户有效、模板处于发
 
 充电订单新增规范的 `business_status`（`pending_start/charging/completed`）、`payment_status`（`pending/paid/refunded/partial_refunded`，分别显示待支付、已支付、全额退款、部分退款）及 `start_source`（`payment/balance/card`，分别为扫码支付、余额支付、在线卡，来源不明时可空）字段和筛选。原 `status` 保留内部流程，原始支付单状态另以 `payment_order_status` 返回；支付状态依据已经到账与成功退款金额确定，未成功的退款申请不提前改变支付状态。`refunded_cents` 为累计成功退款金额，实际充电时长使用设备采样或结束读数，过期实时采样有标记。
 
+列表与详情返回可空字符串 `selected_scheme_name` 和 `selected_package_name`，分别取自订单冻结快照的 `rule.spec.scheme.name` 和 `offer.name`。启动来源后的“所选套餐”列及详情组合显示“方案名称（套餐名称）”，例如“金额模式（1元）”；缺一项时显示可用名称，两项都无时显示“—”，不读取当前站点配置。
+
 支付订单支持 `page/page_size/order_no/biz_type/payment_status/pay_method` 查询，保留原支付 `status` 并返回独立的四态 `payment_status`。充电关联须满足同一用户且充电单有效未删除；钱包充值的充电关联字段固定为空。具体 DTO、空值与金额口径见 [充电订单与支付订单](go-admin-pages.md#充电订单与支付订单2026-10-01)。
 
 ### 钱包退款风控审核队列

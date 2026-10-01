@@ -6,7 +6,7 @@ import { Link } from 'react-router-dom';
 import { type ApiEnvelope, http } from '../api/client';
 import { LoadError } from '../components/LoadError';
 import { DEFAULT_PAGE_SIZE, TABLE_PAGINATION } from '../utils/tablePagination';
-import { paymentStatuses, paymentStatusInfo, refundedAmount } from './orders/presentation';
+import { paymentStatuses, paymentStatusInfo, paymentStatusColors, refundedAmount } from './orders/presentation';
 
 interface PaymentOrder {
   payment_order_id: number;
@@ -37,7 +37,8 @@ const tagTextStyle = (color?: string) => color && presetTextColors[color] ? { co
 const time = (value: string | null) => value ? dayjs(value).format('YYYY-MM-DD HH:mm:ss') : '—';
 const paymentTag = (row: PaymentOrder) => {
   const info = paymentStatusInfo({ payment_status: row.payment_status, payment_order_status: row.status });
-  const tag = <Tag style={tagTextStyle(info.color)}>{info.label}</Tag>;
+  const color = paymentStatusColors[row.payment_status];
+  const tag = <Tag style={color ? { color } : undefined}>{info.label}</Tag>;
   return info.hint ? <Tooltip title={info.hint}>{tag}</Tooltip> : tag;
 };
 const errorMessage = (cause: unknown) => axios.isAxiosError<ApiEnvelope>(cause)

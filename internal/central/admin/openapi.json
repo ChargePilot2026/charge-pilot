@@ -5735,6 +5735,8 @@
           "business_status",
           "payment_status",
           "start_source",
+          "selected_scheme_name",
+          "selected_package_name",
           "payment_order_status",
           "refunded_cents",
           "duration_seconds",
@@ -5796,6 +5798,16 @@
           },
           "start_source": {
             "$ref": "#/components/schemas/OrderStartSource"
+          },
+          "selected_scheme_name": {
+            "type": "string",
+            "nullable": true,
+            "description": "订单冻结快照 rule.spec.scheme.name；缺少有效快照或方案名称时为 null。所选套餐组合显示方案名称（套餐名称），如金额模式（1元）；缺一项显示可用名称，两项都无显示—，不读取当前站点配置。"
+          },
+          "selected_package_name": {
+            "type": "string",
+            "nullable": true,
+            "description": "订单冻结快照 offer.name；缺少有效快照或套餐名称时为 null。与 selected_scheme_name 组合用于列表及详情的所选套餐显示，不读取当前站点配置。"
           },
           "created_at": {
             "type": "string",

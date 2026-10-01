@@ -11,6 +11,10 @@ export const paymentStatuses: Record<string, { label: string; color: string }> =
   partial_refunded: { label: '部分退款', color: 'orange' },
 };
 
+export const paymentStatusColors: Record<string, string> = {
+  pending: '#ffa940', paid: '#73d13d', refunded: '#ff4d4f', partial_refunded: '#ff7a45',
+};
+
 type StatusRow = {
   business_status: string;
   payment_status: string;
