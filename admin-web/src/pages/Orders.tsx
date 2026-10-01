@@ -1,4 +1,4 @@
-import { Alert, Button, DatePicker, Descriptions, Drawer, Form, Input, InputNumber, Select, Space, Spin, Table, Tag, Timeline, Tooltip, Typography } from 'antd';
+import { Alert, Button, DatePicker, Descriptions, Drawer, Form, Input, Select, Space, Spin, Table, Tabs, Tag, Timeline, Tooltip, Typography } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
 import { useEffect, useState } from 'react';
 import dayjs, { Dayjs } from 'dayjs';
@@ -6,6 +6,8 @@ import axios from 'axios';
 import { ApiEnvelope, http } from '../api/client';
 import { LoadError } from '../components/LoadError';
 import ManualRefund from './ManualRefund';
+import OrderPackageDetails, { type SelectedPackage } from './orders/OrderPackageDetails';
+import OrderStationSelect from './orders/OrderStationSelect';
 
 interface Order {
 	 live?: { at: string; stale: boolean; kwh: number; seconds: number; fee?: { electric_cents: number; service_cents: number; total_cents: number }; fee_unavailable?: string };
@@ -31,6 +33,7 @@ interface Order {
 interface OrderPage { items: Order[]; total: number; page: number; page_size: number }
 interface OrderTimeline { order_id: number; timeline: { event_id: string; at: string; event: string; actor: string; detail: string }[] }
 interface OrderDetail extends Order {
+  selected_package: SelectedPackage | null;
   refund_applicant_id: string | null;
   billing: { calculation_no: string | null; settlements: Settlement[] } | null;
   payment_order_id: number | null;
@@ -74,7 +77,7 @@ function errorMessage(error: unknown): string {
   }
   return error instanceof Error ? error.message : '加载失败，请稍后重试';
 }
-function initialFilters(): Filters { return { period: [dayjs().subtract(7, 'day'), dayjs()] }; }
+function initialFilters(): Filters { return { station_id: 0 }; }
 
 export default function OrdersPage() {
   const [form] = Form.useForm<Filters>();
@@ -110,6 +113,7 @@ export default function OrdersPage() {
       signal: controller.signal,
       params: {
         ...values, ...pagination,
+        station_id: values.station_id || undefined,
         order_no: values.order_no?.trim() || undefined,
         device_id: values.device_id?.trim() || undefined,
         started_from: period?.[0]?.toISOString(), started_to: period?.[1]?.toISOString(),
@@ -143,7 +147,7 @@ export default function OrdersPage() {
       onFinish={values => { setFilters(values); setPagination(value => ({ ...value, page: 1 })); }}>
       <Form.Item name="order_no" label="订单号"><Input allowClear maxLength={64} placeholder="完整订单号" /></Form.Item>
       <Form.Item name="device_id" label="设备"><Input allowClear maxLength={64} placeholder="设备编号" /></Form.Item>
-      <Form.Item name="station_id" label="站点 ID"><InputNumber min={1} precision={0} placeholder="全部站点" /></Form.Item>
+      <Form.Item name="station_id" label="站点"><OrderStationSelect /></Form.Item>
       <Form.Item name="status" label="状态"><Select allowClear placeholder="全部状态" style={{ width: 130 }}
         options={Object.entries(statuses).map(([value, status]) => ({ value, label: status.label }))} /></Form.Item>
       <Form.Item name="period" label="时间范围"><DatePicker.RangePicker showTime format="YYYY-MM-DD HH:mm" /></Form.Item>
@@ -152,7 +156,7 @@ export default function OrdersPage() {
         <Button onClick={() => { const values = initialFilters(); form.resetFields(); form.setFieldsValue(values); setFilters(values); setPagination(value => ({ ...value, page: 1 })); }}>重置</Button>
       </Space></Form.Item>
     </Form>
-    <Typography.Paragraph type="secondary">默认查询近 7 天，时间按本地时区显示。尚未启动的订单按创建时间筛选。</Typography.Paragraph>
+    <Typography.Paragraph type="secondary">时间范围留空时查询全部时间，时间按本地时区显示。尚未启动的订单按创建时间筛选。</Typography.Paragraph>
     {page?.items.some(row => row.status === 'charging') && <Typography.Paragraph type="secondary">充电中显示最新设备电量；≈ 为按订单冻结费率计算的当前估算费用，每 5 秒刷新。（旧）表示读数已过期，费用停留在最后采样时刻。</Typography.Paragraph>}
     {error && <LoadError title="订单加载失败" detail={error} onRetry={() => setReload(value => value + 1)} />}
     <Table<Order> rowKey="order_id" loading={loading} dataSource={page?.items || []} scroll={{ x: 1500 }}
@@ -172,12 +176,14 @@ export default function OrdersPage() {
         { title: '开始时间', dataIndex: 'started_at', width: 180, render: time },
         { title: '结束时间', dataIndex: 'ended_at', width: 180, render: time },
       ]} />
-    <Drawer title="订单详情" open={selected != null} onClose={() => setSelected(null)} width="min(760px, 100vw)">
+    <Drawer title="订单详情" open={selected != null} onClose={() => setSelected(null)} width="min(1100px, 100vw)">
       {detailLoading && <Spin />}
       {detailError && <LoadError title="详情加载失败" detail={detailError} onRetry={() => setDetailReload(value => value + 1)} />}
       {detail && <Space direction="vertical" size="large" style={{ width: '100%' }}>
-        {detail.refund_applicant_id && <ManualRefund key={detail.order_id} orderId={detail.order_id} orderNo={detail.order_no} actorId={detail.refund_applicant_id} onCreated={() => setReload(value => value + 1)} />}
-        <Descriptions title={detail.order_no} bordered column={2} items={[
+        <Space wrap><Typography.Text strong copyable>{detail.order_no}</Typography.Text>{statusTag(detail.status)}</Space>
+        {detail.failure_reason && <Alert type="warning" message="异常原因" description={detail.failure_reason} showIcon />}
+        <Tabs key={detail.order_id} style={{ width: '100%' }} items={[
+          { key: 'basic', label: '基本信息', children: <Descriptions bordered column={{ xs: 1, sm: 2, md: 2, lg: 2, xl: 2, xxl: 2 }} items={[
           { key: 'status', label: '状态', children: statusTag(detail.status) },
           { key: 'user', label: '用户 ID', children: detail.user_id },
           { key: 'station', label: '站点', children: detail.station_name || '未关联站点' },
@@ -188,17 +194,24 @@ export default function OrdersPage() {
           { key: 'duration', label: '时长', children: detail.live ? `${detail.live.seconds} 秒` : detail.duration_seconds == null ? '—' : `${detail.duration_seconds} 秒` },
           { key: 'meter', label: '电量 (kWh)', children: orderMeter(detail) },
         ]} />
-        <Descriptions title="费用与支付" bordered column={2} items={[
+          },
+          { key: 'package', label: '所选套餐', children: <OrderPackageDetails value={detail.selected_package} /> },
+          { key: 'payment', label: '费用与支付', children: <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+        {detail.status === 'charging' && <Alert type="info" showIcon message="充电中的费用为按冻结费率计算的估算值，结束后以最终结算为准。" />}
+        <Descriptions bordered column={{ xs: 1, sm: 2, md: 2, lg: 2, xl: 2, xxl: 2 }} items={[
           { key: 'electric', label: '电费', children: orderFee(detail, 'electric') },
           { key: 'service', label: '服务费', children: orderFee(detail, 'service') },
           { key: 'total', label: '总费用', children: orderFee(detail, 'total') },
           { key: 'paid', label: '实付', children: detail.paid_cents == null ? '—' : money(detail.paid_cents) },
           { key: 'payment', label: '支付单号', children: detail.payment_order_no || '—', span: 2 },
+          { key: 'payment-status', label: '支付状态', children: detail.payment_status ? ({ pending: '待支付', paying: '支付中', paid: '已支付', closed: '已关闭', refunded: '已退款', failed: '失败' }[detail.payment_status] || detail.payment_status) : '—' },
+          { key: 'receipt', label: '计费单号', children: detail.billing?.calculation_no || '尚未生成' },
           { key: 'refund', label: '退款状态', children: refunds[detail.refund_status] || detail.refund_status },
           { key: 'refunded', label: '已退金额', children: detail.refunded_cents == null ? '—' : money(detail.refunded_cents) },
         ]} />
-        {detail.failure_reason && <Alert type="warning" message="异常原因" description={detail.failure_reason} showIcon />}
-        <Typography.Title level={5}>分账明细</Typography.Title>
+        {detail.refund_applicant_id && <ManualRefund key={detail.order_id} orderId={detail.order_id} orderNo={detail.order_no} actorId={detail.refund_applicant_id} onCreated={() => { setReload(value => value + 1); setDetailReload(value => value + 1); }} />}
+          </Space> },
+          { key: 'billing', label: '分账明细', children: <Space direction="vertical" size="middle" style={{ width: '100%' }}>
         {!detail.billing?.settlements.length && <Typography.Text type="secondary">暂无分账记录</Typography.Text>}
         {detail.billing?.settlements.map(settlement => <div key={settlement.settlement_id}>
           <Typography.Paragraph>{settlement.settlement_no} · {settlement.mode === 'mode_a' ? '全额分账' : '服务费分账'} · 分账池 {money(settlement.split_pool_cents)} · {settlement.status}</Typography.Paragraph>
@@ -209,12 +222,15 @@ export default function OrdersPage() {
             { title: '状态', dataIndex: 'status', render: value => ({ pending: '待支付', paid: '已支付', failed: '失败' }[value as string] || value) },
           ]} />
         </div>)}
-        <Typography.Title level={5}>事件时间线</Typography.Title>
+          </Space> },
+          { key: 'timeline', label: '事件时间线', children: <>
         {!timeline?.timeline.length && <Typography.Text type="secondary">暂无已记录的事件</Typography.Text>}
         <Timeline items={timeline?.timeline.map(event => ({
           key: event.event_id,
           children: <><div>{time(event.at)} · {event.detail}</div><Typography.Text type="secondary">{event.actor} · {event.event}</Typography.Text></>,
         }))} />
+          </> },
+        ]} />
       </Space>}
     </Drawer>
   </div>;

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -125,16 +126,15 @@ func (s AutoStopper) Run(ctx context.Context) (int, error) {
 				}
 				if !stop && contract.Offer.Mode == "amount" {
 					if latest, ok := latestMeter(samples, order.PortNo, now); ok {
-						fee, feeErr := pricing.PriceActual(contract.Rule, measuredMeter(order, latest, samples))
-						if feeErr == nil && fee.TotalCents >= contract.Offer.PriceCents {
-							capped, err := pricing.PriceOfferActual(contract.Rule, contract.Offer, measuredMeter(order, latest, samples))
-							if err != nil {
-								return stopped, err
-							}
-							frozenFee = &capped
+						plan, capped, feeErr := pricing.BudgetStopAtMeter(contract.Rule, contract.Offer, measuredMeter(order, latest, samples))
+						if feeErr != nil {
+							log.Printf("charge budget unavailable order=%s device=%s port=%d sampled_at=%s error=%v", order.OrderNo, order.DeviceID, order.PortNo, latest.at.Format(time.RFC3339), feeErr)
+						} else if plan.ShouldStop {
+							frozenFee = capped
 							stop = true
 							cutoff = latest.at
 							reason = "budget_exhausted"
+							log.Printf("charge budget exhausted order=%s device=%s port=%d budget_cents=%d fee_lower_bound_cents=%d exact_split=%t sampled_at=%s", order.OrderNo, order.DeviceID, order.PortNo, contract.Offer.PriceCents, plan.AccruedCents, capped != nil, latest.at.Format(time.RFC3339))
 						}
 					}
 				}

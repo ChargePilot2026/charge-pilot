@@ -2,10 +2,10 @@ package admin
 
 import (
 	"context"
-	"github.com/ChargePilot2026/charge-pilot/internal/central/charge"
 	"strconv"
 	"time"
 
+	"github.com/ChargePilot2026/charge-pilot/internal/central/charge"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/httpapi"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -43,6 +43,7 @@ type OrderView struct {
 	FailureReason     *string               `json:"failure_reason"`                    // 失败原因；指针，非失败单为 null
 	RefundApplicantID *string               `json:"refund_applicant_id" gorm:"-"`      // 发起退款的操作人 ID；gorm:"-" 表示不来自库表，只有具备 order.refund.create 权限时才回填，前端据此显示退款入口
 	Billing           *OrderBilling         `json:"billing" gorm:"-"`                  // 分账信息；gorm:"-" 表示不在本查询中加载，仅详情接口填充
+	SelectedPackage   *OrderPackage         `json:"selected_package" gorm:"-"`         // 下单时冻结的套餐及规则，仅详情接口填充
 }
 
 // OrderBilling 是订单详情附带的结算视图。订单本身不含金额去向，金额怎么分在
@@ -223,6 +224,12 @@ func (a ResourceAPI) order(c *gin.Context) {
 	row = rows[0]
 	a.orderLive(ctx, rows)
 	row = rows[0]
+	selectedPackage, err := a.Store.orderPackage(ctx, row.OrderID)
+	if err != nil {
+		resourceFailure(c, err)
+		return
+	}
+	row.SelectedPackage = selectedPackage
 	// 匿名结构只为承载这一张事件表的五个可读列，避免为一个查询单独定义类型。
 	billing := OrderBilling{Settlements: []SettlementView{}}
 	// calculation_no 可空：计费完成前还没有计费单。
