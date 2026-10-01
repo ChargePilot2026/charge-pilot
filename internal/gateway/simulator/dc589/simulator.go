@@ -398,11 +398,7 @@ func (b *board) loop(ctx context.Context) error {
 				return err
 			}
 		case tick := <-meter.C:
-			seconds := 1
-			if !b.lastMeter.IsZero() {
-				seconds = int(tick.Sub(b.lastMeter) / time.Second)
-			}
-			b.lastMeter = tick
+			seconds := b.meterSeconds(tick)
 			for i := 0; i < seconds; i++ {
 				b.advance()
 			}
@@ -422,6 +418,23 @@ func (b *board) loop(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+// meterSeconds 返回本次计量应推进的整秒数，保留不足一秒的余量供后续累计。
+// 首次 tick 推进一秒；重复或早到的 tick 不改变已计量时刻。
+func (b *board) meterSeconds(tick time.Time) int {
+	if b.lastMeter.IsZero() {
+		b.lastMeter = tick
+		return 1
+	}
+	if !tick.After(b.lastMeter) {
+		return 0
+	}
+	seconds := int(tick.Sub(b.lastMeter) / time.Second)
+	if seconds > 0 {
+		b.lastMeter = b.lastMeter.Add(time.Duration(seconds) * time.Second)
+	}
+	return seconds
 }
 
 // handle 应答一帧服务器下行。

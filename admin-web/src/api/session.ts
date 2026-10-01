@@ -15,6 +15,17 @@ export class SessionChanged extends Error {}
 export class SessionExpired extends Error {}
 type StoragePort = Pick<Storage,'getItem'|'setItem'|'removeItem'>;
 type LockPort = <T>(action:()=>Promise<T>)=>Promise<T>;
+type RefreshRequest = (refresh:string)=>Promise<SessionTokens>;
+
+// exp 仅用于提前续期；令牌有效性和会话授权仍由服务端校验。
+function tokenExpiresAt(token:string):number|null {
+ try {
+  const payload=token.split('.')[1];
+  if(!payload)return null;
+  const {exp}=JSON.parse(atob(payload.replace(/-/g,'+').replace(/_/g,'/')));
+  return typeof exp==='number' && exp>0 && Number.isFinite(exp*1000) ? exp*1000 : null;
+ } catch { return null; }
+}
 
 // 刷新、登录、登出共用同一把锁。一个迟到的响应绝不能覆盖掉属于更晚一次登录的凭据，
 // 无论是本标签页还是别的标签页。
@@ -29,6 +40,14 @@ export function createSessionManager(storage:StoragePort, lock:LockPort, changed
   storage.setItem('cp_refresh',data.refresh_token);
   storage.setItem('cp_admin',JSON.stringify({username:data.username||username,display_name:data.display_name,role:data.role,role_name:data.role_name,mfa_enabled:data.mfa_enabled,admin_user_id:data.admin_user_id,permissions:data.permissions}));
   changed();
+ };
+ const rotate=async(expected:string|null,request:RefreshRequest)=>{
+  const refresh=storage.getItem('cp_refresh');
+  if(!expected || !refresh)throw new SessionExpired('登录已过期，请重新登录');
+  const result=await request(refresh);
+  if(epoch()!==expected)throw new SessionChanged('登录账号已变化，请重新打开页面');
+  write(result);
+  return result.token;
  };
  return {
   epoch,
@@ -56,16 +75,20 @@ export function createSessionManager(storage:StoragePort, lock:LockPort, changed
    for(const key of ['cp_token','cp_refresh','cp_admin','cp_session_epoch'])storage.removeItem(key);
    changed();return true;
   }),
-  refresh:(failedToken:string,expected:string|null,request:(refresh:string)=>Promise<SessionTokens>)=>lock(async()=>{
+  ensureFresh:(expected:string|null,request:RefreshRequest)=>lock(async()=>{
+   if(epoch()!==expected)throw new SessionChanged('登录账号已变化，请重新打开页面');
+   const current=storage.getItem('cp_token');
+   if(!current)return '';
+   const expiresAt=tokenExpiresAt(current);
+   // 锁内复核到期时间，使并发请求复用已续期的令牌；30 秒余量覆盖请求传输时间。
+   if(expiresAt===null || expiresAt>Date.now()+30_000)return current;
+   return rotate(expected,request);
+  }),
+  refresh:(failedToken:string,expected:string|null,request:RefreshRequest)=>lock(async()=>{
    if(epoch()!==expected)throw new SessionChanged('登录账号已变化，请重新打开页面');
    const current=storage.getItem('cp_token');
    if(current && current!==failedToken)return current;
-   const refresh=storage.getItem('cp_refresh');
-   if(!expected || !refresh)throw new SessionExpired('登录已过期，请重新登录');
-   const result=await request(refresh);
-   if(epoch()!==expected)throw new SessionChanged('登录账号已变化，请重新打开页面');
-   write(result);
-   return result.token;
+   return rotate(expected,request);
   })
  };
 }

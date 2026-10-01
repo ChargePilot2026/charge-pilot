@@ -116,7 +116,7 @@ export default function StationWorkspace({ station, permissions, revision = 0, i
           <Col xs={24} sm={12} lg={8}><Form.Item name="address" label="地址"><Input aria-label="站点地址" maxLength={255} /></Form.Item></Col>
           <Col xs={24} sm={12} lg={8}><Form.Item name="contact_phone" label="联系电话"><Input aria-label="联系电话" maxLength={32} /></Form.Item></Col>
           <Col xs={24} sm={12} lg={8}><Form.Item name="longitude" label="经度" rules={[{ required: true, message: '请输入经度' }]}
-            extra={<Typography.Link href="https://lbs.amap.com/tools/picker" target="_blank" rel="noopener noreferrer">坐标拾取器</Typography.Link>}>
+            extra={<Typography.Link href="https://lbs.qq.com/getPoint" target="_blank" rel="noopener noreferrer">坐标拾取器</Typography.Link>}>
             <InputNumber aria-label="经度" min={-180} max={180} precision={8} style={{ width: '100%' }} />
           </Form.Item></Col>
           <Col xs={24} sm={12} lg={8}><Form.Item name="latitude" label="纬度" rules={[{ required: true, message: '请输入纬度' }]}><InputNumber aria-label="纬度" min={-90} max={90} precision={8} style={{ width: '100%' }} /></Form.Item></Col>

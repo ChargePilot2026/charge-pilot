@@ -28,11 +28,11 @@ export default function OrderPackageDetails({ value }: { value: SelectedPackage 
       : offer.mode === 'duration' ? '按实际完整分钟结算，提前结束按未使用时长退还余额。'
         : '按实际计量电量结算，提前结束退还未使用电量对应的金额。'} />
     <Descriptions title="用户所选套餐" bordered column={{ xs: 1, sm: 2, md: 2, lg: 2, xl: 2, xxl: 2 }} items={[
-      { key: 'name', label: '套餐名称', children: offer.name, span: 2 },
+      { key: 'name', label: '套餐名称', children: offer.name, span: 'filled' },
       { key: 'mode', label: '充电模式', children: modes[offer.mode] || offer.mode },
       { key: 'price', label: card ? '每次刷卡价格' : offer.mode === 'amount' ? '充电预算' : '套餐价格', children: money(offer.price_cents) },
-      ...(offer.mode === 'duration' ? [{ key: 'minutes', label: card ? '每次购买时长' : '购买时长', children: `${offer.duration_minutes} 分钟`, span: 2 }] : []),
-      ...(offer.mode === 'energy' ? [{ key: 'energy', label: '购买电量', children: `${(offer.energy_wh || 0) / 1000} 度`, span: 2 }] : []),
+      ...(offer.mode === 'duration' ? [{ key: 'minutes', label: card ? '每次购买时长' : '购买时长', children: `${offer.duration_minutes} 分钟`, span: 'filled' as const }] : []),
+      ...(offer.mode === 'energy' ? [{ key: 'energy', label: '购买电量', children: `${(offer.energy_wh || 0) / 1000} 度`, span: 'filled' as const }] : []),
       { key: 'scheme', label: '方案名称', children: scheme?.name || '未记录' },
       { key: 'version', label: '方案版本', children: value.rule_version || '未记录' },
     ]} />
@@ -40,7 +40,7 @@ export default function OrderPackageDetails({ value }: { value: SelectedPackage 
     {card && <Descriptions title="刷卡累计购买" bordered column={{ xs: 1, sm: 2, md: 2, lg: 2, xl: 2, xxl: 2 }} items={[
       { key: 'paid', label: '累计支付', children: money(card.paid_cents) },
       { key: 'minutes', label: '累计购买时长', children: `${card.purchased_minutes} 分钟` },
-      { key: 'max', label: '累计时长上限', children: `${card.max_minutes} 分钟`, span: 2 },
+      { key: 'max', label: '累计时长上限', children: `${card.max_minutes} 分钟`, span: 'filled' },
     ]} />}
     <Typography.Text strong>{algorithms[value.billing_mode] || value.billing_mode}</Typography.Text>
     {amount?.periods.map((period, index) => <Card key={index} size="small" title={`${clock(index ? amount.periods[index - 1].end_minute : 0)}～${clock(period.end_minute)}`}>

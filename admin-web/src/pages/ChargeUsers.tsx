@@ -59,7 +59,7 @@ export default function ChargeUsersPage() {
       </Form.Item>
     </Form>
     <Typography.Paragraph type="secondary">
-      手机号按完整号码精确查询：库中只存密文与不可逆哈希，没有可用于模糊匹配的明文，输入后四位之类的片段查不出来。
+      手机号支持完整号码或号码片段查询。
     </Typography.Paragraph>
     {error && <LoadError title="充电用户加载失败" detail={error} onRetry={() => setReload(value => value + 1)} />}
     <Table<ChargeUser> size="middle" rowKey="id" loading={loading} dataSource={page?.items || []} scroll={{ x: 1200 }}
@@ -67,10 +67,6 @@ export default function ChargeUsersPage() {
       pagination={{ ...TABLE_PAGINATION, current: query.page, pageSize: query.page_size, total: page?.total || 0,
         showTotal: total => `共 ${total} 位用户`,
         onChange: (page, page_size) => setQuery(value => ({ ...value, page: page_size !== value.page_size ? 1 : page, page_size })) }}
-      expandable={{ expandedRowRender: chargeUser => <Space direction="vertical" size={2}>
-        <Typography.Text type="secondary">用户 ID {chargeUser.id} · openid {chargeUser.openid}{chargeUser.union_id ? ` · unionid ${chargeUser.union_id}` : ''}</Typography.Text>
-        <Typography.Text type="secondary">首次出现 {time(chargeUser.first_seen_at)}{chargeUser.inviter_id ? ` · 邀请人 #${chargeUser.inviter_id}` : ' · 自然注册'}</Typography.Text>
-      </Space> }}
       columns={[
         { title: '用户', key: 'user', width: 200, fixed: 'left', render: (_, chargeUser) => <Space>
           <Avatar size="small" src={chargeUser.avatar_url || undefined} icon={<SearchOutlined />} />

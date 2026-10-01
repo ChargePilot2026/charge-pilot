@@ -52,12 +52,8 @@ export default function MainLayout() {
   useEffect(() => { const update = () => sessionChanged(v => v + 1); window.addEventListener('cp-session', update); window.addEventListener('storage', update); return () => { window.removeEventListener('cp-session', update); window.removeEventListener('storage', update); }; }, []);
   const sessionEpoch = adminSession.epoch();
   useEffect(() => {
-    const sync = () => { void adminSession.syncProfile(() => apiGet<SessionProfile>('/api/v1/admin/auth/me')).catch(() => undefined); };
-    const onVisible = () => { if (document.visibilityState === 'visible') sync(); };
-    sync();
-    window.addEventListener('focus', sync);
-    document.addEventListener('visibilitychange', onVisible);
-    return () => { window.removeEventListener('focus', sync); document.removeEventListener('visibilitychange', onVisible); };
+    // 进入会话时同步身份；登录和续期响应已经包含最新权限，无需按窗口焦点重复查询。
+    void adminSession.syncProfile(() => apiGet<SessionProfile>('/api/v1/admin/auth/me')).catch(() => undefined);
   }, [sessionEpoch]);
   const navigate = useNavigate();
   const { pathname } = useLocation();

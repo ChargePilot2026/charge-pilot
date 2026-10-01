@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Table, Space, Button, Modal, Form, Input, InputNumber, Select, Tag, message } from 'antd';
+import { Table, Space, Button, Modal, Form, Input, InputNumber, Select, Tag, Typography, message } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import { apiGet, apiPost } from '../api/client';
 import { LoadError } from '../components/LoadError';
@@ -113,7 +113,10 @@ export default function StationsPage() {
         <Form form={form} layout="vertical">
           <Form.Item name="name" label="名称" rules={[{ required: true, whitespace:true }]}><Input maxLength={128} /></Form.Item>
           <Form.Item name="address" label="地址"><Input maxLength={255} /></Form.Item>
-          <Form.Item name="longitude" label="经度" rules={[{ required: true }]}><InputNumber min={-180} max={180} precision={8} style={{width:"100%"}} /></Form.Item>
+          <Form.Item name="longitude" label="经度" rules={[{ required: true }]}
+            extra={<Typography.Link href="https://lbs.qq.com/getPoint" target="_blank" rel="noopener noreferrer">坐标拾取器</Typography.Link>}>
+            <InputNumber min={-180} max={180} precision={8} style={{width:"100%"}} />
+          </Form.Item>
           <Form.Item name="latitude" label="纬度" rules={[{ required: true }]}><InputNumber min={-90} max={90} precision={8} style={{width:"100%"}} /></Form.Item>
           <Form.Item name="contact_phone" label="联系电话"><Input maxLength={32} /></Form.Item>
           <Form.Item name="status" label="状态" rules={[{required:true}]}><Select options={[{value:'active',label:'运营中'},{value:'disabled',label:'已停用'},{value:'construction',label:'建设中'}]} /></Form.Item>

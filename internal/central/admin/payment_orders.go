@@ -32,6 +32,7 @@ type PaymentOrderView struct {
 
 type PaymentOrderQuery struct {
 	PageQuery
+	UserID                                     uint64 // 内部用户范围；0 表示不筛选，通用支付单接口不读取此字段。
 	OrderNo, BizType, PayMethod, PaymentStatus string
 	From, To                                   *time.Time
 }
@@ -40,6 +41,9 @@ type PaymentOrderQuery struct {
 func (s ResourceStore) PaymentOrders(ctx context.Context, q PaymentOrderQuery) (Page[PaymentOrderView], error) {
 	out := Page[PaymentOrderView]{Items: []PaymentOrderView{}, Page: q.Page, PageSize: q.PageSize}
 	query := s.UserDB.WithContext(ctx).Table("payment_order AS p").Where("p.deleted_at IS NULL")
+	if q.UserID != 0 {
+		query = query.Where("p.user_id=?", q.UserID)
+	}
 	if q.OrderNo != "" {
 		query = query.Where("p.order_no=?", q.OrderNo)
 	}

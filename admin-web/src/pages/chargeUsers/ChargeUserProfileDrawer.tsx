@@ -1,4 +1,5 @@
-import { Descriptions, Drawer, Space, Spin, Table, Tag, Tooltip, Typography } from 'antd';
+import { Button, Descriptions, Drawer, Space, Spin, Table, Tabs, Tag, Tooltip, Typography } from 'antd';
+import { EyeOutlined } from '@ant-design/icons';
 import { useEffect, useRef, useState } from 'react';
 import dayjs from 'dayjs';
 import { adminSession, http, type ApiEnvelope } from '../../api/client';
@@ -6,6 +7,8 @@ import { LoadError } from '../../components/LoadError';
 import { TABLE_PAGINATION } from '../../utils/tablePagination';
 import { isChargeUserID } from '../../utils/chargeUserID';
 import { businessStatusInfo, paymentStatusInfo } from '../orders/presentation';
+import OrderDetailsDrawer from '../orders/OrderDetailsDrawer';
+import ChargeUserRecharges from './ChargeUserRecharges';
 
 export interface ChargeUser {
   id: string;
@@ -44,7 +47,6 @@ export const chargeUserStatuses: Record<string, { label: string; color: string }
   active: { label: '正常', color: 'green' }, frozen: { label: '已冻结', color: 'red' },
 };
 const walletStatuses: Record<string, string> = { active: '正常', frozen: '已冻结' };
-const genders: Record<string, string> = { unknown: '未知', male: '男', female: '女' };
 const orderTag = (row: ChargeUserOrder, kind: 'business' | 'payment') => {
   const info = kind === 'business' ? businessStatusInfo(row) : paymentStatusInfo(row);
   const tag = <Tag color={info.color}>{info.label}</Tag>;
@@ -55,19 +57,45 @@ export const chargeUserMoney = (value: number) => `¥${(value / 100).toFixed(2)}
 export const chargeUserStatusTag = (value: string) => <Tag color={chargeUserStatuses[value]?.color}>{chargeUserStatuses[value]?.label || value}</Tag>;
 export const chargeUserName = (chargeUser: Pick<ChargeUser, 'nickname' | 'id'>) => chargeUser.nickname || `用户 #${chargeUser.id}`;
 
-/** 展示和复制均使用后台解密后的完整号码。 */
+/** 展示和复制均使用后台返回的完整号码。 */
 export function ChargeUserPhone({ chargeUser }: { chargeUser: Pick<ChargeUser, 'phone' | 'phone_bound' | 'id'> }) {
   if (!chargeUser.phone_bound) return <Typography.Text type="secondary">未绑定</Typography.Text>;
   return <Typography.Text copyable={{ text: chargeUser.phone }} style={{ fontVariantNumeric: 'tabular-nums' }}>{chargeUser.phone}</Typography.Text>;
 }
 
 type ProfileState = { userID: string | null; detail: ChargeUserDetail | null; error: string; loading: boolean };
+type SelectedOrder = { orderID: number; userID: string; epoch: string | null };
+const cachedCanReadOrders = () => {
+  try {
+    const permissions = JSON.parse(localStorage.getItem('cp_admin') || 'null')?.permissions;
+    return Array.isArray(permissions) && permissions.includes('order.read');
+  } catch { return false; }
+};
 
 export default function ChargeUserProfileDrawer({ userID, onClose }: { userID: string | null; onClose: () => void }) {
   const [state, setState] = useState<ProfileState>({ userID: null, detail: null, error: '', loading: false });
   const [reload, setReload] = useState(0);
+  const [tab, setTab] = useState({ userID, key: 'account' });
+  const [selectedOrder, setSelectedOrder] = useState<SelectedOrder | null>(null);
+  const [canReadOrders, setCanReadOrders] = useState(cachedCanReadOrders);
+  const activeTab = tab.userID === userID ? tab.key : 'account';
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
+
+  useEffect(() => { setTab({ userID, key: 'account' }); setSelectedOrder(null); }, [userID]);
+  useEffect(() => {
+    const updatePermissions = () => {
+      const allowed = cachedCanReadOrders();
+      setCanReadOrders(allowed);
+      if (!allowed) setSelectedOrder(null);
+    };
+    window.addEventListener('cp-session', updatePermissions);
+    window.addEventListener('storage', updatePermissions);
+    return () => {
+      window.removeEventListener('cp-session', updatePermissions);
+      window.removeEventListener('storage', updatePermissions);
+    };
+  }, []);
 
   useEffect(() => {
     if (userID == null) {
@@ -84,14 +112,16 @@ export default function ChargeUserProfileDrawer({ userID, onClose }: { userID: s
     const closeExpired = () => {
       if (epoch !== adminSession.epoch()) {
         controller.abort();
+        setSelectedOrder(null);
         setState({ userID: null, detail: null, error: '', loading: false });
         closeRef.current();
       }
     };
     window.addEventListener('cp-session', closeExpired);
     window.addEventListener('storage', closeExpired);
-    setState({ userID, detail: null, error: '', loading: true });
-    http.get<ApiEnvelope<ChargeUserDetail>>(`/api/v1/admin/charge-users/${userID}`, { signal: controller.signal })
+    setState(previous => ({ userID, detail: previous.userID === userID ? previous.detail : null, error: '', loading: true }));
+    const request = { signal: controller.signal, cpEpoch: epoch };
+    http.get<ApiEnvelope<ChargeUserDetail>>(`/api/v1/admin/charge-users/${userID}`, request)
       .then(response => {
         if (!current()) return;
         const detail = response.data.data;
@@ -112,20 +142,21 @@ export default function ChargeUserProfileDrawer({ userID, onClose }: { userID: s
 
   const visible = state.userID === userID ? state : { detail: null, error: '', loading: userID != null };
   const detail = visible.detail;
-  return <Drawer title={detail ? chargeUserName(detail) : '充电用户档案'} open={userID != null} onClose={onClose} width="min(760px, 100vw)">
+  const orderSelection = selectedOrder && selectedOrder.userID === userID && selectedOrder.epoch === adminSession.epoch() && detail?.id === userID && canReadOrders ? selectedOrder : null;
+  return <Drawer title={detail ? chargeUserName(detail) : '充电用户档案'} open={userID != null}
+    onClose={() => { setSelectedOrder(null); onClose(); }} width="50%">
     {visible.loading && <Spin />}
     {visible.error && <LoadError title="档案加载失败" detail={visible.error} onRetry={() => setReload(value => value + 1)} />}
-    {detail && <Space direction="vertical" size="large" style={{ width: '100%' }}>
+    {detail && <Tabs key={detail.id} activeKey={activeTab} onChange={key => setTab({ userID, key })} items={[
+      { key: 'account', label: '基础信息', children: <Space direction="vertical" size="large" style={{ width: '100%' }}>
       <Descriptions title="账号" bordered column={2} items={[
         { key: 'id', label: '用户 ID', children: detail.id },
         { key: 'status', label: '状态', children: chargeUserStatusTag(detail.status) },
         { key: 'phone', label: '手机号', children: <ChargeUserPhone chargeUser={detail} />, span: 2 },
         { key: 'openid', label: 'openid', children: detail.openid, span: 2 },
-        { key: 'unionid', label: 'unionid', children: detail.union_id || '—' },
-        { key: 'gender', label: '性别', children: genders[detail.gender] || detail.gender },
-        { key: 'first', label: '首次出现', children: chargeUserTime(detail.first_seen_at) },
+        { key: 'unionid', label: 'unionid', children: detail.union_id || '—', span: 2 },
+        { key: 'first', label: '注册时间', children: chargeUserTime(detail.first_seen_at) },
         { key: 'last', label: '最后登录', children: chargeUserTime(detail.last_login_at) },
-        { key: 'inviter', label: '邀请人', children: detail.inviter_id ? `#${detail.inviter_id}` : '自然注册' },
       ]} />
       <Descriptions title="钱包与消费" bordered column={2} items={[
         { key: 'balance', label: '可用余额', children: chargeUserMoney(detail.balance_cents) },
@@ -137,17 +168,23 @@ export default function ChargeUserProfileDrawer({ userID, onClose }: { userID: s
         { key: 'coupon', label: '优惠券', children: `累计发放 ${detail.coupon_granted} 张，未使用 ${detail.coupon_unused} 张` },
         { key: 'fault', label: '报障单', children: `${detail.fault_reports} 单` },
       ]} />
-      <Typography.Title level={5}>最近订单</Typography.Title>
-      {!detail.recent_orders.length && <Typography.Text type="secondary">该用户暂无充电订单</Typography.Text>}
-      <Table<ChargeUserOrder> rowKey="order_id" size="middle" pagination={TABLE_PAGINATION} dataSource={detail.recent_orders}
+      </Space> },
+      { key: 'recharges', label: '余额记录', children: <ChargeUserRecharges key={detail.id} userID={detail.id} /> },
+      { key: 'orders', label: '订单记录', children: <Table<ChargeUserOrder> rowKey="order_id" size="middle" pagination={TABLE_PAGINATION} dataSource={detail.recent_orders}
+        scroll={{ x: 800 }}
         locale={{ emptyText: '暂无订单' }} columns={[
-          { title: '订单号', dataIndex: 'order_no' },
+          { title: '订单号', dataIndex: 'order_no', width: 80, align: 'center', render: (_, row) =>
+            <Tooltip title={canReadOrders ? '查看订单详情' : '没有查看订单权限'}><Button type="link" size="small" icon={<EyeOutlined />}
+              aria-label={`查看订单 ${row.order_no} 详情`} disabled={!canReadOrders}
+              onClick={() => setSelectedOrder({ orderID: row.order_id, userID: detail.id, epoch: adminSession.epoch() })} /></Tooltip> },
           { title: '设备', dataIndex: 'device_id' },
           { title: '业务状态', key: 'business_status', render: (_, row) => orderTag(row, 'business') },
           { title: '支付状态', key: 'payment_status', render: (_, row) => orderTag(row, 'payment') },
           { title: '金额', dataIndex: 'total_cents', align: 'right', render: value => value == null ? '待结算' : chargeUserMoney(value) },
           { title: '下单时间', dataIndex: 'created_at', render: chargeUserTime },
-        ]} />
-    </Space>}
+        ]} /> },
+    ]} />}
+    {orderSelection && <OrderDetailsDrawer orderID={orderSelection.orderID} onClose={() => setSelectedOrder(null)}
+      onChanged={() => setReload(value => value + 1)} />}
   </Drawer>;
 }

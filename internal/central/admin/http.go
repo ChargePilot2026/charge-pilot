@@ -21,6 +21,8 @@ type API struct {
 	JWT      *auth.JWT // 后台访问令牌的签发与校验
 }
 
+const adminAccessTTL = 8 * time.Hour
+
 // Register 挂载鉴权相关路由：OpenAPI 文档、登录、MFA 验证、令牌续期、改密、登出和"我是谁"。
 // 除登录与文档外，每条路由都先过 a.Require 鉴权；Require 传空串表示"只要求登录，不额外要求权限位"。
 func (a API) Register(r *gin.Engine) {
@@ -161,16 +163,16 @@ func (a API) refresh(c *gin.Context) {
 	a.issue(c, profile, sid, refresh)
 }
 
-// issue 签发 15 分钟有效的访问令牌并返回前端所需的完整登录信息（令牌、刷新令牌、角色与权限清单）。
+// issue 签发 8 小时有效的访问令牌，返回令牌、有效期、身份及权限。
 // 令牌里带 kind="admin"、会话 sid 和角色 ID，后台与用户侧的令牌因此不能互相通用。
 func (a API) issue(c *gin.Context, p Profile, sid, refresh string) {
 	now := time.Now()
-	token, err := a.JWT.Sign(auth.Claims{Subject: strconv.FormatUint(p.ID, 10), Kind: "admin", SessionID: sid, RoleIDs: []uint64{p.RoleID}, IssuedAt: now.Unix(), ExpiresAt: now.Add(15 * time.Minute).Unix()})
+	token, err := a.JWT.Sign(auth.Claims{Subject: strconv.FormatUint(p.ID, 10), Kind: "admin", SessionID: sid, RoleIDs: []uint64{p.RoleID}, IssuedAt: now.Unix(), ExpiresAt: now.Add(adminAccessTTL).Unix()})
 	if err != nil {
 		a.failure(c, err)
 		return
 	}
-	httpapi.OK(c, gin.H{"token": token, "access_token": token, "refresh_token": refresh, "expires_in": 900, "admin_user_id": p.ID, "username": p.Username, "display_name": p.DisplayName, "role": p.Role, "role_name": p.RoleName, "role_id": p.RoleID, "mfa_enabled": p.MFAEnabled, "permissions": p.Permissions})
+	httpapi.OK(c, gin.H{"token": token, "access_token": token, "refresh_token": refresh, "expires_in": int64(adminAccessTTL / time.Second), "admin_user_id": p.ID, "username": p.Username, "display_name": p.DisplayName, "role": p.Role, "role_name": p.RoleName, "role_id": p.RoleID, "mfa_enabled": p.MFAEnabled, "permissions": p.Permissions})
 }
 
 // Require 返回鉴权中间件：校验 Bearer 令牌、Redis 会话是否还在、档案与令牌是否匹配，

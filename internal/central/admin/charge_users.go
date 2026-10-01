@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"net/url"
 	"time"
 
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/httpapi"
@@ -76,11 +77,12 @@ type chargeUserStat struct {
 	LastOrderAt  *time.Time // 最近下单时间
 }
 
-// registerChargeUsers 注册只读列表和详情接口，要求 charge_user.read 权限。
+// registerChargeUsers 注册用户列表、档案和充值记录，要求 charge_user.read 权限。
 // 账号冻结和解冻由风控流程处理。
 func (a ResourceAPI) registerChargeUsers(r *gin.Engine) {
 	r.GET("/api/v1/admin/charge-users", a.Auth.Require("charge_user.read"), a.chargeUsers)
 	r.GET("/api/v1/admin/charge-users/:id", a.Auth.Require("charge_user.read"), a.chargeUser)
+	r.GET("/api/v1/admin/charge-users/:id/recharges", a.Auth.Require("charge_user.read"), a.chargeUserRecharges)
 }
 
 // chargeUsers 分页列出充电用户。
@@ -122,6 +124,44 @@ func (a ResourceAPI) chargeUser(c *gin.Context) {
 	}
 	detail.ChargeUserRow = row[0]
 	httpapi.OK(c, detail)
+}
+
+// chargeUserRecharges 分页读取路径用户的充值支付单，查询参数不能改变用户或业务范围。
+func (a ResourceAPI) chargeUserRecharges(c *gin.Context) {
+	id, ok := pathID(c)
+	if !ok {
+		return
+	}
+	params, err := url.ParseQuery(c.Request.URL.RawQuery)
+	if err != nil {
+		httpapi.BadRequest(c, "查询参数格式无效")
+		return
+	}
+	for name, values := range params {
+		if (name != "page" && name != "page_size") || len(values) != 1 || values[0] == "" {
+			httpapi.BadRequest(c, "仅支持单值 page 和 page_size 分页参数")
+			return
+		}
+	}
+	page, ok := parsePage(c, "")
+	if !ok {
+		return
+	}
+	out, err := a.Store.ChargeUserRecharges(c.Request.Context(), id, page)
+	if err != nil {
+		resourceFailure(c, err)
+		return
+	}
+	httpapi.OK(c, out)
+}
+
+// ChargeUserRecharges 只返回未删除用户的余额充值，不把未支付订单视为到账。
+func (s ResourceStore) ChargeUserRecharges(ctx context.Context, id uint64, page PageQuery) (Page[PaymentOrderView], error) {
+	var user struct{ ID uint64 }
+	if err := s.UserDB.WithContext(ctx).Table("user").Select("id").Where("id=? AND deleted_at IS NULL", id).Take(&user).Error; err != nil {
+		return Page[PaymentOrderView]{}, err
+	}
+	return s.PaymentOrders(ctx, PaymentOrderQuery{PageQuery: page, UserID: id, BizType: "wallet_recharge"})
 }
 
 // decorateChargeUsers 批量回填手机号、钱包余额与订单统计。

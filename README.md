@@ -191,7 +191,7 @@ DC589 原生刷卡报文没有事件序号。gateway 为每次新报文生成 UU
 
 金额为整数分，计量字段注明单位。用户 Snowflake ID 使用十进制字符串，前端不得转成 JavaScript `Number`。数据库时间按 UTC 解析，计费日界和 DC589 本地时间按北京时间。列表常用 `page/page_size`，默认 1/20，上限 100；过程查询另有游标、时间窗及行数限制。
 
-用户与管理员使用不同 kind 的 JWT，访问令牌期限 15 分钟，刷新令牌在 Redis 中轮换。用户操作校验 JWT、Redis 会话及有效用户；后台另查 auth_version 和实时角色权限。后台口令使用 bcrypt，可启用 TOTP；后台登录、MFA、刷新按 IP 限速，Redis 不可用时拒绝相关请求。菜单权限只影响展示。服务间接口使用 `X-Service-Token`。
+用户与管理员使用不同 kind 的 JWT，用户访问令牌有效期 15 分钟，后台访问令牌有效期 8 小时。后台请求前在本地检查到期时间，剩余 30 秒以内时先刷新，并保留 401 后单次刷新重试。身份资料仅在进入会话时同步，登录和续期直接使用响应中的身份及权限。刷新令牌在 Redis 中轮换，后台会话从登录起最长 7 天，续期不延长此期限。用户操作校验 JWT、Redis 会话及有效用户；后台另查 auth_version 和实时角色权限。后台口令使用 bcrypt，可启用 TOTP；后台登录、MFA、刷新按 IP 限速，Redis 不可用时拒绝相关请求。菜单权限只影响展示。服务间接口使用 `X-Service-Token`。
 
 用户匿名入口为 `/scan/resolve`、`/scan/port`、`/scan/offers`、`/station/nearby`、`/station/:id`、`/announcement/list`，均位于 `/api/v1/user`。订单、钱包、卡、手机号和其他用户操作校验当前会话与资源归属。
 
@@ -216,6 +216,8 @@ DC589 原生刷卡报文没有事件序号。gateway 为每次新报文生成 UU
 | central 内部 | [charge](internal/central/charge)、[billing/service.go](internal/central/billing/service.go)、[regulatory/http.go](internal/regulatory/http.go) |
 | gateway 内部 | [provision](internal/gateway/provision)、[control](internal/gateway/control) |
 | worker 内部 | [internaljob/ops.go](internal/worker/internaljob/ops.go)、[schedule/http.go](internal/worker/schedule/http.go) |
+
+后台用户档案的余额记录通过 `GET /api/v1/admin/charge-users/:id/recharges` 分页读取，要求 `charge_user.read`。数据来自该用户未删除的余额充值支付单，保留待支付、已支付和退款状态；实付与成功退款金额分别展示。仅接受 `page/page_size`，按创建时间及支付单 ID 倒序排列。
 
 ### Webhook
 
