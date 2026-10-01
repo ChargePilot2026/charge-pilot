@@ -90,6 +90,9 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : '加载失败，请稍后重试';
 }
 const startSources: Record<string, string> = { payment: '扫码支付', balance: '余额支付', card: '在线卡' };
+const startSourceColors: Record<string, string> = { payment: 'green', balance: 'gold', card: 'purple' };
+const startSourceTag = (source: Order['start_source']) => source && startSources[source]
+  ? <Tag color={startSourceColors[source]}>{startSources[source]}</Tag> : '—';
 function initialFilters(orderNo?: string): Filters { return { station_id: 0, order_no: orderNo }; }
 
 export default function OrdersPage() {
@@ -204,7 +207,7 @@ export default function OrdersPage() {
         { title: '站点', dataIndex: 'station_name', width: 180, render: value => value || '未关联站点' },
         { title: '设备', dataIndex: 'device_id', onCell: () => ({ style: { whiteSpace: 'nowrap' } }) },
         { title: '端口', dataIndex: 'port_no', width: 80 },
-        { title: '启动来源', dataIndex: 'start_source', width: 130, render: value => startSources[value] || '—' },
+        { title: '启动来源', dataIndex: 'start_source', width: 130, render: startSourceTag },
         { title: '业务状态', width: 110, render: (_, row) => statusTag(row, 'business') },
         { title: '支付状态', width: 130, render: (_, row) => statusTag(row, 'payment') },
         { title: '充电时间', width: 160, render: (_, row) => orderDuration(row) },
@@ -226,7 +229,7 @@ export default function OrdersPage() {
           { key: 'basic', label: '基本信息', children: <Descriptions bordered column={{ xs: 1, sm: 2, md: 2, lg: 2, xl: 2, xxl: 2 }} items={[
           { key: 'business-status', label: '业务状态', children: statusTag(detail, 'business') },
           { key: 'payment-status', label: '支付状态', children: statusTag(detail, 'payment') },
-          { key: 'start-source', label: '启动来源', children: startSources[detail.start_source || ''] || '—' },
+          { key: 'start-source', label: '启动来源', children: startSourceTag(detail.start_source) },
           { key: 'user', label: '用户 ID', children: detail.user_id },
           { key: 'station', label: '站点', children: detail.station_name || '未关联站点' },
           { key: 'device', label: '设备 / 端口', children: `${detail.device_id} / ${detail.port_no}` },

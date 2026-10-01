@@ -28,6 +28,8 @@ interface PaymentOrderPage { items: PaymentOrder[]; total: number; page: number;
 interface Filters { order_no?: string; biz_type?: string; payment_status?: string; pay_method?: string }
 const businessTypes: Record<string, string> = { charge: '充电支付', wallet_recharge: '余额充值' };
 const paymentMethods: Record<string, string> = { wechat: '微信支付', balance: '余额支付' };
+const businessTypeColors: Record<string, string> = { charge: 'blue', wallet_recharge: 'purple' };
+const paymentMethodColors: Record<string, string> = { wechat: 'green', balance: 'gold' };
 const time = (value: string | null) => value ? dayjs(value).format('YYYY-MM-DD HH:mm:ss') : '—';
 const paymentTag = (row: PaymentOrder) => {
   const info = paymentStatusInfo({ payment_status: row.payment_status, payment_order_status: row.status });
@@ -82,8 +84,10 @@ export default function PaymentOrdersPage() {
         onChange: (page, page_size) => setPagination({ page: page_size !== pagination.page_size ? 1 : page, page_size }) }}
       columns={[
         { title: '支付单号', dataIndex: 'order_no', fixed: 'left', onCell: () => ({ style: { whiteSpace: 'nowrap' } }) },
-        { title: '用途', dataIndex: 'biz_type', width: 110, render: value => businessTypes[value] || value },
-        { title: '支付方式', dataIndex: 'pay_method', width: 110, render: value => paymentMethods[value] || value },
+        { title: '用途', dataIndex: 'biz_type', width: 110, render: value => value
+          ? <Tag color={businessTypeColors[value]}>{businessTypes[value] || value}</Tag> : '—' },
+        { title: '支付方式', dataIndex: 'pay_method', width: 110, render: value => value
+          ? <Tag color={paymentMethodColors[value]}>{paymentMethods[value] || value}</Tag> : '—' },
         { title: '支付状态', width: 130, render: (_, row) => paymentTag(row) },
         { title: '应付金额', dataIndex: 'total_cents', width: 120, render: refundedAmount },
         { title: '实付金额', dataIndex: 'paid_cents', width: 120, render: refundedAmount },
