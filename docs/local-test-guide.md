@@ -74,10 +74,11 @@ node scripts/dev/prepare.mjs
 
 ```powershell
 ./scripts/git/install-hooks.ps1
-go run ./tools/backend-check -fix -fmt-only
-go run ./tools/backend-check
+make fmt
+make lint
+make test
 ```
 
-提交 hook 强制检查 Go 格式与 `go vet`，检查失败不能提交。完整集成测试使用隔离数据库；Linux/Git Bash 可运行 `scripts/test/integration.sh`。用户端在 `miniprogram` 执行 `npm run typecheck`、`npm test`、`npm run build:h5` 与 `npm run build:weapp`。
+Makefile 直接调用 `go fmt ./...`、`go vet ./...` 和 `go test ./...`，`make check` 依次执行三项。格式化后重新暂存；提交 hook 运行 `make lint test`，CI 额外检查格式化产生的差异。Go 与 Make 均需安装；Windows 未安装 Make 时，可用 `docker compose -f compose.dev.yaml run --rm --no-deps -T central make check` 在开发容器中检查，安装提交 hook 后本机仍需 Make。完整集成测试使用隔离数据库；Linux/Git Bash 可运行 `scripts/test/integration.sh`。用户端在 `miniprogram` 执行 `npm run typecheck`、`npm test`、`npm run build:h5` 与 `npm run build:weapp`。
 
 本轮已实际验证两台模拟器同时 TCP 在线、H5 登录/充值/下单、一分钟套餐完整 60 秒到期结算、金额支付启动/停止/自动结算退款、电量套餐故障停机/自动退款、刷卡启动/移卡重刷加时及刷卡结束结算。协议指令与故障分支还有自动化测试覆盖。Go 全量测试（含隔离 MySQL/Redis 集成测试）、后端 fmt/vet、后台 43 项测试、用户端 51 项测试及 Taro H5/小程序构建通过。微信正式登录/商户支付与实机计量需要外部环境验收；2026-10-01 已移除 OTA 固件管理、升级计划与协议升级控制，保留模拟器烟雾等设备故障上报告警。双口扩展八档固件变体的额外指令需要对应扩展协议，当前覆盖文档内通用五档指令。

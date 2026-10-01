@@ -15,12 +15,16 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Backend formatting and lint
-        run: go run ./tools/backend-check
+      - name: Backend formatting
+        run: |
+          make fmt
+          git diff --exit-code -- '*.go'
+      - name: Backend lint
+        run: make lint
       - name: Check Go module graph
         run: go mod tidy -diff
       - name: Unit tests
-        run: go test ./...
+        run: make test
       - name: Build services
         run: |
           go build -o /tmp/chargepilot-gateway ./cmd/gateway

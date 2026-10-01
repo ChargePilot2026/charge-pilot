@@ -1,5 +1,5 @@
 #!/bin/sh
-# Mandatory backend formatting and static checks. A nonzero exit blocks commit.
+# Run static checks and unit tests; format explicitly with make fmt before staging.
 set -eu
 cd "$(git rev-parse --show-toplevel)"
-exec go run ./tools/backend-check -staged
+exec make lint test

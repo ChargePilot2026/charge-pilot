@@ -27,9 +27,8 @@ docs/              需求、接口、数据库和迁移验收记录
 - scripts/dev/：开发栈、双模拟器与本地联调数据准备。
 - scripts/db/：三库备份、恢复和明确清空开发数据的重建工具。
 - scripts/test/：隔离 MySQL/Redis 的完整集成测试。
-- scripts/git/：安装 Go 格式与 lint 提交检查。
+- scripts/git/：安装 Go 静态检查与单元测试提交钩子。
 - scripts/ops/：校验根目录的生产 Compose 与 Caddy 配置。
-- tools/backend-check/：本地、Git hook 与 CI 共用的 Go 检查入口。
 
 部署说明见 [部署配置](docs/deployment.md)。重复 examples、副本检查器、旧 HTTP 探针和一次性迁移脚本已删除。
 
@@ -37,14 +36,18 @@ docs/              需求、接口、数据库和迁移验收记录
 
 双模拟器联调入口见[双模拟器本地验收](docs/local-test-guide.md)。运行 `./scripts/dev/start.ps1`，在两个终端分别运行 `./scripts/dev/simulator.ps1 -Number 1` 和 `-Number 2`。后台在 `5173`，用户 H5 在 `5174`。
 
-后端格式化使用 gofmt，lint 使用 go vet。首次克隆后执行 `./scripts/git/install-hooks.ps1`（PowerShell）或 `sh scripts/git/install-hooks.sh`，启用仓库 pre-commit；提交前强制检查工作区及已暂存 Go 源码格式，再运行 go vet，失败则阻止提交。CI 使用同一检查入口。
+后端检查由 Makefile 直接调用 `go fmt`、`go vet` 和 `go test`，需要安装 Go 与 Make。首次克隆后执行 `./scripts/git/install-hooks.ps1`（PowerShell）或 `sh scripts/git/install-hooks.sh`，启用仓库 pre-commit；提交前运行 `make lint test`，失败则阻止提交。格式化请在暂存前执行 `make fmt`；CI 执行格式化后检查 Git 差异，格式不符合要求时失败，再运行静态检查与单元测试。
 
 ```powershell
-go run ./tools/backend-check -fix -fmt-only # 格式化；之后重新暂存
-go run ./tools/backend-check                # fmt + lint
+make fmt   # 格式化；之后重新暂存
+make lint  # go vet ./...
+make test  # go test ./...
+make check # 依次执行 fmt、lint、test
 ```
 
-也可使用 `make fmt`、`make lint`、`make check`。数据库尚未发布，直接修改 [init](migrations/README.md)。五库合并已完成，当前使用三个数据库，实施记录见 [数据库精简清单](docs/db/central.md)。设备默认拥有所选协议声明的全部能力，不需要逐台人工核验。[双模拟器与完整 TUI](docs/simulator-dc589.md) 可用于后台和充电用户流程测试。
+Windows 未安装 Make 时，可在开发容器中运行 `docker compose -f compose.dev.yaml run --rm --no-deps -T central make check`，或直接执行上述 Go 命令。
+
+数据库尚未发布，直接修改 [init](migrations/README.md)。五库合并已完成，当前使用三个数据库，实施记录见 [数据库精简清单](docs/db/central.md)。设备默认拥有所选协议声明的全部能力，不需要逐台人工核验。[双模拟器与完整 TUI](docs/simulator-dc589.md) 可用于后台和充电用户流程测试。
 
 ```bash
 go test ./...

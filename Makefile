@@ -1,7 +1,13 @@
-.PHONY: fmt lint check
+.PHONY: fmt lint test check
+.NOTPARALLEL: check
+
 fmt:
-	go run ./tools/backend-check -fix -fmt-only
+	go fmt ./...
+
 lint:
 	go vet ./...
-check:
-	go run ./tools/backend-check
+
+test:
+	go test ./...
+
+check: fmt lint test
