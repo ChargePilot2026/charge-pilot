@@ -24,6 +24,7 @@ type AdminUserRow struct {
 	DisplayName   *string `json:"display_name"`       // 显示名称；nil 表示未设置
 	RoleID        *uint64 `json:"role_id"`            // 主角色 ID；nil 表示尚未分配角色
 	RoleCode      *string `json:"role_code"`          // 主角色编码（如 customer_admin），由 role 表联查得出；角色已删时为 nil
+	RoleName      *string `json:"role_name"`          // 实际角色名称，支持自定义角色；角色已删时为空。
 	Phone         *string `json:"phone"`              // 备用手机号；nil 表示未登记
 	Email         *string `json:"email"`              // 邮箱；nil 表示未登记
 	Status        string  `json:"status"`             // 账号状态：active 正常 / disabled 停用 / locked 因连续登录失败临时锁定
@@ -68,7 +69,7 @@ func (a ResourceAPI) listAdminUsers(c *gin.Context) {
 		resourceFailure(c, err)
 		return
 	}
-	if err := query.Select("u.id,u.username,u.display_name,u.role_id,r.code AS role_code,u.phone,u.email,u.status,u.mfa_enabled,u.last_login_at,u.locked_until,u.failed_login_count").
+	if err := query.Select("u.id,u.username,u.display_name,u.role_id,r.code AS role_code,r.name AS role_name,u.phone,u.email,u.status,u.mfa_enabled,u.last_login_at,u.locked_until,u.failed_login_count").
 		Joins("LEFT JOIN role AS r ON r.id = u.role_id AND r.deleted_at IS NULL").
 		Order("u.id DESC").Offset((page.Page - 1) * page.PageSize).Limit(page.PageSize).Find(&out.Items).Error; err != nil {
 		resourceFailure(c, err)

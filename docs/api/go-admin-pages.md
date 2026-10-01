@@ -23,10 +23,10 @@
 | 页面 | 路由 | 能力与限制 |
 | --- | --- | --- |
 | 站点 | GET/POST `/stations`；GET/PUT `/stations/{id}`；GET `/stations/{id}/configuration` | 新建、编辑、分页、keyword/status 筛选；从名称或行内工作区直接管理本站计费、套餐、设备及策略；经纬度放在基本信息中；不提供删除 |
-| 设备 | GET `/devices`、`/devices/{id}`；PUT `/devices/{id}`、`/devices/{id}/status` | keyword/status/station_id 筛选；新建复用设备开通流程；设备列表与站点工作区的设备列表支持编辑管理资料及启停；从设备行进入所属站点的计费与套餐配置；显示管理状态，不代表在线遥测 |
+| 设备 | GET `/devices`、`/devices/{id}`；PUT `/devices/{id}`、`/devices/{id}/status` | keyword/status/station_id 筛选；新建复用设备开通流程；设备列表与站点工作区支持编辑管理资料及启停，显示运营状态、最新信号强度与端口物理状态 |
 | 厂商 | GET/POST `/vendors`；GET/PUT `/vendors/{id}`；GET `/vendor-options` | 设备运维中的厂商管理：分页、编码/名称搜索、状态筛选、新建、编辑和启停；设备新建从可选厂商接口读取已启用厂商；不提供删除 |
 | 导入 | GET/POST `/device-imports`；POST `/device-imports/{import_id}/retry` | CSV 预览后提交 JSON，每批 1–100；gateway 幂等建档，再落 admin 元数据；失败保留批次供显式重试 |
-| 充电订单 | GET `/orders`、`/orders/{id}`、`/orders/{id}/timeline` | 仅充电业务；分页及订单号、设备、站点、业务状态、支付状态、启动来源、时间筛选；显示实际充电时长与累计成功退款金额；详情保留原流程及异常信息 |
+| 充电订单 | GET `/orders`、`/orders/{id}`、`/orders/{id}/timeline`、`/orders/{id}/process` | 仅充电业务；分页及订单号、设备、站点、业务状态、支付状态、启动来源、时间筛选；显示实际充电时长与累计成功退款金额；详情包含功率曲线页签 |
 | 支付订单 | GET `/payment-orders` | 只读支付流水，包含充电付款与钱包充值；支持订单号精确查询及业务类型、支付状态、支付方式筛选；不把充值列为充电订单 |
 | 充电用户 | GET `/charge-users`、`/charge-users/{id}` | 后台第一个以"人"而非以"单"为入口的视图：列表给昵称、完整手机号、状态、订单数、累计消费、钱包余额与最后登录，档案再给最近 20 笔订单（业务状态与支付状态分别展示，保留原内部 status）及券/报障计数。只读，不含建号与解冻。手机号按完整号码精确搜索，输入后四位查不出来（库中只有密文与不可逆哈希） |
 | 管理员 | GET/POST `/users`；GET `/roles`；PUT/DELETE `/admin-users/{id}` | 新建账号，密码 12–72 字节 bcrypt；只可分配不超出操作者权限的有效角色；支持资料、角色和状态管理，角色未改变的资料保存不撤销会话 |
@@ -56,6 +56,12 @@
 计费配置统一从“站点 → 工作区”进入：默认计费、套餐及设备独立配置位于“计费与套餐”，启动/退款策略及本站计费下发记录位于“站点策略与下发记录”。独立“站点计费”菜单与 `/station-pricing` 前端路由已移除，不再提供跨站点配置页面或全站点下发记录入口。进入站点需 `station.read`，工作区中的计费及策略页签另需 `pricing.read`，写操作仍按实时操作权限及数据范围校验。
 
 ## 充电订单与支付订单（2026-10-01）
+
+`GET /orders/{id}/process` 需要 `order.read`，由 central 从未删除的充电订单读取规范订单号、设备和端口，再通过 gateway 内部接口查询过程记录。客户端只控制 `after_id`（默认 0）与 `limit`（默认 1000，1–2000），不能覆盖订单身份。响应 `items/next_after_id` 按采样 ID 升序，前端读取完整分页后按采样时间绘制功率曲线。页签激活时才加载，充电中每 15 秒增量刷新；空数据、加载错误和重试分别显示，采样间隔超过 60 秒断开曲线，不补造缺失读数。
+
+订单详情的用户 ID 在具备 `charge_user.read` 时提供档案入口，点击打开与充电用户页共用的用户档案抽屉，读取已有 `GET /charge-users/{id}`。关闭档案返回当前订单详情；无该读取权限时保留普通 ID 文本。
+
+设备 DTO 新增可空 `signal_strength/signal_at` 及 `ports[]`（`port_no/status_code/status_at`）；源自 gateway 最新心跳。原始信号 0 保留、99 显示未知；未上报端口不伪装为空闲。gateway 不可用时 `runtime_available=false`，列表显示暂不可读取。列表中的运营状态仍是独立管理状态。
 
 “充电运营”下的菜单分为“充电订单”和“支付订单”，两页及现有充电订单详情、时间线统一要求 `order.read`。充电订单保留 `/orders` 前端地址及已有接口，支付订单新增 `/payment-orders`。当前后台订单读取按 `order.read` 查询全量记录，尚未实现站点或厂商数据范围过滤；钱包充值不虚构站点归属。
 
@@ -183,6 +189,8 @@
 
 - `GET /admin-users`、`PUT /admin-users/{id}`、`DELETE /admin-users/{id}`、`POST /admin-users/{id}/unlock`、`POST /admin-users/{id}/reset-password`：`admin_user.read/update/delete/reset_password`。普通资料更新或提交相同 `role_id` 不撤销会话；实际改角色、改密、重置与删除会递增 `auth_version`，既有会话立即失效。账号更新响应的 `sessions_revoked` 表明是否已撤销旧会话，实际换角色时为 `true`。系统始终保留至少一个有效客户管理员；禁止停用、删除或实际修改当前登录账号的角色，相同角色的保存仍允许。
 - `POST /admin-users/{id}/mfa`：`admin_user.update`。`action=enrol` 生成密钥并返回 `otpauth_uri`（label 为目标账号）与当前验证码，此时密钥尚未生效；`action=confirm` 校验验证码后才启用；`action=disable` 关闭。禁止对本人账号操作。
+- `/security` 是所有有效登录账号的本人安全设置入口，位于顶部账号菜单；管理员列表本人行的 MFA 操作也进入此页。使用专用 `POST /auth/mfa-settings`，不要求 `admin_user.update`，具体密码与验证码流程见 [认证契约](go-admin-auth.md)。他人账号管理仍保留原授权与本人操作保护。
+- 登录、续期与 `/auth/me` 返回 `display_name/role_name/mfa_enabled`；角色显示名源自 `role.name`，支持自定义角色，不硬编码内置编码。顶部显示管理员显示名（空时回退登录名）及中文角色名；管理员列表同时显示 `role_name` 与 `role_code`。
 - `POST /auth/mfa`：口令校验通过但账号启用双因素时，`/auth/login` 只返回 `mfa_required` 与 5 分钟有效的 `mfa_challenge`，不下发令牌；`/auth/mfa` 凭正确验证码才签发会话，错误验证码计入失败锁定。
 
 ### 首页统计与趋势（2026-10-01）

@@ -2,7 +2,7 @@ import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { Layout, Menu, Avatar, Button, Dropdown, Typography, type MenuProps } from 'antd';
 import {
   DashboardOutlined, AlertOutlined, GiftOutlined, AccountBookOutlined,
-  SettingOutlined, UserOutlined, LogoutOutlined, ThunderboltOutlined,
+  SettingOutlined, UserOutlined, LogoutOutlined, ThunderboltOutlined, SafetyCertificateOutlined,
 } from '@ant-design/icons';
 import { useEffect, useState, type ReactNode } from 'react';
 import { apiGet, apiPost, adminSession } from '../api/client';
@@ -75,6 +75,7 @@ export default function MainLayout() {
   const visibleSections = sections.map(section => ({ ...section, children: section.children.filter(link => permissions.has(link.permission)) }))
     .filter(section => section.children.length > 0);
   const selectedLink = links.find(link => pathname === link.key || link.key !== '/' && pathname.startsWith(link.key + '/'));
+  const pageTitle = pathname === '/security' ? '账号安全' : selectedLink?.label;
   const menuItems: MenuProps['items'] = [
     ...(permissions.has(dashboard.permission) ? [dashboard] : []),
     ...visibleSections,
@@ -87,7 +88,7 @@ export default function MainLayout() {
       <Header className="layout-header">
         <div className="layout-heading">
           <Text strong className="layout-brand">ChargePilot ·</Text>
-          {selectedLink && <Typography.Title level={3} className="layout-page-title">{selectedLink.label}</Typography.Title>}
+          {pageTitle && <Typography.Title level={3} className="layout-page-title">{pageTitle}</Typography.Title>}
         </div>
         <Menu
           mode="horizontal"
@@ -101,14 +102,15 @@ export default function MainLayout() {
           trigger={['click']}
           menu={{
             items: [
+              { key: 'security', icon: <SafetyCertificateOutlined />, label: '账号安全', onClick: () => navigate('/security') },
               { key: 'logout', icon: <LogoutOutlined />, label: '退出', onClick: onLogout },
             ],
           }}
         >
           <Button type="text" aria-label="账号菜单" style={{ height: 'auto', display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
             <Avatar icon={<UserOutlined />} />
-            <span>{adminInfo?.username || 'admin'}</span>
-            <Text type="secondary" style={{ fontSize: 12 }}>{adminInfo?.role || ''}</Text>
+            <span>{adminInfo?.display_name?.trim() || adminInfo?.username || 'admin'}</span>
+            <Text type="secondary" style={{ fontSize: 12 }}>{adminInfo?.role_name || adminInfo?.role || ''}</Text>
           </Button>
         </Dropdown>
       </Header>

@@ -14,6 +14,24 @@
 
 ## 通用约定
 
+### 充电过程与最新心跳状态（2026-10-01）
+
+当前建库定义以 `migrations/gateway_db/0001_init.sql` 为准。新增 `charge_process` 保存 DC589 A4 充电中心跳的每个充电端口采样，与 `device_event`、outbox 和遥测在同一事务提交；没有自动保留期清理。该表不受原始遥测归档影响，也不从历史帧自动回填。
+
+| 字段 | 含义与单位 |
+| --- | --- |
+| `event_key`、`port_no` | 唯一采样键；同一次接收重放不重复写入，之后收到的相同报文仍是新采样 |
+| `charge_order_id`、`order_no`、`device_id` | 从已确认启动、仍占用该端口的 `charge_command` 取规范订单身份；不按时间猜测订单 |
+| `ts` | 平台接收时间，UTC 毫秒；早于启动确认的心跳不关联到新订单 |
+| `power_deciwatts` | 功率，0.1 W；零值是有效测量 |
+| `charged_seconds`、`remaining_seconds` | 已充电与剩余时长，秒 |
+| `charged_mwh`、`remaining_mwh` | 已充与剩余电量，毫瓦时；协议整数 Wh 转为 mWh 保存 |
+| `signal_strength` | 原始 CSQ 信号值；0 是有效值，99 表示未知 |
+| `port_status` | 本端口上报状态；0 空闲、1 充电、3 输出故障、4 粘连；未上报为 NULL |
+| `voltage_v`、`temperature_c`、`device_status` | 扩展心跳的输入电压 V、温度 ℃、设备状态位；未上报为 NULL |
+
+`device.signal_strength/signal_at` 保存最新信号及接收时间；`device_port.reported_status/reported_status_at` 保存最新端口物理状态及接收时间。仅较新的采样更新这些字段，短心跳不清空已有端口状态。端口物理状态与平台的 `device_port.status/current_order_id` 预约、充电占用状态分开，故障上报不会擅自释放订单。
+
 | 项目 | 约定 | 例外 |
 | --- | --- | --- |
 | 主键 | `BIGINT UNSIGNED AUTO_INCREMENT`,字段名 `id` | 无 |

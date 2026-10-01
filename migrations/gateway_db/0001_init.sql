@@ -70,6 +70,32 @@ CREATE TABLE `charge_end_delivery` (
   KEY `idx_order` (`charge_order_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='设备结束事件投递与重试';
 
+-- charge_process：按已确认充电订单归属的 A4 心跳过程记录，独立于遥测保留期。
+CREATE TABLE `charge_process` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT '充电过程采样主键 ID',
+  `event_key` char(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL COMMENT '来源设备心跳事件幂等键',
+  `charge_order_id` bigint unsigned NOT NULL COMMENT '业务充电订单 ID，来自已确认启动命令',
+  `order_no` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '业务充电订单编号，来自端口当前订单及启动命令',
+  `device_id` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '设备全局唯一编号',
+  `port_no` tinyint unsigned NOT NULL COMMENT '设备充电端口号，从 1 开始',
+  `ts` datetime(3) NOT NULL COMMENT '平台接收本次心跳的 UTC 时间',
+  `power_deciwatts` int unsigned NOT NULL COMMENT '设备上报当前功率，单位 0.1 瓦',
+  `charged_seconds` int unsigned NOT NULL COMMENT '设备上报已充电时长，单位秒',
+  `remaining_seconds` int unsigned NOT NULL COMMENT '设备上报剩余充电时长，单位秒',
+  `charged_mwh` int unsigned NOT NULL COMMENT '设备上报已充电量，单位毫瓦时，协议精度为瓦时',
+  `remaining_mwh` int unsigned NOT NULL COMMENT '设备上报剩余电量，单位毫瓦时，协议精度为瓦时',
+  `signal_strength` tinyint unsigned NOT NULL COMMENT '设备上报信号强度原始值，0 为有效读数',
+  `port_status` tinyint unsigned DEFAULT NULL COMMENT '同次心跳中的端口状态码，NULL 表示未上报',
+  `voltage_v` smallint unsigned DEFAULT NULL COMMENT '同次心跳中的整机电压，单位伏，NULL 表示未上报',
+  `temperature_c` smallint DEFAULT NULL COMMENT '同次心跳中的整机温度，单位摄氏度，NULL 表示未上报',
+  `device_status` tinyint unsigned DEFAULT NULL COMMENT '同次心跳中的整机状态码，NULL 表示未上报',
+  `created_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '充电过程记录创建时间',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_event_port` (`event_key`,`port_no`),
+  KEY `idx_order_time` (`order_no`,`ts`,`id`),
+  KEY `idx_order_id` (`order_no`,`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='已确认充电订单的 A4 心跳过程记录，无自动保留期清理';
+
 -- charge_stop_command：设备停止命令和确认状态
 CREATE TABLE `charge_stop_command` (
   `command_id` varchar(36) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '设备指令 ID',
@@ -108,6 +134,8 @@ CREATE TABLE `device` (
   `status` enum('enabled','disabled','retired') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'enabled' COMMENT '当前业务状态；取值 enabled / disabled / retired',
   `last_seen_at` datetime(3) DEFAULT NULL COMMENT '设备最近在线时间',
   `last_heartbeat_at` datetime(3) DEFAULT NULL COMMENT '最近心跳时间',
+  `signal_strength` tinyint unsigned DEFAULT NULL COMMENT '最近心跳上报的信号强度原始值，NULL 表示尚未上报',
+  `signal_at` datetime(3) DEFAULT NULL COMMENT '最近信号强度心跳的 UTC 接收时间，只按事件时间前进',
   `last_ip` varchar(45) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '设备最近连接的 IP 地址',
   `registered_at` datetime(3) DEFAULT NULL COMMENT '设备首次注册时间',
   `config_json` json DEFAULT NULL COMMENT '业务配置 JSON',
@@ -149,6 +177,8 @@ CREATE TABLE `device_port` (
   `status` enum('idle','charging','full','fault','disabled') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'idle' COMMENT '当前业务状态；取值 idle / charging / full / fault / disabled',
   `current_order_id` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '正在充电订单 ID(冗余自 user_db.charge_order)',
   `last_telemetry_at` datetime(3) DEFAULT NULL COMMENT '最近遥测时间',
+  `reported_status` tinyint unsigned DEFAULT NULL COMMENT '最近心跳上报的端口状态码，与业务预约状态独立',
+  `reported_status_at` datetime(3) DEFAULT NULL COMMENT '最近端口状态心跳的 UTC 接收时间，只按事件时间前进',
   `created_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '记录创建时间',
   `updated_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) COMMENT '记录更新时间',
   `deleted_at` datetime(3) DEFAULT NULL COMMENT '软删除时间',

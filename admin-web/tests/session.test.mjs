@@ -77,3 +77,23 @@ test('failed or invalid identity synchronization retains cached credentials and 
  assert.equal(await manager.syncProfile(async()=>({...profile,admin_user_id:2})),false);assert.deepEqual(values,before);
  assert.equal(await manager.syncProfile(async()=>profile),true);
 });
+
+test('login, refresh and profile synchronization carry account names and MFA without changing session identity',async()=>{
+ const {manager,values}=setup();
+ await manager.login({...login,display_name:'运营管理员',role_name:'客户管理员',mfa_enabled:false},'admin');
+ const epoch=manager.epoch();
+ assert.equal(JSON.parse(values.get('cp_admin')).display_name,'运营管理员');
+ assert.equal(JSON.parse(values.get('cp_admin')).role_name,'客户管理员');
+ await manager.refresh('access1',epoch,async()=>({...login,token:'access2',refresh_token:'refresh2',display_name:'值班管理员',role_name:'自定义运维角色',mfa_enabled:true}));
+ const refreshed=JSON.parse(values.get('cp_admin'));
+ assert.equal(refreshed.display_name,'值班管理员');assert.equal(refreshed.role_name,'自定义运维角色');
+ assert.equal(refreshed.mfa_enabled,true);assert.equal(refreshed.role,'customer_admin');assert.equal(manager.epoch(),epoch);
+ await manager.syncProfile(async()=>({...profile,display_name:null,role_name:'新角色名称',mfa_enabled:true}));
+ assert.equal(JSON.parse(values.get('cp_admin')).display_name,null);
+ assert.equal(JSON.parse(values.get('cp_admin')).role_name,'新角色名称');
+ assert.equal(values.get('cp_token'),'access2');assert.equal(values.get('cp_refresh'),'refresh2');assert.equal(manager.epoch(),epoch);
+ const before=new Map(values);
+ await assert.rejects(manager.syncProfile(async()=>({...profile,role_name:23})),/登录身份数据无效/);
+ await assert.rejects(manager.syncProfile(async()=>({...profile,mfa_enabled:'true'})),/登录身份数据无效/);
+ assert.deepEqual(values,before);
+});

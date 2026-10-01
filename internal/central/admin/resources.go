@@ -73,6 +73,7 @@ func (a ResourceAPI) Register(r *gin.Engine) {
 	r.GET("/api/v1/admin/payment-orders", a.Auth.Require("order.read"), a.paymentOrders)
 	r.GET("/api/v1/admin/orders/:id", a.Auth.Require("order.read"), a.order)
 	r.GET("/api/v1/admin/orders/:id/timeline", a.Auth.Require("order.read"), a.timeline)
+	r.GET("/api/v1/admin/orders/:id/process", a.Auth.Require("order.read"), a.orderProcess)
 }
 
 // PageQuery 是全后台统一的分页与筛选入参，各列表接口在此基础上再拼自己的条件。

@@ -629,6 +629,12 @@ charged_wh 是本订单实际累计整数 Wh，charged_seconds 为实际持续�
 
 ### `GET /api/v1/internal/device-summaries`
 
-需要 `X-Service-Token`。查询参数 `device_id` 可重复，1–100 台。返回 `data.items[]`，每项包含 `device_id`、`vendor_name`、`last_heartbeat_at`。仅查询未删除设备及未删除厂商，不修改任何状态。
+需要 `X-Service-Token`。查询参数 `device_id` 可重复，1–100 台。返回 `data.items[]`，每项包含 `device_id`、`vendor_name`、`last_heartbeat_at`、可空的 `signal_strength/signal_at` 及 `ports[]`。端口项为 `port_no/status_code/status_at`，状态和时间在未上报时为 null，无端口时返回 `[]`。仅查询未删除设备及未删除厂商，不修改任何状态；设备与全部端口批量读取。
 
-`device.last_heartbeat_at` 仅由收到的心跳更新，保留最大的接收时间；注册不会修改此字段。为空表示尚无心跳记录，不能拿注册时间代替。数据库迁移 `gateway_db/0012` 从历史心跳事件回填。
+`device.last_heartbeat_at` 仅由收到的心跳更新，保留最大的接收时间；注册不会修改此字段。为空表示尚无心跳记录，不能拿注册时间代替。信号与端口上报状态也仅由更新的心跳推进；未上报不补零，端口状态不会覆盖平台的充电占用状态。当前建库定义见 `gateway_db/0001_init.sql`。
+
+### `GET /api/v1/internal/charge-orders/{order_no}/process`
+
+需要 `X-Service-Token`，读取 `charge_process`；支持 `after_id` 非负游标（默认 0）、`limit`（默认 1000，1–2000）。可追加 `charge_order_id/device_id/port_no` 与订单编号共同限定规范充电会话。按 ID 升序返回 `data: {items: [...], next_after_id: <最后一项ID或null>}`；有后续页才返回游标，不截断完整历史。
+
+采样字段为 `id/ts/power_w/charged_kwh/remaining_kwh/charged_seconds/remaining_seconds/signal_strength/port_status/voltage_v/temperature_c/device_status`。接口将内部 0.1 W 与 mWh 换算为 W 与 kWh；时间为 UTC RFC3339，扩展字段未上报时为 null，零功率保留。存储或依赖故障返回 503，不作为空曲线成功返回。

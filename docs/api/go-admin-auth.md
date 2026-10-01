@@ -6,10 +6,12 @@ OpenAPI：`GET /api/docs/admin.openapi.json`（仅本模块，不代表全站发
 
 | 方法 | 路径 | 请求或说明 |
 | --- | --- | --- |
-| POST | `/api/v1/admin/auth/login` | `{username,password}`；成功 data 包含 `token`（兼容现有后台）、`access_token`、`refresh_token`、`expires_in:900`、`admin_user_id`、`username`、`role`、`permissions` |
+| POST | `/api/v1/admin/auth/login` | `{username,password}`；成功 data 包含 `token`（兼容现有后台）、`access_token`、`refresh_token`、`expires_in:900`、`admin_user_id`、`username`、`display_name`、`role`、`role_name`、`role_id`、`mfa_enabled`、`permissions`；启用 MFA 时先返回挑战 |
 | POST | `/api/v1/admin/auth/refresh` | `{refresh_token}`；返回同登录结构，旧 refresh token 不可再次使用；7 天绝对有效期不续期 |
 | POST | `/api/v1/admin/auth/logout` | Bearer token；撤销当前会话及其刷新令牌，返回 `{revoked:true}` |
-| GET | `/api/v1/admin/auth/me` | Bearer token；当前账号、角色及数据库中的实时权限，包含 `display_name` 和 `role_id` |
+| GET | `/api/v1/admin/auth/me` | Bearer token；当前账号、角色及数据库中的实时权限，包含 `display_name/role_name/role_id/mfa_enabled` |
+| POST | `/api/v1/admin/auth/mfa` | `{mfa_challenge,code}`；完成已验过密码的登录挑战后签发会话 |
+| POST | `/api/v1/admin/auth/mfa-settings` | Bearer token，仅本人有效会话；绑定、确认或关闭 TOTP，见下方流程 |
 | POST | `/api/v1/admin/auth/change-password` | Bearer token，`{old_password,new_password}`；新密码 12–72 字节且不能与旧密码相同；成功立即使该账号所有旧会话失效 |
 | GET | `/api/v1/admin/dashboard` | Bearer token 且需 `dashboard.read`；充电中订单、本日订单/结算金额、用户统计、站点/设备数、待处理告警及近 7 天趋势 |
 
@@ -18,8 +20,7 @@ OpenAPI：`GET /api/docs/admin.openapi.json`（仅本模块，不代表全站发
 部署独立可信代理网段配置仍待补齐。所有业务授权读取当前角色权限，不以 JWT 中的旧角色缓存授权。
 账号初始化、登录成功/失败、改密写入审计；不记录密码和 token。
 
-启用 MFA 的已有账号当前拒绝登录，不绕过第二因素；TOTP 绑定与验证仍未交付。
-后台现有页面仍使用短期 token，自动刷新交互尚未接入。账号 CRUD、菜单/数据/字段权限仍未完成。
+启用 MFA 时口令验证成功后只返回 `mfa_required:true` 与 5 分钟有效的 `mfa_challenge`，不签发会话；需用验证器验证码完成登录。后台已接入会话自动续期、账号管理及按实时权限过滤菜单。
 仪表盘按北京时间划分日期，金额只统计已有 `total_cents` 的结束订单，不包含待计费订单，未扣除后续退款。
 
 ## 仪表盘统计字段（2026-10-01）
@@ -42,3 +43,15 @@ OpenAPI：`GET /api/docs/admin.openapi.json`（仅本模块，不代表全站发
 ## PC 会话自动续期
 
 前端保存登录返回的刷新令牌，在访问令牌 401 后自动调用 refresh 并仅重试原请求一次。Web Locks 串行化同源标签页的刷新、登录与退出，旧请求不能覆盖后来的账号。刷新网络故障保留会话供重试，刷新令牌失效才清除并跳转登录。资金表单使用独立的登录会话标识区分账号切换与同会话令牌轮换。刷新接口与会话轮换仍由后端实时校验；前端不改变有效期或绕过审核权限。
+
+## 本人双因素认证（2026-10-01）
+
+顶部账号菜单的“账号安全”和管理员列表本人行的 MFA 操作进入 `/security`；专用接口不要求管理员账号管理权限，不能指定其他账号。
+
+| action | 请求字段 | 响应与行为 |
+| --- | --- | --- |
+| `enrol` | `password` 当前密码 | 返回 `enrollment_id/secret/otpauth_uri/expires_in:300/mfa_enabled:false/sessions_revoked:false`；5 分钟待绑定密钥存入 Redis 并绑定本人账号、会话与凭证版本，重新绑定使旧登记失效；已启用时拒绝，不覆盖原密钥，不返回当前验证码 |
+| `confirm` | `enrollment_id/code` 验证器六位码 | 校验未过期登记与验证码，启用并递增凭证版本；返回 `mfa_enabled:true/sessions_revoked:true`，旧会话全部失效，需重新登录 |
+| `disable` | `password/code` 当前密码与当前验证器六位码 | 同时校验后关闭并递增凭证版本；返回 `mfa_enabled:false/sessions_revoked:true`，需重新登录 |
+
+密码或验证码错误返回 400（1002），过期或被替换登记返回 409（2009），每分钟超过 5 次返回 429（4291），依赖故障返回 503（5003）；错误输入不会被解释为当前登录会话过期。启用、关闭与安全审计在数据库事务内完成，不记录密码、密钥、URI 或验证码。

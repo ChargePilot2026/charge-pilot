@@ -131,12 +131,20 @@ func (s MySQLSink) Record(ctx context.Context, event protocol.Event) error {
 			}
 		}
 		if event.Type == protocol.Heartbeat {
-			if err := tx.Model(&deviceRow{}).Where("device_id = ? AND status = 'enabled' AND deleted_at IS NULL", event.DeviceID).
-				Updates(map[string]any{"last_seen_at": event.ReceivedAt.UTC(), "last_heartbeat_at": gorm.Expr("GREATEST(COALESCE(last_heartbeat_at, ?), ?)", event.ReceivedAt.UTC(), event.ReceivedAt.UTC())}).Error; err != nil {
+			if err := tx.Model(&deviceRow{}).Where("device_id = ? AND deleted_at IS NULL", event.DeviceID).
+				Updates(map[string]any{"last_seen_at": gorm.Expr("GREATEST(COALESCE(last_seen_at, ?), ?)", event.ReceivedAt.UTC(), event.ReceivedAt.UTC()), "last_heartbeat_at": gorm.Expr("GREATEST(COALESCE(last_heartbeat_at, ?), ?)", event.ReceivedAt.UTC(), event.ReceivedAt.UTC())}).Error; err != nil {
 				return fmt.Errorf("touch device heartbeat: %w", err)
 			}
 		}
 		if inserted.RowsAffected == 1 {
+			if event.Type == protocol.Heartbeat {
+				if err := recordHeartbeatState(ctx, tx, event); err != nil {
+					return fmt.Errorf("persist heartbeat state: %w", err)
+				}
+				if err := insertChargeProcess(ctx, tx, key, event); err != nil {
+					return fmt.Errorf("persist charge process: %w", err)
+				}
+			}
 			if err := insertMeasurements(ctx, tx, event); err != nil {
 				return fmt.Errorf("persist device telemetry: %w", err)
 			}
@@ -307,7 +315,7 @@ func eventKey(event protocol.Event) string {
 	if (event.Type == protocol.CardSwipe || event.Type == protocol.CardBalanceQuery) && uuid.Validate(event.EventID) == nil {
 		return event.EventID
 	}
-	if event.Type == protocol.Heartbeat || event.Type == protocol.Telemetry {
+	if event.Type == protocol.Telemetry {
 		return uuid.NewString()
 	}
 	hash := sha256.New()
@@ -318,6 +326,20 @@ func eventKey(event protocol.Event) string {
 	_, _ = hash.Write([]byte(event.Type))
 	_, _ = hash.Write(event.SessionID[:])
 	_, _ = hash.Write(event.RawPayload)
+	if event.Type == protocol.Heartbeat {
+		// 同一次接收的心跳重放只保存一次；相同报文在之后的接收仍是新的采样。
+		_, _ = hash.Write([]byte{0})
+		_, _ = hash.Write([]byte(event.ReceivedAt.UTC().Format(time.RFC3339Nano)))
+		if len(event.RawPayload) == 0 {
+			// 结构化事件重放没有原始帧时，也须保留同一时刻不同测量的区别。
+			normalized := event
+			normalized.ReceivedAt = event.ReceivedAt.UTC()
+			normalized.StartedAt = event.StartedAt.UTC()
+			normalized.EndedAt = event.EndedAt.UTC()
+			data, _ := json.Marshal(normalized)
+			_, _ = hash.Write(data)
+		}
+	}
 	if event.Type == protocol.Fault {
 		// C0 没有故障序号；相同报文可以在恢复后再次出现。
 		// 每次接收独立持久化，持续故障的去重由告警状态处理。

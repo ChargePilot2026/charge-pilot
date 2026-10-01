@@ -45,7 +45,9 @@ type Profile struct {
 	Username    string   `json:"username"`      // 登录名
 	DisplayName string   `json:"display_name"`  // 显示名
 	Role        string   `json:"role"`          // 角色编码，如 customer_admin
+	RoleName    string   `json:"role_name"`     // 当前角色名称，从 role 表读取，支持自定义角色。
 	RoleID      uint64   `json:"role_id"`       // 角色主键
+	MFAEnabled  bool     `json:"mfa_enabled"`   // 当前登录账号是否已启用双因素认证。
 	Permissions []string `json:"permissions"`   // 权限码列表，按 code 排序；前端用它决定按钮可见性
 }
 
@@ -210,16 +212,17 @@ func deniedMFA(tx *gorm.DB, err error, accountID uint64, denied *error, ip strin
 func (s Store) Profile(ctx context.Context, id uint64) (Profile, error) {
 	var row struct {
 		Account
-		Role string
+		Role     string
+		RoleName string
 	}
-	err := s.DB.WithContext(ctx).Table("admin_user_role AS a").Select("a.*, r.code AS role").Joins("JOIN role AS r ON r.id=a.role_id AND r.deleted_at IS NULL").Where("a.id = ? AND a.status='active' AND a.deleted_at IS NULL", id).Take(&row).Error
+	err := s.DB.WithContext(ctx).Table("admin_user_role AS a").Select("a.*, r.code AS role,r.name AS role_name").Joins("JOIN role AS r ON r.id=a.role_id AND r.deleted_at IS NULL").Where("a.id = ? AND a.status='active' AND a.deleted_at IS NULL", id).Take(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return Profile{}, ErrCredentials
 	}
 	if err != nil {
 		return Profile{}, err
 	}
-	p := Profile{AuthVersion: row.AuthVersion, ID: row.ID, Username: row.Username, DisplayName: row.DisplayName.String, RoleID: row.RoleID, Role: row.Role, Permissions: []string{}}
+	p := Profile{AuthVersion: row.AuthVersion, ID: row.ID, Username: row.Username, DisplayName: row.DisplayName.String, RoleID: row.RoleID, Role: row.Role, RoleName: row.RoleName, MFAEnabled: row.MFAEnabled, Permissions: []string{}}
 	err = s.DB.WithContext(ctx).Table("permission AS p").Joins("JOIN role_permission AS rp ON rp.permission_id=p.id").Where("rp.role_id = ?", p.RoleID).Order("p.code").Pluck("p.code", &p.Permissions).Error
 	p.Permissions = withoutRetiredPermissions(p.Permissions)
 	return p, err

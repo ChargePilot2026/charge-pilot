@@ -9,6 +9,8 @@ import { LoadError } from '../components/LoadError';
 import ManualRefund from './ManualRefund';
 import OrderPackageDetails, { type SelectedPackage } from './orders/OrderPackageDetails';
 import OrderStationSelect from './orders/OrderStationSelect';
+import OrderPowerCurve from './orders/OrderPowerCurve';
+import ChargeUserProfileDrawer from './chargeUsers/ChargeUserProfileDrawer';
 import { businessStatuses, businessStatusInfo, paymentStatuses, paymentStatusInfo, paymentStatusColors, chargingDuration, refundedAmount } from './orders/presentation';
 import { DEFAULT_PAGE_SIZE, TABLE_PAGINATION } from '../utils/tablePagination';
 
@@ -98,6 +100,12 @@ const startSourceIcons = { payment: <QrcodeOutlined />, balance: <WalletOutlined
 const startSourceTag = (source: Order['start_source']) => source && startSources[source]
   ? <Tag icon={startSourceIcons[source]}>{startSources[source]}</Tag> : '—';
 function initialFilters(orderNo?: string): Filters { return { station_id: 0, order_no: orderNo }; }
+function canReadChargeUserProfile(): boolean {
+  try {
+    const permissions = JSON.parse(localStorage.getItem('cp_admin') || 'null')?.permissions;
+    return Array.isArray(permissions) && permissions.includes('charge_user.read');
+  } catch { return false; }
+}
 
 export default function OrdersPage() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -123,6 +131,20 @@ export default function OrdersPage() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailReload, setDetailReload] = useState(0);
   const [timeline, setTimeline] = useState<OrderTimeline | null>(null);
+  const [detailTab, setDetailTab] = useState('basic');
+  const [profileUser, setProfileUser] = useState<{ orderID: number; userID: number } | null>(null);
+  const [canReadChargeUsers, setCanReadChargeUsers] = useState(canReadChargeUserProfile);
+
+  useEffect(() => { setDetailTab('basic'); setProfileUser(null); }, [selected]);
+  useEffect(() => {
+    const updatePermissions = () => setCanReadChargeUsers(canReadChargeUserProfile());
+    window.addEventListener('cp-session', updatePermissions);
+    window.addEventListener('storage', updatePermissions);
+    return () => {
+      window.removeEventListener('cp-session', updatePermissions);
+      window.removeEventListener('storage', updatePermissions);
+    };
+  }, []);
 
   useEffect(() => {
     if (previousLinkedOrderNo.current === linkedOrderNo) return;
@@ -234,12 +256,15 @@ export default function OrdersPage() {
       {detail && <Space direction="vertical" size="large" style={{ width: '100%' }}>
         <Space wrap><Typography.Text strong copyable>{detail.order_no}</Typography.Text>{statusTag(detail, 'business')}{statusTag(detail, 'payment')}</Space>
         {detail.failure_reason && <Alert type="warning" message="异常原因" description={detail.failure_reason} showIcon />}
-        <Tabs key={detail.order_id} style={{ width: '100%' }} items={[
+        <Tabs key={detail.order_id} activeKey={detailTab} onChange={setDetailTab} style={{ width: '100%' }} items={[
           { key: 'basic', label: '基本信息', children: <Descriptions bordered column={{ xs: 1, sm: 2, md: 2, lg: 2, xl: 2, xxl: 2 }} items={[
           { key: 'business-status', label: '业务状态', children: statusTag(detail, 'business') },
           { key: 'payment-status', label: '支付状态', children: statusTag(detail, 'payment') },
           { key: 'start-source', label: '启动来源', children: startSourceTag(detail.start_source) },
-          { key: 'user', label: '用户 ID', children: detail.user_id },
+          { key: 'user', label: '用户 ID', children: canReadChargeUsers
+            ? <Button type="link" style={{ padding: 0, height: 'auto' }} aria-label={`查看用户 ${detail.user_id} 档案`}
+              onClick={() => setProfileUser({ orderID: detail.order_id, userID: detail.user_id })}>{detail.user_id}</Button>
+            : detail.user_id },
           { key: 'station', label: '站点', children: detail.station_name || '未关联站点' },
           { key: 'device', label: '设备 / 端口', children: `${detail.device_id} / ${detail.port_no}` },
           { key: 'created', label: '创建时间', children: time(detail.created_at), span: 2 },
@@ -250,6 +275,8 @@ export default function OrdersPage() {
         ]} />
           },
           { key: 'package', label: '所选套餐', children: <OrderPackageDetails value={detail.selected_package} /> },
+          { key: 'power', label: '功率曲线', children: <OrderPowerCurve key={detail.order_id} orderID={detail.order_id}
+            active={selected === detail.order_id && detailTab === 'power'} charging={detail.business_status === 'charging'} /> },
           { key: 'payment', label: '费用与支付', children: <Space direction="vertical" size="middle" style={{ width: '100%' }}>
         {detail.status === 'charging' && <Alert type="info" showIcon message="充电中的费用为按冻结费率计算的估算值，结束后以最终结算为准。" />}
         <Descriptions bordered column={{ xs: 1, sm: 2, md: 2, lg: 2, xl: 2, xxl: 2 }} items={[
@@ -286,6 +313,8 @@ export default function OrdersPage() {
           </> },
         ]} />
       </Space>}
+      <ChargeUserProfileDrawer userID={canReadChargeUsers && profileUser?.orderID === selected ? profileUser.userID : null}
+        onClose={() => setProfileUser(null)} />
     </Drawer>
   </div>;
 }

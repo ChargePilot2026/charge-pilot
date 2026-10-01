@@ -25,7 +25,14 @@
                       "type": "string"
                     },
                     "data": {
-                      "$ref": "#/components/schemas/LoginResult"
+                      "oneOf": [
+                        {
+                          "$ref": "#/components/schemas/LoginResult"
+                        },
+                        {
+                          "$ref": "#/components/schemas/MFALoginChallenge"
+                        }
+                      ]
                     },
                     "request_id": {
                       "type": "string"
@@ -4801,6 +4808,460 @@
           }
         }
       }
+    },
+    "/api/v1/admin/orders/{id}/process": {
+      "get": {
+        "summary": "读取充电订单完整心跳过程数据",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "order.read",
+        "responses": {
+          "200": {
+            "description": "按采样ID升序分页；末页游标为null",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderProcessResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数无效"
+          },
+          "401": {
+            "description": "未登录或会话失效"
+          },
+          "403": {
+            "description": "当前实时权限不足"
+          },
+          "404": {
+            "description": "资源不存在"
+          },
+          "409": {
+            "description": "业务状态或幂等冲突"
+          },
+          "503": {
+            "description": "依赖服务不可用"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            }
+          },
+          {
+            "name": "after_id",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0,
+              "default": 0
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2000,
+              "default": 1000
+            }
+          }
+        ],
+        "operationId": "order_process",
+        "description": "从规范订单身份查询gateway持久化过程；缺失订单404，依赖失败503，不返回伪造空数据。"
+      }
+    },
+    "/api/v1/admin/auth/mfa-settings": {
+      "post": {
+        "summary": "本人账号双因素设置",
+        "operationId": "auth_mfa_settings",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "description": "只要求本人有效会话，不要求admin_user.update。enrol校验当前密码，pending登记绑定账号、会话与凭证版本，5分钟过期；confirm仅接收登记ID与验证器验证码；disable需密码与当前验证码。启用或关闭递增凭证版本并写安全审计。",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/MFAEnrolRequest"
+                  },
+                  {
+                    "$ref": "#/components/schemas/MFAConfirmRequest"
+                  },
+                  {
+                    "$ref": "#/components/schemas/MFADisableRequest"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "待绑定密钥或已变更状态",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MFASettingsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数、密码或验证码错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录或会话失效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "权限不足",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "状态冲突或登记已过期、替换",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "操作过于频繁，Retry-After:60",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "数据库或Redis不可用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/auth/mfa": {
+      "post": {
+        "summary": "完成双因素登录挑战",
+        "operationId": "auth_mfa",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "mfa_challenge",
+                  "code"
+                ],
+                "properties": {
+                  "mfa_challenge": {
+                    "type": "string",
+                    "maxLength": 128
+                  },
+                  "code": {
+                    "type": "string",
+                    "pattern": "^[0-9]{6}$",
+                    "writeOnly": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "登录成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "code",
+                    "message",
+                    "data",
+                    "request_id",
+                    "trace_id"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/LoginResult"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数、密码或验证码错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录或会话失效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "权限不足",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "状态冲突或登记已过期、替换",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "操作过于频繁，Retry-After:60",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "数据库或Redis不可用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/admin-users": {
+      "get": {
+        "summary": "管理员列表，包含角色名称与编码",
+        "operationId": "admin_users",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "admin_user.read",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          },
+          {
+            "name": "keyword",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "active",
+                "disabled",
+                "locked"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "管理员分页列表",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "code",
+                    "message",
+                    "data",
+                    "request_id",
+                    "trace_id"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/AdminUserPage"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数、密码或验证码错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录或会话失效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "权限不足",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "状态冲突或登记已过期、替换",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "操作过于频繁，Retry-After:60",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "数据库或Redis不可用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -4893,6 +5354,22 @@
             "items": {
               "type": "string"
             }
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "role_name": {
+            "type": "string",
+            "description": "role.name中的角色显示名，支持自定义角色"
+          },
+          "role_id": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1
+          },
+          "mfa_enabled": {
+            "type": "boolean",
+            "description": "本人是否已启用TOTP双因素认证"
           }
         },
         "required": [
@@ -4903,7 +5380,11 @@
           "admin_user_id",
           "username",
           "role",
-          "permissions"
+          "permissions",
+          "display_name",
+          "role_name",
+          "role_id",
+          "mfa_enabled"
         ]
       },
       "Profile": {
@@ -4933,6 +5414,14 @@
             "items": {
               "type": "string"
             }
+          },
+          "role_name": {
+            "type": "string",
+            "description": "role.name中的角色显示名，支持自定义角色"
+          },
+          "mfa_enabled": {
+            "type": "boolean",
+            "description": "本人是否已启用TOTP双因素认证"
           }
         },
         "required": [
@@ -4941,7 +5430,9 @@
           "display_name",
           "role",
           "role_id",
-          "permissions"
+          "permissions",
+          "role_name",
+          "mfa_enabled"
         ]
       },
       "Revoked": {
@@ -5437,7 +5928,10 @@
           "protocol_adapter",
           "charge_mode",
           "reports_energy",
-          "reports_segmented_power"
+          "reports_segmented_power",
+          "signal_strength",
+          "signal_at",
+          "ports"
         ],
         "properties": {
           "id": {
@@ -5539,6 +6033,26 @@
           },
           "reports_segmented_power": {
             "type": "boolean"
+          },
+          "signal_strength": {
+            "type": "integer",
+            "description": "原始CSQ：0为有效值，99为未知，未上报为null",
+            "nullable": true,
+            "minimum": 0,
+            "maximum": 255
+          },
+          "signal_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "最近信号接收时间",
+            "nullable": true
+          },
+          "ports": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DevicePortRuntime"
+            },
+            "description": "按端口编号排序；无端口为[]"
           }
         }
       },
@@ -6284,6 +6798,462 @@
           },
           "trace_id": {
             "type": "string"
+          }
+        }
+      },
+      "DevicePortRuntime": {
+        "type": "object",
+        "required": [
+          "port_no",
+          "status_code",
+          "status_at"
+        ],
+        "properties": {
+          "port_no": {
+            "type": "integer",
+            "description": "设备端口编号",
+            "minimum": 1,
+            "maximum": 255
+          },
+          "status_code": {
+            "type": "integer",
+            "description": "物理上报状态：0空闲、1充电、3输出故障、4粘连；未上报为null，与平台预约状态独立",
+            "nullable": true
+          },
+          "status_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "最近物理状态接收时间；未上报为null",
+            "nullable": true
+          }
+        }
+      },
+      "ChargeProcessPoint": {
+        "type": "object",
+        "required": [
+          "id",
+          "ts",
+          "power_w",
+          "charged_kwh",
+          "remaining_kwh",
+          "charged_seconds",
+          "remaining_seconds",
+          "signal_strength",
+          "port_status",
+          "voltage_v",
+          "temperature_c",
+          "device_status"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "过程记录ID，分页游标",
+            "format": "int64",
+            "minimum": 1
+          },
+          "ts": {
+            "type": "string",
+            "format": "date-time",
+            "description": "平台接收时间，UTC毫秒"
+          },
+          "power_w": {
+            "type": "number",
+            "description": "实测功率，W；保留零值"
+          },
+          "charged_kwh": {
+            "type": "number",
+            "description": "累计充电电量，kWh"
+          },
+          "remaining_kwh": {
+            "type": "number",
+            "description": "剩余电量，kWh"
+          },
+          "charged_seconds": {
+            "type": "integer",
+            "description": "累计实际充电时长，秒"
+          },
+          "remaining_seconds": {
+            "type": "integer",
+            "description": "剩余时长，秒"
+          },
+          "signal_strength": {
+            "type": "integer",
+            "description": "原始CSQ信号值，0有效、99未知"
+          },
+          "port_status": {
+            "type": "integer",
+            "description": "端口上报状态；未上报为null",
+            "nullable": true
+          },
+          "voltage_v": {
+            "type": "integer",
+            "description": "输入电压，V；未上报为null",
+            "nullable": true
+          },
+          "temperature_c": {
+            "type": "integer",
+            "description": "温度，摄氏度；未上报为null",
+            "nullable": true
+          },
+          "device_status": {
+            "type": "integer",
+            "description": "设备状态位；未上报为null",
+            "nullable": true
+          }
+        }
+      },
+      "OrderProcessPage": {
+        "type": "object",
+        "required": [
+          "items",
+          "next_after_id"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChargeProcessPoint"
+            }
+          },
+          "next_after_id": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1,
+            "nullable": true,
+            "description": "存在后续页时为本页末项ID；末页为null"
+          }
+        }
+      },
+      "OrderProcessResponse": {
+        "type": "object",
+        "required": [
+          "code",
+          "message",
+          "data",
+          "request_id",
+          "trace_id"
+        ],
+        "properties": {
+          "code": {
+            "type": "integer"
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/OrderProcessPage"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "trace_id": {
+            "type": "string"
+          }
+        }
+      },
+      "MFAEnrolRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "action",
+          "password"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "enrol"
+            ]
+          },
+          "password": {
+            "type": "string",
+            "format": "password",
+            "minLength": 1,
+            "maxLength": 72,
+            "writeOnly": true
+          }
+        }
+      },
+      "MFAConfirmRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "action",
+          "enrollment_id",
+          "code"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "confirm"
+            ]
+          },
+          "enrollment_id": {
+            "type": "string",
+            "minLength": 43,
+            "maxLength": 43,
+            "pattern": "^[A-Za-z0-9_-]{43}$",
+            "description": "服务端生成的opaque base64url登记标识，绑定当前账号、会话及凭证版本"
+          },
+          "code": {
+            "type": "string",
+            "pattern": "^[0-9]{6}$",
+            "writeOnly": true
+          }
+        }
+      },
+      "MFADisableRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "action",
+          "password",
+          "code"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "disable"
+            ]
+          },
+          "password": {
+            "type": "string",
+            "format": "password",
+            "minLength": 1,
+            "maxLength": 72,
+            "writeOnly": true
+          },
+          "code": {
+            "type": "string",
+            "pattern": "^[0-9]{6}$",
+            "writeOnly": true
+          }
+        }
+      },
+      "MFAEnrolResult": {
+        "type": "object",
+        "required": [
+          "enrollment_id",
+          "secret",
+          "otpauth_uri",
+          "expires_in",
+          "mfa_enabled",
+          "sessions_revoked"
+        ],
+        "properties": {
+          "enrollment_id": {
+            "type": "string",
+            "minLength": 43,
+            "maxLength": 43,
+            "pattern": "^[A-Za-z0-9_-]{43}$",
+            "description": "服务端生成的opaque base64url登记标识，绑定当前账号、会话及凭证版本"
+          },
+          "secret": {
+            "type": "string",
+            "description": "待绑定base32密钥，仅本次显示，不返回当前验证码"
+          },
+          "otpauth_uri": {
+            "type": "string",
+            "description": "验证器绑定URI"
+          },
+          "expires_in": {
+            "type": "integer",
+            "enum": [
+              300
+            ]
+          },
+          "mfa_enabled": {
+            "type": "boolean",
+            "enum": [
+              false
+            ]
+          },
+          "sessions_revoked": {
+            "type": "boolean",
+            "enum": [
+              false
+            ]
+          }
+        }
+      },
+      "MFAChangeResult": {
+        "type": "object",
+        "required": [
+          "mfa_enabled",
+          "sessions_revoked"
+        ],
+        "properties": {
+          "mfa_enabled": {
+            "type": "boolean"
+          },
+          "sessions_revoked": {
+            "type": "boolean",
+            "enum": [
+              true
+            ],
+            "description": "成功后本人全部旧会话失效，前端需重新登录"
+          }
+        }
+      },
+      "MFASettingsResult": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/MFAEnrolResult"
+          },
+          {
+            "$ref": "#/components/schemas/MFAChangeResult"
+          }
+        ]
+      },
+      "MFASettingsResponse": {
+        "type": "object",
+        "required": [
+          "code",
+          "message",
+          "data",
+          "request_id",
+          "trace_id"
+        ],
+        "properties": {
+          "code": {
+            "type": "integer"
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/MFASettingsResult"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "trace_id": {
+            "type": "string"
+          }
+        }
+      },
+      "MFALoginChallenge": {
+        "type": "object",
+        "required": [
+          "mfa_required",
+          "mfa_challenge"
+        ],
+        "properties": {
+          "mfa_required": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "mfa_challenge": {
+            "type": "string",
+            "description": "已验密码的登录挑战，5分钟有效"
+          }
+        }
+      },
+      "AdminUserRow": {
+        "type": "object",
+        "required": [
+          "id",
+          "username",
+          "display_name",
+          "role_id",
+          "role_code",
+          "role_name",
+          "phone",
+          "email",
+          "status",
+          "mfa_enabled",
+          "last_login_at",
+          "locked_until",
+          "failed_login_count"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1
+          },
+          "username": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string",
+            "nullable": true
+          },
+          "role_id": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true
+          },
+          "role_code": {
+            "type": "string",
+            "nullable": true,
+            "description": "角色编码，未分配或已删除为null"
+          },
+          "role_name": {
+            "type": "string",
+            "nullable": true,
+            "description": "role.name显示名，未分配或已删除为null"
+          },
+          "phone": {
+            "type": "string",
+            "nullable": true
+          },
+          "email": {
+            "type": "string",
+            "nullable": true
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "disabled",
+              "locked"
+            ]
+          },
+          "mfa_enabled": {
+            "type": "boolean"
+          },
+          "last_login_at": {
+            "type": "string",
+            "nullable": true
+          },
+          "locked_until": {
+            "type": "string",
+            "nullable": true
+          },
+          "failed_login_count": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "AdminUserPage": {
+        "type": "object",
+        "required": [
+          "items",
+          "total",
+          "page",
+          "page_size"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminUserRow"
+            }
+          },
+          "total": {
+            "type": "integer"
+          },
+          "page": {
+            "type": "integer"
+          },
+          "page_size": {
+            "type": "integer"
           }
         }
       }

@@ -1,5 +1,8 @@
 export interface SessionProfile {
  username?: string;
+ display_name?: string | null;
+ role_name?: string | null;
+ mfa_enabled?: boolean;
  admin_user_id: number;
  role: string;
  permissions: string[];
@@ -24,7 +27,7 @@ export function createSessionManager(storage:StoragePort, lock:LockPort, changed
  const write=(data:SessionTokens,username?:string)=>{
   storage.setItem('cp_token',data.token);
   storage.setItem('cp_refresh',data.refresh_token);
-  storage.setItem('cp_admin',JSON.stringify({username:data.username||username,role:data.role,admin_user_id:data.admin_user_id,permissions:data.permissions}));
+  storage.setItem('cp_admin',JSON.stringify({username:data.username||username,display_name:data.display_name,role:data.role,role_name:data.role_name,mfa_enabled:data.mfa_enabled,admin_user_id:data.admin_user_id,permissions:data.permissions}));
   changed();
  };
  return {
@@ -36,9 +39,11 @@ export function createSessionManager(storage:StoragePort, lock:LockPort, changed
    // 请求放在会话锁外，避免 /me 的 401 重试等待同一把刷新锁。
    const promise=Promise.resolve().then(request).then(profile=>lock(async()=>{
     if(epoch()!==expected || storage.getItem('cp_token')!==token || accountId()!==id)return false;
-    if(!profile || !Number.isSafeInteger(profile.admin_user_id) || typeof profile.username!=='string' || !profile.username || typeof profile.role!=='string' || !profile.role || !Array.isArray(profile.permissions) || !profile.permissions.every(permission=>typeof permission==='string' && !!permission))throw new Error('登录身份数据无效，请稍后重试');
+    if(!profile || !Number.isSafeInteger(profile.admin_user_id) || typeof profile.username!=='string' || !profile.username || typeof profile.role!=='string' || !profile.role || !Array.isArray(profile.permissions) || !profile.permissions.every(permission=>typeof permission==='string' && !!permission)
+      || (profile.display_name!=null && typeof profile.display_name!=='string') || (profile.role_name!=null && typeof profile.role_name!=='string')
+      || (profile.mfa_enabled!==undefined && typeof profile.mfa_enabled!=='boolean'))throw new Error('登录身份数据无效，请稍后重试');
     if(profile.admin_user_id!==id)return false;
-    const value=JSON.stringify({username:profile.username,role:profile.role,admin_user_id:profile.admin_user_id,permissions:profile.permissions});
+    const value=JSON.stringify({username:profile.username,display_name:profile.display_name,role:profile.role,role_name:profile.role_name,mfa_enabled:profile.mfa_enabled,admin_user_id:profile.admin_user_id,permissions:profile.permissions});
     if(storage.getItem('cp_admin')!==value){storage.setItem('cp_admin',value);changed();}
     return true;
    })).finally(()=>{if(pendingProfile?.promise===promise)pendingProfile=undefined;});

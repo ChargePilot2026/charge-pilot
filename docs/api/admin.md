@@ -8,6 +8,8 @@
 
 > 2026-10-01 已移除告警配置（规则与订阅）和 OTA 整个功能；设备主动上报的烟雾、温度与故障告警及告警记录、确认、恢复保留。反馈报修归入设备运维。现有部署的历史表与数据不在本轮清理范围。
 
+> 2026-10-01 充电心跳持久化至 gateway `charge_process`，后台 `GET /orders/{id}/process` 供订单详情“功率曲线”读取完整分页。设备列表返回最新信号和端口上报状态；管理员身份返回显示名与真实角色名称，本人双因素设置使用 `POST /auth/mfa-settings`。精确字段、单位、权限与失败处理见上述 Go 契约及当前 OpenAPI。
+
 **服务**:`admin`(`services/admin`)
 **对外地址**:`https://<customer-domain>/api/v1/admin/...`(经 Caddy 反代到 `admin:8082`)
 **鉴权**:JWT(HS256,§ 7.3.2)+ 角色权限(`permission_codes`)

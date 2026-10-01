@@ -25,6 +25,7 @@ type TelemetryAPI struct {
 func (a TelemetryAPI) Register(router *gin.Engine) {
 	router.GET("/api/v1/internal/devices/:device_id/telemetry", a.curve)
 	router.GET("/api/v1/internal/devices/:device_id/charging-samples", a.chargingSamples)
+	router.GET("/api/v1/internal/charge-orders/:order_no/process", a.chargeProcess)
 	router.GET("/api/v1/internal/devices/:device_id/historical-curve", a.historicalCurve)
 	router.POST("/api/v1/internal/devices/:device_id/backfill", a.backfill)
 }

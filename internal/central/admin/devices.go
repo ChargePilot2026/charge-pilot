@@ -20,22 +20,25 @@ import (
 // Device 是充电桩（设备）的列表/详情模型，取自 admin_db.device_meta 并左连站点带出
 // 站点名。站点统一用主键 ID 关联，列表不再返回站点编码，关键词搜索也不再匹配站点编码。
 type Device struct {
-	ID               uint64     `json:"id"`           // 设备在 admin_db 的内部主键，仅用于列表排序。
-	DeviceID         string     `json:"device_id"`    // 设备编号（device_id），最长 64 字符，是设备对外的业务标识，也是详情接口的寻址键。
-	StationID        *uint64    `json:"station_id"`   // 所属站点 ID，可空表示尚未归属站点。
-	StationName      *string    `json:"station_name"` // 所属站点名称，联表带出；站点被软删除时为空。
-	VendorID         *uint64    `json:"vendor_id"`    // 设备厂商 ID，可空。
-	VendorName       *string    `json:"vendor_name" gorm:"-"`
-	LastHeartbeatAt  *time.Time `json:"last_heartbeat_at" gorm:"-"`
-	RuntimeAvailable bool       `json:"runtime_available" gorm:"-"`
-	Model            *string    `json:"model"`      // 设备型号，可空；关键词搜索会匹配它。
-	SerialNo         *string    `json:"serial_no"`  // 设备出厂序列号，可空。
-	Status           string     `json:"status"`     // 设备状态：enabled 启用、disabled 停用、retired 退役、fault 故障。
-	InstallAt        *time.Time `json:"install_at"` // 安装时间，可空表示尚未记录。
-	WarrantyUntil    *time.Time `json:"warranty_until"`
-	Tags             []string   `json:"tags" gorm:"-"` // 对外标签数组；数据库 NULL 统一读为空数组。
-	TagsJSON         *string    `json:"-" gorm:"column:tags_json"`
-	UpdatedAt        time.Time  `json:"updated_at"` // 资料编辑的并发校验值，使用 UTC 毫秒精度。
+	ID               uint64             `json:"id"`           // 设备在 admin_db 的内部主键，仅用于列表排序。
+	DeviceID         string             `json:"device_id"`    // 设备编号（device_id），最长 64 字符，是设备对外的业务标识，也是详情接口的寻址键。
+	StationID        *uint64            `json:"station_id"`   // 所属站点 ID，可空表示尚未归属站点。
+	StationName      *string            `json:"station_name"` // 所属站点名称，联表带出；站点被软删除时为空。
+	VendorID         *uint64            `json:"vendor_id"`    // 设备厂商 ID，可空。
+	VendorName       *string            `json:"vendor_name" gorm:"-"`
+	LastHeartbeatAt  *time.Time         `json:"last_heartbeat_at" gorm:"-"`
+	SignalStrength   *uint8             `json:"signal_strength" gorm:"-"` // 最新设备信号；未上报时为空，0 仍是有效读数。
+	SignalAt         *time.Time         `json:"signal_at" gorm:"-"`
+	Ports            []DevicePortStatus `json:"ports" gorm:"-"` // 当前端口状态；未读取到端口时返回空数组。
+	RuntimeAvailable bool               `json:"runtime_available" gorm:"-"`
+	Model            *string            `json:"model"`      // 设备型号，可空；关键词搜索会匹配它。
+	SerialNo         *string            `json:"serial_no"`  // 设备出厂序列号，可空。
+	Status           string             `json:"status"`     // 设备状态：enabled 启用、disabled 停用、retired 退役、fault 故障。
+	InstallAt        *time.Time         `json:"install_at"` // 安装时间，可空表示尚未记录。
+	WarrantyUntil    *time.Time         `json:"warranty_until"`
+	Tags             []string           `json:"tags" gorm:"-"` // 对外标签数组；数据库 NULL 统一读为空数组。
+	TagsJSON         *string            `json:"-" gorm:"column:tags_json"`
+	UpdatedAt        time.Time          `json:"updated_at"` // 资料编辑的并发校验值，使用 UTC 毫秒精度。
 	// 这块板能上报什么，以及它当前按什么口径计费。
 	// 这些信息就挂在设备行上，运营不必再打开定价页面
 	// 去弄清某个计费规则为什么在这儿用不了。
@@ -43,6 +46,13 @@ type Device struct {
 	ChargeMode            string `json:"charge_mode"`                      // 该设备当前实际生效的计费方式，取自 pricing 引擎的 ChargeMode（server_realtime_power / server_max_power / server_energy / device_duration / device_energy / device_power）。
 	ReportsEnergy         bool   `json:"reports_energy" gorm:"-"`          // 协议帧里是否带电量：false 表示这块板报不了电量，只有时长口径能落到它身上。
 	ReportsSegmentedPower bool   `json:"reports_segmented_power" gorm:"-"` // 协议帧里是否带分段功率：功率档位口径需要它，为 false 时该设备无法应用。
+}
+
+// DevicePortStatus 保留设备原始状态码和采样时刻，未上报的状态不默认为空闲。
+type DevicePortStatus struct {
+	PortNo     uint8      `json:"port_no"`
+	StatusCode *uint8     `json:"status_code"`
+	StatusAt   *time.Time `json:"status_at"`
 }
 
 // deviceQuery 组装设备的基础查询：device_meta 左连未删除的站点，并排除已软删除的设备。
@@ -58,6 +68,9 @@ const deviceColumns = "d.id,d.device_id,d.station_id,d.vendor_id,d.model,d.seria
 // normalizeMetadata 隐藏内部 JSON 存储形式，并让所有日期保持数据库的 UTC 毫秒精度。
 func (d *Device) normalizeMetadata() error {
 	d.Tags = []string{}
+	if d.Ports == nil {
+		d.Ports = []DevicePortStatus{}
+	}
 	if d.TagsJSON != nil {
 		if err := json.Unmarshal([]byte(*d.TagsJSON), &d.Tags); err != nil {
 			return err
@@ -174,6 +187,11 @@ func (a ResourceAPI) device(c *gin.Context) {
 // Enrich only devices already authorized by the central data scope, in one call.
 // A gateway outage must not fabricate a 'never online' result or hide operations.
 func (a ResourceAPI) enrichDevices(ctx context.Context, rows []Device) {
+	for i := range rows {
+		if rows[i].Ports == nil {
+			rows[i].Ports = []DevicePortStatus{}
+		}
+	}
 	if len(rows) == 0 || a.GatewayURL == "" || a.ServiceToken == "" {
 		return
 	}
@@ -185,9 +203,12 @@ func (a ResourceAPI) enrichDevices(ctx context.Context, rows []Device) {
 		Code int `json:"code"`
 		Data struct {
 			Items []struct {
-				DeviceID        string     `json:"device_id"`
-				VendorName      *string    `json:"vendor_name"`
-				LastHeartbeatAt *time.Time `json:"last_heartbeat_at"`
+				DeviceID        string             `json:"device_id"`
+				VendorName      *string            `json:"vendor_name"`
+				LastHeartbeatAt *time.Time         `json:"last_heartbeat_at"`
+				SignalStrength  *uint8             `json:"signal_strength"`
+				SignalAt        *time.Time         `json:"signal_at"`
+				Ports           []DevicePortStatus `json:"ports"`
 			} `json:"items"`
 		} `json:"data"`
 	}
@@ -199,6 +220,12 @@ func (a ResourceAPI) enrichDevices(ctx context.Context, rows []Device) {
 			if extra.DeviceID == rows[i].DeviceID {
 				rows[i].VendorName = extra.VendorName
 				rows[i].LastHeartbeatAt = extra.LastHeartbeatAt
+				rows[i].SignalStrength = extra.SignalStrength
+				rows[i].SignalAt = extra.SignalAt
+				rows[i].Ports = extra.Ports
+				if rows[i].Ports == nil {
+					rows[i].Ports = []DevicePortStatus{}
+				}
 				rows[i].RuntimeAvailable = true
 				break
 			}

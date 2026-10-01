@@ -1,4 +1,4 @@
-import { Table, Typography, Tag, Space, Button, Input, Select, Popconfirm, Alert, message } from 'antd';
+import { Table, Typography, Tag, Space, Button, Input, Select, Popconfirm, Alert, Tooltip, message } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -8,15 +8,30 @@ import DeviceCreate from './DeviceCreate';
 import DeviceEdit from './DeviceEdit';
 import { LoadError } from '../components/LoadError';
 import { DEFAULT_PAGE_SIZE, TABLE_PAGINATION } from '../utils/tablePagination';
+import { portStatusText, signalStrengthText } from '../utils/deviceTelemetry';
 
 interface Device {
   id: number; device_id: string; station_id?: number; station_name?: string;
-vendor_id?: number; vendor_name?: string; last_heartbeat_at?: string; runtime_available?: boolean; model?: string; status: string; install_at?: string;
+  vendor_id?: number; vendor_name?: string; last_heartbeat_at?: string; runtime_available?: boolean; model?: string; status: string; install_at?: string;
+  signal_strength?: number | null; signal_at?: string | null;
+  ports?: { port_no: number; status_code: number | null; status_at: string | null }[] | null;
 }
 const statuses: Record<string, { label: string; color: string }> = {
   enabled: {label:'已启用',color:'green'}, disabled:{label:'已禁用',color:'red'},
   retired:{label:'已退役',color:'red'}, fault:{label:'故障',color:'volcano'},
 };
+const sampledAt = (value: string | null | undefined) => value ? `采样时间：${new Date(value).toLocaleString()}` : '采样时间未记录';
+const deviceSignal = (device: Device) => device.runtime_available === false ? '暂不可读取'
+  : device.signal_strength == null ? '—'
+    : <Tooltip title={sampledAt(device.signal_at)}><span>{signalStrengthText(device.signal_strength)}</span></Tooltip>;
+const devicePorts = (device: Device) => device.runtime_available === false ? '暂不可读取'
+  : !device.ports?.length ? '—'
+    : <Space size={[0, 4]} wrap style={{ maxWidth: 320 }}>
+      {[...device.ports].sort((a, b) => a.port_no - b.port_no).map(port => <Tooltip key={port.port_no}
+        title={port.status_code == null ? '尚未上报端口状态' : sampledAt(port.status_at)}>
+        <Tag>{port.port_no}：{portStatusText(port.status_code)}</Tag>
+      </Tooltip>)}
+    </Space>;
 export default function DevicesPage({ station, embedded = false, onConfigure }: {
   station?: { id: number; name: string; status: string };
   embedded?: boolean;
@@ -82,7 +97,7 @@ export default function DevicesPage({ station, embedded = false, onConfigure }: 
     </Space>{!embedded && <Space wrap>{createActions}</Space>}</div>
     {error && <LoadError title="设备列表加载失败" detail={error} onRetry={() => void load()} />}
     {!loading&&data.some(d=>d.runtime_available===false)&&<Alert type="warning" showIcon style={{marginBottom:12}} message="部分设备的厂商及心跳信息暂不可读取，请刷新重试。"/>}
-    <Table<Device> size="middle" rowKey="id" loading={loading} dataSource={data} scroll={{x:800}}
+    <Table<Device> size="middle" rowKey="id" loading={loading} dataSource={data} scroll={{x:'max-content'}}
       pagination={{...TABLE_PAGINATION,current:query.page,pageSize:query.page_size,total,showTotal:n=>`共 ${n} 台设备`,onChange:(page,page_size)=>setQuery({...query,page:page_size===query.page_size?page:1,page_size})}}
       columns={[
         {title:'设备编号',dataIndex:'device_id'},
@@ -92,6 +107,8 @@ export default function DevicesPage({ station, embedded = false, onConfigure }: 
           : d.station_name || (d.station_id ? `站点 #${d.station_id}` : '未分配')}] : []),
         {title:'厂商',key:'vendor',render:(_:unknown,d:Device)=>d.runtime_available===false?'暂不可读取':d.vendor_name||'未登记'},
         {title:'运营状态',dataIndex:'status',render:(s:string)=><Tag color={statuses[s]?.color || 'default'}>{statuses[s]?.label || s}</Tag>},
+        {title:'信号强度',key:'signal',render:(_:unknown,d:Device)=>deviceSignal(d)},
+        {title:'端口状态',key:'ports',width:320,render:(_:unknown,d:Device)=>devicePorts(d)},
         {title:'安装时间',dataIndex:'install_at',render:(v?:string)=>v ? new Date(v).toLocaleString() : '-'},
         {title:'最后在线时间',key:'heartbeat',render:(_:unknown,d:Device)=>d.runtime_available===false?'暂不可读取':d.last_heartbeat_at?new Date(d.last_heartbeat_at).toLocaleString():'尚无心跳'},
         ...(permissions.includes('device.operate') || permissions.includes('pricing.read') && (onConfigure || permissions.includes('station.read')) ? [{title:'操作',key:'configuration',render:(_:unknown,d:Device)=><Space>

@@ -29,6 +29,7 @@ func (a API) Register(r *gin.Engine) {
 	r.POST("/api/v1/admin/auth/mfa", a.verifyMFA)
 	r.POST("/api/v1/admin/auth/refresh", a.refresh)
 	r.POST("/api/v1/admin/auth/change-password", a.Require(""), a.changePassword)
+	r.POST("/api/v1/admin/auth/mfa-settings", a.Require(""), a.mfaSettings)
 	r.POST("/api/v1/admin/auth/logout", a.Require(""), a.logout)
 	r.GET("/api/v1/admin/auth/me", a.Require(""), func(c *gin.Context) { httpapi.OK(c, c.MustGet("admin_profile")) })
 }
@@ -172,7 +173,7 @@ func (a API) issue(c *gin.Context, p Profile, sid, refresh string) {
 		a.failure(c, err)
 		return
 	}
-	httpapi.OK(c, gin.H{"token": token, "access_token": token, "refresh_token": refresh, "expires_in": 900, "admin_user_id": p.ID, "username": p.Username, "role": p.Role, "permissions": p.Permissions})
+	httpapi.OK(c, gin.H{"token": token, "access_token": token, "refresh_token": refresh, "expires_in": 900, "admin_user_id": p.ID, "username": p.Username, "display_name": p.DisplayName, "role": p.Role, "role_name": p.RoleName, "role_id": p.RoleID, "mfa_enabled": p.MFAEnabled, "permissions": p.Permissions})
 }
 
 // Require 返回鉴权中间件：校验 Bearer 令牌、Redis 会话是否还在、档案与令牌是否匹配，

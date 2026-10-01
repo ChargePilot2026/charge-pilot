@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Alert, App, Button, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag, Typography } from 'antd';
 import { KeyOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
-import { apiDelete, apiGet, apiPost, apiPut } from '../api/client';
+import { useNavigate } from 'react-router-dom';
+import { apiDelete, apiGet, apiPost, apiPut, adminSession } from '../api/client';
+import type { SessionProfile } from '../api/session';
 import { formatTime } from '../utils/time';
 import { LoadError } from '../components/LoadError';
 import { DEFAULT_PAGE_SIZE, TABLE_PAGINATION } from '../utils/tablePagination';
@@ -14,6 +16,7 @@ interface AdminUser {
   display_name: string | null;
   role_id: number | null;
   role_code: string | null;
+  role_name: string | null;
   phone: string | null;
   email: string | null;
   status: string;
@@ -32,6 +35,7 @@ const statusMeta: Record<string, { color: string; label: string }> = {
 };
 
 export default function UsersPage() {
+  const navigate = useNavigate();
   const { message } = App.useApp();
   const [roles, setRoles] = useState<Role[]>([]);
   const [rolesError, setRolesError] = useState<string | null>(null);
@@ -50,6 +54,10 @@ export default function UsersPage() {
   const [editForm] = Form.useForm();
   const [resetForm] = Form.useForm();
   const [mfaForm] = Form.useForm();
+  const isSelf = (row: AdminUser) => {
+    try { return JSON.parse(localStorage.getItem('cp_admin') || 'null')?.admin_user_id === row.id; }
+    catch { return false; }
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -104,6 +112,7 @@ export default function UsersPage() {
       message.success(result.sessions_revoked ? '账号已更新，原有会话已失效' : '账号已更新');
       setEditing(null);
       await load();
+      void adminSession.syncProfile(() => apiGet<SessionProfile>('/api/v1/admin/auth/me')).catch(() => undefined);
     } catch (e: any) {
       if (!e?.errorFields) message.error(e?.message || '更新失败');
     } finally {
@@ -210,7 +219,8 @@ export default function UsersPage() {
         columns={[
           { title: '用户名', dataIndex: 'username', width: 160 },
           { title: '显示名', dataIndex: 'display_name', width: 130, render: (v: string | null) => v || '—' },
-          { title: '角色', dataIndex: 'role_code', width: 130, render: (v: string | null, row) => v ? <Tag color="blue">{v}</Tag> : `ID ${row.role_id ?? '—'}` },
+          { title: '角色', dataIndex: 'role_code', width: 260, render: (v: string | null, row) => row.role_name || v
+            ? <Tag>{row.role_name && v ? `${row.role_name}（${v}）` : row.role_name || v}</Tag> : `ID ${row.role_id ?? '—'}` },
           { title: '状态', dataIndex: 'status', width: 100, render: (v: string) => <Tag color={statusMeta[v]?.color}>{statusMeta[v]?.label || v}</Tag> },
           { title: '双因素', dataIndex: 'mfa_enabled', width: 100, render: (v: boolean) => v ? <Tag color="green">已启用</Tag> : <Tag>未启用</Tag> },
           { title: '最近登录', dataIndex: 'last_login_at', width: 170, render: (v: string | null) => v ? formatTime(v) : '从未登录' },
@@ -221,8 +231,8 @@ export default function UsersPage() {
               <Button type="link" onClick={() => { setResetting(row); resetForm.resetFields(); }}>重置密码</Button>
               {row.status === 'locked'
                 ? <Button type="link" onClick={() => void unlock(row)} loading={saving}>解锁</Button>
-                : <Button type="link" icon={<KeyOutlined />} onClick={() => void enrolMFA(row)} loading={saving}>MFA</Button>}
-              {row.mfa_enabled && <Button type="link" danger onClick={() => void disableMFA(row)} loading={saving}>关闭 MFA</Button>}
+                : <Button type="link" icon={<KeyOutlined />} onClick={() => isSelf(row) ? navigate('/security') : void enrolMFA(row)} loading={saving}>MFA</Button>}
+              {row.mfa_enabled && <Button type="link" danger onClick={() => isSelf(row) ? navigate('/security') : void disableMFA(row)} loading={saving}>关闭 MFA</Button>}
               <Popconfirm title={`删除账号 ${row.username}？`} description="该账号将立即失效且无法登录。" onConfirm={() => void remove(row)}>
                 <Button type="link" danger>删除</Button>
               </Popconfirm>

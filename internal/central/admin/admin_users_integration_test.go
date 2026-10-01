@@ -43,7 +43,7 @@ func TestAdminProfileEditingKeepsUnchangedRoleAndSession(t *testing.T) {
 			ID   uint64
 			Code string
 			Name string
-		}{Code: "selfedit_" + suffix + "_" + tag, Name: "Self edit integration fixture"}
+		}{Code: "selfedit_" + suffix + "_" + tag, Name: "自定义角色-" + suffix}
 		if err := db.Table("role").Create(&row).Error; err != nil {
 			t.Fatal(err)
 		}
@@ -72,9 +72,33 @@ func TestAdminProfileEditingKeepsUnchangedRoleAndSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if profile.RoleName != "自定义角色-owner" || profile.Role != "selfedit_owner_"+tag {
+		t.Fatalf("profile did not read custom role name: %+v", profile)
+	}
 	router := gin.New()
 	router.Use(func(c *gin.Context) { c.Set("admin_profile", profile) })
 	router.PUT("/admin-users/:id", (ResourceAPI{Store: ResourceStore{AdminDB: db}}).updateAdminUser)
+	router.GET("/admin-users", (ResourceAPI{Store: ResourceStore{AdminDB: db}}).listAdminUsers)
+	checkRoleName := func(want string) {
+		t.Helper()
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/admin-users?keyword="+actor.Username, nil))
+		var out struct {
+			Data Page[AdminUserRow] `json:"data"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &out); err != nil || response.Code != 200 || len(out.Data.Items) != 1 || out.Data.Items[0].RoleName == nil || *out.Data.Items[0].RoleName != want || out.Data.Items[0].RoleCode == nil || *out.Data.Items[0].RoleCode != profile.Role {
+			t.Fatalf("list lost actual role name: %s %v", response.Body.String(), err)
+		}
+		current, err := (Store{DB: db}).Profile(context.Background(), actor.ID)
+		if err != nil || current.RoleName != want {
+			t.Fatalf("profile lost renamed role: %+v %v", current, err)
+		}
+	}
+	checkRoleName("自定义角色-owner")
+	if err := db.Table("role").Where("id=?", actor.RoleID).Update("name", "中文维护组").Error; err != nil {
+		t.Fatal(err)
+	}
+	checkRoleName("中文维护组")
 	request := func(id uint64, input any, wantStatus int, revoked bool) {
 		t.Helper()
 		body, err := json.Marshal(input)
