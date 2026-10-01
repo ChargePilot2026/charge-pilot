@@ -1,4 +1,4 @@
-# 生产拓扑。部署前完成 docs/migration/go-rebuild.md 中的业务与外部验收。
+# 生产拓扑。配置、支付覆盖层与上线验收要求见 README.md。
 name: chargepilot
 
 x-go-build: &go-build

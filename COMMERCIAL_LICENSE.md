@@ -1,7 +1,7 @@
 # ChargePilot 商业授权协议(模板)
 
 > **适用对象**:与 ChargePilot 软件权利人签订商业授权协议的付费客户
-> **配套**:`LICENSE`(AGPL-3.0 开源侧);`docs/需求分析.md` § 1.2 / § 13.2
+> **配套**:[LICENSE](LICENSE)(AGPL-3.0 开源侧);[README](README.md)、[AGENTS](AGENTS.md) 及 [DC589 协议](protocols/dc589.md)
 > **法律效力**:本文件为**模板**,实际生效以双方盖章的纸质 / 电子合同为准
 
 ---
@@ -24,7 +24,7 @@
 
 1.3 标的清单(签约时确认):
 - [ ] ChargePilot 软件源代码(本仓库 `main` 分支及指定 tag)
-- [ ] 配套文档(`docs/` 目录下全部 Markdown 文档)
+- [ ] 配套文档(`README.md`、`AGENTS.md`、`protocols/dc589.md`)
 - [ ] (可选)OTA 固件包维护服务 1 年
 - [ ] (可选)远程技术支持(运维订阅)
 

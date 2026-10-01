@@ -1,6 +1,6 @@
 # 充电用户端：Taro + React
 
-21 个业务页面共用 Taro 4.3、React 18 和 TypeScript；同一份源代码构建浏览器 H5 与微信小程序。路由与平台 API 由 Taro 管理，原业务控制器通过 React 生命周期适配。
+用户端使用 Taro 4.3、React 18 和 TypeScript，同一份源代码构建浏览器 H5 与微信小程序。
 
 推荐 Node.js 24，使用已提交的 lockfile 安装依赖：
 
@@ -13,7 +13,7 @@ npm run build:h5
 npm run build:weapp
 ```
 
-H5 开发服务器默认端口 5174。本机联调使用仓库根目录 `compose.dev.yaml`，已设置代理、本地登录与模拟支付，操作见 [本地验收说明](../docs/local-test-guide.md)。
+H5 开发服务器默认端口 5174。本机联调使用仓库根目录 `compose.dev.yaml`，已设置代理、开发登录与模拟支付，操作见 [本地运行](../README.md#本地运行)。
 
 | 环境变量 | 作用 |
 | --- | --- |

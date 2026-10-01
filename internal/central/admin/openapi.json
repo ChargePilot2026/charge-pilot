@@ -3,7 +3,7 @@
   "info": {
     "title": "ChargePilot Go admin API",
     "version": "2026-10-01",
-    "description": "已接线的 Go 后台认证、仪表盘和现有 PC 页面接口。字段与工作流见 docs/api/go-admin-pages.md；不代表目标设计中的全部后台能力。"
+    "description": "后台认证、仪表盘及运营页面的部分接口契约。完整接口以服务实际注册路由和 DTO 为准；业务规则与接口导航见仓库 README.md。"
   },
   "paths": {
     "/api/v1/admin/auth/login": {
@@ -6779,7 +6779,7 @@
           }
         },
         "additionalProperties": true,
-        "description": "在充电用户列表行基础上增加钱包、优惠券及报修计数；此处明确最近订单摘要契约，其余字段见 docs/api/go-admin-pages.md。"
+        "description": "充电用户详情，包含列表基础字段、钱包、优惠券、报修计数及最近订单摘要。"
       },
       "ChargeUserDetailResponse": {
         "type": "object",

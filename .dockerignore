@@ -10,7 +10,7 @@ node_modules/
 **/node_modules/
 admin-web/
 miniprogram/
-docs/
+protocols/
 scripts/
 monitoring/
 logs/
