@@ -27,16 +27,16 @@ const deviceSignal = (device: Device) => device.runtime_available === false ? '�
     : <Tooltip title={sampledAt(device.signal_at)}><span>{signalStrengthText(device.signal_strength)}</span></Tooltip>;
 const devicePorts = (device: Device) => device.runtime_available === false ? '暂不可读取'
   : !device.ports?.length ? '—'
-    : <Space size={[0, 4]} wrap style={{ maxWidth: 320 }}>
+    : <div style={{ display: 'inline-grid', gridTemplateColumns: 'repeat(10, 28px)', gap: 4 }}>
       {[...device.ports].sort((a, b) => a.port_no - b.port_no).map(port => {
         const state = port.status_code == null ? '未上报' : portStatusText(port.status_code);
         const description = `端口 ${port.port_no}：${state} · 最近上报时间：${port.status_at ? new Date(port.status_at).toLocaleString() : '—'}`;
         return <Tooltip key={port.port_no} title={description}>
           <Tag color={port.status_code == null ? 'default' : portStatusColors[port.status_code] || 'default'}
-            aria-label={description} tabIndex={0}>{port.port_no}</Tag>
+            aria-label={description} tabIndex={0} style={{ marginInlineEnd: 0, paddingInline: 0, textAlign: 'center' }}>{port.port_no}</Tag>
         </Tooltip>;
       })}
-    </Space>;
+    </div>;
 export default function DevicesPage({ station, embedded = false, onConfigure }: {
   station?: { id: number; name: string; status: string };
   embedded?: boolean;
@@ -113,7 +113,7 @@ export default function DevicesPage({ station, embedded = false, onConfigure }: 
         {title:'厂商',key:'vendor',render:(_:unknown,d:Device)=>d.runtime_available===false?'暂不可读取':d.vendor_name||'未登记'},
         {title:'运营状态',dataIndex:'status',render:(s:string)=><Tag color={statuses[s]?.color || 'default'}>{statuses[s]?.label || s}</Tag>},
         {title:'信号强度',key:'signal',render:(_:unknown,d:Device)=>deviceSignal(d)},
-        {title:'端口状态',key:'ports',width:320,render:(_:unknown,d:Device)=>devicePorts(d)},
+        {title:'端口状态',key:'ports',width:348,render:(_:unknown,d:Device)=>devicePorts(d)},
         {title:'最后在线时间',key:'heartbeat',render:(_:unknown,d:Device)=>d.runtime_available===false?'暂不可读取':d.last_heartbeat_at?new Date(d.last_heartbeat_at).toLocaleString():'尚无心跳'},
         ...(permissions.includes('device.operate') || permissions.includes('pricing.read') && (onConfigure || permissions.includes('station.read')) ? [{title:'操作',key:'configuration',render:(_:unknown,d:Device)=><Space>
           {permissions.includes('device.operate')&&<Button type="link" onClick={() => setEditing(d.device_id)}>编辑</Button>}
