@@ -28,7 +28,7 @@ func (a API) authorized() gin.HandlerFunc {
 		provided := sha256.Sum256([]byte(c.GetHeader("X-Service-Token")))
 		expected := sha256.Sum256([]byte(a.ServiceToken))
 		if a.ServiceToken == "" || subtle.ConstantTimeCompare(provided[:], expected[:]) != 1 {
-			httpapi.Write(c, http.StatusUnauthorized, 1001, "service token invalid", nil)
+			httpapi.Write(c, http.StatusUnauthorized, httpapi.CodeUnauthorized, "service token invalid", nil)
 			c.Abort()
 			return
 		}
@@ -50,10 +50,10 @@ func (a API) enqueue(c *gin.Context) {
 			return
 		}
 		if errors.Is(err, ErrEventConflict) {
-			httpapi.Write(c, http.StatusConflict, 1005, err.Error(), nil)
+			httpapi.Write(c, http.StatusConflict, httpapi.CodeConflict, err.Error(), nil)
 			return
 		}
-		httpapi.Write(c, http.StatusServiceUnavailable, 5003, "监管报送队列暂时不可用", nil)
+		httpapi.Write(c, http.StatusServiceUnavailable, httpapi.CodeServiceUnavailable, "监管报送队列暂时不可用", nil)
 		return
 	}
 	httpapi.OK(c, gin.H{"event_id": event.EventID, "queued": created})
@@ -74,11 +74,11 @@ func (a API) status(c *gin.Context) {
 	err := a.Queue.DB.QueryRowContext(c.Request.Context(), `SELECT object_type,object_key,status,attempts,next_attempt_at,delivered_at,delivered_mode,last_error FROM regulatory_report WHERE event_id = ?`, eventID).
 		Scan(&objectType, &objectKey, &state, &attempts, &next, &delivered, &deliveredMode, &lastError)
 	if err == sql.ErrNoRows {
-		httpapi.Write(c, http.StatusNotFound, 1004, "监管报送事件不存在", nil)
+		httpapi.Write(c, http.StatusNotFound, httpapi.CodeNotFound, "监管报送事件不存在", nil)
 		return
 	}
 	if err != nil {
-		httpapi.Write(c, http.StatusServiceUnavailable, 5003, "监管报送状态暂时无法读取", nil)
+		httpapi.Write(c, http.StatusServiceUnavailable, httpapi.CodeServiceUnavailable, "监管报送状态暂时无法读取", nil)
 		return
 	}
 	var deliveredAt any

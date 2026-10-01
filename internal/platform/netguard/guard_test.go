@@ -21,7 +21,9 @@ func TestValidatePublicHTTPSBlocksInternalTargets(t *testing.T) {
 		"https://db.local/hook",
 		"https://node.cluster.local/hook",
 		"https://0.0.0.0/hook",
-		"https://100.64.0.1/hook", // 运营商级 NAT
+		"https://100.64.0.1/hook",     // 运营商级 NAT
+		"https://198.18.0.1/hook",     // 基准测试网段，原开发映射放行已按 D3 关闭
+		"https://198.19.255.254/hook", // 基准测试网段上界
 		"ftp://example.com/hook",
 		"https://[fd00::1]/hook", // IPv6 唯一本地地址
 	}

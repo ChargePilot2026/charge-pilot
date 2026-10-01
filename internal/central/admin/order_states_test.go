@@ -16,7 +16,7 @@ func TestOrderQueriesRejectInvalidIndependentFilters(t *testing.T) {
 	router.GET("/payment-orders", api.paymentOrders)
 	for _, path := range []string{
 		"/orders?business_status=paid", "/orders?payment_status=charging", "/orders?start_source=wallet",
-		"/payment-orders?biz_type=charge_debt", "/payment-orders?pay_method=card",
+		"/payment-orders?biz_type=unknown", "/payment-orders?pay_method=card",
 		"/payment-orders?payment_status=charging", "/payment-orders?page_size=101",
 		"/payment-orders?order_no=" + strings.Repeat("x", 65),
 	} {

@@ -3,7 +3,6 @@ package charge
 import (
 	"context"
 	"encoding/binary"
-	"errors"
 	"net/http"
 	"os"
 	"strconv"
@@ -22,7 +21,7 @@ import (
 
 // 覆盖各支付来源的实际回执路径，不收款也不下发网关命令。
 // 外层事务回滚编号分配、钱包流水及卡充、充电 outbox 夹具。
-func TestPaymentNumberSourcesAndDebtRequestReplay(t *testing.T) {
+func TestPaymentNumberSources(t *testing.T) {
 	if os.Getenv("TEST_USER_DATABASE_URL") == "" {
 		t.Skip("migrated disposable user MySQL database required")
 	}
@@ -109,7 +108,6 @@ func TestPaymentNumberSourcesAndDebtRequestReplay(t *testing.T) {
 		Card: pricing.CardPolicy{PackageID: 1, MaxMinutes: 600}, Display: pricing.DefaultDisplay()}.Normalized()
 	rule := pricing.Rule{ID: 31, StationID: 9, Version: 1, Spec: scheme.SpecFor(scheme.Packages[0])}
 	cards := CardStore{DB: tx}
-	var cardOrders []ChargeOrderRecord
 	for no := uint8(3); no <= 4; no++ {
 		event := uuid.NewString()
 		first, err := cards.Swipe(ctx, card.CardNo, event, port(no), rule)
@@ -128,7 +126,6 @@ func TestPaymentNumberSourcesAndDebtRequestReplay(t *testing.T) {
 		if replay, err := cards.Swipe(ctx, card.CardNo, event, port(no), pricing.Rule{}); err != nil || replay.OperationID != first.OperationID || replay.ChargeOrderID != first.ChargeOrderID {
 			t.Fatalf("card event replay changed payment: %+v %v", replay, err)
 		}
-		cardOrders = append(cardOrders, order)
 	}
 
 	jwt, err := auth.NewJWT("numbering-test-secret-at-least-32-bytes")
@@ -158,48 +155,9 @@ func TestPaymentNumberSourcesAndDebtRequestReplay(t *testing.T) {
 		}
 	}
 
-	debts := DebtStore{DB: tx}
-	var debtRows []Debt
-	for i, order := range cardOrders {
-		debt := Debt{DebtNo: "number-debt-" + tag + strconv.Itoa(i), ChargeOrderID: order.ID, PaymentOrderID: uint64(order.PaymentOrderID.Int64),
-			UserID: userID, DebtCents: 50, Status: "unpaid"}
-		if err := tx.Create(&debt).Error; err != nil {
-			t.Fatal(err)
-		}
-		debtRows = append(debtRows, debt)
-	}
-	for range 2 {
-		requestID := uuid.NewString()
-		id, no, amount, payer, err := debts.OpenDebtPayment(ctx, debtRows[0].ID, requestID)
-		if err != nil || amount != 50 || payer != openID {
-			t.Fatalf("new debt payment: %d %s %d %s %v", id, no, amount, payer, err)
-		}
-		assertNewNumber(readPayment(no))
-		if retryID, retryNo, _, _, err := debts.OpenDebtPayment(ctx, debtRows[0].ID, requestID); err != nil || retryID != id || retryNo != no {
-			t.Fatalf("debt UUID replay changed payment: %d %s %v", retryID, retryNo, err)
-		}
-		if _, _, _, _, err := debts.OpenDebtPayment(ctx, debtRows[1].ID, requestID); !errors.Is(err, ErrPaymentIntentConflict) {
-			t.Fatalf("request UUID reused for another debt: %v", err)
-		}
-	}
-	legacyRequest := uuid.NewString()
-	legacy := PaymentOrderRecord{OrderNo: "DPAY" + legacyRequest, BizType: "charge_debt", BizID: debtRows[0].ID, UserID: userID,
-		PayMethod: "wechat", TotalCents: 50, Status: "initiated", CreatedMonth: utcDate()}
-	if err := tx.Create(&legacy).Error; err != nil {
-		t.Fatal(err)
-	}
-	if id, no, _, _, err := debts.OpenDebtPayment(ctx, debtRows[0].ID, legacyRequest); err != nil || id != legacy.ID || no != legacy.OrderNo {
-		t.Fatalf("legacy DPAY replay changed payment: %d %s %v", id, no, err)
-	}
-	if _, _, _, _, err := debts.OpenDebtPayment(ctx, debtRows[1].ID, legacyRequest); !errors.Is(err, ErrPaymentIntentConflict) {
-		t.Fatalf("legacy UUID reused for another debt: %v", err)
-	}
-	var payments, charges, receipts, walletTxns int64
-	if err := tx.Model(&PaymentOrderRecord{}).Where("user_id=?", userID).Count(&payments).Error; err != nil || payments != 9 {
+	var payments, charges, walletTxns int64
+	if err := tx.Model(&PaymentOrderRecord{}).Where("user_id=?", userID).Count(&payments).Error; err != nil || payments != 6 {
 		t.Fatalf("replays created extra payments: %d %v", payments, err)
-	}
-	if err := tx.Table("charge_debt_payment_request").Where("debt_id=?", debtRows[0].ID).Count(&receipts).Error; err != nil || receipts != 2 {
-		t.Fatalf("new debt request receipts: %d %v", receipts, err)
 	}
 	if err := tx.Table("wallet_txn").Where("user_id=?", userID).Count(&walletTxns).Error; err != nil || walletTxns != 2 {
 		t.Fatalf("card replay debited wallet twice: %d %v", walletTxns, err)

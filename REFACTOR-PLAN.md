@@ -1,8 +1,8 @@
 # charge-pilot 后端重构方案（基于全量代码审读定稿）
 
-> 证据基线：`internal/` 179 个生产 Go 文件 / 32359 行，155 个测试文件 / 17377 行，合计 336 文件 / 51121 行；
+> 证据基线：`internal/` 179 个生产 Go 文件 / 32359 行，150 个测试文件 / 17432 行（含 cmd 2 个），合计 329 文件 / 49791 行；
 > `migrations/{central_db,gateway_db,worker_db}/0001_init.sql` 逐行读完（85 / 15 / 5 张业务表）；
-> 190 条路由、64 条权限码全量提取；行数用 `[System.IO.File]::ReadAllLines` 统计（含空行）。
+> 193 条路由（去重路由字面量，internal/）、64 条权限码全量提取；行数用 `wc -l` 复核（含空行，2026-10-02 逐行重验）。
 
 本文件是**提案**，不是已生效的契约。采纳后应把结论分别并入 README「架构与目录」与 AGENTS.md，然后删除本文件——AGENTS.md 明确"不新增重复文档树"。
 
@@ -22,7 +22,7 @@
 判定：
 
 - **C 端：`user` 正确，`charge_user` 是漂移名。** `user` 出现在 4 处且互相印证——表名 `user`、JWT `kind=user`（`platform/auth/jwt.go:85,91`）、Redis 会话前缀 `user:session:`、表 `user_login_identity`。`charge_user` 只出现在 2 处（后台路由段 + 1 条权限码），且它的表根本不叫 `charge_user`。**结论：发布前把 `charge_user.read` → `user.read`，`/api/v1/admin/charge-users` → `/api/v1/admin/users`。**
-- **后台：`admin_user` 正确，`admin_user_role` 是错名。** 逐列看，`admin_user` 赢了 3 列（路由、权限码、审计 `target_type`）；输的那一列是表名。而这张表**不是关联表**——它有 `username` / `password_hash` / `mfa_secret` / `status` / `failed_login_count` / `locked_until` / `auth_version`，是账号主表；真正的关联表是 `role_permission(role_id, permission_id)`。**结论：表 `admin_user_role` → `admin_user`。**（这是我此前引用 `charge_user.read` 被你纠正的那类错误，方向相反但同源。）
+- **后台：`admin_user` 正确，`admin_user_role` 是错名。** 逐列看，`admin_user` 赢了 3 列（路由、权限码、审计 `target_type`）；输的那一列是表名。而这张表**不是关联表**——它有 `username` / `password_hash` / `mfa_secret` / `status` / `failed_login_count` / `locked_until` / `auth_version`，是账号主表；真正的关联表是 `role_permission(role_id, permission_id)`（表内另内联 `role_id` 列，即一个账号一个角色，改名后该语义须在新表注释里写明）。**结论：表 `admin_user_role` → `admin_user`。**（这是我此前引用 `charge_user.read` 被你纠正的那类错误，方向相反但同源。）
 
 ### 1.2 三个"库"不是库
 
@@ -143,7 +143,7 @@
 
 #### P1-1　服务令牌校验逐字复制 16+ 份
 
-`sha256 + subtle.ConstantTimeCompare` 同一段逻辑：worker 3 份（`schedule/http.go:26-37`、`internaljob/ops.go:32-43`、`regulatory/http.go:26-37`）+ gateway 9 份 + central/charge 5 份（其中 4 份字节级相同）。`internal/platform` 里**没有**共享助手。
+`sha256 + subtle.ConstantTimeCompare` 同一段逻辑：worker 3 份（`schedule/http.go:26-37`、`internaljob/ops.go:32-43`、`regulatory/http.go:26-37`）+ gateway 9 份 + central/charge 7 份（其中 5 份字节级相同）+ central/billing 1 份（`service.go:105`），合计 20 份。`internal/platform` 里**没有**共享助手。
 
 #### P1-2　分页解析 5 套，边界不一致
 
@@ -151,7 +151,7 @@ admin 4 套 + charge 3 套（含 1 个共享）。`page ≤ 100000` vs `≤ 1000
 
 #### P1-3　幂等机制 4 套并行
 
-`LAST_INSERT_ID()`（全仓 20 处，charge 包内 9 处）、GORM `Create` 回填、两套重复键判定（其中一套降级到字符串匹配）、请求号重放比对。
+`LAST_INSERT_ID()`（全仓 17 处，charge 包内 7 处）、GORM `Create` 回填、两套重复键判定（其中一套降级到字符串匹配）、请求号重放比对。
 
 #### P1-4　`httpapi` 错误码 1005 一码三义
 
@@ -179,10 +179,11 @@ admin 4 套 + charge 3 套（含 1 个共享）。`page ≤ 100000` vs `≤ 1000
 | B12 | `central_db.charge_port_lock` | 生产 Go 零引用，但 dev 库**现存 7 行数据**（`0000000088100001-1` 等）—— 已被 `SELECT ... FOR UPDATE` 取代的旧锁机制残留 |
 | B13 | `internal/platform/config/config.go` | `Gateway.DatabaseURL` / `Worker.DatabaseURL` 读 `DATABASE_URL`，`Central.DatabaseURL` 读 `DATABASE_URL_CENTRAL`；而 `cmd/migrate` 读 `DATABASE_URL_WORKER` → **同一张 `worker_db` 有两个环境变量名** |
 | B14 | `internal/worker/webhook/deliver.go:1` | `package worker`，目录名 ≠ 包名 → `cmd/worker/main.go:25` 必须起别名 `webhookdelivery` |
-| B15 | `internal/gateway/protocol` | 被 `central/charge`(3)、`central/pricing`(1)、`worker/*`(5) 跨进程 import，但物理位置在 gateway 进程目录树内 |
+| B15 | `internal/gateway/protocol` | 被 `central/charge`(2)、`central/pricing`(1)、`worker/*`(5) 跨进程 import，但物理位置在 gateway 进程目录树内 |
 | B16 | `migrations/admin_db`、`migrations/billing_db`、`migrations/user_db` | 三个**空目录**，schema 合并提交 `a95a1ff` 的残留 |
 | B17 | `platform/httpapi/gin.go:69` vs `:42` | `BadRequest`(400) 与 `NoMethod`(405) 共用 code 1005；`schedule/http.go:108` 的 409 也用 1005 |
-| B18 | `netguard/guard.go:83-84` | 显式放行 `198.18.0.0/15`（基准测试网段），注释自承"为兼容开发环境 DNS 映射" → 出站 SSRF 防护有一个已知开口 |
+| B18 | `netguard/guard.go:83-84` | 显式放行 `198.18.0.0/15`（基准测试网段），注释自承"为兼容开发环境 DNS 映射" → 出站 SSRF 防护有一个已知开口。已定（D3，2026-10-02）：生产不依赖该 DNS 映射，**删除放行条**；若开发环境受影响，再以配置项方式仅 dev profile 放行 |
+| B19 | `worker/charge/auto_stop.go:149`、`card_deadline.go:33`、`meter_segments.go:63` | 三处 `OnConflict DoUpdates` 为自赋值空更新，插入冲突被静默吞掉；关键写入（停机冻结/结束回执冻结）须改为查回或报错重试 |
 
 ### 2.4 我要收回的此前判断
 
@@ -227,13 +228,13 @@ internal/
   gateway/            设备接入
     store/  control/  provision/  simulator/
   worker/             调度、消费、重试、外部投递
-  delivery/           ★ 外部投递（alerts + webhook + regulatory 合并）
+  delivery/           ★ 外部投递（webhook + regulatory 合并；alerts 不进来，见下）
 ```
 
 **三处结构性变更，都有现有名字支撑：**
 
 - `internal/gateway/protocol` → `internal/protocol`。名字不新：目录已叫 `protocol`，类型已叫 `protocol.Adapter` / `protocol.Event`，AGENTS.md 已在用这两个名字。理由：它被 3 个进程 import（B15），放在 gateway 目录树内是错的。
-- `internal/worker/webhook`（`package worker`）+ `internal/worker/alerts` + `internal/regulatory` → `internal/delivery/`。三者共同点是**向进程外投递**：订阅端点、监管端点、以及 gateway 故障→告警。名字取自表名 `webhook_delivery_log` 已有的词 `delivery`（`worker/webhook/deliver.go:317` 也在用 `delivered_at`）。**这一条名字没有现成的目录/包名可引，需要你确认。**
+- `internal/worker/webhook`（`package worker`）+ `internal/regulatory` → `internal/delivery/`。两者共同点是**向进程外投递**：订阅端点与监管端点的签名和 HTTP 发送。名字取自表名 `webhook_delivery_log` 已有的词 `delivery`（`worker/webhook/deliver.go:317` 也在用 `delivered_at`）。**已定稿（2026-10-02 审核修订）**：`worker/alerts` 不进 `delivery`——它的价值是设备协议语义翻译（故障码、恢复判定），随第 5 批 `alert_event` 写入改调 central HTTP 后整体并入 `protocol/dc589`，不独立成包。
 - `internal/finance` **不升为领域包**。3 个文件 197 行，2/3 死；`Allocate` 唯一调用方是 `central/billing/settlement.go:11`。把 `Allocate` 并进 `central/billing`，删掉 `checkout.go` / `pricing.go`。真正的计价领域已经是 `central/pricing`（15 文件 / 1949 行 / 零 DB）。
 
 ### 3.3 `internal/central/` 子包定稿
@@ -260,13 +261,13 @@ internal/
 | `wallet` | `wallet_*`、`risk_freeze_log` | `wallet*.go` |
 | `card` | `online_card`、`online_card_audit`、`card_operation`、`card_charge` | `card*.go`、`online_card.go` |
 | `coupon` | `coupon*` | `coupon*.go` |
-| `account` | `user`、`user_login_identity`、`snowflake_state` | `user_account.go`（1214 行，再拆） |
+| （不建 `account`） | `user`、`user_login_identity` 档案读写并回 `identity`；`snowflake_state` 随编号分配逻辑留原处或随 `billing/number.go` 归并 | `user_account.go`（1214 行，按表前缀家族拆散） |
 
-**三处命名冲突需要你裁决**（我不能自己发明）：
+**三处命名冲突已裁决（2026-10-02 审核修订）：**
 
-1. **`payment` 已被 `central/payment`（渠道适配器）占用。** 支付**订单**与支付**渠道**必须分开。现有可引用名：表 `payment_order` → `paymentorder`？权限码只有 `finance.read`（无帮助）；路由 `/api/v1/admin/payment-orders` → `paymentorder`？都不干净。**倾向：把渠道适配器改名为 `channel`（`payment/wechat.go` 本身就是渠道实现，`config` 里也有 `PAYMENT_MODE=simulation` 这个"渠道"词），释放 `payment` 给支付订单。**
-2. **`refund` 与 `settlement` 的边界。** `refund_record` 归谁？现有 `central/payment/refund.go` 是渠道退款，`charge/refund.go` 是业务退款申请。**倾向：业务退款进 `refund`，渠道退款并入 `channel`。**
-3. **`account` vs `identity`。** `charge/user_account.go` 里既有用户档案也有钱包/卡/券的读写。**倾向：档案读写并回 `identity`（表 `user` 已在 identity），`account` 不新建。**
+1. **`payment` 已被 `central/payment`（渠道适配器）占用。** 支付**订单**与支付**渠道**必须分开。**定稿：渠道适配器改名 `channel`**——`payment/wechat.go` 本身就是渠道实现，`config` 里的 `PAYMENT_MODE=simulation` 也是"渠道"词，`channel` 有系统内既有词汇支撑；`payment` 让给支付订单。
+2. **`refund` 与 `settlement` 的边界。定稿：业务退款（`refund_record` 等 5 张表）进 `refund`，渠道退款（`central/payment/refund.go`）随渠道适配器并入 `channel`。** 连锁约束：退款结算事务同时触碰 `refund_record`、`payment_order` 与钱包，**`refund` 与 `payment` 两个包允许双向引用（同一事务内），不强制单向依赖**。
+3. **`account` vs `identity`。定稿：不建 `account`**——`charge/user_account.go` 的用户档案读写并回 `identity`（表 `user`/`user_login_identity` 本就归 identity），钱包/卡/券按表前缀家族各归新包。
 
 ### 3.4 `internal/worker/` 子包定稿
 
@@ -279,7 +280,7 @@ worker 的定位应该是**只做三件事**：消费事件流、调度定时任
 | `internaljob` | 2 / 153 | 升为 worker 的唯一服务间 HTTP 出口（现在 6 处手写客户端应收敛到这里） |
 | `charge` | 7 / 1108 | 拆：`Synchronizer`/`EndSynchronizer`/`CardDispatcher` 保留（走 HTTP）；`AutoStopper` 的停机判定与 `charge_billing_cutoff` 写入**移回 central**，worker 只发"该停了"的意图 |
 | `billing` `refund` | 各 1 / 16 | 合并进 `internaljob`（只是路径字符串包装） |
-| `webhook` `alerts` | 1+1 / 548 | 移入 `internal/delivery` |
+| `webhook` `alerts` | 1+1 / 548 | `webhook` 移入 `internal/delivery`（与 `internal/regulatory` 合并）；`alerts` 不独立成包，随第 5 批并入 `protocol/dc589` |
 | — | — | 新增 `dlq` 消费接线，修 B1/B2/B3 |
 
 ---
@@ -294,23 +295,25 @@ worker 的定位应该是**只做三件事**：消费事件流、调度定时任
 |---|---|
 | 删 `spendCapReached` | `worker/charge/auto_stop.go:163-181` |
 | 删 `registerPricing` | `central/admin/pricing_rules.go` 整个文件 |
-| 删 `RecordDebt`/`SettleDebt`/`RemindDebt` + `/api/v1/user/debts*` 两条路由 + `charge_debt*` 三张表 | `charge/debt.go`、`charge/debt_http.go`、schema |
+| 删 `RecordDebt`/`SettleDebt`/`RemindDebt` + `/api/v1/user/debts*` 两条路由 + `charge_debt*` 三张表 | `charge/debt.go`、`charge/debt_http.go`、schema。已确认整删（D1，2026-10-02）：产品层面放弃欠费/追缴 |
 | 删 `internal/finance/checkout.go`、`pricing.go`；`Allocate` 并入 `central/billing` | |
 | 删空目录 `migrations/{admin_db,billing_db,user_db}` | |
-| 删 `charge_port_lock`（先确认 7 行数据可弃） | schema |
+| 删 `charge_port_lock`（dev 库 7 行数据已确认可弃，D2，2026-10-02） | schema |
 
 验收：`make check` 绿；`GET /api/v1/user/debts` 返回 404（前端需同步隐藏入口）。
 
 ### 第 2 批：修 bug（不改结构）
 
-B1、B2、B3、B5、B6、B7、B13、B17。全部是局部修改，可逐个独立 PR。
+B1、B2、B3、B5、B6、B7、B13、B17、B18。全部是局部修改，可逐个独立 PR。
+
+另加 B19（2026-10-02 审核新增）：`worker/charge/auto_stop.go:149`、`card_deadline.go:33`、`meter_segments.go:63` 三处 `OnConflict DoUpdates` 均为 `gorm.Expr("charge_order_id")` 式自赋值空更新——插入冲突被静默吞掉，而停机冻结/结束回执冻结恰是关键写入。统一改为：先查回（幂等重试语义本就需要），冲突即返回错误进入重试，不做静默跳过。
 
 ### 第 3 批：命名归一（趁未发布，成本最低）
 
 - 表 `admin_user_role` → `admin_user`；`charge_user.read` → `user.read`；`/api/v1/admin/charge-users` → `/api/v1/admin/users`。
-- 修 `permission.module` 的 4 处错误（`fault.resolve`、`feedback.*`、`order.refund.*`、`charge_user`）。
+- 修 `permission.module` 的 4 处错误，目标取值已定（2026-10-02）：`fault.resolve` → `fault`；`feedback.*` → `feedback`（新模块）；`order.refund.*` → `refund`（跟随 3.3 包名）；`charge_user.read` 改名后模块列即 `user`，原 `charge_user` 模块消失。
 - `internal/worker/webhook` 的包名改回 `webhook`（B14）。
-- 统一 `worker_db` 的环境变量名（B13）。
+- 统一 `worker_db` 的环境变量名（B13），方向已定：worker 进程 `config.Worker.DatabaseURL` 从 `DATABASE_URL` 改为 `DATABASE_URL_WORKER`，与 `cmd/migrate` 的 `DATABASE_URL_<schema>` 通用规则及 `compose.dev.yaml:83` 对齐；同步更新 compose 注入与 `.env` 模板。
 - 前端 + `internal/central/admin/openapi.json` 同步。
 
 ### 第 4 批：提升共享契约库
@@ -319,11 +322,11 @@ B1、B2、B3、B5、B6、B7、B13、B17。全部是局部修改，可逐个独�
 
 ### 第 5 批：切断 worker 的跨库直写（主体工作量）
 
-按 P0-1 逐表改造，每张表一个 PR：
+按 P0-1 逐表改造，每张表一个 PR。**前置 PR 0（2026-10-02 增补）**：gateway 内部证据端点扩展——停机判定移回 central 后需要设备心跳证据，而 `AutoStopper.Run` 现直读 `gateway_db.device_event`（`auto_stop.go:107-123`，每订单最多 10080 行），现有 `/charging-samples` 端点（`live_meter.go:49`）的单次调用形态不够用，须先支持批量/游标取证据：
 
 1. `refund_record` / `refund_success_receipt` / `payment_order`（资金，最高优先）→ central 新增 `POST /api/v1/internal/refunds/:refund_no/settle`；同时删掉 `result_consumer.go:12` 对 `central/charge` 的 import。
 2. `charge_billing_cutoff`（含金额）→ 停机判定整体移回 central；worker 只发意图。
-3. `alert_event` → central 新增告警写入端点；故障码语义从 `alerts/device.go:89-100` 移进 `protocol/dc589`（这是协议语义，本来就该在适配器）。
+3. `alert_event` → central 新增告警写入端点；故障码语义从 `alerts/device.go:89-100` 移进 `protocol/dc589`（这是协议语义，本来就该在适配器）。**`worker/alerts` 包随之整体并入 `protocol/dc589`，不独立成包**。
 4. `webhook_delivery_log` / `regulatory_report` → 配置与投递分离：配置写与状态推进都归 central，worker 只做签名与 HTTP 发送。
 5. `gateway_db` 的 6 处 → 全部改走 gateway 已有 HTTP（`/api/v1/internal/*` 已存在对应能力）。
 
@@ -340,5 +343,57 @@ B1、B2、B3、B5、B6、B7、B13、B17。全部是局部修改，可逐个独�
 1. **未做实机验收。** 全部结论来自源码、schema 与 dev 容器（`central_db` / `gateway_db` / `worker_db` 当前实例）。模拟器与 `PAYMENT_MODE=simulation` 的结果不构成实机或真实资金验证。
 2. **未跑集成测试。** `scripts/test/integration.ps1` 在 PowerShell 5.1 下会因 docker 写 stderr 触发 `NativeCommandError` 提前终止（非测试失败）；本次只做了等价的手工只读查询。`scripts/test/integration.ps1` 的 PS 5.1 兼容性仍未修（你尚未决定是否要修）。
 3. **前端未纳入本次范围。** `charge-users` → `users` 改名会波及 `admin-web` 与 `miniprogram`，需在第 3 批一并处理。
-4. **`198.18.0.0/15` 放行（B18）** 是否可接受，取决于部署环境是否真的需要该 DNS 映射——这条我没做判断。
-5. **仍未答复的三个问题**（前几轮遗留）：在线设备点开跳哪里；TabBar 是否该出现在扫码/充电中这类全屏页；`integration.ps1` 的 PS 5.1 兼容是否要修。
+4. **`198.18.0.0/15` 放行（B18）已决（D3）**：生产不依赖该 DNS 映射，删除放行条，转入第 2 批执行。
+5. **仍未答复的三个问题**（前几轮遗留，与本次重构无关）：在线设备点开跳哪里；TabBar 是否该出现在扫码/充电中这类全屏页；`integration.ps1` 的 PS 5.1 兼容是否要修。
+
+---
+
+## 第六部分：决策记录（2026-10-02 全部落定）
+
+原"待决策清单"三项均已由老杨师傅裁决，无遗留阻塞项：
+
+| # | 事项 | 结论 |
+|---|---|---|
+| D1 | 欠费功能去留 | **整删**——两条路由 + 3 张表 + 前端入口全去掉，产品层面放弃欠费/追缴 |
+| D2 | `charge_port_lock` 7 行 dev 数据 | **可弃**——直接删表，无需备份 |
+| D3 | `198.18.0.0/15` 放行 | **生产不依赖**——删除 `netguard` 放行条（B18，入第 2 批）；若开发环境受影响，再以配置项方式仅 dev profile 放行 |
+
+此前"需要你裁决"的命名与包结构事项（`channel`/`payment`、`refund` 边界、`identity` 归并、`delivery` 构成、B13 环境变量方向、B19 修复范围、第 5 批前置 PR 0）均已按审核推荐定稿，见 1.1、2.3、3.2、3.3、3.4 及第 2/3/5 批的修订标注。
+
+
+---
+
+## 第七部分：执行进度（2026-10-02 起）
+
+### 第 1 批：删死代码 —— ✅ 已完成
+
+| 动作 | 结果 |
+|---|---|
+| 删 `spendCapReached` | `worker/charge/auto_stop.go` 已删，`pricing.StopAtMeter` 仍保留（pricing 领域 API，有测试覆盖） |
+| 删 `registerPricing` | `central/admin/pricing_rules.go` 整文件删除；openapi.json 中两条死路由（`settings/charge-rules` 及 `/{id}/disable`）同步移除 |
+| 欠费功能整删（D1） | `charge/debt.go`、`charge/debt_http.go`、`cmd/central` 路由注册、`charge_debt`/`charge_debt_receipt`/`charge_debt_payment_request` 三表、`payment_order.biz_type` 枚举值；前端全仓无入口无需改动；`oneOfStatus`/`splitFields` 移至 `charge/status.go`；相关 4 个测试文件同步 |
+| `internal/finance` 并入 `central/billing` | `allocation.go` 平移为 `billing/allocation.go`（类型去 `finance.` 前缀），测试平移为 `billing/allocation_test.go`；`checkout.go`/`pricing.go`/`finance_test.go` 删除；`settlement.go` 改本地类型 |
+| 删空迁移目录 | `migrations/{admin_db,billing_db,user_db}` 已删 |
+| 删 `charge_port_lock`（D2） | 表与 DROP 语句删除；**修正计划 B12 的判断**：该表并非零引用——`port_lock.go` 的 `lockCheckoutPort` 被扫码支付与在线卡两条活路径调用。已删除锁函数，端口抢占并发安全改由既有唯一键兜底（`charge_payment_intent.uk_active_port` 生成列 + `card_charge.active_port`），刷卡路径唯一键冲突显式映射 `ErrCardOperation`；`checkoutPortAvailable` 保留于 `charge/checkout_port.go` |
+
+验收：`make fmt && make lint && make test` 全绿；`scripts/test/integration.sh` 隔离集成测试全绿（唯一断言按删债后实际单数修正）。README 表索引 105→101 张。
+
+### 第 2 批：修 bug —— 🔶 部分完成
+
+| Bug | 状态 |
+|---|---|
+| B7 告警跨库双事务 | ✅ 已修：`alerts` 改为先 central 写告警（event_id 去重幂等）、后 gateway 推进 `processed_at`，包注释写明顺序契约；两方向均不丢事件、不重复建告警 |
+| B13 worker_db 环境变量 | ✅ 已修：worker 进程 `DATABASE_URL` → `DATABASE_URL_WORKER`；`compose.dev.yaml`、`docker-compose.yml`、`.env.example`、`check-deploy.mjs` 同步 |
+| B17 错误码 1005 一码三义 | ✅ 已修：`httpapi/codes.go` 定义具名常量区段（1xxx 请求凭证 / 2xxx 业务冲突 / 5xxx 依赖故障）；409 冲突改用 2000/2009/2010 等，405 改用 1006；`schedule`、`regulatory` 等裸整数全部替换；前端无数值匹配无需改动 |
+| B18 `198.18.0.0/15` 放行 | ✅ 已修：按 D3 关闭开口——该网段现按非公网目标拦截（`isPrivateAddress` 返回真），注释注明若开发需要应以配置项仅 dev profile 放行；测试已更新 |
+| B19 三处 OnConflict 空更新 | ✅ 已修：`auto_stop.go`、`card_deadline.go` 改为先查回、冲突即返回错误进入 10s 重试；`meter_segments.go` 直接插入、主键冲突按错误上抛由 `SyncBatch` 记录重试 |
+| B1/B2 DLQ 语义 | ⬜ 未动：失败先 XAck 导致消息永不重试、XPENDING 只拉前 100 条，待修 |
+| B3 DLQ/ops 接线 | ⬜ 未动：`DLQ.Streams` 未设、`OpsAPI.Replay` 未赋值、ConsumeBatch 零生产调用，待修 |
+| B5 worker HTTP Client 未接线 | ⬜ 未动：各组件 `Client` 字段未赋值导致连接池失效，待修 |
+| B6 跨月重投重复入账 | ⬜ 未动：`isCommitted` 固定查当月分区 + 重复 `Where("tx_id = ?")`，待修 |
+
+### 第 3–6 批
+
+未开始。第 3 批注意 B14 包名与 openapi/前端同步；第 5 批前置 PR 0（gateway 证据批量端点）仍未做。
+
+> 验证口径说明：以上验证均为源码级与隔离集成测试；未做实机与真实资金验收。`integration.ps1` 的 PS 5.1 兼容问题未修，本次验证走 `scripts/test/integration.sh`。

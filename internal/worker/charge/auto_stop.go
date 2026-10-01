@@ -16,7 +16,6 @@ import (
 	"github.com/ChargePilot2026/charge-pilot/internal/central/pricing"
 	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 type AutoStopper struct {
@@ -146,7 +145,16 @@ func (s AutoStopper) Run(ctx context.Context) (int, error) {
 					row["electric_cents"] = frozenFee.ElectricCents
 					row["service_cents"] = frozenFee.ServiceCents
 				}
-				if err := s.UserDB.WithContext(ctx).Table("charge_billing_cutoff").Clauses(clause.OnConflict{DoUpdates: clause.Assignments(map[string]any{"charge_order_id": gorm.Expr("charge_order_id")})}).Create(row).Error; err != nil {
+				// 计费截止点按订单主键首写冻结：已有记录表明此前已冻结，
+				// 视为冲突返回错误交由外层定时循环重试，不做静默空更新。
+				var frozen int64
+				if err := s.UserDB.WithContext(ctx).Table("charge_billing_cutoff").Where("charge_order_id=?", order.ID).Count(&frozen).Error; err != nil {
+					return stopped, err
+				}
+				if frozen > 0 {
+					return stopped, fmt.Errorf("charge billing cutoff already frozen for order %s", order.OrderNo)
+				}
+				if err := s.UserDB.WithContext(ctx).Table("charge_billing_cutoff").Create(row).Error; err != nil {
 					return stopped, err
 				}
 				if err := s.requestStop(ctx, order); err != nil {
@@ -158,26 +166,6 @@ func (s AutoStopper) Run(ctx context.Context) (int, error) {
 		afterID = orders[len(orders)-1].ID
 	}
 	return stopped, nil
-}
-
-// spendCapReached 判断服务端计费会话是否达到费率费用上限。
-// 上限为零或费率无法计价时返回 false，由已有额度和停机规则处理。
-func spendCapReached(rule pricing.Rule, samples []protocol.Event, order autoStopOrder, now time.Time) bool {
-	spec := rule.Spec
-	if !spec.Mode.ServerBilled() || spec.SpendCapCents <= 0 {
-		return false
-	}
-	latest, ok := latestMeter(samples, order.PortNo, now)
-	if !ok {
-		// 费用上限判断必须使用未过期的计量读数；设备不可达由其他规则处理。
-		return false
-	}
-	plan, err := pricing.StopAtMeter(rule, measuredMeter(order, latest, samples))
-	if err != nil {
-		// ErrMeterReview 表示分段电量不一致，需要计费核实，不作为消费超限停机依据。
-		return false
-	}
-	return plan.ShouldStop
 }
 
 // measuredMeter 用最新读数和遥测能佐证的各段数据，

@@ -2,6 +2,7 @@ package charge
 
 import (
 	"context"
+	"fmt"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 	"time"
@@ -30,7 +31,16 @@ func (s AutoStopper) freezeCardDeadline(ctx context.Context, id uint64, now time
 		if now.Before(deadline) {
 			return nil
 		}
-		if err := tx.Table("charge_billing_cutoff").Clauses(clause.OnConflict{DoUpdates: clause.Assignments(map[string]any{"charge_order_id": gorm.Expr("charge_order_id")})}).Create(map[string]any{"charge_order_id": id, "cutoff_at": deadline, "reason": "card_duration_exhausted"}).Error; err != nil {
+		// 计费截止点按订单主键首写冻结：已有记录表明此前已冻结，
+		// 视为冲突返回错误并回滚本事务，交由外层定时循环重试，不做静默空更新。
+		var frozen int64
+		if err := tx.Table("charge_billing_cutoff").Where("charge_order_id=?", id).Count(&frozen).Error; err != nil {
+			return err
+		}
+		if frozen > 0 {
+			return fmt.Errorf("charge billing cutoff already frozen for order %d", id)
+		}
+		if err := tx.Table("charge_billing_cutoff").Create(map[string]any{"charge_order_id": id, "cutoff_at": deadline, "reason": "card_duration_exhausted"}).Error; err != nil {
 			return err
 		}
 		stop = true

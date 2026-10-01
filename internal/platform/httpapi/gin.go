@@ -37,9 +37,11 @@ func NewRouter(metrics ...*Metrics) *gin.Engine {
 	}
 	router.HandleMethodNotAllowed = true
 	router.NoRoute(func(c *gin.Context) {
-		Write(c, http.StatusNotFound, 1004, "接口尚未提供，请确认服务版本", nil)
+		Write(c, http.StatusNotFound, CodeNotFound, "接口尚未提供，请确认服务版本", nil)
 	})
-	router.NoMethod(func(c *gin.Context) { Write(c, http.StatusMethodNotAllowed, 1005, "请求方法不支持", nil) })
+	router.NoMethod(func(c *gin.Context) {
+		Write(c, http.StatusMethodNotAllowed, CodeMethodNotAllowed, "请求方法不支持", nil)
+	})
 	return router
 }
 
@@ -66,7 +68,7 @@ func Write(c *gin.Context, status, code int, message string, data any, fields ..
 func OK(c *gin.Context, data any) { Write(c, http.StatusOK, 0, "ok", data) }
 
 func BadRequest(c *gin.Context, message string, fields ...FieldErr) {
-	Write(c, http.StatusBadRequest, 1005, message, nil, fields...)
+	Write(c, http.StatusBadRequest, CodeBadRequest, message, nil, fields...)
 }
 
 func validID(id string) bool {

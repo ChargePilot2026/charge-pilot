@@ -58,7 +58,7 @@ try {
   databaseURL(services['chargepilot-central'].environment, 'DATABASE_URL_CENTRAL', 'central_db');
   databaseURL(services['chargepilot-worker'].environment, 'DATABASE_URL_CENTRAL', 'central_db');
   databaseURL(services['chargepilot-gateway'].environment, 'DATABASE_URL', 'gateway_db');
-  databaseURL(services['chargepilot-worker'].environment, 'DATABASE_URL', 'worker_db');
+  databaseURL(services['chargepilot-worker'].environment, 'DATABASE_URL_WORKER', 'worker_db');
   for (const [name, policy] of [['redis-cache', 'allkeys-lru'], ['redis-stream', 'noeviction']]) {
     requireValue(redisArgument(services[`chargepilot-${name}`], '--maxmemory-policy') === policy, `${name} must use ${policy}.`);
   }

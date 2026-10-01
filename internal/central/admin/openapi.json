@@ -3265,31 +3265,6 @@
         }
       }
     },
-    "/api/v1/admin/settings/charge-rules": {
-      "get": {
-        "summary": "读取 settings/charge-rules",
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ],
-        "x-permission": "pricing.read",
-        "responses": {
-          "200": {
-            "description": "data.items 为实际数据库记录"
-          },
-          "401": {
-            "description": "会话失效"
-          },
-          "403": {
-            "description": "权限不足"
-          },
-          "503": {
-            "description": "数据库不可用"
-          }
-        }
-      }
-    },
     "/api/v1/admin/billing/settlements": {
       "get": {
         "summary": "读取 billing/settlements",
@@ -3311,39 +3286,6 @@
           },
           "503": {
             "description": "数据库不可用"
-          }
-        }
-      }
-    },
-    "/api/v1/admin/settings/charge-rules/{id}/disable": {
-      "post": {
-        "summary": "停用计费规则",
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ],
-        "x-permission": "pricing.rule.update",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "integer",
-              "minimum": 1
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "已停用（重复调用幂等）"
-          },
-          "403": {
-            "description": "权限不足"
-          },
-          "404": {
-            "description": "规则不存在"
           }
         }
       }
