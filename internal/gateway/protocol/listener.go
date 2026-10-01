@@ -45,9 +45,7 @@ func Serve(ctx context.Context, endpoints []Endpoint, sink Sink, maxConnections 
 	active := make(map[net.Conn]struct{})
 	for i, listener := range listeners {
 		adapter := endpoints[i].Adapter
-		acceptWG.Add(1)
-		go func() {
-			defer acceptWG.Done()
+		acceptWG.Go(func() {
 			for {
 				conn, err := listener.Accept()
 				if err != nil {
@@ -61,9 +59,7 @@ func Serve(ctx context.Context, endpoints []Endpoint, sink Sink, maxConnections 
 					connMu.Lock()
 					active[conn] = struct{}{}
 					connMu.Unlock()
-					connWG.Add(1)
-					go func() {
-						defer connWG.Done()
+					connWG.Go(func() {
 						defer func() {
 							_ = conn.Close()
 							connMu.Lock()
@@ -80,13 +76,13 @@ func Serve(ctx context.Context, endpoints []Endpoint, sink Sink, maxConnections 
 						if err := adapter.ServeConn(ctx, conn, sink); err != nil && ctx.Err() == nil {
 							log.Printf("device session ended on %s: %v", adapter.Name(), err)
 						}
-					}()
+					})
 				default:
 					log.Printf("device connection rejected protocol=%s remote=%s reason=connection_limit", adapter.Name(), conn.RemoteAddr())
 					_ = conn.Close()
 				}
 			}
-		}()
+		})
 	}
 	var result error
 	select {

@@ -49,7 +49,7 @@ func TestServeMultipleProtocolPorts(t *testing.T) {
 			defer wg.Done()
 			var conn net.Conn
 			var err error
-			for attempt := 0; attempt < 20; attempt++ {
+			for range 20 {
 				conn, err = net.DialTimeout("tcp", address, 100*time.Millisecond)
 				if err == nil {
 					break

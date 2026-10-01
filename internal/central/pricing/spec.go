@@ -142,7 +142,7 @@ type Spec struct {
 	CardMaxMinutes uint16 `json:"card_max_minutes,omitempty"`
 	// Display 是小程序允许展示的内容。它从不改变实际收费，这正是它与 spec 并列
 	// 而不是嵌在 spec 里面的原因。
-	Display Display `json:"display,omitempty"`
+	Display Display `json:"display"`
 }
 
 // Sample 是一段始终落在同一费率时段内的连续用电。无法保证这一点的调用方必须在

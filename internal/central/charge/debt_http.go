@@ -2,6 +2,7 @@ package charge
 
 import (
 	"errors"
+	"slices"
 	"strconv"
 	"time"
 
@@ -67,12 +68,7 @@ func oneOfStatus(value, allowed string) bool {
 	if value == "" {
 		return true
 	}
-	for _, candidate := range splitFields(allowed) {
-		if candidate == value {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(splitFields(allowed), value)
 }
 
 func splitFields(value string) []string {

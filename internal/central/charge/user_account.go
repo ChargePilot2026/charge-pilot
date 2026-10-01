@@ -94,10 +94,7 @@ func (a UserAccountAPI) walletBalance(c *gin.Context) {
 		httpapi.Write(c, 503, 5003, "钱包暂时无法读取", nil)
 		return
 	}
-	available := wallet.BalanceCents - wallet.FrozenCents
-	if available < 0 {
-		available = 0
-	}
+	available := max(wallet.BalanceCents-wallet.FrozenCents, 0)
 	httpapi.OK(c, gin.H{
 		"balance_cents": wallet.BalanceCents, "frozen_cents": wallet.FrozenCents,
 		"available_cents": available, "status": wallet.Status,

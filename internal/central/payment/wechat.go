@@ -91,11 +91,11 @@ func (w *WechatDirect) Prepay(ctx context.Context, request PrepayRequest) (Prepa
 		return PrepayParams{}, ErrInvalidPayment
 	}
 	resp, _, err := w.jsapi.PrepayWithRequestPayment(ctx, jsapi.PrepayRequest{
-		Appid: core.String(w.config.AppID), Mchid: core.String(w.config.MerchantID),
-		Description: core.String("电瓶车充电"), OutTradeNo: core.String(request.MerchantOrderNo),
-		TimeExpire: core.Time(request.ExpiresAt), NotifyUrl: core.String(w.config.NotifyURL),
-		Amount: &jsapi.Amount{Total: core.Int64(request.AmountCents), Currency: core.String("CNY")},
-		Payer:  &jsapi.Payer{Openid: core.String(request.OpenID)},
+		Appid: new(w.config.AppID), Mchid: new(w.config.MerchantID),
+		Description: new("电瓶车充电"), OutTradeNo: new(request.MerchantOrderNo),
+		TimeExpire: new(request.ExpiresAt), NotifyUrl: new(w.config.NotifyURL),
+		Amount: &jsapi.Amount{Total: new(request.AmountCents), Currency: new("CNY")},
+		Payer:  &jsapi.Payer{Openid: new(request.OpenID)},
 	})
 	if err != nil {
 		return PrepayParams{}, err

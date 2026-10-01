@@ -35,7 +35,7 @@ func (Simulator) CreateRefund(_ context.Context, r RefundRequest) (RefundResult,
 	return RefundResult{RefundNo: r.RefundNo, MerchantOrderNo: r.MerchantOrderNo, TransactionID: r.TransactionID, RefundID: "SIMRF" + r.RefundNo, Status: "SUCCESS", TotalCents: r.TotalCents, RefundCents: r.RefundCents, SuccessAt: time.Now().UTC()}, nil
 }
 func (w *WechatDirect) QueryRefund(ctx context.Context, r RefundRequest) (RefundResult, error) {
-	result, _, err := w.refunds.QueryByOutRefundNo(ctx, refunddomestic.QueryByOutRefundNoRequest{OutRefundNo: core.String(r.RefundNo)})
+	result, _, err := w.refunds.QueryByOutRefundNo(ctx, refunddomestic.QueryByOutRefundNoRequest{OutRefundNo: new(r.RefundNo)})
 	var apiErr *core.APIError
 	if errors.As(err, &apiErr) && apiErr.Code == "RESOURCE_NOT_EXISTS" {
 		return RefundResult{}, ErrRefundNotFound
@@ -49,7 +49,7 @@ func (w *WechatDirect) CreateRefund(ctx context.Context, r RefundRequest) (Refun
 	if r.RefundNo == "" || r.TransactionID == "" || r.TotalCents <= 0 || r.RefundCents <= 0 || r.RefundCents > r.TotalCents {
 		return RefundResult{}, ErrInvalidPayment
 	}
-	result, _, err := w.refunds.Create(ctx, refunddomestic.CreateRequest{TransactionId: core.String(r.TransactionID), OutRefundNo: core.String(r.RefundNo), Amount: &refunddomestic.AmountReq{Total: core.Int64(r.TotalCents), Refund: core.Int64(r.RefundCents), Currency: core.String("CNY")}})
+	result, _, err := w.refunds.Create(ctx, refunddomestic.CreateRequest{TransactionId: new(r.TransactionID), OutRefundNo: new(r.RefundNo), Amount: &refunddomestic.AmountReq{Total: new(r.TotalCents), Refund: new(r.RefundCents), Currency: new("CNY")}})
 	if err != nil {
 		return RefundResult{}, err
 	}

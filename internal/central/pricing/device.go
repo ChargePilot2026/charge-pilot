@@ -166,10 +166,7 @@ func SettleSession(spec Spec, meter ActualMeter, paid *Offer, actual *SessionAct
 		}
 		wh := uint64(meter.ChargedWh)
 		rate := spec.Scheme.Energy
-		amount := int64(wh) * (rate.ElectricCents + rate.ServiceCents) / 1000
-		if amount > paid.PriceCents {
-			amount = paid.PriceCents
-		}
+		amount := min(int64(wh)*(rate.ElectricCents+rate.ServiceCents)/1000, paid.PriceCents)
 		electric := amount * rate.ElectricCents / (rate.ElectricCents + rate.ServiceCents)
 		settlement.ElectricCents = electric
 		settlement.ServiceCents = amount - electric
@@ -228,10 +225,7 @@ func splitFee(fee Fee, total int64) (int64, int64) {
 	if fee.TotalCents <= 0 {
 		return 0, total
 	}
-	electric := fee.ElectricCents * total / fee.TotalCents
-	if electric < 0 {
-		electric = 0
-	}
+	electric := max(fee.ElectricCents*total/fee.TotalCents, 0)
 	if electric > total {
 		electric = total
 	}

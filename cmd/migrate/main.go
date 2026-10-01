@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -98,10 +99,5 @@ func migrateOne(ctx context.Context, db *sql.DB, schema, directory string) error
 }
 
 func contains(items []string, wanted string) bool {
-	for _, item := range items {
-		if item == wanted {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(items, wanted)
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"os"
 	"sort"
@@ -274,7 +275,7 @@ func configCode(f wire.Frame) byte {
 		return 6
 	}
 	previous := uint16(0)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		v := n(8 + 2*i)
 		if v > 9990 || v > 0 && v <= previous {
 			return 7
@@ -500,14 +501,10 @@ func (b *board) snapshot() Snapshot {
 	s := Snapshot{Identity: b.config.Identity, Config: b.configTable, RawConfig: b.rawConfig, RemovePower: b.removePower, Temperature: b.temperature, Voltage: b.voltage, Ports: map[byte]*PhysicalPort{}, Pending: append([]wire.Frame(nil), b.pending...), HeartbeatSeconds: uint16(b.heartbeatInterval / time.Second)}
 	s.Online, s.Smoke = b.online, b.smoke
 	s.Completed = map[string]bool{}
-	for k, v := range b.completed {
-		s.Completed[k] = v
-	}
+	maps.Copy(s.Completed, b.completed)
 	s.SavedAt = time.Now()
 	s.Cards = map[uint32]CardStatus{}
-	for n, v := range b.cards {
-		s.Cards[n] = v
-	}
+	maps.Copy(s.Cards, b.cards)
 	for i := 1; i <= b.config.PortCount; i++ {
 		v := *b.physical(byte(i))
 		s.Ports[byte(i)] = &v

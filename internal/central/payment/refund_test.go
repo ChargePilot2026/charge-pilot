@@ -8,7 +8,7 @@ import (
 )
 
 func TestRefundResultRequiresCompleteVerifiedAmounts(t *testing.T) {
-	r := &refunddomestic.Refund{OutRefundNo: core.String("RF1"), OutTradeNo: core.String("PAY1"), TransactionId: core.String("TX1"), RefundId: core.String("WXRF1"), Status: refunddomestic.Status("SUCCESS").Ptr(), SuccessTime: core.Time(time.Now()), Amount: &refunddomestic.Amount{Total: core.Int64(100), Refund: core.Int64(20), Currency: core.String("CNY")}}
+	r := &refunddomestic.Refund{OutRefundNo: new("RF1"), OutTradeNo: new("PAY1"), TransactionId: new("TX1"), RefundId: new("WXRF1"), Status: refunddomestic.Status("SUCCESS").Ptr(), SuccessTime: new(time.Now()), Amount: &refunddomestic.Amount{Total: core.Int64(100), Refund: core.Int64(20), Currency: new("CNY")}}
 	if result, err := refundResult(r); err != nil || result.RefundCents != 20 || result.TotalCents != 100 {
 		t.Fatal(result, err)
 	}
@@ -20,7 +20,7 @@ func TestRefundResultRequiresCompleteVerifiedAmounts(t *testing.T) {
 	if _, err := refundResult(r); err != nil {
 		t.Fatal(err)
 	}
-	r.Amount.Currency = core.String("USD")
+	r.Amount.Currency = new("USD")
 	if _, err := refundResult(r); err == nil {
 		t.Fatal("foreign currency accepted")
 	}

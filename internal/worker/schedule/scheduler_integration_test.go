@@ -106,7 +106,7 @@ func TestRepeatedFailuresPauseTask(t *testing.T) {
 	scheduler := Scheduler{DB: orm, Handlers: map[string]Handler{code: func(context.Context) (uint64, error) {
 		return 0, errors.New("test failure")
 	}}}
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		completed, err := scheduler.Trigger(ctx, code, "retry", false)
 		if !completed || err == nil {
 			t.Fatalf("failure %d completed=%v err=%v", i, completed, err)

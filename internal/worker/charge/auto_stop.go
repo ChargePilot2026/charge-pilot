@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -223,8 +224,8 @@ type meterReading struct {
 }
 
 func latestMeter(samples []protocol.Event, port uint8, now time.Time) (meterReading, bool) {
-	for i := len(samples) - 1; i >= 0; i-- {
-		e := samples[i]
+	for _, e := range slices.Backward(samples) {
+
 		if now.Sub(e.ReceivedAt) > 30*time.Second {
 			break
 		}

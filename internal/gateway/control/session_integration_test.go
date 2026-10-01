@@ -188,7 +188,7 @@ func TestCleanupIdleIsRepeatable(t *testing.T) {
 	db := sessionTestDB
 	seedOpenSession(t, db, "sess-rp-"+shortID(t), "QA-SESSION-REPEAT", time.Hour)
 
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		rec := callSession(t, router, http.MethodPost, "/api/v1/internal/device-sessions/cleanup-idle", sessionToken)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("run %d got %d: %s", i+1, rec.Code, rec.Body.String())

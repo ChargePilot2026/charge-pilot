@@ -53,10 +53,7 @@ func MeasuredSegments(start time.Time, end protocol.Event, samples []protocol.Ev
 			if previousPower != nil && at.Sub(cursor) <= 60*time.Second {
 				v := *previousPower
 				segment.PowerW = &v
-				segment.PeakW = v
-				if power > segment.PeakW {
-					segment.PeakW = power
-				}
+				segment.PeakW = max(power, v)
 			}
 			segments = append(segments, segment)
 			previousPower = &power

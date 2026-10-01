@@ -44,9 +44,7 @@ func TestMySQLAllocationAcrossConcurrentConnectionsAndRestartIntegration(t *test
 	start := make(chan struct{})
 	var workersDone sync.WaitGroup
 	for worker := range workers {
-		workersDone.Add(1)
-		go func() {
-			defer workersDone.Done()
+		workersDone.Go(func() {
 			<-start
 			for iteration := range perWorker {
 				pool := (worker + iteration/2) % len(pools)
@@ -75,7 +73,7 @@ func TestMySQLAllocationAcrossConcurrentConnectionsAndRestartIntegration(t *test
 				}
 				ids <- id
 			}
-		}()
+		})
 	}
 	close(start)
 	workersDone.Wait()

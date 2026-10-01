@@ -56,16 +56,16 @@ func TestSessionAuditIsSafeUnderConcurrentFrames(t *testing.T) {
 	audit := NewSessionAudit(TransportTCP, "s1", "addr", start)
 	const writers, frames = 8, 500
 	done := make(chan struct{})
-	for i := 0; i < writers; i++ {
+	for range writers {
 		go func() {
 			defer func() { done <- struct{}{} }()
-			for j := 0; j < frames; j++ {
+			for range frames {
 				audit.Inbound(2, start)
 				audit.Outbound(3, start)
 			}
 		}()
 	}
-	for i := 0; i < writers; i++ {
+	for range writers {
 		<-done
 	}
 	record := audit.Snapshot("board", "device_closed", start)

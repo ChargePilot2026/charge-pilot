@@ -82,15 +82,13 @@ func TestCardServerExtensionDebitsOnceAndRefundsUnusedMinutes(t *testing.T) {
 	assertConcurrentReplay := func(event string, expected CardOperation) {
 		t.Helper()
 		var group sync.WaitGroup
-		for i := 0; i < 5; i++ {
-			group.Add(1)
-			go func() {
-				defer group.Done()
+		for range 5 {
+			group.Go(func() {
 				op, err := store.Swipe(ctx, cardNo, event, port, pricing.Rule{})
 				if err != nil || op.OperationID != expected.OperationID {
 					t.Errorf("replay %+v %v", op, err)
 				}
-			}()
+			})
 		}
 		group.Wait()
 	}
@@ -150,7 +148,7 @@ func TestCardServerExtensionDebitsOnceAndRefundsUnusedMinutes(t *testing.T) {
 		t.Fatalf("%+v %v", fee, err)
 	}
 	receipt := billing.Result{CalculationNo: billing.CalculationNumber(order.OrderNo, order.ID), Source: source, ActualFee: fee}
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		if err := orders.Apply(ctx, receipt); err != nil {
 			t.Fatal(err)
 		}

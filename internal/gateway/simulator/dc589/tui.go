@@ -324,7 +324,7 @@ func (m terminalModel) event() (Input, error) {
 		c.FloatSeconds = values[7]
 		c.RemoveSeconds = values[8]
 		c.TemperatureGuard = byte(values[10])
-		for i := 0; i < 5; i++ {
+		for i := range 5 {
 			if values[16+i] > 100 {
 				return in, fmt.Errorf("档位折扣不能超过100%%")
 			}
@@ -359,16 +359,17 @@ func (m terminalModel) View() string {
 	if m.state.Online {
 		status = green.Render("已连接")
 	}
-	header := blue.Render("ChargePilot · DC589 设备模拟器") + "  " + status + "\n" + fmt.Sprintf("设备 %s · 软件 %s/%d · 当前端口 %d\n", m.state.Identity.BoardID, m.state.Identity.SoftwareID, m.state.Identity.SoftwareVersion, m.port)
+	var header strings.Builder
+	header.WriteString(blue.Render("ChargePilot · DC589 设备模拟器") + "  " + status + "\n" + fmt.Sprintf("设备 %s · 软件 %s/%d · 当前端口 %d\n", m.state.Identity.BoardID, m.state.Identity.SoftwareID, m.state.Identity.SoftwareVersion, m.port))
 	tabs := []string{"端口与充电", "参数与身份", "待确认上报", "日志"}
 	for i, t := range tabs {
 		if i == m.tab {
-			header += blue.Render("[ " + t + " ] ")
+			header.WriteString(blue.Render("[ " + t + " ] "))
 		} else {
-			header += t + "  "
+			header.WriteString(t + "  ")
 		}
 	}
-	header += "\n" + strings.Repeat("─", max(10, min(m.width-1, 110))) + "\n"
+	header.WriteString("\n" + strings.Repeat("─", max(10, min(m.width-1, 110))) + "\n")
 	var body string
 	if m.editing {
 		body = blue.Render(m.current.label) + "\nEnter 执行 · Tab 切换字段 · Ctrl+U 清空 · Esc 取消\n"
@@ -452,7 +453,7 @@ func (m terminalModel) View() string {
 		body = strings.Join(lines[start:min(len(lines), start+max(1, m.height-9))], "\n")
 	}
 	footer := "\n" + red.Render(m.notice) + "\nTab 切页 · ↑↓ 选端口 · P 调功率 · M/Enter 操作 · PgUp/PgDn 滚动 · Q/Ctrl+C 退出（保留状态）"
-	out := header + body + footer
+	out := header.String() + body + footer
 	lines := strings.Split(out, "\n")
 	for i := range lines {
 		lines[i] = ansi.Truncate(lines[i], max(10, m.width-1), "…")

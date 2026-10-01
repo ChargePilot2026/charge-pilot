@@ -84,7 +84,7 @@ func TestRefundResultsPersistPartialAndFullOrderPaymentStates(t *testing.T) {
 	for i, want := range []string{"partial_refunded", "refunded"} {
 		refund := refunds[i]
 		result := RefundResult{RefundNo: refund.RefundNo, ChannelRef: "state-channel-" + uuid.NewString(), RefundCents: refund.RefundCents, Success: true}
-		for replay := 0; replay < 2; replay++ {
+		for range 2 {
 			if err := consumer.post(ctx, result); err != nil {
 				t.Fatal(err)
 			}

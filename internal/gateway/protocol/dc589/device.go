@@ -302,7 +302,7 @@ func encodeIdentifier(value string, width int) ([]byte, error) {
 		return packed, nil
 	}
 	raw := make([]byte, width)
-	for i := 0; i < width; i++ {
+	for i := range width {
 		raw[i] = hexNibble(value[i*2])<<4 | hexNibble(value[i*2+1])
 	}
 	return raw, nil

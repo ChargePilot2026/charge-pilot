@@ -101,7 +101,7 @@ func TestDevelopmentWalletCheckoutAndRefund(t *testing.T) {
 		t.Fatal(data)
 	}
 	// Third distinct valid claim in five minutes creates a linked risk ticket.
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		req := map[string]any{"request_id": uuid.NewString(), "amount_cents": 100}
 		code, body = callJSON(t, one, "POST", "/api/v1/user/wallet/refund", req)
 		if code != 200 {

@@ -138,7 +138,7 @@ func TestActualBillingPersistsAndRefundsOnce(t *testing.T) {
 		return id, pid
 	}
 	id, pid := fixture(1000, false)
-	sourceOrders := scopedBillingOrders{BillingOrders: BillingOrders{DB: userDB}, ID: id}
+	sourceOrders := scopedBillingOrders{DB: userDB, ID: id}
 	store := billing.Store{DB: billingDB}
 	source, err := sourceOrders.Read(ctx, id)
 	if err != nil {
@@ -148,8 +148,7 @@ func TestActualBillingPersistsAndRefundsOnce(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make(chan error, 8)
 	for range 8 {
-		wg.Add(1)
-		go func() { defer wg.Done(); _, err := store.Calculate(ctx, source); errs <- err }()
+		wg.Go(func() { ; _, err := store.Calculate(ctx, source); errs <- err })
 	}
 	wg.Wait()
 	close(errs)

@@ -40,7 +40,7 @@ func (s UserStore) Login(ctx context.Context, openID, unionID string) (User, err
 	if openID == "" || len(openID) > 64 || len(unionID) > 64 {
 		return User{}, errors.New("invalid WeChat identity")
 	}
-	for attempt := 0; attempt < 5; attempt++ {
+	for attempt := range 5 {
 		user, err := s.loginOnce(ctx, openID, unionID)
 		if !retryableMySQL(err) {
 			return user, err

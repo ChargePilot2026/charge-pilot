@@ -183,7 +183,7 @@ func TestCompleteMinutesDoNotDisappearAcrossTinyFragments(t *testing.T) {
 	s := exampleScheme(ModeServerRealtimePower, []Period{examplePeriod(80, 40)}, 300)
 	start := time.Date(2026, 9, 30, 9, 0, 0, 0, beijing)
 	u := Usage{Start: start, End: start.Add(61 * time.Second), EnergyWh: 61}
-	for i := 0; i < 61; i++ {
+	for i := range 61 {
 		u.Samples = append(u.Samples, Sample{Start: start.Add(time.Duration(i) * time.Second), End: start.Add(time.Duration(i+1) * time.Second), EnergyWh: 1, PowerW: 180})
 	}
 	f, err := Cost(s.SpecFor(s.Packages[0]), u)

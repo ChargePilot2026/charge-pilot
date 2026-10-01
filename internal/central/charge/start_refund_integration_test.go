@@ -150,7 +150,7 @@ func TestRejectedStartQueuesRefundAtomicallyAndIdempotently(t *testing.T) {
 	if err := orm.Model(&RefundRecord{}).Where("id = ?", refund.ID).Update("next_attempt_at", time.Now().Add(-time.Minute)).Error; err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		if err := executor.Execute(ctx, refund.ID); err != nil {
 			t.Fatal(err)
 		}

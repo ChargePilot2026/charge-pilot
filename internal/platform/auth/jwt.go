@@ -51,11 +51,9 @@ func (j *JWT) Sign(claims Claims) (string, error) {
 		OpenID:    claims.OpenID,
 		SessionID: claims.SessionID,
 		RoleIDs:   claims.RoleIDs,
-		RegisteredClaims: jwt.RegisteredClaims{
-			Subject:   claims.Subject,
-			IssuedAt:  jwt.NewNumericDate(time.Unix(claims.IssuedAt, 0)),
-			ExpiresAt: jwt.NewNumericDate(time.Unix(claims.ExpiresAt, 0)),
-		},
+		Subject:   claims.Subject,
+		IssuedAt:  jwt.NewNumericDate(time.Unix(claims.IssuedAt, 0)),
+		ExpiresAt: jwt.NewNumericDate(time.Unix(claims.ExpiresAt, 0)),
 	}
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, wire).SignedString(j.key)
 }

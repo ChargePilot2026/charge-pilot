@@ -57,7 +57,7 @@ func TestChargeProcessCursorReturnsEverySampleAndStrictOrderIdentity(t *testing.
 	tx := processControlTransaction(t)
 	order, device := "page-"+uuid.NewString(), "device-"+uuid.NewString()
 	base := time.Now().UTC().Truncate(time.Millisecond)
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		identityOrder, identityDevice, identityID, identityPort := order, device, uint64(7123), uint8(1)
 		switch i {
 		case 5:
@@ -86,7 +86,7 @@ func TestChargeProcessCursorReturnsEverySampleAndStrictOrderIdentity(t *testing.
 	path := fmt.Sprintf("/api/v1/internal/charge-orders/%s/process?charge_order_id=7123&device_id=%s&port_no=1&limit=2", order, device)
 	all := []ChargeProcessPoint{}
 	after := uint64(0)
-	for pages := 0; pages < 4; pages++ {
+	for range 4 {
 		page := getProcess(t, r, path+fmt.Sprintf("&after_id=%d", after))
 		all = append(all, page.Items...)
 		if page.NextAfterID == nil {

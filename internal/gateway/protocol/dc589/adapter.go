@@ -339,8 +339,7 @@ func (a TCPAdapter) ServeConn(ctx context.Context, conn net.Conn, sink protocol.
 				if err := ParseConfigAck(frame); err == nil {
 					event.ResultCode = 0
 				} else {
-					var rejected ErrConfigRejected
-					if errors.As(err, &rejected) {
+					if rejected, ok := errors.AsType[ErrConfigRejected](err); ok {
 						// 错误码指明是哪个字段越界，这正是「运维照着
 						// 改一个值」和「运维靠猜」之间的区别。
 						event.ResultCode = rejected.Code

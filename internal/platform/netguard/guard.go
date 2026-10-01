@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net"
 	"net/url"
+	"slices"
 	"strings"
 )
 
@@ -58,10 +59,8 @@ func ValidatePublicHTTPS(raw string) error {
 		// 解析不出来的主机，同样也不可能是能用的端点。
 		return ErrTargetBlocked
 	}
-	for _, ip := range addresses {
-		if isPrivateAddress(ip) {
-			return ErrTargetBlocked
-		}
+	if slices.ContainsFunc(addresses, isPrivateAddress) {
+		return ErrTargetBlocked
 	}
 	return nil
 }

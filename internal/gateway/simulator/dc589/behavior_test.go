@@ -150,7 +150,7 @@ func TestDurationExpiryBetweenTicksReportsPurchasedMinute(t *testing.T) {
 	}
 	conn.frames(t)
 	base := now.Truncate(time.Second)
-	for i := 0; i < 60; i++ {
+	for i := range 60 {
 		now = base.Add(time.Duration(i)*time.Second + 900*time.Millisecond)
 		b.clockOffset = now.Sub(time.Now())
 		b.advance()

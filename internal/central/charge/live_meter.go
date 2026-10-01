@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"time"
 
 	"github.com/ChargePilot2026/charge-pilot/internal/central/pricing"
@@ -96,8 +97,8 @@ func (s LiveMeterService) Read(ctx context.Context, id uint64, device string, po
 }
 
 func liveMeterEvidence(device string, port uint8, start time.Time, samples []protocol.Event, now time.Time) (*LiveMeterView, pricing.ActualMeter, bool) {
-	for i := len(samples) - 1; i >= 0; i-- {
-		e := samples[i]
+	for i, e := range slices.Backward(samples) {
+
 		if e.Type != protocol.Heartbeat || e.DeviceID != device || e.ReceivedAt.Before(start) || e.ReceivedAt.After(now) {
 			continue
 		}

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -250,11 +251,12 @@ func grantSourceFor(triggerType string) string {
 // 它不会在活动上线之后被人偷偷改掉，code 却会。
 // 可选的 scope 把邀请人的发放与被邀请人自己的分开，免得一条规则触发一次就撞上自己。
 func activityEventID(ruleID uint64, event activityEvent, scope ...string) string {
-	key := fmt.Sprint(ruleID)
+	var key strings.Builder
+	key.WriteString(fmt.Sprint(ruleID))
 	for _, s := range scope {
-		key += "\x00" + s
+		key.WriteString("\x00" + s)
 	}
-	sum := sha256.Sum256([]byte(key + "\x00" + fmt.Sprint(event.UserID) + "\x00" + event.EventKey))
+	sum := sha256.Sum256([]byte(key.String() + "\x00" + fmt.Sprint(event.UserID) + "\x00" + event.EventKey))
 	return hex.EncodeToString(sum[:16])
 }
 

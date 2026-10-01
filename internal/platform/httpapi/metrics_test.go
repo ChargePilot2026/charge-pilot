@@ -57,7 +57,7 @@ func TestMetricsLabelRoutesByTemplateNotRawPath(t *testing.T) {
 // 否则未认证的扫描器就能随意撑大序列数量。
 func TestMetricsCollapseUnmatchedRequests(t *testing.T) {
 	router := metricsRouter()
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		recorder := httptest.NewRecorder()
 		router.ServeHTTP(recorder, httptest.NewRequest("GET", "/no/such/path/"+string(rune('a'+i)), nil))
 	}
@@ -92,7 +92,7 @@ func TestMetricsExposeValidExposition(t *testing.T) {
 	}
 	// 每一行非注释内容都必须带上 service 标签，或者属于 HELP/TYPE
 	// 那一组，而且不允许有空行。
-	for _, line := range strings.Split(strings.TrimSpace(body), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(body), "\n") {
 		if strings.HasPrefix(line, "#") {
 			continue
 		}
