@@ -64,14 +64,14 @@ interface Filters {
   period?: [Dayjs, Dayjs];
 }
 const refunds: Record<string, string> = { none: '无退款', processing: '退款中', refunded: '已全额退款', partial_refunded: '部分退款' };
-const businessStatusColors: Record<string, string> = { pending_start: '#ffa940', charging: '#4096ff', completed: 'default' };
+const businessStatusColors: Record<string, string> = { pending_start: '#ffa940', charging: '#4096ff' };
 const paymentStatusColors: Record<string, string> = { pending: '#ffa940', paid: '#73d13d', refunded: '#ff4d4f', partial_refunded: '#ff7a45' };
 const time = (value: string | null) => value ? dayjs(value).format('YYYY-MM-DD HH:mm:ss') : '—';
 const money = (value: number | null) => value == null ? '待结算' : `¥${(value / 100).toFixed(2)}`;
 const statusTag = (row: Order, kind: 'business' | 'payment') => {
   const info = kind === 'business' ? businessStatusInfo(row) : paymentStatusInfo(row);
   const color = kind === 'business' ? businessStatusColors[row.business_status] : paymentStatusColors[row.payment_status];
-  const tag = <Tag color={color || info.color}>{info.label}</Tag>;
+  const tag = <Tag style={color ? { color } : undefined}>{info.label}</Tag>;
   return info.hint ? <Tooltip title={info.hint}>{tag}</Tooltip> : tag;
 };
 const orderDuration = (row: Order) => {

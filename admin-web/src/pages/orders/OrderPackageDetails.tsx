@@ -61,7 +61,7 @@ export default function OrderPackageDetails({ value }: { value: SelectedPackage 
       { key: 'minimum', label: '最低电费', children: scheme ? scheme.policy.min_electric_cents ? money(scheme.policy.min_electric_cents) : '不设下限' : '未记录' },
     ]} />}
     {scheme && <Descriptions bordered column={1} items={[
-      { key: 'full', label: '满充停止', children: <Tag color={scheme.stop.stop_when_full ? 'green' : 'default'}>{scheme.stop.stop_when_full ? '启用' : '关闭'}</Tag> },
+      { key: 'full', label: '满充停止', children: <Tag style={scheme.stop.stop_when_full ? { color: '#389e0d' } : undefined}>{scheme.stop.stop_when_full ? '启用' : '关闭'}</Tag> },
     ]} />}
     <Alert type="info" showIcon message={offer.mode === 'amount'
       ? '支付金额作为充电预算，预算耗尽或达到最长时长停止。免费时长内结束不计费，超出后整段计费；最低电费不含服务费。'
