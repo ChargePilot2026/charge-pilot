@@ -13,6 +13,8 @@ export const wx: any = new Proxy({
   navigateTo: (options: any) => Taro.navigateTo(options),
   navigateBack: (options: any) => Taro.navigateBack(options),
   switchTab: (options: any) => Taro.switchTab(options),
+  // 底部导航已改为自定义组件，页面之间用 reLaunch 跳转；原生 tabBar 未配置时 switchTab 会失败。
+  reLaunch: (options: any) => Taro.reLaunch(options),
   showModal: (options: any) => Taro.showModal(options),
   showToast: (options: any) => Taro.showToast(options),
   stopPullDownRefresh: (options?: any) => Taro.stopPullDownRefresh(options),

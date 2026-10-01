@@ -1,6 +1,7 @@
 import { Fragment } from "react";
 import { Button, Picker, Text, Textarea, View } from "@tarojs/components";
 import { useController } from "../../runtime";
+import { HOME_TABS, TabBar } from "../../runtime/TabBar";
 import { inlineStyle, StationMap } from "../../runtime/components";
 import controller from "./detail.controller";
 
@@ -86,5 +87,6 @@ return (<><View className="container">{!!(needsLogin) && (<Button onClick={event
 <Button type="primary" onClick={event("submitFeedback", {})} loading={feedbackBusy} disabled={feedbackBusy}>{"提交反馈"}</Button></View>)}
 {!!(order?.feedback_submitted) && (<View className="card success">{"已收到本订单反馈，谢谢。"}</View>)}
 {!!(order?.device_id) && (<View className="card"><Button onClick={event("reportFault", {})}>{"设备报修"}</Button>
-</View>)}</Fragment>)}</View></>);
+</View>)}</Fragment>)}</View>
+<TabBar active="home" tabs={HOME_TABS} /></>);
 }

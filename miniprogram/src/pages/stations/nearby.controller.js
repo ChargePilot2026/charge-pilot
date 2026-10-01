@@ -26,7 +26,7 @@ export default defineController({
     try {
       const result=await stationApp.request('GET','/user/station/nearby',{latitude:this.data.latitude,longitude:this.data.longitude,radius_km:this.data.radii[this.data.radiusIndex]},false);
       if (this._gone || generation!==this._generation) return;
-      this.setData({items:result.items.map(s=>({...s,distanceText:s.distance_km.toFixed(2)+' 公里'})),markers:result.items.map(s=>({id:s.id,latitude:s.latitude,longitude:s.longitude,title:s.name}))});
+      this.setData({items:result.items.map(s=>({...s,distanceText:typeof s.distance_km==='number'?s.distance_km.toFixed(2)+' 公里':'距离未知'})),markers:result.items.map(s=>({id:s.id,latitude:s.latitude,longitude:s.longitude,title:s.name}))});
     } catch(e) { if (!this._gone && generation===this._generation) this.setData({error:e.message || '站点查询失败'}); }
     finally { if (!this._gone && generation===this._generation) this.setData({loading:false}); }
   },

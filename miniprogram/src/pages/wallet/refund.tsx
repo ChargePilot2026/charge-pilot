@@ -1,6 +1,7 @@
 import { Fragment } from "react";
 import { Button, Input, View } from "@tarojs/components";
 import { useController } from "../../runtime";
+import { HOME_TABS, TabBar } from "../../runtime/TabBar";
 import { inlineStyle, StationMap } from "../../runtime/components";
 import controller from "./refund.controller";
 
@@ -30,5 +31,6 @@ return (<><View className="container">{!!(needsLogin) && (<Button onClick={event
 {part?.statusText}</View>
 <View className="text-secondary">{part?.refund_no}</View>
 {!!(part?.failure_reason) && (<View>{part?.failure_reason}</View>)}</View>))}</View>))}
-{!!(!loading && !items?.length && !needsLogin) && (<View>{"暂无退款申请"}</View>)}</View></>);
+{!!(!loading && !items?.length && !needsLogin) && (<View>{"暂无退款申请"}</View>)}</View>
+<TabBar active="home" tabs={HOME_TABS} /></>);
 }

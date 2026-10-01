@@ -1,6 +1,7 @@
 import { Fragment } from "react";
 import { Button, Input, View } from "@tarojs/components";
 import { useController } from "../../runtime";
+import { HOME_TABS, TabBar } from "../../runtime/TabBar";
 import { inlineStyle, StationMap } from "../../runtime/components";
 import controller from "./recharge.controller";
 
@@ -21,5 +22,6 @@ return (<><View className="container">{!!(needsLogin) && (<View className="card"
 {" · "}
 {item?.statusText}</View>
 {!!(item?.can_pay) && (<Button onClick={event("resume", {"id":item?.request_id})} data-id={item?.request_id} disabled={paying || pending}>{"继续支付"}</Button>)}</View>))}
-{!!(hasMore) && (<Button onClick={event("more", {})} disabled={loading || paying}>{"加载更多"}</Button>)}</View></>);
+{!!(hasMore) && (<Button onClick={event("more", {})} disabled={loading || paying}>{"加载更多"}</Button>)}</View>
+<TabBar active="home" tabs={HOME_TABS} /></>);
 }

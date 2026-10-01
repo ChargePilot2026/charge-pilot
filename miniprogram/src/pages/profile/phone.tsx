@@ -1,6 +1,7 @@
 import { Fragment } from "react";
 import { Button, Input, View } from "@tarojs/components";
 import { useController, developmentLogin, isH5 } from "../../runtime";
+import { HOME_TABS, TabBar } from "../../runtime/TabBar";
 import { inlineStyle, StationMap } from "../../runtime/components";
 import controller from "./phone.controller";
 import "./phone.css";
@@ -20,5 +21,6 @@ return (<><View className="container">{!!(needsLogin) && (<View className="card"
 {!!(bound) && (<Button onClick={event("unbind", {})} loading={busy} disabled={busy}>{"解除绑定"}</Button>)}</View>)}
 {!!(notice) && (<View className="card success">{notice}</View>)}
 {!!(error) && (<View className="card error"><View>{error}</View>
-{!!(!needsLogin) && (<Button onClick={event("load", {})} disabled={busy}>{"刷新状态"}</Button>)}</View>)}</View></>);
+{!!(!needsLogin) && (<Button onClick={event("load", {})} disabled={busy}>{"刷新状态"}</Button>)}</View>)}</View>
+<TabBar active="home" tabs={HOME_TABS} /></>);
 }

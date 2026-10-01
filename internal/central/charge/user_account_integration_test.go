@@ -41,6 +41,13 @@ func openAccountDB(t *testing.T, key string) *gorm.DB {
 // 让处理器里的归属与状态校验完全按生产的样子跑。
 func accountRouter(t *testing.T, userDB, adminDB *gorm.DB, userID uint64) http.Handler {
 	t.Helper()
+	return accountRouterWithGateway(t, userDB, adminDB, userID, "")
+}
+
+// accountRouterWithGateway 在 accountRouter 的基础上注入 gateway 地址，
+// 用于验证依赖设备运行态的接口。gatewayURL 为空表示未配置网关。
+func accountRouterWithGateway(t *testing.T, userDB, adminDB *gorm.DB, userID uint64, gatewayURL string) http.Handler {
+	t.Helper()
 	options, err := redis.ParseURL(os.Getenv("TEST_REDIS_URL"))
 	if err != nil {
 		t.Fatal(err)
@@ -68,6 +75,7 @@ func accountRouter(t *testing.T, userDB, adminDB *gorm.DB, userID uint64) http.H
 	UserAccountAPI{
 		Auth:   identity.SessionAuthenticator{JWT: jwt, Sessions: identity.Sessions{Redis: client}, Users: identity.UserStore{DB: userDB}},
 		UserDB: userDB, AdminDB: adminDB, Gateway: serviceclient.Client{},
+		GatewayURL: gatewayURL, ServiceToken: "svc",
 		DevelopmentPhone: true, Prepay: payment.Simulator{},
 	}.Register(router)
 	DevelopmentPaymentAPI{Auth: identity.SessionAuthenticator{JWT: jwt, Sessions: identity.Sessions{Redis: client}, Users: identity.UserStore{DB: userDB}}, DB: userDB, Store: PaymentCallbackStore{DB: userDB, ExpectedProvider: "simulation", ExpectedMerchantID: "local-simulation", ExpectedAppID: "wx_local_dev"}}.Register(router)
@@ -298,4 +306,268 @@ func createUserWithWallet(t *testing.T, db *gorm.DB, balance int64) uint64 {
 		t.Fatal(err)
 	}
 	return id
+}
+
+// createStation 写入一个指定创建时间的站点，用于验证未定位分支的排序。
+func createStation(t *testing.T, adminDB *gorm.DB, name string, createdAt time.Time) uint64 {
+	t.Helper()
+	if err := adminDB.Exec(
+		"INSERT INTO station(name,address,longitude,latitude,status,created_at) VALUES(?,?,?,?,'active',?)",
+		name, "江西省赣州市", 114.9, 25.8, createdAt,
+	).Error; err != nil {
+		t.Fatal(err)
+	}
+	var id uint64
+	adminDB.Table("station").Where("name = ?", name).Pluck("id", &id)
+	return id
+}
+
+// createAnnouncement 写入一条公告，targetIDs 为空表示全局公告。
+// target_ids 存的是 JSON 字符串数组，与后台创建公告的写入格式保持一致。
+func createAnnouncement(t *testing.T, adminDB *gorm.DB, title, scope string, targetIDs []string) uint64 {
+	t.Helper()
+	encoded, err := json.Marshal(targetIDs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	targets := "null"
+	if scope != "global" {
+		targets = string(encoded)
+	}
+	if err := adminDB.Exec(
+		"INSERT INTO announcement(title,content,scope,target_ids,status,start_at,created_by) VALUES(?,?,?,?,'published',?,1)",
+		title, "公告正文", scope, targets, time.Now().UTC().Add(-time.Hour),
+	).Error; err != nil {
+		t.Fatal(err)
+	}
+	var id uint64
+	adminDB.Table("announcement").Where("title = ?", title).Pluck("id", &id)
+	return id
+}
+
+// createStationDevice 写入一台归属站点的设备。
+func createStationDevice(t *testing.T, adminDB *gorm.DB, deviceID string, stationID uint64) {
+	t.Helper()
+	if err := adminDB.Exec(
+		"INSERT INTO device_meta(device_id,station_id,vendor_id,status) VALUES(?,?,1,'enabled')",
+		deviceID, stationID,
+	).Error; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestStationDetailReturnsAnnouncementsAndDeviceStatus 验证站点详情返回站内公告与设备在线状态：
+// 公告只包含全局公告和指向本站的公告；在线判定按最后心跳是否落在 1 小时内执行，
+// 网关不可用时标记为状态未知而不是离线。
+func TestStationDetailReturnsAnnouncementsAndDeviceStatus(t *testing.T) {
+	if os.Getenv("TEST_USER_DATABASE_URL") == "" || os.Getenv("TEST_ADMIN_DATABASE_URL") == "" || os.Getenv("TEST_REDIS_URL") == "" {
+		t.Skip("disposable MySQL and Redis required")
+	}
+	userDB := openAccountDB(t, "TEST_USER_DATABASE_URL")
+	adminDB := openAccountDB(t, "TEST_ADMIN_DATABASE_URL")
+	userID := createUserWithWallet(t, userDB, 0)
+	t.Cleanup(func() {
+		userDB.Exec("DELETE FROM wallet_account WHERE user_id = ?", userID)
+		userDB.Exec("DELETE FROM user WHERE id = ?", userID)
+	})
+
+	stationID := createStation(t, adminDB, "qa-detail-"+uuid.NewString()[:8], time.Now().UTC())
+	otherID := createStation(t, adminDB, "qa-other-"+uuid.NewString()[:8], time.Now().UTC())
+	t.Cleanup(func() { adminDB.Exec("DELETE FROM station WHERE id IN ?", []uint64{stationID, otherID}) })
+
+	globalID := createAnnouncement(t, adminDB, "qa-global-"+uuid.NewString()[:8], "global", nil)
+	mineID := createAnnouncement(t, adminDB, "qa-mine-"+uuid.NewString()[:8], "station", []string{strconv.FormatUint(stationID, 10)})
+	foreignID := createAnnouncement(t, adminDB, "qa-foreign-"+uuid.NewString()[:8], "station", []string{strconv.FormatUint(otherID, 10)})
+	t.Cleanup(func() { adminDB.Exec("DELETE FROM announcement WHERE id IN ?", []uint64{globalID, mineID, foreignID}) })
+	online := "qa-online-" + uuid.NewString()[:8]
+	offline := "qa-offline-" + uuid.NewString()[:8]
+	createStationDevice(t, adminDB, online, stationID)
+	createStationDevice(t, adminDB, offline, stationID)
+	t.Cleanup(func() { adminDB.Exec("DELETE FROM device_meta WHERE device_id IN ?", []string{online, offline}) })
+
+	recent := time.Now().UTC().Add(-10 * time.Minute)
+	stale := time.Now().UTC().Add(-3 * time.Hour)
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Service-Token") != "svc" || r.URL.Path != "/api/v1/internal/device-summaries" {
+			t.Errorf("unexpected gateway request: %s %s", r.URL.Path, r.URL.RawQuery)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{
+			"items": []map[string]any{
+				{"device_id": online, "last_heartbeat_at": recent},
+				{"device_id": offline, "last_heartbeat_at": stale},
+			},
+		}})
+	}))
+	defer gateway.Close()
+
+	status, body := callJSON(t, accountRouterWithGateway(t, userDB, adminDB, userID, gateway.URL),
+		http.MethodGet, "/api/v1/user/station/"+strconv.FormatUint(stationID, 10), nil)
+	if status != http.StatusOK {
+		t.Fatalf("status %d body %v", status, body)
+	}
+	data, _ := body["data"].(map[string]any)
+
+	titles := map[string]bool{}
+	notices, _ := data["announcements"].([]any)
+	for _, raw := range notices {
+		notice, _ := raw.(map[string]any)
+		titles[notice["title"].(string)] = true
+	}
+	if !titles[announcementTitle(t, adminDB, globalID)] || !titles[announcementTitle(t, adminDB, mineID)] {
+		t.Fatalf("expected global + own station announcement, got %v", titles)
+	}
+	if titles[announcementTitle(t, adminDB, foreignID)] {
+		t.Fatalf("announcement of another station must not be returned: %v", titles)
+	}
+
+	devices, _ := data["devices"].([]any)
+	states := map[string]map[string]any{}
+	for _, raw := range devices {
+		device, _ := raw.(map[string]any)
+		states[device["device_id"].(string)] = device
+	}
+	if len(states) != 2 {
+		t.Fatalf("expected 2 devices, got %d", len(states))
+	}
+	if onlineFlag, _ := states[online]["online"].(bool); !onlineFlag {
+		t.Fatalf("device with 10-minute heartbeat must be online: %v", states[online])
+	}
+	if known, _ := states[online]["runtime_available"].(bool); !known {
+		t.Fatalf("runtime must be marked available: %v", states[online])
+	}
+	if onlineFlag, _ := states[offline]["online"].(bool); onlineFlag {
+		t.Fatalf("device with 3-hour heartbeat must be offline: %v", states[offline])
+	}
+}
+
+// TestStationDetailMarksDeviceUnknownWhenGatewayDown 验证网关不可用时设备状态为未知，
+// 而不是把查询失败伪装成离线。
+func TestStationDetailMarksDeviceUnknownWhenGatewayDown(t *testing.T) {
+	if os.Getenv("TEST_USER_DATABASE_URL") == "" || os.Getenv("TEST_ADMIN_DATABASE_URL") == "" || os.Getenv("TEST_REDIS_URL") == "" {
+		t.Skip("disposable MySQL and Redis required")
+	}
+	userDB := openAccountDB(t, "TEST_USER_DATABASE_URL")
+	adminDB := openAccountDB(t, "TEST_ADMIN_DATABASE_URL")
+	userID := createUserWithWallet(t, userDB, 0)
+	t.Cleanup(func() {
+		userDB.Exec("DELETE FROM wallet_account WHERE user_id = ?", userID)
+		userDB.Exec("DELETE FROM user WHERE id = ?", userID)
+	})
+	stationID := createStation(t, adminDB, "qa-down-"+uuid.NewString()[:8], time.Now().UTC())
+	t.Cleanup(func() { adminDB.Exec("DELETE FROM station WHERE id = ?", stationID) })
+	device := "qa-down-dev-" + uuid.NewString()[:8]
+	createStationDevice(t, adminDB, device, stationID)
+	t.Cleanup(func() { adminDB.Exec("DELETE FROM device_meta WHERE device_id = ?", device) })
+
+	// 指向一个没有监听的地址，模拟网关不可用。
+	router := accountRouterWithGateway(t, userDB, adminDB, userID, "http://127.0.0.1:1")
+	status, body := callJSON(t, router, http.MethodGet, "/api/v1/user/station/"+strconv.FormatUint(stationID, 10), nil)
+	if status != http.StatusOK {
+		t.Fatalf("status %d body %v", status, body)
+	}
+	data, _ := body["data"].(map[string]any)
+	devices, _ := data["devices"].([]any)
+	if len(devices) != 1 {
+		t.Fatalf("expected 1 device, got %d", len(devices))
+	}
+	row, _ := devices[0].(map[string]any)
+	if known, _ := row["runtime_available"].(bool); known {
+		t.Fatalf("runtime must be unknown when gateway is down: %v", row)
+	}
+	if onlineFlag, _ := row["online"].(bool); onlineFlag {
+		t.Fatalf("device must not be reported online without runtime data: %v", row)
+	}
+}
+
+// announcementTitle 读回公告标题，供断言按 id 引用，避免在测试里重复保存随机标题。
+func announcementTitle(t *testing.T, adminDB *gorm.DB, id uint64) string {
+	t.Helper()
+	var title string
+	if err := adminDB.Table("announcement").Where("id = ?", id).Pluck("title", &title).Error; err != nil {
+		t.Fatal(err)
+	}
+	return title
+}
+
+// TestNearbyStationsWithoutCoordinatesReturnsLatest 验证未开启定位时按创建时间倒序
+// 返回最近创建的站点，默认 10 条；distance_km 为 null 而不是 0，
+// 避免把未知距离伪装成同址。
+func TestNearbyStationsWithoutCoordinatesReturnsLatest(t *testing.T) {
+	if os.Getenv("TEST_USER_DATABASE_URL") == "" || os.Getenv("TEST_ADMIN_DATABASE_URL") == "" || os.Getenv("TEST_REDIS_URL") == "" {
+		t.Skip("disposable MySQL and Redis required")
+	}
+	userDB := openAccountDB(t, "TEST_USER_DATABASE_URL")
+	adminDB := openAccountDB(t, "TEST_ADMIN_DATABASE_URL")
+	userID := createUserWithWallet(t, userDB, 0)
+	t.Cleanup(func() {
+		userDB.Exec("DELETE FROM wallet_account WHERE user_id = ?", userID)
+		userDB.Exec("DELETE FROM user WHERE id = ?", userID)
+	})
+	router := accountRouter(t, userDB, adminDB, userID)
+
+	// 本包其它测试也会写入站点，因此把创建时间放到未来，
+	// 使这些站点稳定占据倒序结果的前列，断言不依赖用例执行顺序。
+	base := time.Now().UTC().Add(time.Hour)
+	const total = 12
+	ids := make([]uint64, 0, total)
+	for i := range total {
+		ids = append(ids, createStation(t, adminDB, "qa-future-"+uuid.NewString()[:8], base.Add(time.Duration(i)*time.Minute)))
+	}
+	t.Cleanup(func() { adminDB.Exec("DELETE FROM station WHERE id IN ?", ids) })
+
+	status, body := callJSON(t, router, http.MethodGet, "/api/v1/user/station/nearby", nil)
+	if status != http.StatusOK {
+		t.Fatalf("status %d body %v", status, body)
+	}
+	data, _ := body["data"].(map[string]any)
+	if located, _ := data["located"].(bool); located {
+		t.Fatalf("expected located=false, got %v", data["located"])
+	}
+	if size, _ := data["page_size"].(float64); int(size) != 10 {
+		t.Fatalf("expected default page_size 10, got %v", data["page_size"])
+	}
+	items, _ := data["items"].([]any)
+	if len(items) != 10 {
+		t.Fatalf("expected 10 stations, got %d", len(items))
+	}
+	for i, raw := range items {
+		item, _ := raw.(map[string]any)
+		distance, present := item["distance_km"]
+		if !present || distance != nil {
+			t.Fatalf("item %d: distance_km must be null when location is off, got %v", i, distance)
+		}
+		id := uint64(item["id"].(float64))
+		if want := ids[total-1-i]; id != want {
+			t.Fatalf("item %d: got station %d, want newest-first %d", i, id, want)
+		}
+	}
+}
+
+// TestNearbyStationsRejectsPartialCoordinates 验证只提供一个坐标或坐标非法仍是请求错误，
+// 避免把残缺坐标当作“未开启定位”静默降级。
+func TestNearbyStationsRejectsPartialCoordinates(t *testing.T) {
+	if os.Getenv("TEST_USER_DATABASE_URL") == "" || os.Getenv("TEST_ADMIN_DATABASE_URL") == "" || os.Getenv("TEST_REDIS_URL") == "" {
+		t.Skip("disposable MySQL and Redis required")
+	}
+	userDB := openAccountDB(t, "TEST_USER_DATABASE_URL")
+	adminDB := openAccountDB(t, "TEST_ADMIN_DATABASE_URL")
+	userID := createUserWithWallet(t, userDB, 0)
+	t.Cleanup(func() {
+		userDB.Exec("DELETE FROM wallet_account WHERE user_id = ?", userID)
+		userDB.Exec("DELETE FROM user WHERE id = ?", userID)
+	})
+	router := accountRouter(t, userDB, adminDB, userID)
+
+	for _, path := range []string{
+		"/api/v1/user/station/nearby?latitude=25.8",
+		"/api/v1/user/station/nearby?longitude=114.9",
+		"/api/v1/user/station/nearby?latitude=25.8&longitude=999",
+		"/api/v1/user/station/nearby?latitude=not-a-number&longitude=114.9",
+	} {
+		status, body := callJSON(t, router, http.MethodGet, path, nil)
+		if status != http.StatusBadRequest {
+			t.Fatalf("%s: expected 400, got %d body %v", path, status, body)
+		}
+	}
 }

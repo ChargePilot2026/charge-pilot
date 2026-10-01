@@ -1,0 +1,65 @@
+/* 站点详情：上半部分为站内公告与站点信息，下半部分为设备列表。
+   底部导航留白由 runtime/TabBar.css 的占位块提供。 */
+
+.station-detail {
+  min-height: 100vh;
+  padding: 16rpx;
+  background: #f5f6f7;
+}
+
+.detail-hint {
+  margin-bottom: 16rpx;
+  padding: 24rpx 28rpx;
+  border-radius: 16rpx;
+  background: #fff;
+  font-size: 26rpx;
+  color: #5f6368;
+}
+
+.detail-hint-error { color: #ef4444; }
+
+/* ---- 上半部分：公告与站点信息 ---- */
+.detail-head {
+  padding: 28rpx;
+  border-radius: 16rpx;
+  background: #fff;
+}
+
+.notice-card {
+  margin-bottom: 24rpx;
+  padding: 20rpx 24rpx;
+  border-radius: 12rpx;
+  background: #fff7ed;
+}
+
+.notice-title { display: flex; align-items: center; font-size: 26rpx; font-weight: 600; color: #ea580c; }
+.notice-dot { width: 12rpx; height: 12rpx; margin-right: 12rpx; border-radius: 50%; background: #f97316; }
+.notice-content { display: block; margin-top: 10rpx; font-size: 24rpx; color: #9a5b2c; line-height: 36rpx; }
+
+.detail-name { font-size: 36rpx; font-weight: 600; color: #1f2329; line-height: 52rpx; }
+.detail-address { margin-top: 8rpx; font-size: 26rpx; color: #9aa0a6; }
+
+/* ---- 下半部分：设备列表 ---- */
+.detail-section { margin-top: 24rpx; }
+.detail-section-title { padding: 0 8rpx 16rpx; font-size: 30rpx; font-weight: 600; color: #1f2329; }
+
+.device-card {
+  margin-bottom: 16rpx;
+  padding: 28rpx;
+  border-radius: 16rpx;
+  background: #fff;
+}
+
+.device-card-offline { background: #fafafa; }
+
+.device-main { display: flex; align-items: center; justify-content: space-between; }
+.device-id { font-size: 30rpx; font-weight: 600; color: #1f2329; }
+
+.device-status { display: flex; align-items: center; }
+.device-dot { width: 16rpx; height: 16rpx; margin-right: 10rpx; border-radius: 50%; background: #c4c8cc; }
+.device-dot-online { background: #22c55e; }
+
+.device-status-text { font-size: 26rpx; color: #9aa0a6; }
+.device-card:not(.device-card-offline) .device-status-text { color: #22c55e; }
+
+.device-heartbeat { display: block; margin-top: 12rpx; font-size: 22rpx; color: #b0b4b8; }

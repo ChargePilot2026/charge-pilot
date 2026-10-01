@@ -1,6 +1,7 @@
 import { Fragment } from "react";
 import { Button, Input, Picker, View } from "@tarojs/components";
 import { useController } from "../../runtime";
+import { HOME_TABS, TabBar } from "../../runtime/TabBar";
 import { inlineStyle, StationMap } from "../../runtime/components";
 import controller from "./apply.controller";
 import "./apply.css";
@@ -26,5 +27,6 @@ return (<><View className="container">{!!(needsLogin) && (<View className="card"
 {!!(error) && (<View className="card error"><View>{error}</View>
 <Button onClick={event("loadOrders", {})} disabled={loading || submitting}>{"重试"}</Button></View>)}
 {!!(notice) && (<View className="card success">{notice}</View>)}
-{!!(!loading && !needsLogin && !orders?.length) && (<View className="card">{"没有可申请开票的已完成订单"}</View>)}</View></>);
+{!!(!loading && !needsLogin && !orders?.length) && (<View className="card">{"没有可申请开票的已完成订单"}</View>)}</View>
+<TabBar active="home" tabs={HOME_TABS} /></>);
 }

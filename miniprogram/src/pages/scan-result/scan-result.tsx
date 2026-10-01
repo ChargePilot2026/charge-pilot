@@ -1,6 +1,7 @@
 import { Fragment } from "react";
 import { Button, View } from "@tarojs/components";
 import { useController } from "../../runtime";
+import { HOME_TABS, TabBar } from "../../runtime/TabBar";
 import { inlineStyle, StationMap } from "../../runtime/components";
 import controller from "./scan-result.controller";
 
@@ -48,5 +49,6 @@ return (<><View className="container">{!!(loading) && (<View className="card">{"
 {" · "}
 {feeText}</View>)}
 <Button onClick={event("history", {})}>{"查看订单记录"}</Button></View>)}
-<Button onClick={event("rescan", {})} disabled={paying || startAttempted}>{"重新扫码"}</Button></View></>);
+<Button onClick={event("rescan", {})} disabled={paying || startAttempted}>{"重新扫码"}</Button></View>
+<TabBar active="home" tabs={HOME_TABS} /></>);
 }

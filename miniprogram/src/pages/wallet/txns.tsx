@@ -1,6 +1,7 @@
 import { Fragment } from "react";
 import { Button, Picker, Text, View } from "@tarojs/components";
 import { useController } from "../../runtime";
+import { HOME_TABS, TabBar } from "../../runtime/TabBar";
 import { inlineStyle, StationMap } from "../../runtime/components";
 import controller from "./txns.controller";
 
@@ -25,5 +26,6 @@ return (<><View className="container">{!!(needsLogin) && (<View className="card"
 {!!(error) && (<View className="card"><Text>{error}</Text>
 <Button onClick={event("retry", {})}>{"重试"}</Button></View>)}
 {!!(!loading && !error && !needsLogin && total === 0) && (<View className="card">{"暂无资金流水"}</View>)}
-{!!(items?.length < total && !loading) && (<Button onClick={event("onReachBottom", {})}>{"加载更多"}</Button>)}</View></>);
+{!!(items?.length < total && !loading) && (<Button onClick={event("onReachBottom", {})}>{"加载更多"}</Button>)}</View>
+<TabBar active="home" tabs={HOME_TABS} /></>);
 }

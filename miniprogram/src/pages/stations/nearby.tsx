@@ -1,6 +1,7 @@
 import { Fragment } from "react";
 import { Button, Input, Picker, View } from "@tarojs/components";
 import { useController, isH5 } from "../../runtime";
+import { HOME_TABS, TabBar } from "../../runtime/TabBar";
 import { inlineStyle, StationMap } from "../../runtime/components";
 import controller from "./nearby.controller";
 
@@ -20,5 +21,6 @@ return (<><View className="container"><Button onClick={event("locate", {})} disa
 {" · "}
 {item?.distanceText}</View>
 <View className="text-secondary">{item?.address || '地址未填写'}</View></View>))}
-{!!(latitude != null && !loading && !error && !items?.length) && (<View className="card">{"该范围内暂无开放站点，可扩大搜索范围。"}</View>)}</View></>);
+{!!(latitude != null && !loading && !error && !items?.length) && (<View className="card">{"该范围内暂无开放站点，可扩大搜索范围。"}</View>)}</View>
+<TabBar active="home" tabs={HOME_TABS} /></>);
 }

@@ -1,6 +1,7 @@
 import { Fragment } from "react";
 import { Button, Picker, Text, View } from "@tarojs/components";
 import { useController } from "../../runtime";
+import { HOME_TABS, TabBar } from "../../runtime/TabBar";
 import { inlineStyle, StationMap } from "../../runtime/components";
 import controller from "./history.controller";
 
@@ -26,5 +27,6 @@ return (<><View className="container">{!!(needsLogin) && (<Button onClick={event
 {!!(!(loading) && (items?.length < total)) && (<Button onClick={event("onReachBottom", {})}>{"加载更多"}</Button>)}
 {!!(!(loading || items?.length < total) && (items?.length)) && (<View className="text-secondary">{"共 "}
 {total}
-{" 笔，已全部加载"}</View>)}</View></>);
+{" 笔，已全部加载"}</View>)}</View>
+<TabBar active="home" tabs={HOME_TABS} /></>);
 }
