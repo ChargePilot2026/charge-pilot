@@ -50,8 +50,7 @@ func (a SessionAuthenticator) Authenticate(c *gin.Context) (userID uint64, ok bo
 		return 0, false
 	}
 	if a.Users == nil {
-		// 配置错了的部署必须回一个可重试的错误，
-		// 而不是让请求路径里去解引用一个 nil 的存储。
+		// 认证存储未配置时返回可重试错误，避免访问 nil 依赖。
 		httpapi.Write(c, http.StatusServiceUnavailable, 5001, "user unavailable", nil)
 		return 0, false
 	}

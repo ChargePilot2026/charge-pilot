@@ -1,7 +1,4 @@
-// Package serviceclient 提供 central 各服务之间、以及它们与 gateway 之间
-// 那些用 service token 鉴权的 HTTP 调用。
-// 把它放在 platform，是为了让每个模块都套用同一套
-// 超时、请求头与错误处理，而不是各自复制一遍。
+// Package serviceclient 统一服务间 HTTP 调用的超时、服务令牌及错误处理。
 package serviceclient
 
 import (
@@ -38,9 +35,7 @@ func (c Client) httpClient() *http.Client {
 	return &http.Client{Timeout: timeout}
 }
 
-// Get 发出一个带鉴权的 GET 并返回原始响应体。404 会被转成 ErrNotFound，
-// 这样调用方能区分"不存在"与"调用失败"，
-// 而不是把一条缺失的记录当成空结果。
+// Get 发送带服务令牌的 GET 并返回响应体；404 映射为 ErrNotFound，其他失败独立返回。
 func (c Client) Get(ctx context.Context, baseURL, serviceToken, path string) ([]byte, error) {
 	target := strings.TrimRight(baseURL, "/") + path
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)

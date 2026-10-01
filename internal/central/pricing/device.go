@@ -6,16 +6,13 @@ import (
 )
 
 var (
-	// ErrNoPaidAmount 在设备计费的充电拿不出实际收款金额时返回。这里没有站得住脚的
-	// 替代值：充电用户付的是一个确定的数，账单就必须是这个数。
+	// ErrNoPaidAmount 表示设备计费缺少实际付款金额，不能用估算值替代。
 	ErrNoPaidAmount = errors.New("设备计费缺少实付金额，无法结算")
-	// ErrStopRequired 在服务端计费的充电结束时没有拿到已确认的停止指令时返回。
-	// 不把这个状态标出来，就等于让一次没人管得住的充电靠一个 bug 一直跑下去。
+	// ErrStopRequired 表示服务端计费的结束记录缺少已确认停止指令，需进入补偿或核实流程。
 	ErrStopRequired = errors.New("服务端计费必须确认已下发停止指令")
 )
 
-// StopReason 是设备停止的原因。它由设备上报，因此遇到认不出的取值时原样记录，
-// 而不是猜一个。
+// StopReason 记录设备上报的停止原因；未知编码保留原值。
 type StopReason string
 
 const (
@@ -32,22 +29,19 @@ const (
 	StopOverheat         StopReason = "overheat"          // 高温停止
 	StopServerDisconnect StopReason = "server_disconnect" // 平台失联兜底
 	StopUser             StopReason = "user"              // 用户主动结束
-	// StopUnknown 保留本版本认不出的编码。厂商文档里这个枚举曾经漏过项，所以
-	// 无法归位的取值原样保存，而不是并进相邻的取值里。
+	// StopUnknown 表示本版本无法识别的停止原因编码，原始值继续保留。
 	StopUnknown StopReason = "unknown"
 )
 
-// ControlInstruction 是平台在支付时下发给设备、告诉它怎么做的指令。只有当前模式
-// 真正用到的那个字段有意义，其余字段都是零值。设备计费的充电完全不带费率，所以
-// 这里没有任何字段能被拿去再算一笔钱。
+// ControlInstruction 描述支付后下发的设备控制参数；仅当前模式需要的字段有效，其余为零值。
+// 设备计费指令不包含服务端费率。
 type ControlInstruction struct {
 	Mode ChargeMode `json:"mode"`
 	// Minutes 是 device_duration 的控制量。
 	Minutes uint16 `json:"minutes,omitempty"`
 	// EnergyMilliWh 是 device_energy 的控制量。
 	EnergyMilliWh uint64 `json:"energy_milli_wh,omitempty"`
-	// BalanceCents 是 device_power 的控制量：设备要花掉的那份额度，
-	// 它等于充电用户实际付的金额。
+	// BalanceCents 是 device_power 的设备额度，等于用户实际付款金额。
 	BalanceCents int64 `json:"balance_cents,omitempty"`
 	// TierCentsPerHour 随余额一起下发，设备据此把当前抽取的功率换算成
 	// 运行中的累计花费。
@@ -76,44 +70,33 @@ func (c ControlInstruction) Valid() bool {
 	}
 }
 
-// SessionActual 是设备回报它实际做了什么。Reported 为 false 表示这个值是推算出来的
-// 而不是从充电板回读到的，而这一区别是被存下来的，不是被抹平的：兜底值就是
-// 估算值，估算一旦被当成计量归档就再也找不回来了。
+// SessionActual 记录设备执行结果。Reported 为 false 表示推算值，归档时需保留其估算来源。
 type SessionActual struct {
 	StopReason  StopReason `json:"stop_reason"`
 	UsedSeconds uint32     `json:"used_seconds"`
 	UsedMilliWh uint64     `json:"used_milli_wh"`
 	PeakWatts   uint32     `json:"peak_watts"`
-	// SpentCents 是 device_power 运行中的累计花费。它通常略低于实际收回的余额，
-	// 因为设备是在自己的采样栅格上停下的，而不是在那个精确瞬间停的。
-	// 这点差额是采样残差而不是少收。
+	// SpentCents 为 device_power 累计消费，单位为分；采样间隔可能产生未消费余额。
 	SpentCents int64 `json:"spent_cents"`
 	Reported   bool  `json:"reported"`
 }
 
-// Settlement 是一次充电实际产生的钱，并带上它是从哪来的。之所以要记下 Executor，
-// 是因为两者不能互换：服务端计费的金额是一次计算，设备计费的金额是已经到手的
-// 钱，一份说不清来源的报表没法审计。
+// Settlement 保存充电结算金额及执行来源。Executor 区分服务端计算与设备已收金额，供对账审计。
 type Settlement struct {
 	Mode          ChargeMode `json:"mode"`
 	Executor      string     `json:"executor"`
 	ElectricCents int64      `json:"electric_cents"`
 	ServiceCents  int64      `json:"service_cents"`
 	TotalCents    int64      `json:"total_cents"`
-	// ResidualCents 是在功率计费口径下，设备没能花完的那部分已收金额。
-	// 它被退回而不是被核销，这样采样栅格太粗的设备才不会被藏起来。
+	// ResidualCents 为设备功率计费的未消费预付款，单位为分；该余额退还用户。
 	ResidualCents int64 `json:"residual_cents,omitempty"`
-	// Estimated 标记这个总额是推算出来的，而不是上报上来的。
+	// Estimated 标记结算金额为推算值，而非设备上报值。
 	Estimated  bool   `json:"estimated"`
 	StopReason string `json:"stop_reason,omitempty"`
 }
 
-// SettleSession 是一次充电的钱被定下来的唯一地方。
-//
-// 服务端计费模式下，金额必须与 Cost 返回的完全一致；任何别的来源都是 bug，
-// 而这个 bug 是在这里被抓住的，而不是等它出现在账单上。设备计费模式下，
-// 金额就是实际付出的钱，别的什么都不看——重新算一遍等于给一张已经结清的
-// 账单再造一个数字。
+// SettleSession 统一生成充电结算。
+// 服务端计费使用 Cost 结果；设备计费基于已支付金额及实际执行结果计算消费和退款，避免重复计价。
 func SettleSession(spec Spec, meter ActualMeter, paid *Offer, actual *SessionActual) (Settlement, error) {
 	if meter.ReviewRequired {
 		return Settlement{}, ErrMeterReview
@@ -196,15 +179,13 @@ func SettleSession(spec Spec, meter ActualMeter, paid *Offer, actual *SessionAct
 		}
 		electric, service := fee.ElectricCents, fee.ServiceCents
 		if total != fee.TotalCents {
-			// 封顶或折算都会改掉总额，所以两项拆分必须同比例重算。留着原来算出的
-			// 金额不动，就会开出一张「分项加起来不等于合计」的收据，这正是任何
-			// 一次对账最先撞上的问题。
+			// 封顶或折算改变总额后，按比例重算电费与服务费，使分项合计等于总额。
 			electric, service = splitFee(fee, total)
 		}
 		settlement.ElectricCents, settlement.ServiceCents, settlement.TotalCents = electric, service, total
 		return settlement, nil
 	}
-	// 设备计费：金额就是已经收走的那笔钱。
+	// 设备计费金额等于实际付款金额。
 	if paid == nil || !paid.Valid() {
 		return Settlement{}, ErrNoPaidAmount
 	}
@@ -232,35 +213,27 @@ func splitFee(fee Fee, total int64) (int64, int64) {
 	return electric, total - electric
 }
 
-// StopPlan 是服务端计费路径在充电运行期间可以做的事。
-//
-// 这个模式下固件仍会被告知一个时长或电量额度，也仍会在额度用完时停下；
-// 平台计费改变的只是充电板不再对自己的功率档打折，于是平台按真实取电计费。
-// 所以给充电封顶是产品决策而不是协议必需——但运营方一旦设了消费封顶，
-// 执行它就只是平台自己的事了，因为再没有别人会执行。
+// StopPlan 描述运行中服务端计费的停止决策。
+// 设备继续执行下发的时长或电量安全额度；消费封顶由平台执行。
 type StopPlan struct {
 	// ShouldStop 在每次遥测更新时求值。
 	ShouldStop bool
-	// Reason 向读日志的人解释这个决定。
+	// Reason 为停机判断原因。
 	Reason string
-	// AccruedCents 是做这个决定时对照的累计总额。
+	// AccruedCents 为判断时的累计总费用，单位分。
 	AccruedCents int64
 	// GraceSeconds 是平台要求设备停止之后，等多久才把这次充电视为失控。
 	GraceSeconds int
 }
 
-// DecideStop 判断一次运行中的服务端计费充电是否已经触到它那份电价表所声明的
-// 消费封顶。
-//
-// 它与传输层分开是故意的：什么时候切断充电这条规则，无论是轮询器、webhook
-// 还是运营人员来执行，都必须是同一条，而且必须能在没有设备的情况下测试。
+// DecideStop 根据生效规则和当前消费判断服务端计费是否达到上限。
+// 决策与传输层分离，供调度器或其他执行入口复用并独立测试。
 func DecideStop(spec Spec, usage Usage, elapsed time.Duration) (StopPlan, error) {
 	if ValidateSpec(spec) != nil {
 		return StopPlan{}, ErrInvalidPricing
 	}
 	if !spec.Mode.ServerBilled() {
-		// 设备计费的充电在设备自己的额度用完时结束。插手进去就是去和充电板抢
-		// 一次平台并不付费的充电的控制权。
+		// 设备计费由设备自身额度控制结束，不使用平台费用上限停机。
 		return StopPlan{Reason: "设备计费由设备到量自行停止"}, nil
 	}
 	if spec.TimeCharge != nil && spec.TimeCharge.MaxMinutes > 0 && elapsed >= time.Duration(spec.TimeCharge.MaxMinutes)*time.Minute {

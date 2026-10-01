@@ -60,9 +60,8 @@ type chargeProcessRow struct {
 
 func (chargeProcessRow) TableName() string { return "charge_process" }
 
-// An A4 has no order identity. Only the acknowledged command owning this port
-// can supply it. The acknowledgement cutoff prevents older reports from being
-// attributed to a newer order that has since taken over the same port.
+// A4 不携带订单标识，只能关联当前端口已确认的命令。
+// 以命令确认时间为下界，防止历史上报被归入后来占用端口的新订单。
 func insertChargeProcess(ctx context.Context, tx *gorm.DB, key string, event protocol.Event) error {
 	if event.Protocol != "dc589" || len(event.ChargingPorts) == 0 {
 		return nil
@@ -72,9 +71,8 @@ func insertChargeProcess(ctx context.Context, tx *gorm.DB, key string, event pro
 		ports = append(ports, int(port.Port))
 	}
 	at := event.ReceivedAt.UTC().Truncate(time.Millisecond)
-	// Pin the current ownership until the process rows have been saved. Lock
-	// only ports: START acknowledgements already acquire command then port,
-	// so also locking commands here would introduce the reverse lock order.
+	// 保存过程记录前锁定端口，保持订单归属不变。
+	// 启动确认按命令、端口顺序加锁；此处仅锁端口，避免反向锁定命令形成死锁。
 	var locked []devicePortRow
 	if err := tx.WithContext(ctx).Select("id").
 		Where("device_id=? AND port_no IN ? AND deleted_at IS NULL", event.DeviceID, ports).

@@ -47,9 +47,8 @@ func MeasuredSegments(start time.Time, end protocol.Event, samples []protocol.Ev
 			}
 			segment := MeterSegment{StartedAt: cursor, EndedAt: at, EnergyWh: wh - previous}
 			power := (port.PowerDeciWatts + 5) / 10
-			// A previous reading may describe the interval only for a verified
-			// consecutive heartbeat gap of at most 60 seconds. Larger gaps stay
-			// explicitly missing instead of inferring power from energy.
+			// 仅当相邻心跳连续且间隔不超过 60 秒时，使用前次功率描述该区间。
+			// 更长间隔保留为证据缺失，不从电量反推功率。
 			if previousPower != nil && at.Sub(cursor) <= 60*time.Second {
 				v := *previousPower
 				segment.PowerW = &v

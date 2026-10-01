@@ -14,9 +14,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// StartAuthorization 是给设备网关用的只读守卫。
-// 只有在充电订单和它的支付记录都被标记为已支付之后，
-// 它才返回这笔订单。这个状态迁移必须由支付回调的实现来完成。
+// StartAuthorization 是网关启动充电的只读校验入口，仅返回订单和支付记录均已支付的订单。
+// 支付状态由支付回调更新。
 type StartAuthorization struct {
 	DB           *gorm.DB
 	ServiceToken string

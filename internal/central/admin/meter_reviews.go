@@ -46,16 +46,13 @@ func (a ResourceAPI) resolveMeterAmount(c *gin.Context) {
 	httpapi.OK(c, gin.H{"queued": true})
 }
 
-// meterReviews 分页返回人工定价兜底单（central_db.manual_fee_review），状态只接受
-// pending/resolved，关键词按订单号搜索。兜底单在 central_db，核实记录在 central_db，
-// 因此这里先分页取出兜底单，再按 charge_order_id 逐行补上该订单的核实记录。
+// meterReviews 按 pending、resolved 状态及订单号分页查询人工定价工单，逐单补充计量核实记录。
 func (a ResourceAPI) meterReviews(c *gin.Context) {
 	q, ok := parsePage(c, "pending resolved")
 	if !ok {
 		return
 	}
-	// entry 是列表行的临时结构：兜底单本体来自 central_db，reviews 来自 central_db，
-	// 两者拼在一行里返回，避免前端为了看核实记录再发一次请求。
+	// entry 合并人工定价工单与计量核实记录，供列表一次返回。
 	type entry struct {
 		ChargeOrderID uint64               `json:"charge_order_id"`  // 计费订单主键（central_db），核实记录靠它关联。
 		OrderNo       string               `json:"order_no"`         // 订单号，列表关键词搜索的就是它。
@@ -166,10 +163,8 @@ func (a ResourceAPI) proposeMeter(c *gin.Context) {
 	httpapi.OK(c, row)
 }
 
-// decideMeter 裁决一次计量核实，path 上的 id 是 charge_order_id，body 里的 review_id
-// 还要再和它对上，防止拿别的订单的核实记录来审批。Approve 用指针区分"没传"和
-// "传了 false"；判为拒绝时必须给原因。通过之前还会复查首次核实人的账号和权限是否
-// 仍然有效——账号失效的申请宁可驳回重提，也不能由第二个人顺手放行。
+// decideMeter 校验核实记录所属订单，并用 Approve 指针区分缺失字段与拒绝。
+// 拒绝必须填写原因；通过前复查首次核实人的账号和权限是否仍有效。
 func (a ResourceAPI) decideMeter(c *gin.Context) {
 	id, ok := pathID(c)
 	if !ok {
@@ -179,7 +174,7 @@ func (a ResourceAPI) decideMeter(c *gin.Context) {
 	if !ok {
 		return
 	}
-	// 裁决入参：review_id 指向 central_db.charge_meter_review 里待裁决的那条记录。
+	// review_id 指定待裁决的 charge_meter_review 记录。
 	var in struct {
 		ReviewID uint64 `json:"review_id"` // 待裁决的核实记录主键，必须属于本订单。
 		Approve  *bool  `json:"approve"`   // 是否通过；指针是为了把"没传"和 false 区分开，拒绝时必须另填原因。

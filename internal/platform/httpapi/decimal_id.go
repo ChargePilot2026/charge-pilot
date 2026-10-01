@@ -6,9 +6,8 @@ import (
 	"strconv"
 )
 
-// DecimalID accepts exact decimal strings and legacy safe JSON integers. New
-// callers must send large IDs as strings: a JavaScript number may be rounded
-// before it reaches the server.
+// DecimalID 接受十进制字符串及兼容旧接口的安全 JSON 整数。
+// 大 ID 必须以字符串传输，避免 JavaScript number 在请求发送前丢失精度。
 type DecimalID uint64
 
 func (id DecimalID) MarshalJSON() ([]byte, error) {

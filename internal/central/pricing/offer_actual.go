@@ -1,9 +1,6 @@
 package pricing
 
-// PriceOfferActual 是计费与充电两个流程调用的结算入口。它只是 SettleSession
-// 之上的一层薄适配，而不是第二条计价路径：设备计费的情况由实际收走的金额
-// 决定，把这套逻辑放在两个地方，正是报价与账单对不上「自己用的是哪一套」
-// 的原因。
+// PriceOfferActual 将套餐实收及计量适配为 SettleSession 输入，供充电和计费流程共用。
 func PriceOfferActual(rule Rule, offer *Offer, meter ActualMeter) (ActualFee, error) {
 	settlement, err := SettleSession(rule.Spec, meter, offer, ActualFromMeter(meter))
 	if err != nil {

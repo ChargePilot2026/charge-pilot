@@ -25,11 +25,7 @@ const (
 	ChargeEnd    EventType = "charge_end"
 	Fault        EventType = "fault"
 	RemoteResult EventType = "remote_result"
-	// ConfigResult 覆盖板子对平台下发的那些设置的答复：
-	// 心跳周期的确认、参数表的写入结果，以及电源控制的回复。
-	// 之所以记录它们，是因为"某个设置被拒绝"是关于一台充电桩
-	// 唯一一条运维从别处看不到的信息——板子会带着它原有的值继续跑，
-	// 会话本身看起来完全正常。
+	// ConfigResult 表示心跳、参数表及电源控制的设备响应，包含拒绝原因，供运维确认配置是否生效。
 	ConfigResult     EventType = "config_result"
 	Telemetry        EventType = "telemetry"
 	TimeSync         EventType = "time_sync"
@@ -83,17 +79,13 @@ type Sink interface {
 	Record(context.Context, Event) error
 }
 
-// SessionRecorder 持久化一条连接的终态，好让运维能回答
-// 设备何时连上、从哪来、挂了多久、搬了多少数据。
-// 它与 Sink 分开，是因为会话只有在连接已经结束之后才拿得到，
-// 而一个存不了会话的适配器
-// 仍然必须能正常服务设备。
+// SessionRecorder 在连接结束后持久化时间、地址及流量统计。
+// 与 Sink 独立，未实现会话存储的适配器仍可处理设备事件。
 type SessionRecorder interface {
 	RecordSession(context.Context, SessionRecord) error
 }
 
-// CloseReason 说明连接为什么结束。它是一个简短且稳定的标记，
-// 因为这个值会被存下来，之后在审计查询里按它分组。
+// CloseReason 表示持久化的连接结束原因，使用稳定标记供审计分组。
 type CloseReason string
 
 const (

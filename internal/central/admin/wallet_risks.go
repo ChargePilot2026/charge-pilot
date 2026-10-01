@@ -14,19 +14,17 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// registerWalletRisks 挂载钱包退款风控的后台路由：风控工单列表、审核、解除冻结。
-// 审核（finance.wallet_risk.review）允许客服和财务两个角色，解除冻结（finance.wallet_risk.release）只给财务，
-// 因为解冻会直接恢复用户的钱包可用状态，风险高于出一张复核单。
+// registerWalletRisks 注册风控列表、审核和解冻路由。
+// 审核要求 finance.wallet_risk.review，允许客服与财务；解冻要求 finance.wallet_risk.release，仅允许财务。
 func (a ResourceAPI) registerWalletRisks(r *gin.Engine) {
 	r.GET("/api/v1/admin/billing/wallet-risks", a.Auth.Require("finance.wallet_risk.review"), a.walletRisks)
 	r.POST("/api/v1/admin/billing/wallet-risks/:request_id/review", a.Auth.Require("finance.wallet_risk.review"), a.reviewWalletRisk)
 	r.POST("/api/v1/admin/billing/wallet-risks/:request_id/release", a.Auth.Require("finance.wallet_risk.release"), a.releaseWalletRisk)
 }
 
-// walletRisks 分页返回钱包退款风控工单，只统计已经关联到冻结记录（wallet_risk_freeze_link）的请求，
-// 因为没有冻结的请求并不构成需要人工处理的风险。
-// pending 视图是"还没审过"的请求，reviewed 视图是"已审过"的请求，reviewed 下再按是否已解冻区分。
-// 每行附带 can_review、can_release 两个布尔位供前端控制按钮：解冻还要求审核已完成、尚未解冻、冻结仍生效，且触发规则确为钱包退款频次。
+// walletRisks 分页查询关联冻结记录的退款风控请求。
+// pending、reviewed 分别表示未审核和已审核；已审核记录可按解冻状态过滤。
+// can_review、can_release 按权限及审核、冻结状态计算，解冻还要求 wallet_refund_frequency 规则。
 func (a ResourceAPI) walletRisks(c *gin.Context) {
 	q, ok := parsePage(c, "pending reviewed")
 	if !ok {
@@ -64,7 +62,7 @@ func (a ResourceAPI) walletRisks(c *gin.Context) {
 	httpapi.OK(c, out)
 }
 
-// riskRequest 是风控侧对 wallet_refund_request 一行所需字段的最小投影，只查审核流程真正用得到的列。
+// riskRequest 是钱包退款风控审核所需的最小字段投影。
 type riskRequest struct {
 	RequestID   string  // 请求号，业务主键，审核、解冻、幂等都按它定位
 	UserID      uint64  // 申请退款的用户 ID，冻结与退款记录都挂在该用户上
@@ -93,10 +91,9 @@ func validComment(s string) bool {
 	return true
 }
 
-// reviewWalletRisk 审核一笔钱包退款风控请求。审核人必须是财务或客服角色（写入前再判一次，不能只依赖路由权限）。
-// 通过时先按原路把申请金额拆成若干笔微信充值退款并冻结等额钱包余额；不通过则只留审核结论，不动钱。
-// 幂等靠 wallet_risk_review：同一请求号重放时，若审核人、结论、留言都一致就返回首次的 response，否则判冲突。
-// 另外要求该请求恰好关联一条触发规则为 wallet_refund_frequency 的冻结记录，否则拒绝——风控单必须能追溯到它冻结的原因。
+// reviewWalletRisk 要求财务或客服角色，并验证请求恰好关联一条 wallet_refund_frequency 冻结记录。
+// 通过时按原渠道拆分充值退款并冻结等额余额；拒绝时仅保存审核结论。
+// 相同请求、审核人、结论和留言返回首次回执；内容不一致时返回冲突。
 func (a ResourceAPI) reviewWalletRisk(c *gin.Context) {
 	p := c.MustGet("admin_profile").(Profile)
 	if p.Role != "customer_finance" && p.Role != "customer_cs" {
@@ -164,10 +161,8 @@ func (a ResourceAPI) reviewWalletRisk(c *gin.Context) {
 	httpapi.OK(c, response)
 }
 
-// reserveWalletRefund 按申请金额为风控通过的请求预留退款额：把用户的微信充值支付单按 id 顺序逐笔拆成退款记录，
-// 每笔写成 automatic 策略的 pending 退款（执行器会自己跑），并冻结等额的钱包余额，防止这笔钱在到账前被再次花掉。
-// 只能挑全额实付、且有微信交易号的充值单；每笔还要扣掉已有 pending/processing 退款和已退金额。
-// 任一环节凑不齐申请金额就整笔回滚（errConflict），不留下半截退款。
+// reserveWalletRefund 按申请金额拆分微信充值支付单，创建 automatic/pending 退款并冻结钱包余额。
+// 仅使用全额实付且有微信交易号的充值，扣除已有退款占用与已退金额；资金不足时整笔事务回滚。
 func reserveWalletRefund(tx *gorm.DB, req riskRequest) error {
 	err := charge.ReserveWalletRefund(tx, charge.WalletRefundReservation{RequestID: req.RequestID, UserID: req.UserID, AmountCents: req.AmountCents, Reason: "wallet risk approved"})
 	if errors.Is(err, charge.ErrRefundConflict) {
@@ -176,10 +171,9 @@ func reserveWalletRefund(tx *gorm.DB, req riskRequest) error {
 	return err
 }
 
-// releaseWalletRisk 解除一笔风控请求带来的冻结，由客户财务执行。
-// 前置条件：该请求已审过、冻结仍为 frozen、触发规则确为 wallet_refund_frequency、且冻结记录属于同一用户。
-// 解冻后重算该用户是否还剩别的冻结、账号是否仍 active；都不占用才把钱包置回 active，否则保持冻结。
-// 幂等靠 wallet_risk_release：同人同留言重放返回首次 response，不同内容判冲突。
+// releaseWalletRisk 由客户财务解除已审核、同用户且仍生效的 wallet_refund_frequency 冻结。
+// 解冻后仅在用户 active 且无其他冻结时恢复钱包为 active。
+// 相同审核人和留言重放返回首次回执；内容不一致时返回冲突。
 func (a ResourceAPI) releaseWalletRisk(c *gin.Context) {
 	p, ok := a.financeActor(c, "finance.wallet_risk.release")
 	if !ok {

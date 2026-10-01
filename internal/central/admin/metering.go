@@ -10,7 +10,7 @@ import (
 
 type deviceCapability struct {
 	ProtocolAdapter       string `gorm:"column:protocol_adapter"`
-	DeviceID              string `gorm:"column:device_id"`   // 设备号，全网唯一，是这块板子的标识
+	DeviceID              string `gorm:"column:device_id"`   // 全局唯一设备号。
 	ChargeMode            string `gorm:"column:charge_mode"` // 设备充电类型（厂商协议值），空串表示尚未归类；另有取值 none 仅用于任务日志
 	ReportsEnergy         bool   `gorm:"-"`                  // 是否在结束充电帧里上报电量，决定能否按电量计费
 	ReportsSegmentedPower bool   `gorm:"-"`                  // 是否上报分段功率表，决定能否按功率计费
@@ -24,8 +24,7 @@ func capabilityBlock(mode pricing.ChargeMode, cap deviceCapability) string {
 	cap.ReportsEnergy, cap.ReportsSegmentedPower = abilities.ReportsEnergy, abilities.ReportsSegmentedPower
 	switch mode {
 	case pricing.ModeDeviceDuration:
-		// 板子自己数自己的分钟数、自己停。我们这边什么都不测，
-		// 所以也就没有什么需要它上报的。
+		// 设备端时长计费由固件倒计时并停机，不要求电量或分段功率上报。
 		return ""
 	case pricing.ModeServerEnergy, pricing.ModeDeviceEnergy:
 		if !cap.ReportsEnergy {

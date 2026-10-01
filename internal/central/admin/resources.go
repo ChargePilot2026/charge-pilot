@@ -26,10 +26,6 @@ type ResourceAPI struct {
 	Auth                     API           // 鉴权与权限中间件（API.Register 负责认证路由）
 	GatewayURL, ServiceToken string        // 调用网关用的地址与内部服务令牌
 	ExportDir                string        // 导出任务的落地目录
-	// PhoneKey 是部署级的手机号解密密钥（AES-256，32 字节）。充电用户列表要显示
-	// 完整号码，库里只有密文，取明文必须用它。留空时该列留空而不是报错——没有密钥
-	// 就退化成"只能看到没绑号的用户"，不阻断整个页面。
-	PhoneKey []byte
 }
 
 // Register 把所有后台业务路由挂到引擎上：先交给各业务域自己的 register 函数，
@@ -156,11 +152,8 @@ func resourceFailure(c *gin.Context, err error) {
 	}
 }
 
-// 解析写入请求体时限制长度，并拒绝拼错的字段，
-// 而不是拿默认值静默覆盖已有记录。业务校验在解析之后。
-//
-// decodeResource 解析写入请求体：限长 64KB、拒绝未知字段、且只允许一个 JSON 对象，
-// 避免拼错的字段被静默丢弃后用默认值覆盖已有数据。业务校验在解析之后由各接口自己做。
+// decodeResource 限制请求体为 64 KB，拒绝未知字段及多个 JSON 对象。
+// 各业务接口在解析成功后继续执行参数校验。
 func decodeResource(c *gin.Context, dst any) bool {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 64<<10)
 	d := json.NewDecoder(c.Request.Body)
@@ -177,8 +170,7 @@ func decodeResource(c *gin.Context, dst any) bool {
 	return true
 }
 
-// resourceAudit 写一条审计记录：把变更前后的快照序列化成 JSON，一并记下操作人、
-// 对象、客户端 IP 和请求号。必须传业务事务的 tx 才能与业务改动同生共死；
+// resourceAudit 在业务事务内保存变更快照、操作人、对象、客户端 IP 和请求号。
 func resourceAudit(tx *gorm.DB, p Profile, action, target string, id uint64, before, after any, ip, requestID string) error {
 	old, err := json.Marshal(before)
 	if err != nil {

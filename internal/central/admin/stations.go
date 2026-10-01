@@ -12,15 +12,8 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// 站点曾经有一份对外业务编码 code：它与客户资产台账上的编码保持一致，C 端详情
-// 接口也按它寻址（GET /api/v1/user/station/：code）。这套编码还有一条更强的约束——
-// 全局唯一且删除后永不复用，仅靠 (code， deleted_at) 唯一索引做不到，因为 MySQL 把
-// 唯一索引里的每个 NULL 都视为互不相同，两个存活站点可以同时 code = NULL 而谁也
-// 拦不住；真正兜底的是 station_code_identity 注册表。
-//
-// 迁移 central_db/0044 同时删掉了 code 列和这张注册表，站点现在统一用主键 ID 寻址。
-// StationInput.Code 仍然保留，但它的用途已经变成"拦截旧客户端"：仍在提交 code 的
-// 客户端会拿到一句明确的提示，而不是让这个值在解码时被静默丢弃。
+// 站点统一按主键 ID 寻址，不保存业务编码 code。
+// StationInput.Code 仅用于识别旧客户端请求，提交此字段时返回明确参数错误。
 
 // Station 是站点的对外模型，映射 central_db 的 station 表。站点是整套计费配置的
 // 挂载点——分账模板、计费规则、充电套餐都挂在站点 ID 上。站点已无独立的业务编码
@@ -43,10 +36,8 @@ func (Station) TableName() string { return "station" }
 // "传了 0"——这两个字段是必填项，缺失按无效处理。分账模板同样用指针表示"不绑定"，
 // 但它只在新建时生效，编辑路径一旦带上就会被拒绝。
 type StationInput struct {
-	// Code 早已不再是站点的字段。之所以还留在这儿，
-	// 只是为了让仍在传它的客户端能收到一句明确的说明，
-	// 而不是让这个值在解析时被静默丢掉。
-	Code            *string  `json:"code"`              // 已废弃的站点编码，故意保留的兼容字段：非 nil 即触发"编码已移除"的报错，不要当成待删的死代码。
+	// 保留已废弃的 Code 请求字段用于兼容性校验，禁止写入站点记录。
+	Code            *string  `json:"code"`              // 兼容旧客户端的废弃字段；非 nil 时返回编码已移除的参数错误。
 	Name            string   `json:"name"`              // 站点名称，必填，去空白后最长 128 字符。
 	Address         *string  `json:"address"`           // 站点地址，可空，最长 255 字符。
 	Longitude       *float64 `json:"longitude"`         // 经度，必填指针；缺失、非数字或超出 [-180,180] 判为无效。
@@ -139,10 +130,8 @@ func (a ResourceAPI) createStation(c *gin.Context) { a.saveStation(c, true) }
 // updateStation 是更新站点的 HTTP 入口，转调 saveStation 的更新分支。
 func (a ResourceAPI) updateStation(c *gin.Context) { a.saveStation(c, false) }
 
-// saveStation 新建或更新一个站点。三条硬约束：请求里出现 code 字段直接回 400 并说明
-// 编码已移除；更新路径一旦带 split_template_id 就判为无效，分账模板必须走独立的绑定
-// 接口；更新时先对站点行加 UPDATE 行锁再写，使审计里的 before 与真正被改掉的内容一致。
-// 新建分支还会校验分账模板处于可用状态；两条分支都在同一事务里写审计。
+// saveStation 创建或更新站点，并在同一事务内记录审计。
+// 禁止 code 字段；更新分账模板必须使用独立绑定接口。更新先锁定站点，新建校验模板可用性。
 func (a ResourceAPI) saveStation(c *gin.Context, create bool) {
 	var id uint64
 	if !create {

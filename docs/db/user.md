@@ -98,7 +98,7 @@
 
 - 一个微信用户 = 一条记录(按 `openid` 唯一)
 - 手机号绑定为可选;当前实现不存手机号明文且尚未配置绑送奖励
-- 注销流程:用户主动注销 → 软删除(`deleted_at`)+ 抹除 `phone_enc` / `unionid`(`openid` 保留 30 天后物理归档)
+- 注销流程:用户主动注销 → 软删除(`deleted_at`)+ 抹除 `phone` / `unionid`(`openid` 保留 30 天后物理归档)
 - 跨服务访问:仅 user 服务读写;admin 通过 HTTP 调 user 读取(§ 4.2)
 
 ### 字段定义
@@ -110,8 +110,8 @@
 | `unionid` | `VARCHAR(64)` | UNIQUE NULL | NULL | 微信开放平台 unionid(多小程序 / 公众号打通时填) |
 | `nickname` | `VARCHAR(64)` | NOT NULL | `''` | 微信昵称(脱敏后存储:emoji 转 `*` / 特殊字符过滤) |
 | `avatar_url` | `VARCHAR(512)` | NULL | NULL | 微信头像 URL(下载到 OSS 后存 OSS 路径,避免微信 URL 失效) |
-| `phone_enc` | `VARBINARY(255)` | NULL | NULL | 手机号 AES_ENCRYPT 密文(§ 9.3);未绑定时为 NULL |
-| `phone_hash` | `VARCHAR(64)` | UNIQUE NULL | NULL | 服务端对微信验证手机号计算的 SHA-256 哈希(用于唯一性检查) |
+| `phone` | `VARCHAR(11)` | UNIQUE NULL | NULL | 明文中国大陆手机号；未绑定为 NULL |
+
 | `status` | `ENUM('active','banned')` | NOT NULL | `'active'` | 状态:active 正常 / banned 封禁(含主动注销) |
 | `banned_reason` | `VARCHAR(128)` | NULL | NULL | 封禁原因(主动注销 / 投诉 / 风控) |
 | `banned_at` | `DATETIME(3)` | NULL | NULL | 封禁时间 |
@@ -129,13 +129,13 @@
 | `pk_user` | `id` | 主键 | — |
 | `uk_user_openid` | `openid` | 唯一 | 登录 / `code2Session` 后查表 |
 | `uk_user_unionid` | `unionid` | 唯一(可空) | 跨小程序 unionid 打通 |
-| `uk_phone_hash` | `phone_hash` | 唯一(可空) | 阻止同一手机号绑定多个有效账号(由 `user_db/0018_unique_phone_hash.sql` 增加) |
+| `uk_phone` | `phone` | 唯一(可空) | 防止同一号码绑定多个账号；解绑清空为 NULL |
 | `idx_user_last_active` | `last_active_at` | 普通 | 找活跃用户 / 数据分析 |
 | **`idx_user_deleted_at`** | `deleted_at` | 普通 | **加速扫描已删除用户**(worker 物理归档) |
 
 ### 约束
 
-- 当前微信手机号绑定流程仅写 `phone_hash`;不保存明文，也不要求 `phone_enc` 必须有值。未绑定时 `phone_hash` 为 NULL。
+- 当前微信手机号绑定流程验证凭证后写入明文 `phone`；开发环境允许输入测试手机号。号码去除首尾空白，未绑定为 NULL。
 - `banned_at` NOT NULL 时,`status` 必须为 `banned`(应用层约束)
 - `deleted_at` NOT NULL 时,`deleted_by` 可 NULL(用户主动注销)或 NOT NULL(管理员操作)
 
@@ -149,8 +149,8 @@
 ### 业务规则
 
 - **首次登录流程**:`code2Session` → 拿 `openid` → `INSERT ... ON DUPLICATE KEY UPDATE last_active_at = NOW()`(幂等)
-- **手机号绑定流程(当前实现)**:小程序提交 `getPhoneNumber` 一次性凭证 → user 服务调用微信 `wxa/business/getuserphonenumber` → 只在服务端对返回号码计算 SHA-256 并写 `phone_hash`。不接收客户端手机号/哈希，不保存明文，当前不发放绑送奖励。部署 `0018_unique_phone_hash.sql` 前须核查历史重复哈希；重复值会使唯一索引迁移失败，需先让相关账号重新验证后再清理重复值。
-- **注销流程**:`UPDATE user SET status='banned', banned_at=NOW(), banned_reason='user_request', phone_enc=NULL, unionid=NULL, nickname='', avatar_url=NULL, deleted_at=NOW(), deleted_by=NULL`;`openid` 保留用于 30 天审计追溯,30 天后 worker 物理归档
+- **手机号绑定流程(当前实现)**：小程序提交 `getPhoneNumber` 凭证，central 调用微信验证后将号码写入 `phone`。唯一索引处理并发冲突并返回 409；解绑设为 NULL，释放号码。当前不发放绑定奖励。
+- **注销流程**:`UPDATE user SET status='banned', banned_at=NOW(), banned_reason='user_request', phone=NULL, unionid=NULL, nickname='', avatar_url=NULL, deleted_at=NOW(), deleted_by=NULL`;`openid` 保留用于 30 天审计追溯,30 天后 worker 物理归档
 - **软删除查询规范**:所有查询经仓储层封装(`UserRepository::find_by_id($id)`),仓储内自动加 `WHERE deleted_at IS NULL`;直接 `SELECT *` 仅用于后台运维查询
 
 ---

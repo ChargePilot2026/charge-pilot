@@ -20,9 +20,8 @@ import (
 	"github.com/google/uuid"
 )
 
-// Exercise real source-specific receipt paths without collecting a payment or
-// dispatching a gateway command. The outer transaction rolls back all fixtures,
-// including the allocator state, wallet movements and card/charge outbox records.
+// 覆盖各支付来源的实际回执路径，不收款也不下发网关命令。
+// 外层事务回滚编号分配、钱包流水及卡充、充电 outbox 夹具。
 func TestPaymentNumberSourcesAndDebtRequestReplay(t *testing.T) {
 	if os.Getenv("TEST_USER_DATABASE_URL") == "" {
 		t.Skip("migrated disposable user MySQL database required")

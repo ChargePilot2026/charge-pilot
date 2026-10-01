@@ -10,9 +10,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// TestVerifiedRechargeCreditsWalletExactlyOnce —— 钱包充值不创建支付意图。
-// 在回调按 biz_type 分流之前，
-// 每一笔充值通知都会因为找不到意图而被拒，客户付了钱、余额却始终不动。
+// TestVerifiedRechargeCreditsWalletExactlyOnce 验证充值回调按 biz_type 分流且仅入账一次，无需支付意图。
 func TestVerifiedRechargeCreditsWalletExactlyOnce(t *testing.T) {
 	url := os.Getenv("TEST_USER_DATABASE_URL")
 	if url == "" {

@@ -38,9 +38,8 @@ type AdminUserRow struct {
 // usernamePattern 是登录用户名的格式约束：字母、数字、下划线、点、短横，3–64 位。
 var usernamePattern = regexp.MustCompile(`^[A-Za-z0-9_.-]{3,64}$`)
 
-// registerAdminUsers 注册管理员账号的六个后台接口，覆盖账号管理页的读写与安全操作。
-// 改角色、解锁、改双因素用 admin_user.update，重置密码另用 admin_user.reset_password，
-// 删除账号用 admin_user.delete——权限拆开是为了让"能改人"不等于"能删人"。
+// registerAdminUsers 注册管理员账号及安全操作接口。
+// 资料、角色、解锁和 MFA 使用 admin_user.update；重置密码与删除分别要求独立权限。
 func (a ResourceAPI) registerAdminUsers(r *gin.Engine) {
 	r.GET("/api/v1/admin/admin-users", a.Auth.Require("admin_user.read"), a.listAdminUsers)
 	r.PUT("/api/v1/admin/admin-users/:id", a.Auth.Require("admin_user.update"), a.updateAdminUser)
@@ -81,8 +80,7 @@ func (a ResourceAPI) listAdminUsers(c *gin.Context) {
 	httpapi.OK(c, out)
 }
 
-// assignableRole 校验目标角色可以授予：角色必须存在且至少带一项权限，
-// 并且每一项权限操作者自己都有——否则通过新建或编辑账号就能自我提权。
+// assignableRole 要求角色存在、权限非空，且其全部权限属于操作者已持有的权限。
 func assignableRole(ctx context.Context, db *gorm.DB, p Profile, roleID uint64) error {
 	var codes []string
 	if err := db.WithContext(ctx).Table("role AS r").
@@ -105,10 +103,8 @@ func assignableRole(ctx context.Context, db *gorm.DB, p Profile, roleID uint64) 
 // errInsufficient 表示要授予的权限超出了操作者自己拥有的范围，由 assignableRole 判定。
 var errInsufficient = errors.New("不能授予自己未拥有的权限")
 
-// updateAdminUser 修改管理员账号的显示名、手机号、邮箱、角色和状态。
-// 字段用指针表示"传了才改"；状态只允许 active / disabled。
-// 两条硬约束：不能把自己停用或降级（避免把最后一个管理员锁在控制台外）；
-// 改角色会顺带把 auth_version + 1，令该账号已签发的会话全部失效。
+// updateAdminUser 更新已提交的资料字段、角色和状态；指针字段区分缺省值与显式更新。
+// 状态仅允许 active 或 disabled；禁止操作者停用或降级自己。角色变更递增 auth_version，撤销已有会话。
 func (a ResourceAPI) updateAdminUser(c *gin.Context) {
 	id, ok := pathID(c)
 	if !ok {
@@ -161,8 +157,7 @@ func (a ResourceAPI) updateAdminUser(c *gin.Context) {
 		// 表单会回传原角色；用有类型的快照比较，避免 uint64 与驱动 int64 被误判为不同。
 		roleChanged = in.RoleID != nil && (before.RoleID == nil || *in.RoleID != *before.RoleID)
 		if id == profile.ID {
-			// 不能让操作者把自己降级或停用，
-			// 那会把最后一个管理员锁在控制台外面。
+			// 禁止操作者停用或降级自己，避免失去管理入口。
 			if in.Status != nil && *in.Status == "disabled" {
 				return errConflict
 			}
@@ -175,7 +170,7 @@ func (a ResourceAPI) updateAdminUser(c *gin.Context) {
 				return err
 			}
 			values["role_id"] = *in.RoleID
-			// 只有真正换角色时撤销会话，普通资料修改保留当前登录。
+			// 仅角色变化时递增凭证版本；普通资料更新保留现有会话。
 			values["auth_version"] = gorm.Expr("auth_version + 1")
 		}
 		if err := tx.Table("admin_user_role").Where("id = ?", id).Updates(values).Error; err != nil {
@@ -313,14 +308,9 @@ func (a ResourceAPI) resetAdminPassword(c *gin.Context) {
 	httpapi.OK(c, gin.H{"id": id, "sessions_revoked": true})
 }
 
-// adminUserMFA 为某账号登记、确认或移除双因素。
-// 密钥只有在操作者证明验证器确实能用之后才落库。
-
-// adminUserMFA 为某账号启用、确认或关闭双因素认证（TOTP），按 action 分三种：
-// enrol 生成密钥并以"未启用"状态落库（密钥在 confirm 之前不生效）；
-// confirm 校验一次验证码通过后才真正置为启用；disable 清空密钥。
-// 不允许对自己操作，必须走本人账号的安全设置，避免把验证器绑到错误的身份上。
-// 三种动作成功时都会让 auth_version + 1，已签发会话随之失效。
+// adminUserMFA 按 action 管理目标账号的 TOTP：enrol 登记未启用密钥，
+// confirm 验证口令后启用，disable 清除密钥。成功操作递增 auth_version。
+// 本人 MFA 必须通过个人安全设置操作，禁止在此接口修改自己的验证器。
 func (a ResourceAPI) adminUserMFA(c *gin.Context) {
 	id, ok := pathID(c)
 	if !ok {
@@ -331,8 +321,7 @@ func (a ResourceAPI) adminUserMFA(c *gin.Context) {
 		httpapi.Write(c, http.StatusConflict, 2009, "请使用本人账号的安全设置修改双因素认证", nil)
 		return
 	}
-	// 登记用的标签必须写被保护的那个账号，而不是操作者自己，
-	// 否则验证器 App 可能被绑到错误的身份上。
+	// 验证器标签使用目标账号身份，确保密钥绑定到被管理的账号。
 	var target struct {
 		Username string `gorm:"column:username"`
 	}
@@ -367,7 +356,7 @@ func (a ResourceAPI) adminUserMFA(c *gin.Context) {
 			resourceFailure(c, err)
 			return
 		}
-		// 密钥以未启用状态存下来，只有 confirm 之后才真正生效。
+		// 登记阶段保存未启用密钥；confirm 验证成功后启用。
 		if err := a.Store.AdminDB.WithContext(c.Request.Context()).Table("admin_user_role").
 			Where("id = ? AND deleted_at IS NULL", id).
 			Updates(map[string]any{"mfa_secret": secret, "mfa_enabled": false}).Error; err != nil {

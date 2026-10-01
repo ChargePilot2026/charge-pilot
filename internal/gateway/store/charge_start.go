@@ -43,8 +43,7 @@ type StartReservation struct {
 	StopWire  protocol.Command `json:"-"`
 }
 
-// ReserveStart 在任何 socket 写入之前先在 gateway_db 里占下端口。
-// 已存在的命令原样返回，所以重试永远不会产生第二条 START。
+// ReserveStart 在写入 TCP 前持久化端口占用及启动命令；重试复用已有命令，不新增 START。
 func (s MySQLSink) ReserveStart(ctx context.Context, paid PaidOrder) (StartReservation, error) {
 	if s.DB == nil || paid.ChargeOrderID == 0 || paid.PaymentOrderID == 0 || paid.OrderNo == "" || paid.UserID == 0 || paid.DeviceID == "" || paid.PortNo == 0 || paid.ChargeQuantity == 0 {
 		return StartReservation{}, ErrOrderConflict
@@ -119,7 +118,7 @@ func (s MySQLSink) ReserveStart(ctx context.Context, paid PaidOrder) (StartReser
 		return nil
 	}, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if errors.Is(err, ErrPortUnavailable) {
-		// 针对同一个已支付订单的并发请求，可能已经把端口抢走了。
+		// 同一已支付订单的并发启动请求可能已完成端口占用。
 		var raced chargeCommandRow
 		lookupErr := s.DB.WithContext(ctx).Where("order_no = ?", paid.OrderNo).Take(&raced).Error
 		if lookupErr == nil {

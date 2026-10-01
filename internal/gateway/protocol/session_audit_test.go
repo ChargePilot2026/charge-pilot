@@ -34,8 +34,7 @@ func TestSessionAuditCountsFramesAndBytes(t *testing.T) {
 	}
 }
 
-// 一条从未承载过任何帧的连接也必须能产出一条可用的记录：
-// "连上了然后一直沉默"恰恰是运维最需要看到的那种情况。
+// 未收到任何帧的连接也应生成完整会话记录。
 func TestSessionAuditWithNoFramesReportsStartAsLastActive(t *testing.T) {
 	start := time.Date(2026, 9, 29, 10, 0, 0, 0, time.UTC)
 	record := NewSessionAudit(TransportTCP, "s1", "10.0.0.7:51000", start).
@@ -48,9 +47,7 @@ func TestSessionAuditWithNoFramesReportsStartAsLastActive(t *testing.T) {
 	}
 }
 
-// 审计只在连接消失之后读一次，但会话可能从另一个 goroutine 被 detach，
-// 而那个 goroutine 并不是在服务帧的那个。这里的数据竞争会算错
-// 记录下来的总量，而不只是让它们乱序。
+// 验证帧处理与并发 detach 时审计计数无数据竞争，保证最终总量一致。
 func TestSessionAuditIsSafeUnderConcurrentFrames(t *testing.T) {
 	start := time.Date(2026, 9, 29, 10, 0, 0, 0, time.UTC)
 	audit := NewSessionAudit(TransportTCP, "s1", "addr", start)

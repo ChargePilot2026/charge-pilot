@@ -10,9 +10,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// historicalCurve 接受一个由 central 从它自己拥有的充电订单推导出来的时间窗。
-// gateway 拿不到 central_db，所以订单归属必须在 central 那一侧先证明，
-// 才能调到这个内部接口。
+// historicalCurve 查询 central 根据订单确定的时间窗口。
+// 网关不读取 central_db，订单归属由 central 校验，调用此内部接口需要服务令牌。
 func (a TelemetryAPI) historicalCurve(c *gin.Context) {
 	if !a.authorized(c) {
 		return

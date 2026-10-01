@@ -88,13 +88,8 @@ func TestRetiredPermissionsPreserveFeedbackWalletAndDeviceAlerts(t *testing.T) {
 	}
 }
 
-// TestNormalizeRowsTurnsTinyintFlagsIntoBooleans 锁住一件事：MySQL 的 tinyint(1)
-// 回来是数字，前端拿到的必须是 true/false 而不是 1/0。
-//
-// 这不是洁癖。前端设备矩阵用 `reports_energy === true` 判设备能不能按电量计费，
-// 而设备矩阵的列直接来自 device_meta。数字 1 会被判成 false，一台明明上报电量的
-// 桩在界面上显示成"仅时长"——运营照着这个结论去分配计费方式，真正下发时才会被
-// "未声明电量上报能力"挡回来，理由还指向一台无辜的设备。
+// TestNormalizeRowsTurnsTinyintFlagsIntoBooleans 验证数据库 tinyint(1) 在响应中转换为布尔值。
+// 设备能力字段必须输出 true/false，保持前端严格布尔判断与后端能力校验一致。
 func TestNormalizeRowsTurnsTinyintFlagsIntoBooleans(t *testing.T) {
 	rows := []map[string]any{{
 		"device_id":               "demo_DC589-0001",
@@ -115,7 +110,7 @@ func TestNormalizeRowsTurnsTinyintFlagsIntoBooleans(t *testing.T) {
 	if v, ok := row["reports_segmented_power"].(bool); !ok || v {
 		t.Errorf("reports_segmented_power = %#v，期望 false", row["reports_segmented_power"])
 	}
-	// 非布尔列不能被顺手改掉：station_id 还是数字，status 还是字符串。
+	// 布尔归一化不应改变数字和字符串列的类型。
 	if _, ok := row["station_id"].(int64); !ok {
 		t.Errorf("station_id 被改成了 %#v，不该动", row["station_id"])
 	}

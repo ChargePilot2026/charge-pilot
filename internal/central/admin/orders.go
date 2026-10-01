@@ -97,8 +97,7 @@ const orderColumns = `c.id AS order_id,c.order_no,c.user_id,c.device_id,c.port_n
  c.payment_order_id,p.order_no AS payment_order_no,p.status AS payment_order_status,p.paid_cents,p.refunded_cents,c.failure_reason,
  CASE WHEN EXISTS (SELECT 1 FROM refund_record r WHERE r.payment_order_id=p.id AND r.status IN ('pending','processing') AND r.deleted_at IS NULL) THEN 'processing' WHEN c.payment_status='refunded' THEN 'refunded' WHEN c.status='refunding' THEN 'processing' WHEN p.refunded_cents>0 THEN 'partial_refunded' ELSE 'none' END AS refund_status`
 
-// orderQuery 返回订单查询的公共部分：联支付单取钱的状态，联支付意图取所属站点，
-// 并统一排除软删除。Select 和 Where 由调用方自己补。
+// orderQuery 关联支付单和支付意图，查询支付状态与站点归属，并排除软删除；投影和过滤由调用方补充。
 func (s ResourceStore) orderQuery(ctx context.Context) *gorm.DB {
 	return s.UserDB.WithContext(ctx).Table("charge_order AS c").Joins("LEFT JOIN payment_order AS p ON p.id=c.payment_order_id AND p.user_id=c.user_id AND p.deleted_at IS NULL").Joins("LEFT JOIN charge_payment_intent AS i ON i.charge_order_id=c.id").Where("c.deleted_at IS NULL")
 }
@@ -225,10 +224,8 @@ func (a ResourceAPI) orders(c *gin.Context) {
 	httpapi.OK(c, out)
 }
 
-// order 是 GET /api/v1/admin/orders/：id 的处理函数：返回订单详情，并补上
-// central_db 里的计费单号、分账汇总和各参与方金额。
-// RefundApplicantID 只有当操作人持有 order.refund.create 权限时才回填，
-// 前端据此显示退款入口；它不参与后端退款权限校验，只影响界面是否展示按钮。
+// order 返回订单详情、计费单号及分账汇总。
+// 仅对持有 order.refund.create 权限的操作人回填 RefundApplicantID，供界面显示退款入口；后端另行校验退款权限。
 func (a ResourceAPI) order(c *gin.Context) {
 	id, ok := pathID(c)
 	if !ok {

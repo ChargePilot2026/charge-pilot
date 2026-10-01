@@ -10,14 +10,8 @@ import (
 
 var chinaLocation = time.FixedZone("CST", 8*3600)
 
-// Civil 按 5.8.9 帧里携带的时区来呈现一个时刻。
-//
-// encodeTime 写的是交给它的那个 location 的日历字段，所以一块把时钟留在 UTC
-// 的主板一旦给充电开始打时间戳，就会报出 8 小时的偏差——结算随之把这次会话
-// 记到错误的小时里。
-//
-// 把换算收敛在这里，是为了让唯一那处时区假设待在一个地方，而不是让设备侧的
-// 每个调用方各自挑一个 location。
+// Civil 将时刻转换为协议使用的民用时区，供不含时区偏移的 BCD 日期字段编码。
+// 设备和服务器统一使用该时区，不依赖宿主机本地设置。
 func Civil(at time.Time) time.Time { return at.In(chinaLocation) }
 
 // HeartbeatData 是心跳里的公共字段，外加在 A6 打开时可能不完整的充电端口集合。
@@ -83,11 +77,8 @@ func ParseHeartbeat(frame Frame) (HeartbeatData, error) {
 	return result, nil
 }
 
-// ChargeEndData 是一帧结算。
-//
-// 充电类型和金额也一并读出。两者都不用来判定充电用户该付多少钱——设备侧计费
-// 的会话，钱在主板还没上报任何东西之前就已经收走了——但它们是这次会话究竟
-// 怎么结束的唯一记录：没有类型，一次长时模式会话和一次普通会话就再也分不开。
+// ChargeEndData 表示充电结束上报，保留类型、金额和计量字段用于会话审计。
+// 设备计费金额取实际支付记录，不由上报的类型或金额决定。
 type ChargeEndData struct {
 	Port           uint8
 	OrderNumber    string
@@ -95,14 +86,10 @@ type ChargeEndData struct {
 	EndedAt        time.Time
 	ChargeType     uint8
 	ChargedSeconds uint32
-	// RemainingSeconds 是主板当时还剩多少时间。功率分档打过折时，
-	// 主板会在上报前把它换算回去，所以它可以与授权时长相比，
-	// 而不是与打过折的时长相比。
+	// RemainingSeconds 为上报时剩余的授权秒数；功率档位折算后由固件还原到可比较的时长。
 	RemainingSeconds uint32
 	ChargedMWh       uint32
-	// AmountCents 是主板对这次充电自己的算法，单位是分。主板在
-	// 这条命令里按每单位 0.01 元上报，而别的命令用 0.1 元，所以
-	// 换算随命令而异，不做共用。
+	// AmountCents 为设备上报的消费金额，单位分；本命令单位为 0.01 元，其他命令可能为 0.1 元。
 	AmountCents    int64
 	StopReason     uint8
 	ConsumerType   uint8
@@ -154,9 +141,7 @@ func ParseChargeEnd(frame Frame) (ChargeEndData, error) {
 	}
 	data := frame.Data
 	amount := int64(binary.LittleEndian.Uint16(data[endOffsetAmount : endOffsetAmount+2]))
-	// 这里的档位是从 1 开始的。端口状态应答对同一套档位是从 0
-	// 数起的，两者不可互换，所以各自固定自己的起点，而不是共用一个
-	// 对其中一方必然是错的辅助函数。
+	// 此命令档位从 1 开始，端口状态应答从 0 开始，分别按命令处理。
 	band := data[endOffsetBand]
 	if band > 5 {
 		return ChargeEndData{}, ErrPayload
@@ -198,8 +183,7 @@ func decodeTime(data []byte) (time.Time, error) {
 		}
 		values[i] = int(value>>4)*10 + int(value&15)
 	}
-	// 厂商帧里是不带偏移量的本地民用时间。本协议部署在中国大陆，
-	// 所以不能依赖容器的 TZ。
+	// 帧中的民用时间不含偏移，按中国大陆协议时区解析，不依赖容器 TZ。
 	date := time.Date(2000+values[0], time.Month(values[1]), values[2], values[3], values[4], values[5], 0, chinaLocation)
 	if date.Month() != time.Month(values[1]) || date.Day() != values[2] || date.Hour() != values[3] || date.Minute() != values[4] || date.Second() != values[5] {
 		return time.Time{}, fmt.Errorf("%w: invalid device time", ErrPayload)

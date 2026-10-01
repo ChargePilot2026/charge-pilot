@@ -66,8 +66,7 @@ func (s Service) Run(ctx context.Context) (int, error) {
 					err = s.Store.MarkDelivered(ctx, id)
 				}
 				if err == nil {
-					// 账单由同一笔已提交的 fee 开出，
-					// 因此展示给用户的金额不可能与实际扣费产生偏差。
+					// 账单使用已提交的同一份费用结果，保持展示金额与扣费一致。
 					if s.Bills != nil {
 						if _, billErr := s.Bills.Issue(ctx, id); billErr != nil && first == nil {
 							first = billErr
@@ -116,13 +115,9 @@ func (s Service) Register(r *gin.Engine) {
 	})
 }
 
-// settleCalculation 为一笔刚算出的 fee 记录分账。calculation 号由订单 id 推导而来，
-// 所以 settlement_no 与它所拆分的那笔 fee
-// 带的是同一个确定性标识。
+// settleCalculation 为已计算费用生成分账记录；settlement_no 与 calculation_no 使用同一订单派生标识。
 func (s Service) settleCalculation(ctx context.Context, source Source, result Result) error {
-	// 结算是在一笔有效 fee 之上追加的账本。
-	// 没有 resolver 时这个部署就是不做分账，
-	// 但绝不能因此让那笔已经正确计费的订单失败。
+	// 分账基于有效费用结果追加台账；未配置 resolver 时跳过分账，不使已完成计费失败。
 	if source.Rule.StationID == 0 || s.Splits.AdminDB == nil {
 		return nil
 	}
@@ -133,8 +128,7 @@ func (s Service) settleCalculation(ctx context.Context, source Source, result Re
 	template, err := s.Splits.Resolve(ctx, source.Rule.StationID)
 	if err != nil {
 		if errors.Is(err, ErrNoSplitTemplate) || errors.Is(err, gorm.ErrRecordNotFound) {
-			// 站点没有生效的分账模板属于配置缺口，不是计费失败：
-			// fee 仍然有效，结算稍后重试。
+			// 缺少生效分账模板时保留已计算费用，等待后续结算重试。
 			return nil
 		}
 		return err
@@ -147,9 +141,7 @@ func (s Service) settleCalculation(ctx context.Context, source Source, result Re
 	return err
 }
 
-// CalculationID 解析某个订单已落库的 fee_calculation 主键。
-// calculation 号由订单 id 推导，但结算台账引用的是真实的行 id，
-// 所以从回执里读出来而不是猜。
+// CalculationID 从计费回执读取 fee_calculation 的实际主键，供结算台账引用。
 func (s Store) CalculationID(ctx context.Context, chargeOrderID uint64) (uint64, error) {
 	var row struct {
 		CalculationID *uint64 `gorm:"column:calculation_id"`

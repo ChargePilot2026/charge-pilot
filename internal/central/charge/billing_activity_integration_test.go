@@ -10,9 +10,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// TestApplyOrderCampaignsGrantsThresholdOnce —— 订单钩子跑在结算事务内部。
-// 它必须为每个够条件的订单恰好发一张券，
-// 而且坏掉的规则不能妨碍这笔充电开出账单。
+// TestApplyOrderCampaignsGrantsThresholdOnce 验证结算事务内按订单幂等发券，无效活动规则不影响账单生成。
 func TestApplyOrderCampaignsGrantsThresholdOnce(t *testing.T) {
 	orm := activityDB(t)
 	fx := newActivityFixture(t, orm, "threshold_redeem", 5, 0)
@@ -28,7 +26,7 @@ func TestApplyOrderCampaignsGrantsThresholdOnce(t *testing.T) {
 	if n := fx.grantRows(t); n != 0 {
 		t.Fatalf("a 2999-cent order granted %d coupons", n)
 	}
-	// 够条件的订单发一次。
+	// 符合金额门槛的订单仅发放一次。
 	applyOrderCampaigns(orm, order, 3500)
 	if n := fx.grantRows(t); n != 1 {
 		t.Fatalf("a 3500-cent order granted %d coupons, want 1", n)
@@ -41,8 +39,7 @@ func TestApplyOrderCampaignsGrantsThresholdOnce(t *testing.T) {
 	_ = now
 }
 
-// TestApplyOrderCampaignsHolidayRespectsPerUserLimit —— 节日活动没有金额条件：
-// 窗口期内的每一笔已结算订单都会触发，但单人限领依然生效。
+// TestApplyOrderCampaignsHolidayRespectsPerUserLimit 验证节日活动无金额门槛，但仍受单人额度限制。
 func TestApplyOrderCampaignsHolidayRespectsPerUserLimit(t *testing.T) {
 	orm := activityDB(t)
 	fx := newActivityFixture(t, orm, "holiday", 1, 0)
@@ -92,9 +89,7 @@ func TestApplyOrderCampaignsSurvivesBrokenRule(t *testing.T) {
 		t.Fatal(err)
 	}
 	badRuleID := lastID(t, orm)
-	// 发放记录挂在 user_id 上、又没有外键级联：只删用户的话发放记录会留下来，
-	// 而它的 source_event_id 是按规则主键算出来的固定值，于是第二轮就撞上
-	// uk_coupon_grant_source_event，失败原因指向一个完全无关的唯一键。
+	// 删除用户前清理发放记录，防止固定 source_event_id 在后续测试中触发唯一键冲突。
 	t.Cleanup(func() {
 		_ = orm.Exec("DELETE FROM coupon_grant_request WHERE user_id = ?", userID)
 		_ = orm.Exec("DELETE FROM coupon_grant WHERE user_id = ?", userID)

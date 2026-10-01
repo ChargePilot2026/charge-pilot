@@ -34,12 +34,11 @@ func (a API) Register(r *gin.Engine) {
 	r.GET("/api/v1/admin/auth/me", a.Require(""), func(c *gin.Context) { httpapi.OK(c, c.MustGet("admin_profile")) })
 }
 
-// limitScript 在 Redis 里对同一来源 IP 的登录请求计数，首次计数时顺带设置 60 秒过期，
-// 靠脚本原子完成"加一 + 判是否刚启动过期"，避免并发下窗口被反复重置。
+// limitScript 原子递增来源 IP 的登录计数，并仅在首次计数时设置 60 秒过期。
 var limitScript = redis.NewScript(`local n=redis.call('INCR',KEYS[1]); if n==1 then redis.call('EXPIRE',KEYS[1],60) end; return n`)
 
-// rate 对登录类接口做按 IP 的频率限制：60 秒内超过 5 次就拒（429）并给出 Retry-After。
-// Redis 不可用时按 503 失败关闭，宁可暂时登不上也不放行无限次尝试。
+// rate 将同一 IP 的登录请求限制为每 60 秒 5 次，超限返回 429 和 Retry-After。
+// Redis 不可用时返回 503，保持失败关闭。
 func (a API) rate(c *gin.Context) bool {
 	n, err := limitScript.Run(c.Request.Context(), a.Sessions.Redis, []string{"admin:login-rate:" + c.ClientIP()}).Int()
 	if err != nil {
@@ -54,9 +53,8 @@ func (a API) rate(c *gin.Context) bool {
 	return true
 }
 
-// login 账号密码登录的第一关。先过频率限制，再校验口令。
-// 账号开了双因素认证时登录不算完成，只返回一个短期 challenge 让前端走 MFA；
-// 没开则直接 completeLogin 发放会话与令牌。
+// login 先执行 IP 限流，再验证账号和口令。
+// 启用 MFA 的账号返回短期 challenge，验证二次因素后发放会话；其他账号直接完成登录。
 func (a API) login(c *gin.Context) {
 	if !a.rate(c) {
 		return
@@ -75,8 +73,7 @@ func (a API) login(c *gin.Context) {
 		return
 	}
 	if account.MFAEnabled {
-		// 口令这步过了，但登录还没完成。
-		// 所以回一个短期的 challenge，而不是会话令牌。
+		// 口令验证成功后进入 MFA 阶段，仅返回短期 challenge，不签发会话令牌。
 		challenge, err := a.Sessions.BeginMFA(c.Request.Context(), account)
 		if err != nil {
 			a.failure(c, err)
@@ -116,8 +113,8 @@ func (a API) verifyMFA(c *gin.Context) {
 	a.completeLogin(c, account)
 }
 
-// completeLogin 登录成功的收尾：读出账号当前的权限档案，建会话拿到 sid 与刷新令牌，再统一发给前端。
-// 任一步失败都走 failure 返回对应错误，不会留下半开的会话。
+// completeLogin 读取权限档案，创建会话并返回 SID、刷新令牌和访问令牌。
+// 各阶段错误由 failure 统一映射到响应。
 func (a API) completeLogin(c *gin.Context, account Account) {
 	profile, err := a.Store.Profile(c.Request.Context(), account.ID)
 	if err != nil {

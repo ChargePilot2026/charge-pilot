@@ -14,10 +14,8 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// WithdrawRow 是提现单列表页的一行，对应计费库 withdraw_request 表。
-// 它是“可提现余额 → 申请 → 审核 → 打款”这条资金链路的对外形态：申请时校验余额、
-// 审核时占用余额、打款时二次校验余额，三步读的都是这一张表。
-// 列名是逐个显式映射的，所以一次改名不会让整页悄悄变成一片零。
+// WithdrawRow 映射 withdraw_request 的提现单。
+// 申请、审核和打款分别校验资金余额，数据库列显式映射到 Go 字段。
 type WithdrawRow struct {
 	ID           uint64  `gorm:"column:id" json:"id"`                       // 提现单主键 ID
 	WithdrawNo   string  `gorm:"column:withdraw_no" json:"withdraw_no"`     // 提现单号,形如 WD + UUID 前 24 位大写,全局唯一
@@ -47,8 +45,7 @@ func (s ResourceStore) AvailableCentsExcluding(ctx context.Context, tx *gorm.DB,
 		tx = s.BillingDB.WithContext(ctx)
 	}
 	var earned int64
-	// settlement_party_amount 没有分区列，所以这里只能按 settlement id 单列连接；
-	// 在这里再加 created_month 的条件会直接失败。
+	// settlement_party_amount 不包含分区列，仅按 settlement_id 连接。
 	if err := tx.Table("settlement_party_amount AS p").
 		Joins("JOIN settlement AS st ON st.id = p.settlement_id").
 		Where("p.party_id = ? AND st.status = 'paid'", partyID).
@@ -108,7 +105,7 @@ func (a ResourceAPI) createWithdraw(c *gin.Context) {
 	profile := c.MustGet("admin_profile").(Profile)
 	no := "WD" + strings.ToUpper(strings.ReplaceAll(in.RequestID, "-", ""))[:24]
 	err := a.Store.BillingDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
-		// 完全一样的重放返回原来那张单据，而不是再开一张新的。
+		// 请求号及内容一致的重放返回已有单据，不重复创建。
 		var existing WithdrawRow // 幂等重放时命中的原单据,用来比对金额与参与方是否一致
 		found := tx.Table("withdraw_request").Where("withdraw_no = ?", no).Take(&existing)
 		if found.Error == nil {
@@ -169,9 +166,8 @@ func (a ResourceAPI) createWithdraw(c *gin.Context) {
 	httpapi.OK(c, gin.H{"withdraw_no": no, "status": "pending"})
 }
 
-// decideWithdraw 处理提现单的审核决定：approve=true 表示通过，给了 reason 就按驳回处理。
-// 每次流转都校验当前状态，并用行锁加状态条件更新，重复点击不会把同一笔钱处理两次；
-// 通过前会剔除本单后重算可提现余额，余额不足直接报冲突。
+// decideWithdraw 按 approve 值审核提现，驳回须填写理由。
+// 锁定记录并校验状态；通过前排除当前申请后重算可提现余额，余额不足时返回冲突。
 func (a ResourceAPI) decideWithdraw(c *gin.Context) {
 	no := strings.TrimSpace(c.Param("withdraw_no"))
 	var in struct {
@@ -201,8 +197,7 @@ func (a ResourceAPI) decideWithdraw(c *gin.Context) {
 			if row.Status != "pending" {
 				return errConflict
 			}
-			// 这张单据已经以 pending 的形态占住了余额，所以要从占用里把它剔除，
-			// 否则通过这一关永远都会失败。
+			// 本单 pending 金额已计入占用，余额校验时排除本单，避免重复计算。
 			available, err := a.Store.AvailableCentsExcluding(c.Request.Context(), tx, row.PartyID, row.ID)
 			if err != nil {
 				return err
@@ -221,7 +216,7 @@ func (a ResourceAPI) decideWithdraw(c *gin.Context) {
 			}
 			action, values["status"], values["reject_reason"] = "reject", "rejected", strings.TrimSpace(*in.Reason)
 		case in.Approve != nil:
-			// approve=false 却不给理由，就没法说清为什么驳回。
+			// 驳回必须填写理由。
 			return errConflict
 		}
 		if err := tx.Table("withdraw_request").Where("withdraw_no = ? AND status = ?", no, row.Status).Updates(values).Error; err != nil {
@@ -262,8 +257,7 @@ func (a ResourceAPI) payWithdraw(c *gin.Context) {
 		if row.Status != "approved" {
 			return errConflict
 		}
-		// 这张已通过的单据正是这次要登记的打款，所以和通过时一样把它从占用里
-		// 剔除掉。
+		// 打款校验排除本张已审批单据的占用金额，避免重复扣减可用余额。
 		available, err := a.Store.AvailableCentsExcluding(c.Request.Context(), tx, row.PartyID, row.ID)
 		if err != nil {
 			return err
@@ -289,8 +283,7 @@ func (a ResourceAPI) payWithdraw(c *gin.Context) {
 	httpapi.OK(c, gin.H{"withdraw_no": no, "status": "paid"})
 }
 
-// ReconcileRow 是一天的对账结果快照，对应管理库 finance_reconcile_log 表。
-// 它把内部台账与渠道（微信）上报的笔数、金额、差额并排存下来，供运营判断差异并标记已处理。
+// ReconcileRow 表示 finance_reconcile_log 中单日对账结果。
 type ReconcileRow struct {
 	ID            uint64 `gorm:"column:id" json:"id"`                         // 对账记录主键 ID
 	ReconcileType string `gorm:"column:reconcile_type" json:"reconcile_type"` // 对账类型:wechat_refund 微信退款 / wechat_pay 微信支付 / split 分账 / withdraw 提现
@@ -303,8 +296,7 @@ type ReconcileRow struct {
 	DiffCents     int64  `gorm:"column:diff_cents" json:"diff_cents"`         // 差额合计,单位分,等于渠道减内部
 	Resolved      bool   `gorm:"column:resolved" json:"resolved"`             // 运营是否已标记为处理完毕
 	CreatedAt     string `gorm:"column:created_at" json:"created_at"`         // 记录写入时间,UTC
-	// Diffs 是查询之后回填的：它来自一个 JSON 列，GORM 没法直接扫进 any 类型
-	// 的结构体字段里。
+	// Diffs 在查询后由 JSON 文本解码，避免直接将 JSON 列扫描到 any 字段。
 	Diffs []ReconcileDiff `json:"diffs" gorm:"-"` // 逐条差异明细,查询后从 diffs_json 解析回填
 }
 
@@ -362,8 +354,8 @@ type ReconcileAmount struct {
 	AmountCents int64  `json:"amount_cents"` // 渠道金额,单位分;同一流水号出现多次会累加
 }
 
-// reconcileType 按类型取内部台账并与渠道数据比对，算出笔数、金额与差异，
-// 再按 (类型，日期) 唯一键 upsert 写回 finance_reconcile_log，重跑覆盖上一次结果而不是堆叠。
+// reconcileType 比对内部台账与渠道数据，计算笔数、金额及差异。
+// 按类型和日期更新 finance_reconcile_log，同日重跑覆盖原结果。
 func (a ResourceAPI) reconcileType(c *gin.Context, kind string, date time.Time, channel map[string]int64) (ReconcileRow, error) {
 	out := ReconcileRow{ReconcileType: kind, ReconcileDate: date.Format("2006-01-02"), Diffs: []ReconcileDiff{}}
 	var internal map[string]int64
@@ -405,8 +397,7 @@ func (a ResourceAPI) reconcileType(c *gin.Context, kind string, date time.Time, 
 		out.ExternalCents += cents
 	}
 	diffs, _ := json.Marshal(out.Diffs)
-	// (type，date) 上的唯一键保证一天只留一条对账；重跑是覆盖掉已记录的那次
-	// 比对，而不是把重复的记录堆起来。
+	// 按 type 和 date 唯一键更新对账结果，重复执行不新增记录。
 	if err := a.Store.AdminDB.WithContext(c.Request.Context()).Exec(
 		`INSERT INTO finance_reconcile_log(reconcile_type,reconcile_date,internal_count,wechat_count,diff_count,internal_cents,wechat_cents,diff_cents,diffs_json,resolved)
 		 VALUES(?,?,?,?,?,?,?,?,?,0)
@@ -527,7 +518,7 @@ func validUUID(v string) bool {
 // utf8Count 按 Unicode 字符而不是字节统计长度，用于中文字段的 255 之类上限校验。
 func utf8Count(s string) int { return len([]rune(s)) }
 
-// registerFinanceOps 注册分账、提现、对账的读写路由；读与写分开授权，能看账的人不能动钱。
+// registerFinanceOps 注册分账、提现和对账路由，分别校验读取和操作权限。
 func (a ResourceAPI) registerFinanceOps(r *gin.Engine) {
 	r.GET("/api/v1/admin/billing/settlements", a.Auth.Require("finance.read"), a.settlements)
 	r.GET("/api/v1/admin/billing/withdraws", a.Auth.Require("finance.read"), a.withdraws)
@@ -539,9 +530,8 @@ func (a ResourceAPI) registerFinanceOps(r *gin.Engine) {
 	r.POST("/api/v1/admin/billing/reconciles/:id/resolve", a.Auth.Require("finance.read"), a.resolveReconcile)
 }
 
-// settlements 分页返回分账汇总，并按参与方带出各家的分成金额与比例，让运营看到
-// 实际分下去的结果，而不是一个按月摆着的占位；
-// 列名与 Go 字段名不一致，所以每个字段都显式写了 gorm 列映射。
+// settlements 分页查询分账汇总及各参与方的金额和比例。
+// 查询列显式映射到 Go 字段，保持聚合结果与模型一致。
 func (a ResourceAPI) settlements(c *gin.Context) {
 	page, ok := parsePage(c, "pending confirmed paid failed")
 	if !ok {
@@ -557,8 +547,7 @@ func (a ResourceAPI) settlements(c *gin.Context) {
 		AmountCents int64  `gorm:"column:amount_cents" json:"amount_cents"`     // 该参与方分成合计,单位分
 		Status      string `gorm:"column:status" json:"status"`                 // 这笔分成的状态:pending 待付 / paid 已付 / failed 失败
 	}
-	// 列名和 Go 字段名对不上，所以每个字段都显式写了映射；没有这些 tag 的话
-	// GORM 扫出来全是零值。
+	// 显式映射查询列名，避免字段名称不一致导致扫描结果为零值。
 	type row struct {
 		ID               uint64  `gorm:"column:id" json:"id"`                                                                 // 分账汇总主键 ID
 		SettlementNo     string  `gorm:"column:settlement_no" json:"settlement_no"`                                           // 分账单号
@@ -616,8 +605,7 @@ func (a ResourceAPI) withdraws(c *gin.Context) {
 	httpapi.OK(c, out)
 }
 
-// reconciles 分页返回对账记录，支持按对账类型和是否已处理过滤；
-// diffs_json 是 JSON 列，GORM 扫不进切片，所以用 CAST 取回文本再逐条反序列化。
+// reconciles 按类型和处理状态分页查询对账记录，将 diffs_json 转为文本后逐条解码。
 func (a ResourceAPI) reconciles(c *gin.Context) {
 	page, ok := parsePage(c, "wechat_refund wechat_pay split withdraw")
 	if !ok {
@@ -639,8 +627,7 @@ func (a ResourceAPI) reconciles(c *gin.Context) {
 		resourceFailure(c, err)
 		return
 	}
-	// diffs_json 是 JSON 列；这里显式 CAST 之后再读，因为 GORM 没法把它扫进
-	// 行的 any 类型字段。
+	// 将 diffs_json 转为文本后解码到 any 字段。
 	ids := make([]uint64, 0, len(out.Items))
 	for _, row := range out.Items {
 		ids = append(ids, row.ID)
@@ -674,14 +661,14 @@ func (a ResourceAPI) registerWebhookDelivery(r *gin.Engine) {
 	r.POST("/api/v1/admin/webhooks/:id/deliveries/:event_id/retry", a.Auth.Require("webhook.create"), a.retryWebhookDelivery)
 }
 
-// WebhookDeliveryRow 是一次 Webhook 投递的日志行，对应管理库 webhook_delivery_log 表，用于排查订阅方为什么没收到事件。
+// WebhookDeliveryRow 表示 webhook_delivery_log 中单次投递结果。
 type WebhookDeliveryRow struct {
 	ID             uint64  `json:"id"`              // 投递日志主键 ID
 	SubscriptionID uint64  `json:"subscription_id"` // 所属 Webhook 订阅 ID
 	EventID        string  `json:"event_id"`        // 事件 ID,同一订阅内唯一,重发按它定位原始事件
 	EventType      string  `json:"event_type"`      // 事件类型
 	RequestBody    string  `json:"request_body"`    // 实际发出的请求体 JSON
-	ResponseStatus *int    `json:"response_status"` // 订阅方返回的 HTTP 状态码(可空),请求未拿到响应时为空
+	ResponseStatus *int    `json:"response_status"` // 订阅方 HTTP 状态码；未收到响应时为 NULL。
 	ResponseBody   *string `json:"response_body"`   // 订阅方返回体(可空)
 	ErrorMsg       *string `json:"error_msg"`       // 投递失败原因(可空),成功时为空
 	AttemptCount   uint32  `json:"attempt_count"`   // 累计投递尝试次数
@@ -715,9 +702,8 @@ func (a ResourceAPI) webhookDeliveries(c *gin.Context) {
 	httpapi.OK(c, out)
 }
 
-// retryWebhookDelivery 手动重发：读出原始事件体，重新写进事件流（不复用原事件 ID），
-// 让正式的签名投递链路再跑一次，而不是临时拼一个没校验的请求直接发出去；
-// 订阅停用时拒绝重发。
+// retryWebhookDelivery 从原始事件体生成新事件，复用正式签名投递链路。
+// 使用新的事件 ID；订阅停用时拒绝重发。
 func (a ResourceAPI) retryWebhookDelivery(c *gin.Context) {
 	id, ok := pathID(c)
 	if !ok {

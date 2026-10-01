@@ -12,8 +12,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// 按设备记录能力，全部意义就在于：板子跑不了的费率在发布之前就被拒掉。
-// 下面六种情况是这条规则必须做对的，另有一种用来证明默认值确实是拒绝。
+// 发布前按设备能力校验计费模式；未声明能力时默认拒绝。
 
 func meterless() deviceCapability {
 	return deviceCapability{DeviceID: "DC589TEST001"}
@@ -30,9 +29,7 @@ func TestCapabilityAllowsOnlyWhatTheBoardCanReport(t *testing.T) {
 	}
 }
 
-// 谁都没分类过的设备，在引擎看来就等于什么都不测。新协议不承诺它没有
-// 携带的字段，所以因为「大部分板子都支持」就猜某块板子支持 kWh，等于把
-// 这一列本来要防的那类错误又请回来。
+// 未知协议不推断计量能力；仅接受协议明确支持的电量或功率字段。
 func TestUnclassifiedDeviceIsRefusedEveryMeteredMode(t *testing.T) {
 	cap := deviceCapability{DeviceID: "DC589NEW001", ChargeMode: string(pricing.ModeDeviceDuration)}
 	for _, mode := range []pricing.ChargeMode{
@@ -45,11 +42,9 @@ func TestUnclassifiedDeviceIsRefusedEveryMeteredMode(t *testing.T) {
 	}
 }
 
-// 每块被拒的板子都要点名。只说「有些设备不支持」的拒绝，会让运营去猜是哪几块；
-// 而没被点名的那些，就会继续按旧费率充电，日志里什么都不留。
+// 错误结果应逐一列出不支持当前计费模式的设备。
 
-// 站点在硬件到货之前就先定好费率是常事，而后来才出现的那块板子
-// 从没经过发布时那次能力校验。这就是拦住它的那道检查。
+// 新增设备也必须通过站点当前费率的能力校验。
 func TestCheckImportAgainstStationRefusesABoardThatCannotBeMetered(t *testing.T) {
 	db := dbWithStationMode(t, pricing.ModeServerEnergy)
 	station := stationOf(t, db)
@@ -57,7 +52,7 @@ func TestCheckImportAgainstStationRefusesABoardThatCannotBeMetered(t *testing.T)
 		{DeviceID: "DC589OK001", StationID: station, ProtocolAdapter: "dc589"},
 		{DeviceID: "DC589BAD01", StationID: station},
 	}
-	// 整批一起拒，不是拒一半：一支只有部分设备能计价的机队，等于要运营手工去对账。
+	// 验证整批设备兼容性校验：任一设备不兼容时拒绝整批请求。
 	if err := checkImportAgainstStation(db, devices); err == nil {
 		t.Fatal("a batch containing an unmeasurable board was accepted")
 	} else {
@@ -75,7 +70,7 @@ func TestCheckImportAgainstStationRefusesABoardThatCannotBeMetered(t *testing.T)
 	}
 }
 
-// 还没定费率的站点接受任何板子；按时长计费的也一样，它压根不需要电表。
+// 未配置费率或仅按时长计费的站点不要求设备具备电表能力。
 func TestCheckImportAgainstStationAllowsWhenNothingNeedsAMeter(t *testing.T) {
 	unpriced := dbWithStationMode(t, "")
 	station := stationOf(t, unpriced)
@@ -91,11 +86,8 @@ func TestCheckImportAgainstStationAllowsWhenNothingNeedsAMeter(t *testing.T) {
 	}
 }
 
-// dbWithStationMode 起一个一次性数据库，里面放一个站点，其默认规则正按给定
-// 计费方式运行。计费方式为空表示这个站点根本没有生效的默认规则。
-//
-// 它读的是集成测试套件其余部分用的同一个连接串，没有配置就跳过，
-// 这样上面的单测在没有数据库时照样能跑。
+// dbWithStationMode 创建指定默认计费模式的站点夹具，空模式表示无默认规则。
+// 未配置集成测试连接串时跳过。
 func dbWithStationMode(t *testing.T, mode pricing.ChargeMode) *gorm.DB {
 	t.Helper()
 	raw := os.Getenv("TEST_ADMIN_DATABASE_URL")
@@ -140,7 +132,7 @@ func dbWithStationMode(t *testing.T, mode pricing.ChargeMode) *gorm.DB {
 	return orm
 }
 
-// lastCapabilityStation 记下辅助函数分配到的 ID，测试据此定位这次检查实际会看的那个站点。
+// lastCapabilityStation 保存辅助函数创建的站点 ID，供测试定位校验对象。
 var lastCapabilityStation atomic.Uint64
 
 func stationOf(t *testing.T, _ *gorm.DB) uint64 {

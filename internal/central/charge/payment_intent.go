@@ -31,8 +31,7 @@ type PaymentIntent struct {
 	ExpiresAt       time.Time        `json:"expires_at"`
 	Status          string           `json:"status"`
 	CouponGrantID   uint64           `json:"coupon_grant_id,omitempty"`
-	// DiscountCents 是券减掉的金额；
-	// PayableCents 是客户真正要付的金额。
+	// DiscountCents 为券减免金额，PayableCents 为用户实际应付金额；单位均为分。
 	DiscountCents int64 `json:"discount_cents"`
 	PayableCents  int64 `json:"payable_cents"`
 }
@@ -84,8 +83,7 @@ func (s PaymentIntentStore) Replay(ctx context.Context, userID uint64, requestID
 		CouponGrantID: row.CouponGrantID, DiscountCents: row.DiscountCents, PayableCents: row.TotalCents - row.DiscountCents}, nil
 }
 
-// Reserve 创建支付记录和一个短生命周期的端口占用。
-// 它刻意不写 charge_order；只有验签通过的支付回调才可以写。
+// Reserve 创建支付记录和短期端口预占，不创建 charge_order；订单由验签成功的支付回调创建。
 func (s PaymentIntentStore) Reserve(ctx context.Context, input IntentInput) (PaymentIntent, error) {
 	if s.DB == nil || input.UserID == 0 || uuid.Validate(input.ClientRequestID) != nil ||
 		input.Port.Kind != "port" || input.Port.Port == nil || !input.Port.Port.Available ||
@@ -110,13 +108,8 @@ func (s PaymentIntentStore) Reserve(ctx context.Context, input IntentInput) (Pay
 		if !input.Offer.Valid() || input.Offer.StationID != input.Port.StationID {
 			return PaymentIntent{}, pricing.ErrInvalidPricing
 		}
-		// 固定时长套餐是以 span 的形式交给设备的，
-		// 由充电桩自己倒数并停机。
-		// 预付金额在设备侧没有对应实现——
-		// 固件把那种充电类型保留了却始终没实现——
-		// 所以它表达成平台计费：
-		// 由平台给这次会话定价并停机。
-		// 一起发过去的那个长 span 只是安全上界，不是停机规则；停机规则在计价包的服务端一侧，目前还没上线。
+		// 固定时长套餐由设备倒计时停机；金额预算由平台根据计量执行计费和停机。
+		// 下发的最大时长是设备安全上限，不替代平台的消费封顶规则。
 		if input.Rule.Spec.Scheme == nil {
 			return PaymentIntent{}, pricing.ErrInvalidPricing
 		}
@@ -137,8 +130,7 @@ func (s PaymentIntentStore) Reserve(ctx context.Context, input IntentInput) (Pay
 	} else {
 		return PaymentIntent{}, pricing.ErrOfferUnavailable
 	}
-	// 减免额在任何东西被占用之前就算好，
-	// 这样一张被拒的券不会留下支付订单或端口占用。
+	// 创建支付记录和占用端口前校验优惠券并计算减免额，失败时不留预占记录。
 	var discount int64
 	if input.CouponGrantID != 0 {
 		coupons := CouponStore{DB: s.DB}
@@ -232,8 +224,7 @@ func existingIntent(row PaymentIntentRecord, input IntentInput) (PaymentIntent, 
 	} else if row.OfferID.Valid || row.EstimatedMinutes != input.Minutes || row.PricingRuleID != input.Rule.ID || row.PricingRuleVersion != input.Rule.Version {
 		return PaymentIntent{}, ErrPaymentIntentConflict
 	}
-	// 重放必须带同一张券；
-	// 否则客户就能在自己已经确认过的意图上换一张折扣券。
+	// 重放必须使用首次意图绑定的优惠券。
 	if row.CouponGrantID != input.CouponGrantID {
 		return PaymentIntent{}, ErrPaymentIntentConflict
 	}

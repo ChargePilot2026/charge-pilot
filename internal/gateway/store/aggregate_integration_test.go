@@ -31,9 +31,7 @@ func aggregateDB(t *testing.T) *gorm.DB {
 
 func sqlPort(p int16) sql.NullInt16 { return sql.NullInt16{Int16: p, Valid: true} }
 
-// 汇总表必须把重复样本折叠进同一个桶，并给出正确的运行均值与极值。
-// 重跑同一批数据才是有意思的那个用例：
-// 一帧被重放的设备数据否则会让计数翻倍。
+// 验证同一桶内样本合并后计数、加权均值及极值正确，并校验重复数据处理。
 func TestRefreshAggregatesFoldsSamplesIntoBuckets(t *testing.T) {
 	orm := aggregateDB(t)
 	ctx := context.Background()
@@ -53,8 +51,7 @@ func TestRefreshAggregatesFoldsSamplesIntoBuckets(t *testing.T) {
 		{DeviceID: deviceID, Port: sqlPort(port), Metric: "power_w", Value: "200", TS: base.Add(5 * time.Minute)},
 		{DeviceID: deviceID, Port: sqlPort(port), Metric: "power_w", Value: "300", TS: base.Add(10 * time.Minute)},
 	}
-	// 再加一个不带端口的设备级指标，
-	// 它必须落在 NULL 端口下，而不是端口 0。
+	// 验证设备级指标保留 NULL 端口，不转换为实际端口 0。
 	samples = append(samples,
 		AggregateSample{DeviceID: deviceID, Metric: "signal", Value: "80", TS: base},
 		AggregateSample{DeviceID: deviceID, Metric: "signal", Value: "60", TS: base.Add(5 * time.Minute)},
@@ -123,7 +120,7 @@ func TestRefreshAggregatesFoldsSamplesIntoBuckets(t *testing.T) {
 		}
 	}
 
-	// 小时汇总覆盖的是同样那三个样本。
+	// 小时汇总应包含相同的三个样本。
 	var hourly bucket
 	if err := orm.Raw(`SELECT CAST(avg_value AS CHAR) avg, CAST(min_value AS CHAR) mn,
 		CAST(max_value AS CHAR) mx, count FROM telemetry_aggregate_hourly
@@ -135,8 +132,7 @@ func TestRefreshAggregatesFoldsSamplesIntoBuckets(t *testing.T) {
 		t.Fatalf("hourly bucket = %+v, want count 3 avg 200", hourly)
 	}
 
-	// 再折叠一次同一批数据，计数必须翻倍，
-	// 这正是需要运行均值而不是简单覆盖的原因。
+	// 再次累加同批样本后计数翻倍，均值与极值按累计样本更新，不简单覆盖。
 	if err := RefreshAggregates(ctx, orm, samples[:1]); err != nil {
 		t.Fatal(err)
 	}

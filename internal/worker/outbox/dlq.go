@@ -16,8 +16,7 @@ import (
 // 返回 error 表示重试次数超过 maxAttempts 后把它移入死信流。
 type DLQHandler func(ctx context.Context, stream, eventID, source string, payload []byte) error
 
-// DLQ 为每条业务流配一套有界重试策略和一条死信流，
-// 这样一条毒丸事件不会永远堵在流头。
+// DLQ 为业务流提供有界重试及死信转移，防止持续失败事件阻塞消费。
 type DLQ struct {
 	WorkerDB    *gorm.DB
 	Stream      *redis.Client
@@ -27,7 +26,7 @@ type DLQ struct {
 	Streams     []string
 }
 
-// DeadLetterSuffix 是失败记录被停放的死信流后缀。
+// DeadLetterSuffix 是死信流名称后缀。
 const DeadLetterSuffix = ".dlq"
 
 // Entry 是一条流消息解码后的内容。
@@ -89,8 +88,7 @@ func (d DLQ) consumeStream(ctx context.Context, stream string, handler DLQHandle
 					}
 					continue
 				}
-				// 记录在重试预算耗尽之前一直保持 pending 状态，
-				// 这样临时故障会被重试而不是丢掉。
+				// 重试预算耗尽前保留 pending 状态，允许临时故障恢复后继续处理。
 				attempts := d.attempts(ctx, stream, message.ID)
 				if attempts >= d.maxAttempts() {
 					if moveErr := d.moveToDeadLetter(ctx, stream, entry, handlerErr); moveErr != nil && firstErr == nil {
@@ -153,8 +151,7 @@ func (d DLQ) moveToDeadLetter(ctx context.Context, stream string, entry Entry, c
 	if _, err := d.Stream.XAdd(ctx, &redis.XAddArgs{Stream: stream + DeadLetterSuffix, Values: body}).Result(); err != nil {
 		return err
 	}
-	// Redis 是死信状态的权威来源；数据库表是运维值守的账本，
-	// 所以两处都要写。
+	// Redis 保存可执行死信状态，数据库保存运维查询记录，两处均需更新。
 	if d.WorkerDB != nil {
 		now := time.Now().UTC()
 		month := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
@@ -212,9 +209,7 @@ func (d DLQ) DeadLetterCounts(ctx context.Context) (map[string]int64, error) {
 	return counts, nil
 }
 
-// ReplayOnce 借助滑动游标把死信流里的记录搬回活跃流，
-// 让重放能向前推进，
-// 而不是永远重复扫同一个流头。
+// ReplayOnce 按滑动游标逐批重放死信，避免重复扫描同一批记录。
 func (d DLQ) ReplayOnce(ctx context.Context, stream string, handler DLQHandler) (int, error) {
 	if d.Stream == nil || handler == nil {
 		return 0, errors.New("dlq replay is not configured")
@@ -251,8 +246,7 @@ func (d DLQ) ReplayOnce(ctx context.Context, stream string, handler DLQHandler) 
 		lastID = &id
 		entry := decodeEntry(message)
 		if err := handler(ctx, stream, entry.EventID, entry.Source, entry.Payload); err != nil {
-			// 重放失败不回退游标；
-			// 否则同一条记录会被永远重试。
+			// 单条重放失败不回退批次游标，避免阻塞后续记录。
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -279,8 +273,7 @@ func (d DLQ) ReplayOnce(ctx context.Context, stream string, handler DLQHandler) 
 	return replayed, firstErr
 }
 
-// PendingSummary 报告每条已配置流的积压深度，
-// 让运维能在堆积变成事故之前就看见它。
+// PendingSummary 返回各已配置流的积压数量。
 func (d DLQ) PendingSummary(ctx context.Context) (map[string]int64, error) {
 	summary := map[string]int64{}
 	for _, stream := range d.Streams {
@@ -296,8 +289,7 @@ func (d DLQ) PendingSummary(ctx context.Context) (map[string]int64, error) {
 	return summary, nil
 }
 
-// isBusyGroup 判定那个预期内的 "group already exists" 错误，
-// 它只说明另一个 worker 先把组建起来了。
+// isBusyGroup 识别消费组已存在的 BUSYGROUP 错误。
 func isBusyGroup(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "BUSYGROUP")
 }

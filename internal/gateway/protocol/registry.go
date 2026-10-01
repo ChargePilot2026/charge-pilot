@@ -18,8 +18,7 @@ const (
 	CommandCardBalance CommandKind = "card_balance"
 )
 
-// Command 刻意与厂商无关。领域层必须先把一条指令落库并鉴权，
-// 然后才能让当前那条连接去发送它。
+// Command 表示与厂商协议无关的命令，须由领域层持久化并鉴权后发送。
 type Command struct {
 	ConsumerType     uint8
 	CardNumber       uint32
@@ -38,9 +37,8 @@ type Session interface {
 	Close() error
 }
 
-// Registry 把命令路由到设备当前那条已认证的连接。
-// 一次新的登录会顶替掉上一个会话，而迟到的断开回调
-// 不会把这条被顶替的会话也一起摘掉。
+// Registry 将命令路由至设备当前已认证的连接。
+// 新连接替换旧会话；旧会话的延迟断开回调不会移除新连接。
 type Registry struct {
 	mu       sync.RWMutex
 	sessions map[string]*registryEntry
@@ -48,13 +46,8 @@ type Registry struct {
 
 type registryEntry struct{ session Session }
 
-// Attach 把 session 装成 deviceID 当前的连接，并返回一个 detach 函数。
-// 如果该设备已经登记过一个会话，它会被关闭，
-// 并连同 onReplaced 一起交给调用方，好让调用方记录下
-// 旧连接结束是因为来了更新的登录，
-// 而不是因为设备自己挂断。
-//
-// onReplaced 可以为 nil。
+// Attach 登记设备当前会话并返回 detach 函数。
+// 新会话替换并关闭同设备的旧连接，通过可选 onReplaced 回调记录替换原因。
 func (r *Registry) Attach(deviceID string, session Session, onReplaced func(Session)) func() {
 	r.mu.Lock()
 	if r.sessions == nil {

@@ -10,19 +10,13 @@ import (
 	"gorm.io/gorm"
 )
 
-// 活动规则是券活动引擎面向运营的那一面。
-// 引擎本身在 charge 服务里；
-// 这里只让运营看哪些活动在跑、把活动开关起来、核对花了多少钱。
-//
-// 金额以分存储、窗口是绝对时间，
-// 所以"活动是否在进行中"是拿当前时间直接比一下，
-// 而不是靠一个可能和实际情况对不上的状态位。
+// 本文件提供优惠券活动规则的运营接口；发放逻辑由 charge 包实现。
+// 金额单位为分，活动时间使用绝对起止时间，是否生效由状态及时间窗口共同判断。
 var activityTriggers = map[string]bool{
 	"first_recharge": true, "invite_reward": true, "threshold_redeem": true, "holiday": true,
 }
 
-// activityRuleRow 是券活动规则在列表接口里的行投影：一行 = 一个活动，附带券名和已发放数量，
-// 供运营在列表页直接看出活动挂了哪张券、门槛多少、发了多少份，不用再逐条点进去。
+// activityRuleRow 是活动列表投影，包含规则、券名称和累计发放数量。
 type activityRuleRow struct {
 	ID              uint64    `json:"id"`                // 活动规则主键
 	Name            string    `json:"name"`              // 活动名称，运营可读，不参与业务判定
@@ -48,10 +42,8 @@ func (a ResourceAPI) registerActivityRules(r *gin.Engine) {
 	r.PUT("/api/v1/admin/coupon-activities/:id", a.Auth.Require("coupon.activity.manage"), a.updateActivityRule)
 }
 
-// grantedCounts 统计每条规则实际发出了多少份，
-// 运营不用离开页面就能看到一个活动的真实花费。
-// grantedCounts 统计这批活动券各自实际发出了多少份，让运营不用离开列表页就能看出活动花了多少钱。
-// 只认 coupon_grant 中来源为 activity 或 invite_reward 的发放记录；券 ID 相同的活动会合并计数。
+// grantedCounts 按券 ID 聚合 activity 和 invite_reward 来源的发放数量。
+// 不同活动引用同一张券时，共享该券的累计计数。
 func (a ResourceAPI) grantedCounts(tx *gorm.DB, ruleIDs []uint64) (map[uint64]int64, error) {
 	counts := map[uint64]int64{}
 	if len(ruleIDs) == 0 {
@@ -118,8 +110,8 @@ func (a ResourceAPI) listActivityRules(c *gin.Context) {
 	httpapi.OK(c, out)
 }
 
-// activityRuleInput 是券活动的新建/修改共用的请求体，字段与 coupon_activity_rule 表一一对应。
-// StartAt/EndAt 用字符串接收而不是 time.Time，是为了由 validate 统一按 RFC3339 解析并给出可读报错。
+// activityRuleInput 是创建和更新活动的请求体。
+// StartAt 与 EndAt 由 validate 按 RFC3339 统一解析并返回参数错误。
 type activityRuleInput struct {
 	Name            string  `json:"name"`              // 活动名称，必填，最多 128 字
 	TriggerType     string  `json:"trigger_type"`      // 触发类型，取值见 activityTriggers
@@ -133,10 +125,8 @@ type activityRuleInput struct {
 	EndAt           string  `json:"end_at"`            // 活动结束时间，RFC3339 字符串，须晚于开始时间且不超过一年后
 }
 
-// validate 校验一个活动是否可以落库，并把按类型互斥的规则一并卡住：
-// 满减必须设门槛（否则每一单都触发），邀请有奖必须给邀请人配券（否则就是白送），
-// 首充和节日类不允许设门槛（触发条件本身就是写死的）。
-// 通过时顺带把留空的 Status 补成 active，并返回解析好的 UTC 起止时间。
+// validate 检查活动参数及触发类型约束：满减必须有门槛，邀请活动必须配置邀请人奖励券。
+// 首充和节日活动不接受门槛；缺省状态设为 active，起止时间转换为 UTC。
 func (in *activityRuleInput) validate() (time.Time, time.Time, error) {
 	if in.Name == "" || len([]rune(in.Name)) > 128 {
 		return time.Time{}, time.Time{}, errActivityInput
@@ -195,8 +185,7 @@ func (a ResourceAPI) createActivityRule(c *gin.Context) {
 		httpapi.BadRequest(c, "活动规则无效：名称不能为空，门槛为非负分，窗口须为 RFC3339 且结束晚于开始，满减须设门槛，邀请有奖须设邀请人券")
 		return
 	}
-	// 指向不存在或已停用券的规则会静默地永远发不出券，
-	// 所以这里在创建时直接拒掉。
+	// 创建前校验奖励券存在且可用，避免保存无法发券的规则。
 	if err := a.couponUsable(c, in.CouponID); err != nil {
 		httpapi.BadRequest(c, "活动券不存在或已停用")
 		return
@@ -230,9 +219,8 @@ func (a ResourceAPI) createActivityRule(c *gin.Context) {
 	httpapi.OK(c, gin.H{"id": id})
 }
 
-// updateActivityRule 修改一个已存在的券活动。触发类型不参与更新（trigger_type 未进 Updates），
-// 活动一旦按某种触发方式投放过就不允许换触发口径，否则历史发放记录将无法解释。
-// 更新前先读一份旧值供审计留痕，读不到即 404。
+// updateActivityRule 更新活动配置但保持 trigger_type 不变，确保历史发放的触发语义一致。
+// 更新前读取旧值用于审计；规则不存在时返回 404。
 func (a ResourceAPI) updateActivityRule(c *gin.Context) {
 	id, ok := pathID(c)
 	if !ok {
@@ -251,8 +239,7 @@ func (a ResourceAPI) updateActivityRule(c *gin.Context) {
 		httpapi.BadRequest(c, "活动券不存在或已停用")
 		return
 	}
-	// 用带类型的快照而不是 `any`：GORM 会对目标做反射，
-	// 目标是 nil 接口时它会 panic。
+	// 使用具体类型接收审计快照，避免 GORM 反射 nil 接口时 panic。
 	var before activityRuleRow
 	if err := a.Store.UserDB.WithContext(c.Request.Context()).
 		Table("coupon_activity_rule").Where("id = ? AND deleted_at IS NULL", id).Take(&before).Error; err != nil {
@@ -285,18 +272,14 @@ func (a ResourceAPI) updateActivityRule(c *gin.Context) {
 	httpapi.OK(c, gin.H{"id": id})
 }
 
-// couponUsable 判断一张券能不能挂到活动上：必须存在、状态为 active、未被软删除。
-// 指向不可用券的活动会被拒掉，而不是留着让它永远触发不了却看不出来。
-// 调用方需用自己的错误文案包装返回的 errActivityInput。
+// couponUsable 校验券存在、状态为 active 且未软删除；不满足时返回 errActivityInput。
 func (a ResourceAPI) couponUsable(c *gin.Context, couponID uint64) error {
 	var count int64
 	if err := a.Store.UserDB.WithContext(c.Request.Context()).Table("coupon").
 		Where("id = ? AND status = 'active' AND deleted_at IS NULL", couponID).Count(&count).Error; err != nil {
 		return err
 	}
-	// 计数为 0 不算错误，所以必须显式判断：一条指向不存在券的规则
-	// 永远发不出任何东西，而且在过期之前看上去和一个正常在跑的活动
-	// 一模一样。
+	// Count 不将零行视为错误，因此必须显式拒绝不存在或不可用的券。
 	if count == 0 {
 		return errActivityInput
 	}

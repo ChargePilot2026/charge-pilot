@@ -262,7 +262,7 @@ func (a API) createVendor(c *gin.Context) {
 	if in.Status == "enabled" {
 		row.EnabledAt = &now
 	}
-	// Migration 0010 enforces unique live codes at the database layer, including races.
+	// 数据库唯一索引限制有效厂商编码，覆盖并发写入。
 	if err := a.DB.WithContext(c.Request.Context()).Create(&row).Error; err != nil {
 		vendorFailure(c, err)
 		return

@@ -7,19 +7,15 @@ import (
 )
 
 const (
-	// 空闲设备每分钟心跳，任一端口充电时固定每 15 秒心跳。
-	// 厂商对链路存活的规定是
-	// 漏掉三次心跳，所以平台的读超时取所申请周期的三倍，而不是
-	// 构建期拍脑袋写死的常数。
+	// 空闲设备心跳周期为 60 秒，充电时为 15 秒。
+	// 读超时按连续缺失三次心跳计算，随申请周期调整。
 	DefaultHeartbeatSeconds  = 60
 	ChargingHeartbeatSeconds = 15
-	// MissedHeartbeatsBeforeReset 是连续多少次心跳无人应答之后，
-	// 主板判定链路已死并重发登录。
+	// MissedHeartbeatsBeforeReset 为设备连续未收到心跳应答后重新登录的次数阈值。
 	MissedHeartbeatsBeforeReset = 3
 )
 
-// ErrConfigRejected 表示主板拒绝了一份参数表。错误码指明是哪个
-// 字段越界，这正是「运维照着改一个值」和「运维靠猜」之间的区别。
+// ErrConfigRejected 表示设备拒绝参数表；错误码指示越界字段。
 type ErrConfigRejected struct{ Code byte }
 
 func (e ErrConfigRejected) Error() string {
@@ -64,13 +60,9 @@ func configErrorField(code byte) (string, bool) {
 	}
 }
 
-// ConfigTable 是主板本地的参数表。
-//
-// 承载定价的两个字段——刷卡金额与刷卡时间/电量——其单位随运行模式
-// 而变：时间模式下一个数值表示分钟，电量模式下则表示百分之一 kWh。
-// Getter 和 setter 都绕道运行模式，而不让调用方直接读字节，因为同一
-// 个数字在这里代表两种不同的量，弄混就是百倍量级的错误，却仍然长得
-// 像一个合理的数字。
+// ConfigTable 表示主板参数表。
+// 刷卡时长/电量字段的单位由运行模式决定：时间模式为分钟，电量模式为 0.01 kWh。
+// 通过 getter、setter 按运行模式解释字段，避免直接读写字节混用单位。
 type ConfigTable struct {
 	// RunMode 取值 0 时间优先、1 时间卡优先、2 免费、3 电量优先、
 	// 4 电量卡优先。
@@ -86,9 +78,7 @@ type ConfigTable struct {
 	// TierWatts 存放最多 5 档的功率上限，单位瓦。高档不大于低档的
 	// 表会被主板拒绝。
 	TierWatts [5]uint16
-	// TierRatioPercent 存放与各档对应的折扣，1..100。第一档被固件
-	// 写死为 100，写成其他任何值都会让整次下发失败，所以其他情况下
-	// 从不发送。
+	// TierRatioPercent 为各档折扣百分比，范围 1–100；第一档固定为 100。
 	TierRatioPercent [5]byte
 	// StopWhenFull 在电池充满时结束会话。
 	StopWhenFull     byte
@@ -101,8 +91,7 @@ type ConfigTable struct {
 // cardTimeIsEnergy 报告这张表里刷卡时间/电量字段是否按电量读取。
 func (c ConfigTable) cardTimeIsEnergy() bool { return c.RunMode == 3 || c.RunMode == 4 }
 
-// CardMinutes 把存下来的刷卡时间/电量换算成分钟。电量模式下根本
-// 没有时长可报，所以它返回 false，而不是凭空编一个出来。
+// CardMinutes 在时间模式下将刷卡额度转换为分钟；电量模式返回 false。
 func (c ConfigTable) CardMinutes() (uint16, bool) {
 	if c.cardTimeIsEnergy() {
 		return 0, false
@@ -110,8 +99,7 @@ func (c ConfigTable) CardMinutes() (uint16, bool) {
 	return c.LocalCardTime, true
 }
 
-// CardMilliWh 把存下来的刷卡时间/电量换算成电量。时间模式下主板手里
-// 根本没有电量数字，所以它返回 false。
+// CardMilliWh 在电量模式下将刷卡额度转换为 mWh；时间模式返回 false。
 func (c ConfigTable) CardMilliWh() (uint64, bool) {
 	if !c.cardTimeIsEnergy() {
 		return 0, false
@@ -120,8 +108,7 @@ func (c ConfigTable) CardMilliWh() (uint64, bool) {
 	return uint64(c.LocalCardTime) * 10, true
 }
 
-// Validate 按固件实际强制的范围校验这张表，好让一次拒绝在这里就被
-// 挡住，而不是到了主板上变成一次悄无声息的空操作。
+// Validate 按固件允许的取值范围校验参数表，拒绝无法被设备接受的配置。
 func (c ConfigTable) Validate() error {
 	if c.RunMode > 4 {
 		return errors.New("设备运行模式超出范围")
@@ -155,13 +142,8 @@ func (c ConfigTable) Validate() error {
 	return nil
 }
 
-// configEncoded5 是 5 档固件期望的字节长度。它是 22 个字段却占 33 字节，
-// 而这个字节数正是文档自带的样例帧所印证的：LEN 0x29 即 41，等于 8 字节
-// 帧头加 33。
-//
-// 采用 8 档插座变体的主板会多出 3 个功率档和 3 个比例值。文档没有说明
-// 主板如何声明自己属于哪一种，所以这里核对长度而不是假定，其余长度一律
-// 拒绝。
+// configEncoded5 是五档参数表的 33 字节载荷长度；包含 22 个字段。
+// 加 8 字节帧头后 LEN 为 0x29；当前编解码器仅接受此布局，不支持八档变体。
 const configEncoded5 = 33
 
 // 编码后参数表里的字节偏移。
@@ -182,14 +164,12 @@ const (
 	offTempGuard  = 32
 )
 
-// EncodeConfig 把这张表渲染成 0xC3 下发用的字节。5 档表用不到
-// extra8Band，它是为插座变体预留的。
+// EncodeConfig 将有效五档参数表编码为 0xC3 的 33 字节载荷。
 func EncodeConfig(table ConfigTable) ([]byte, error) {
 	if err := table.Validate(); err != nil {
 		return nil, err
 	}
-	// 固件把第一档比例写死为 100，写成别的值就会拒绝整次下发，
-	// 所以这里取自常量而不是调用方的表。
+	// 第一档折扣按固件要求固定为 100，不使用调用方传入值。
 	first := table
 	first.TierRatioPercent[0] = 100
 
@@ -215,9 +195,7 @@ func EncodeConfig(table ConfigTable) ([]byte, error) {
 	return data, nil
 }
 
-// decodeConfigTable 把一张参数表读回来。5 档表是 22 字节，8 档插座变体
-// 多 6 字节。其余长度一律拒绝而不是照猜着读，因为读一张错位的表会得到
-// 一份看着像样却完全错误的配置。
+// decodeConfigTable 解码五档参数表，仅接受 33 字节载荷及支持的命令字；其他长度返回 ErrPayload。
 func decodeConfigTable(frame Frame) (ConfigTable, error) {
 	if (frame.Command != ConfigReport && frame.Command != SetConfig) || len(frame.Data) != configEncoded5 {
 		return ConfigTable{}, ErrPayload
@@ -244,9 +222,7 @@ func decodeConfigTable(frame Frame) (ConfigTable, error) {
 	return table, nil
 }
 
-// ParseConfigAck 读取 0xC4 应答。错误码非零表示主板保留了它原来的表，
-// 因此把这次下发当作成功，会让平台以为某个计费策略正在设备上跑，
-// 其实并没有。
+// ParseConfigAck 解析 C4；非零错误码表示参数被拒绝，设备保留原参数表。
 func ParseConfigAck(frame Frame) error {
 	if frame.Command != 0xC4 || len(frame.Data) != 1 {
 		return ErrPayload
@@ -281,8 +257,7 @@ func DecodeConfig(frame Frame) (ConfigTable, error) {
 	return decodeConfigTable(frame)
 }
 
-// BuildConfigAck 渲染 0xC4 应答。错误码非零表示主板保留了它原来的表，
-// 所以平台不能把这次计费策略下发当作已送达。
+// BuildConfigAck 编码 0xC4；非零结果表示配置被拒绝，设备保留原参数表。
 func BuildConfigAck(code byte) Frame {
 	return Frame{Command: ConfigAck, Data: []byte{code}}
 }

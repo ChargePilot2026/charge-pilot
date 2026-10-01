@@ -44,8 +44,8 @@ func (s UserStopService) Stop(ctx context.Context, orderNo string, userID uint64
 			return store.StopReservation{}, err
 		}
 		reservation.Status = "sent"
-		// 写入失败或只写了一半的状态依然留在库里，重试循环会重发
-		// 同一条 STOP 的 session。HTTP 响应永远不会声称已经断电。
+		// 写入失败或部分写入时保留停止命令，重试使用同一 STOP 会话标识。
+		// HTTP 接受请求不表示设备已经断电。
 		_ = s.Devices.Send(ctx, reservation.DeviceID, reservation.Wire)
 	}
 	return reservation, nil

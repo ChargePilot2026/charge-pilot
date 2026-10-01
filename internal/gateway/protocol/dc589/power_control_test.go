@@ -20,8 +20,7 @@ func TestPowerControlRoundTrip(t *testing.T) {
 	if len(frame.Data) != powerControlDataBytes {
 		t.Fatalf("data = %d bytes, want %d", len(frame.Data), powerControlDataBytes)
 	}
-	// 保留字节必须发零。文档称它们为保留，却从没说非零代表
-	// 什么，所以发一个非零值就是对固件行为的猜测。
+	// 验证保留字节始终为零。
 	if frame.Data[4] != 0 || frame.Data[5] != 0 {
 		t.Fatalf("reserved bytes are %#x, want 0", frame.Data[4:6])
 	}
@@ -38,8 +37,7 @@ func TestPowerControlRoundTrip(t *testing.T) {
 }
 
 func TestPowerControlRejectsTheDocumentedFailureMarker(t *testing.T) {
-	// 0xFFF1 占满参数字段，所以一块满足不了请求的主板是可以
-	// 认出来的，不必去靠一个文档没定义的错误码来区分。
+	// 验证两字节失败标记 0xFFF1 被识别为请求拒绝。
 	_, err := ParsePowerControlReply(Frame{
 		Command: cmdPowerControlReply,
 		Data:    []byte{byte(PowerSet), byte(PowerOpRemove), 0xF1, 0xFF, 0, 0},
@@ -50,8 +48,7 @@ func TestPowerControlRejectsTheDocumentedFailureMarker(t *testing.T) {
 }
 
 func TestPowerControlRefusesAnUndocumentedOperation(t *testing.T) {
-	// 文档只定义了操作 0，其余没有列举。这个集合之外的码
-	// 在这里就被拒绝，免得任何一帧建立在猜测之上。
+	// 验证仅允许已定义操作 0，拒绝未知操作码。
 	_, err := BuildPowerControl([6]byte{}, PowerControl{Control: PowerSet, Operation: PowerOperation(9)})
 	var unknown ErrPowerOperationUnknown
 	if !errors.As(err, &unknown) || unknown.Operation != 9 {
@@ -60,8 +57,7 @@ func TestPowerControlRefusesAnUndocumentedOperation(t *testing.T) {
 }
 
 func TestPowerQueryCarriesNoParameter(t *testing.T) {
-	// 一条又查又带值的命令是在要求主板同时做两件事，而它听
-	// 哪一件，全看没人测量过的固件行为。
+	// 查询操作必须拒绝非零参数，避免混合查询和设置语义。
 	if _, err := BuildPowerControl([6]byte{},
 		PowerControl{Control: PowerQuery, Operation: PowerOpRemove, DeciWatts: 100}); err == nil {
 		t.Fatal("a query carrying a parameter was accepted")
@@ -73,9 +69,7 @@ func TestPowerQueryCarriesNoParameter(t *testing.T) {
 }
 
 func TestPowerControlRejectsAnUnknownControlByte(t *testing.T) {
-	// 一帧回显了本构建不认识控制字的 0xE1，不是什么该去
-	// 解释的东西。拒掉它，就不至于将来固件的一个新取值被
-	// 当成今天的意思来读。
+	// 验证未知 0xE1 控制字被拒绝，避免按已有语义解析新协议值。
 	_, err := ParsePowerControlReply(Frame{
 		Command: cmdPowerControlReply,
 		Data:    []byte{0x07, byte(PowerOpRemove), 0x00, 0x00, 0, 0},

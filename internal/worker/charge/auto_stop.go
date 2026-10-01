@@ -35,9 +35,8 @@ type autoStopOrder struct {
 	PricingSnapshot []byte    `gorm:"column:pricing_snapshot"`
 }
 
-// Run 只依据已落库的订单与设备证据来停止充电订单。
-// 单凭网络断开不能证明用户拔了枪：最新一次设备心跳必须仍然是新鲜的，
-// 断电规则才会触发。
+// Run 根据持久化订单和设备证据停机。
+// 断电判定要求设备心跳未过期，不能仅凭网络断开认定用户拔枪。
 func (s AutoStopper) Run(ctx context.Context) (int, error) {
 	if s.UserDB == nil || s.GatewayDB == nil || s.ServiceToken == "" {
 		return 0, errors.New("auto stop is not configured")
@@ -161,16 +160,8 @@ func (s AutoStopper) Run(ctx context.Context) (int, error) {
 	return stopped, nil
 }
 
-// spendCapReached 判断一个运行中的服务端计费会话
-// 是否已经触到其费率声明的上限。
-//
-// 上限为 0 表示不设上限，
-// 此时会话照旧由开始时下发的额度来终止，与没有上限时一样。
-// 引擎已经算不出价的费率同样不产生判定：
-// 这是一条停止规则，
-// 而从引擎拒绝的费率推导出来的规则，
-// 不构成切断别人充电的理由。
-// 两种情况都返回 false，把决定权留给既有规则。
+// spendCapReached 判断服务端计费会话是否达到费率费用上限。
+// 上限为零或费率无法计价时返回 false，由已有额度和停机规则处理。
 func spendCapReached(rule pricing.Rule, samples []protocol.Event, order autoStopOrder, now time.Time) bool {
 	spec := rule.Spec
 	if !spec.Mode.ServerBilled() || spec.SpendCapCents <= 0 {
@@ -178,17 +169,12 @@ func spendCapReached(rule pricing.Rule, samples []protocol.Event, order autoStop
 	}
 	latest, ok := latestMeter(samples, order.PortNo, now)
 	if !ok {
-		// 没有新鲜读数就无从声称已经花了多少钱。
-		// 桩不可达是另一个问题，在别处处理；
-		// 在这里拿陈旧计量去猜，
-		// 会停掉那些离上限还很远的会话。
+		// 费用上限判断必须使用未过期的计量读数；设备不可达由其他规则处理。
 		return false
 	}
 	plan, err := pricing.StopAtMeter(rule, measuredMeter(order, latest, samples))
 	if err != nil {
-		// 定不下来的计量是结算复核要回答的问题，不是停止充电的理由。
-		// 这里的 ErrMeterReview 意味着各段电量对不上，
-		// 那是计费问题，不是超限。
+		// ErrMeterReview 表示分段电量不一致，需要计费核实，不作为消费超限停机依据。
 		return false
 	}
 	return plan.ShouldStop
@@ -205,9 +191,7 @@ func measuredMeter(order autoStopOrder, latest meterReading, samples []protocol.
 		ChargedWh:      latest.wh,
 		ChargedSeconds: latest.seconds,
 	}
-	// measuredSegments 需要一个可以测量到头的终止事件，
-	// 所以把这条读数本身装扮成终止事件。
-	// 它是同一份遥测的视图，不是第二次测量。
+	// 将当前读数转换为终止事件视图，供 measuredSegments 校验完整区间，不生成额外测量。
 	terminal := protocol.Event{
 		DeviceID: order.DeviceID, Port: order.PortNo, Type: protocol.ChargeEnd,
 		StartedAt: ended.Add(-time.Duration(latest.seconds) * time.Second),

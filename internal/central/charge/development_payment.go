@@ -11,9 +11,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// DevelopmentPaymentAPI is registered only by PAYMENT_MODE=simulation. It
-// confirms the authenticated user's own simulated checkout via the normal
-// callback transaction; it cannot accept arbitrary amounts or identities.
+// DevelopmentPaymentAPI 仅在 PAYMENT_MODE=simulation 时注册。
+// 通过正常支付回调事务确认当前用户的模拟结算，不接受任意金额或用户身份。
 type DevelopmentPaymentAPI struct {
 	Auth  identity.SessionAuthenticator
 	DB    *gorm.DB

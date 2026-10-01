@@ -18,8 +18,7 @@ func TestConfiguredOfferSettlement(t *testing.T) {
 		offer Offer
 		total int64
 	}{
-		// 固定时长套餐只为用掉的那一段时长收费，所以提前结束的充电
-		// 会把剩下的部分退回去。
+		// 固定时长套餐按实际使用时长收费，提前结束时退还剩余部分。
 		{"package half used", Offer{ID: 1, StationID: 2, Name: "套餐", Mode: "duration", PriceCents: 600, DurationMinutes: 60}, 300},
 		{"amount cap", Offer{ID: 2, StationID: 2, Name: "金额", Mode: "amount", PriceCents: 100}, 100},
 	}

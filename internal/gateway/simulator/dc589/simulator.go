@@ -1,19 +1,6 @@
-// Package dc589sim 在本地顶替一块 dc589 充电板。
-//
-// 它通过 TCP 讲真实的 5.8.9 线路协议，
-// 因此走的是与网关面对真板时完全相同的组帧、载荷校验和会话处理。
-// 它不是网关的 mock：
-// 它是同一份契约设备端的第二套实现。
-//
-// 之所以要它，是因为没有厂商硬件就无法把充电链路从头走到尾。
-// 它是开发与测试工具，
-// 绝不能接进任何生产进程。
-//
-// 模拟器按协议划分：
-// 换一家厂商、或者换成 MQTT 板，应当在本网包旁
-// 边另起一个包，而不是给共享实现加一个开关参数，
-// 因为它们能表达的行为并不相同。
-// 本包命名为 dc589sim 而不是 dc589，就是为了还能 import 它所实现的协议编解码器。
+// Package dc589sim 提供开发和测试使用的 DC589 设备模拟器，通过 TCP 执行实际 5.8.9 协议。
+// 复用协议编解码器，覆盖注册、心跳、控制及计量，不随生产进程启动。
+// 不同厂商或传输协议使用独立模拟器包，避免混用设备行为。
 package dc589sim
 
 import (
@@ -29,9 +16,7 @@ import (
 	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol/dc589"
 )
 
-// Scenario 选定被测的行为。
-// 每个场景共用同一套注册与心跳路径，只在被要求充电之后板子做什么上不同，
-// 这样一次失败就能指向某一个具体行为。
+// Scenario 选择充电行为；各场景共用注册与心跳流程，仅改变启动后的执行结果。
 type Scenario string
 
 const (
@@ -159,7 +144,7 @@ func (board *board) serveOnce(ctx context.Context) error {
 	board.writer = &frameWriter{conn: conn, log: config.Log}
 	board.session = [6]byte{}
 
-	// 靠关连接来打断阻塞读。
+	// 关闭连接以中断阻塞读取。
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
@@ -188,16 +173,8 @@ func (board *board) serveOnce(ctx context.Context) error {
 	return board.loop(ctx)
 }
 
-// deciWattSecondsPerMilliWh 把板子电量累加器的单位换算成
-// 毫瓦时：1 毫瓦时等于 3.6 瓦秒，而累加器计的是 0.1 瓦秒，
-// 所以 1 毫瓦时是它的 36 个单位。
-//
-// 用 0.1W·s 累加、只有在数值要上
-// 线时才换算，是计量精确的前提。
-// 另一条路——每 tick 固定存进一个毫瓦时数——无法和板子上报的功率对账，
-// 因为两者会变成互不相干的常数：
-// 板子声称 150W 却每小时存 3.6kWh，就会多送 24
-// 倍，而结算单里的每个数字看上去都仍然合理。
+// deciWattSecondsPerMilliWh 将 0.1 W·s 累加值转换为 mWh：1 mWh = 3.6 W·s = 36 个累加单位。
+// 先积分功率与时间，发送时再换算电量，避免逐 tick 取整或使用固定增量。
 const deciWattSecondsPerMilliWh = 36
 
 // charge 是一笔正在进行的充电的状态。
@@ -225,13 +202,7 @@ type charge struct {
 	faultSent    bool
 }
 
-// energyBilled 报告这笔订单的数量是电量而不是时长。
-//
-// 线路对两者只有同一个无符号字段，
-// 唯一能说明它是哪一个的只有充电
-// 模式。把按电量下的单当成时长去
-// 读，就会让一笔 1Wh 的订单变成一次一
-// 秒的充电，还上报数倍于卖出量的电。
+// energyBilled 根据充电模式判断授权数量是否为电量；协议共用数值字段，单位不能独立推断。
 func energyBilled(mode dc589.ChargeMode) bool {
 	return mode == dc589.ByEnergy || mode == dc589.LongEnergy
 }
@@ -249,9 +220,7 @@ func (c *charge) remainingMilliWh() uint32 {
 	return 0
 }
 
-// complete 报告这笔充电是否已送出订单买下的全部
-// 量。按电量下的单看电表，按时间下的单看时钟，
-// 因为那才是用户真正买的东西。
+// complete 判断授权额度是否耗尽：电量模式比较累计电量，时长模式比较已用时长。
 func (c *charge) complete() bool {
 	if energyBilled(c.mode) {
 		return c.chargedMilliWh() >= c.targetMilliWh
@@ -280,30 +249,18 @@ type board struct {
 	mu       sync.Mutex
 	session  [6]byte
 	charging map[byte]*charge
-	// clockOffset 是板子自身时钟落后服务器多少：
-	// 注册回包时取初值，之后每个 A9 刷新。
-	// 结算用的是板子自己打的时间戳，
-	// 所以未经校正的时钟不只是日志里看着别
-	// 扭——它会把整个会话放到错误的时间里，而后续读数都是拿这些时间去比的。
+	// clockOffset 保存设备时钟相对服务器的偏移；注册应答初始化，后续 0xA9 校时更新。
+	// 事件与结算时间戳均使用校正后的协议时间。
 	clockOffset time.Duration
-	// heartbeat 在平台每次下发新周期时重
-	// 建，portTelemetry 记录是否带上端口数据。
-	// 自 5.8.6 起这两项都由服务器决定，
-	// 所以板子把它们记下来，而不是假定自己的默认值还算数。
+	// 收到平台心跳设置时重建 ticker，portTelemetry 保存端口遥测开关；两项均以平台下发值为准。
 	heartbeat         *time.Ticker
 	heartbeatInterval time.Duration
 	portTelemetry     bool
 	configTable       dc589.ConfigTable
 }
 
-// factoryTable 是板子出厂自带的参数表。
-//
-// 之所以要有它，是因为零值不是一张合法的表。
-// 固件拒绝 50-100 之外的温度保护值（只有 0xFF 一个出口），
-// 同样限制了浮充电流和拔枪定时器，
-// 所以一块从未被配置过的板子会在自己的校验里失败，对一次读操作回「拒绝」
-// ——平台会以为自己的费率没下发成功，
-// 实际上压根没人发过。
+// factoryTable 返回满足固件范围约束的初始参数表。
+// 温度保护、浮充与移除定时等字段不能使用任意零值，避免首次查询被误判为无效配置。
 func factoryTable() dc589.ConfigTable {
 	return dc589.ConfigTable{
 		RunMode:          0,   // 先充电后按键
@@ -334,10 +291,7 @@ func newBoard(config Config, conn net.Conn) *board {
 	}
 }
 
-// now 是板子认为的当前时间，
-// 用协议承载的那个民用时区表示。encodeTime 会写入交给它的那个时区的日历字段，
-// 所以板子若按宿主本地时区给事件打时间戳，
-// 服务器读回来就会变成另一个瞬间。
+// now 返回校正后的设备时间，并转换为协议民用时区，用于帧日期字段编码。
 func (b *board) now() time.Time {
 	b.mu.Lock()
 	offset := b.clockOffset
@@ -345,9 +299,7 @@ func (b *board) now() time.Time {
 	return dc589.Civil(time.Now().Add(offset))
 }
 
-// setClock 采用服务器的时间。
-// 校正量以偏移量而非新的时间基准保存，这样板子的时钟仍按宿主的真实速率前进，
-// 第二次对时量到的是漂移，而不是把漂移重新推一遍。
+// setClock 将服务器时间保存为相对宿主时钟的偏移，保留真实时间推进速率。
 func (b *board) setClock(server time.Time) {
 	offset := server.Sub(time.Now())
 	b.mu.Lock()
@@ -357,9 +309,7 @@ func (b *board) setClock(server time.Time) {
 	b.config.Log.Printf("server time %s adopted, clock moved %s", server.Format(time.RFC3339), (offset - previous).Truncate(time.Second))
 }
 
-// register 完成 A0/A1 交换并采用服务器下发的会话字节。
-// 之后每一帧都带着它们，
-// 服务器就是靠这个把帧关联到这条连接的。
+// register 完成 A0/A1 交换，后续上行帧使用服务器分配的会话号。
 func (b *board) register(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -385,25 +335,18 @@ func (b *board) register(ctx context.Context) error {
 	b.mu.Lock()
 	b.session = reply.Session
 
-	// 注册回包本身已经带着服务器时间，
-	// 所以在发出任何别的东西之前板子就已校准。在这里就读掉它而不是等 A9，
-	// 意味着即便服务器从不回答对时请求，也不会让板
-	// 子用未经校正的时钟去给结算打时间戳。
+	// 优先使用注册应答中的服务器时间校准时钟，避免依赖后续校时响应。
 	b.clockOffset = at.Sub(time.Now())
 	b.mu.Unlock()
 	b.config.Log.Printf("registered at %s with server time %s", b.config.Gateway, at.Format(time.RFC3339))
-	// 另外再显式索要一次时间。
-	// 服务器会用 A9 回答 A8 并记一条对时事件，而这条
-	// 事件是时钟校正在会话审计里唯一显形的地方——没有它，
-	// 一块登录后发生漂移的板子会被悄悄地校正掉，永远查不到。
+	// 主动发送 0xA8 校时请求，接收 0xA9 并产生可审计的校时事件。
 	if err := b.writer.send(dc589.BuildTimeRequest()); err != nil {
 		return fmt.Errorf("send time request: %w", err)
 	}
 	return nil
 }
 
-// loop 把板子同时要做的三件事复合成一路：应答服务器命令、
-// 发心跳、让充电跑到自己的终点。
+// loop 处理下行命令、心跳及充电状态推进。
 func (b *board) loop(ctx context.Context) error {
 	frames := make(chan dc589.Frame, 16)
 	readErr := make(chan error, 1)
@@ -430,9 +373,7 @@ func (b *board) loop(ctx context.Context) error {
 		defer timer.Stop()
 		reconnect = timer.C
 	}
-	// 用闭包，
-	// 因为平台每次下发新周期都会替换这个字段：
-	// 现在求值会在返回时停掉原来那个 ticker，而真正在用的那个还在跑。
+	// 退出时通过闭包停止当前 ticker；平台更新周期可能已替换原 ticker。
 	defer func() { b.heartbeat.Stop() }()
 	// 计量按自己的节奏推进，这样即便服务器不催，
 	// 充电在两次心跳之间也在走。
@@ -547,12 +488,7 @@ func (b *board) handle(ctx context.Context, frame dc589.Frame) error {
 		}
 		return b.stop(port, 7)
 	case dc589.TimeReply:
-		// A9 是服务器对本板注册时发出的 A8 的应答。
-		// 这里当初处理的是 A8，两头都不成立：
-		// 网关从不下发 A8（A8 是板子到服务
-		// 器方向），而它确实下发的 A9 则掉进 default 分支被无声丢弃。
-		// 于是即便服务器每次连接都主动提供校正，
-		// 校正也从未发生。
+		// A9 是平台对设备 A8 校时请求的应答。
 		server, err := dc589.ParseTimeReply(frame)
 		if err != nil {
 			return fmt.Errorf("parse time reply: %w", err)
@@ -560,11 +496,7 @@ func (b *board) handle(ctx context.Context, frame dc589.Frame) error {
 		b.setClock(server)
 		return nil
 	case dc589.HeartbeatInterval:
-		// 自 5.8.6 起，
-		// 这条命令还决定每次心跳里是否带端口遥测。
-		// 忽略它的板子会一直按自己的出厂默认值上报，而这正是这条命令要消除的歧义，
-		// 所以模拟器遵守它，
-		// 并按收到的值而不是自己的默认值去发心跳。
+		// 按 0xA6 下发的周期及端口遥测开关发送心跳，不保留旧默认配置。
 		ok, err := dc589.ParseHeartbeatInterval(frame)
 		if err != nil {
 			return err
@@ -593,18 +525,10 @@ func (b *board) handle(ctx context.Context, frame dc589.Frame) error {
 		}
 		return b.writer.send(report)
 	case dc589.RegisterReply:
-		// 这些是对本板已发出帧的确认。
-		// 回应确认会形成回路，
-		// 所以按协议沉默才是正确读法，而不是 switch 的疏漏。
+		// 这些帧确认设备已发送的请求，不再应答，避免形成确认循环。
 		return nil
 	default:
-		// 其余都是本版本未实现的下行，而吞掉
-		// 它恰恰是唯一让问题无法诊断的响应：
-		// 命令无影无踪，
-		// 两边都没有记录，
-		// 于是「模拟器没实现」和「网关没发」从外面看一模一样。
-		// 打出这个字节就是全部差别——这里冒出的远程控制或功率控制，
-		// 意味着产品为一条模拟器尚未应答的命令新增了调用方。
+		// 记录未实现的下行命令字节，便于定位模拟器协议覆盖缺口。
 		b.config.Log.Printf("unhandled downlink 0x%02X (%d bytes) ignored", frame.Command, len(frame.Data))
 		return nil
 	}
@@ -622,10 +546,7 @@ func (b *board) setHeartbeat(seconds uint16) {
 	b.heartbeatInterval = time.Duration(seconds) * time.Second
 }
 
-// applyConfig 像真板子那样接收参数表：
-// 校验各区间，被拒的写入保留原来那张表。
-// 一个什么都收的模拟器会让 0xC4 的错误路径无从测
-// 试，而那是平台得知费率没有送达设备的唯一途径。
+// applyConfig 校验参数范围；拒绝时保留原参数表，供 C4 失败应答测试使用。
 func (b *board) applyConfig(frame dc589.Frame) error {
 	code := configCode(frame)
 	if code != 0 {
@@ -643,8 +564,7 @@ func (b *board) applyConfig(frame dc589.Frame) error {
 	return b.writer.send(dc589.BuildConfigAck(0))
 }
 
-// start 开始或拒绝一次充电。
-// 拒绝会被服务器转成退款，所以要用非零的结果码回应。
+// start 执行或拒绝启动请求；拒绝时发送明确非零结果码，供平台处理启动失败与退款。
 func (b *board) start(ctx context.Context, command dc589.StartCommand) error {
 	code := byte(0)
 	duplicate := false
@@ -678,15 +598,9 @@ func (b *board) start(ctx context.Context, command dc589.StartCommand) error {
 		return nil
 	}
 	port := command.Port
-	// Protocol timestamps and the device tick both have one-second precision.
-	// Align START so the first global tick cannot make a one-minute purchase
-	// report only 59 charged seconds when it expires.
+	// 协议时间戳和设备时钟均精确到秒，将启动时间对齐到秒，避免首个时钟步进使一分钟充电只累计 59 秒。
 	running := &charge{port: port, orderBCD: command.OrderBCD, mode: command.Mode, startedAt: b.now().Truncate(time.Second), consumer: command.ConsumerType, card: command.CardNumber, band: 1}
-	// 数量在按时间下单时是分钟、在按电量下单时是瓦时，
-	// 所以一个字段同时承载两者，只有模式能说
-	// 明它到底是哪个。把电量数字当成秒数
-	// 读，会让一笔 1Wh 的订单一秒就结束，
-	// 却仍按好几瓦时上报。
+	// 授权数量根据模式解释：时长模式单位为分钟，电量模式单位为 Wh。
 	if energyBilled(command.Mode) {
 		running.targetMilliWh = uint32(command.Quantity) * 1000
 	} else {
@@ -771,12 +685,8 @@ func (b *board) reportEnd(running *charge, reason byte) error {
 	return nil
 }
 
-// remainingSecs 推算这次充电还能跑多久，单位秒。
-//
-// 心跳的 remaining 字段在两种计费模式下问的是同一个问题，
-// 所以按电量计费的充电要用「还欠的电量 ÷ 实际取的功率」来推算。
-// 那种情况下回零，
-// 等于告诉平台一次刚开始的充电马上就要结束了。
+// remainingSecs 返回预计剩余秒数。
+// 时长模式读取剩余时间；电量模式按剩余电量除以当前功率推算。
 func (b *board) remainingSecs(running *charge) uint32 {
 	if !energyBilled(running.mode) {
 		if running.remaining <= 0 {
@@ -872,14 +782,7 @@ func (b *board) chargingHeartbeat() {
 	b.sendHeartbeat()
 }
 
-// sendHeartbeat 上报板子信息；
-// 平台要求了端口数据且确有充电时，再带上每个充电端口的状态。
-//
-// 端口块是否出现自 5.8.6 起由平台决定，在 A6 里下发。
-// 无条件上报会让「本版本忽略了指令」与「本版本没问题」
-// 变得无法区分，而这正是该命令要
-// 消除的歧义——还会导致一个明确关
-// 掉了端口遥测的平台照样收到它。
+// sendHeartbeat 发送设备状态；仅在平台启用端口遥测且存在充电时添加端口块。
 func (b *board) sendHeartbeat() {
 	if b.portTelemetry {
 		if err := b.sendAllPorts(false, dc589.Heartbeat); err != nil {

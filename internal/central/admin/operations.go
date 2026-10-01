@@ -57,21 +57,9 @@ func (a ResourceAPI) registerOperations(r *gin.Engine) {
 	r.PUT("/api/v1/admin/whitelabel", a.Auth.Require("whitelabel.update"), a.saveWhitelabel)
 }
 
-// MySQL 把 JSON、DECIMAL 这类列以字节的形式返回。这里显式归一化，
-// 是为了让 JSON 值到浏览器那边是数组/对象，而不是 base64 字符串。
-// normalizeRows 归一化 admin 库查出来的行：MySQL 把 JSON、DECIMAL 等列当 []byte 返回，
-// 先转成字符串；event_types、target_ids 以及所有以 _json 结尾的列在能解析时展开成
-// 数组或对象；布尔列转成 true/false。解析不出来的保持原样——
-// 展示问题不该让整页列表失败。
-//
-// 布尔列走白名单而不是逐个 if：MySQL 的 tinyint(1) 回来是数字，前端拿到的是
-// 1 而不是 true。前端一旦用 === true 判断，数字 1 就会被判成 false——设备矩阵
-// 会把一台明明上报电量的桩显示成"仅时长"，运营照着它去配计费方式就会撞上
-// "未声明电量上报能力"。
-//
-// 这里只列真正从库里查出来、且列类型是 tinyint(1) 的列。像 can_review、mfa_required
-// 这种在 Go 里现算的响应字段不在表里——它们本来就是 bool，加进来只会让人
-// 误以为漏了哪张表。以后新增布尔列时记得把列名加进来。
+// normalizeRows 将数据库字节值转换为 JSON 可用的响应值。
+// JSON 字段解析为数组或对象，解析失败保持原值；白名单内的 tinyint(1) 字段转为布尔值。
+// 新增数据库布尔字段时需同步更新白名单，Go 计算的布尔响应字段无需登记。
 var booleanColumns = map[string]bool{
 	"enabled":                 true,
 	"reports_energy":          true,
@@ -124,9 +112,8 @@ func httpsURL(s string) bool {
 	return e == nil && u.Scheme == "https" && u.Hostname() != "" && u.User == nil && len(s) <= 512
 }
 
-// adminWrite 通用写入：id 为 0 时新增并回填自增主键，非 0 时先 SELECT ... FOR UPDATE
-// 读出改前快照再更新，随后在同一事务里写审计。改前快照与审计必须原子成功——
-// 审计里的操作人、权限版本要能与这次改动对得上，缺一条事后就没法复盘。
+// adminWrite 在同一事务中完成业务写入和审计。
+// id=0 时新增并回填主键；否则锁定原记录，读取更新前快照后执行更新。
 func (a ResourceAPI) adminWrite(c *gin.Context, table, action string, id uint64, values map[string]any) (uint64, bool) {
 	p := c.MustGet("admin_profile").(Profile)
 	err := a.Store.AdminDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
@@ -155,10 +142,9 @@ func (a ResourceAPI) adminWrite(c *gin.Context, table, action string, id uint64,
 	return id, true
 }
 
-// createUser 新建后台账号。用户名 3–64 位、密码 12–72 字节（bcrypt 的长度上限），
-// 角色必须存在且至少带一项权限，并且只能授予自己已经持有的权限——
-// 否则一个 customer_admin 就能造出没人审过的提权账号，而审计还会把它记成一次普通操作。
-// 密码只以 bcrypt 散列入库，审计里也只记用户名和角色，不记密码。
+// createUser 校验用户名长度 3–64、密码长度 12–72 字节及角色权限。
+// 角色须存在且权限非空，授予的权限不得超出调用者权限。
+// 密码以 bcrypt 散列保存；审计仅记录用户名和角色。
 func (a ResourceAPI) createUser(c *gin.Context) {
 	// in 是新建后台账号的请求体，全部字段必填。
 	var in struct {
@@ -284,10 +270,8 @@ func (a ResourceAPI) createAnnouncement(c *gin.Context) {
 	}
 }
 
-// createWebhook 新建事件推送订阅。服务端生成 32 字节随机 secret，只在这次响应里
-// 明文返回一次，库里不保存；之后对方带这个 secret 校验推送来源。
-// 事件类型只能取 alert / charge_ended / refund_completed，
-// 1–3 个且不能重复。
+// createWebhook 校验公网 HTTPS 地址及 1–3 个不重复的订阅事件，生成 32 字节随机 secret。
+// secret 保存到订阅表用于投递签名，仅在创建响应中返回；后续查询不返回。
 func (a ResourceAPI) createWebhook(c *gin.Context) {
 	// in 是新建订阅的请求体。
 	var in struct {
@@ -302,8 +286,7 @@ func (a ResourceAPI) createWebhook(c *gin.Context) {
 		httpapi.BadRequest(c, "请填写名称、HTTPS URL 和订阅事件")
 		return
 	}
-	// 在创建时就拒掉内网目标，让它们永远进不了表；
-	// 真正投递时还会复查同一条规则，用来覆盖 DNS rebinding。
+	// 保存前拒绝内网目标；投递时再次校验解析地址，防止 DNS rebinding。
 	if err := netguard.ValidatePublicHTTPS(in.URL); err != nil {
 		httpapi.Write(c, 400, 1002, err.Error(), nil)
 		return
@@ -340,8 +323,7 @@ func (a ResourceAPI) createWebhook(c *gin.Context) {
 	httpapi.OK(c, gin.H{"id": id, "secret": secret})
 }
 
-// whiteKeys 是白标配置的可写字段白名单及各自长度上限。
-// 用白名单而不是逐字段判断：新增字段必须显式登记，漏改校验不会直接让脏值落库。
+// whiteKeys 声明白标可写字段及长度上限；新增字段必须显式登记。
 var whiteKeys = map[string]int{"miniprogram_name": 64, "miniprogram_logo_url": 512, "admin_logo_url": 512, "theme_color": 9, "service_phone": 32, "service_wechat_id": 64, "icp_record_no": 128, "custom_domain": 253, "agreement_url": 512, "privacy_url": 512, "about_us": 20000}
 
 // whiteRead 读出当前生效的白标配置。whitelabel_config 只有 id=1 这一行；
@@ -381,10 +363,9 @@ func (a ResourceAPI) whitelabel(c *gin.Context) {
 	httpapi.OK(c, v)
 }
 
-// saveWhitelabel 保存白标配置，整体覆盖 id=1 那一行（INSERT ... ON DUPLICATE KEY UPDATE）。
-// 只接受白名单内的键，_url 结尾的键非空时必须是 HTTPS 链接，小程序名称和主题色必填
-// 且主题色要符合 #RRGGBB 或 #RRGGBBAA，自定义域名非空时要符合域名格式。
-// 因为是整份 JSON 覆盖而不是逐键合并，调用方必须一次提交完整配置，否则未提交的键会退回默认值。
+// saveWhitelabel 整体覆盖 id=1 的白标 JSON，仅接受允许的键。
+// 非空 URL 必须使用 HTTPS，名称和 #RRGGBB 或 #RRGGBBAA 主题色必填，非空域名须合法。
+// 调用方必须提交完整配置；省略的键按默认值处理。
 func (a ResourceAPI) saveWhitelabel(c *gin.Context) {
 	in := map[string]string{}
 	if !decodeResource(c, &in) {

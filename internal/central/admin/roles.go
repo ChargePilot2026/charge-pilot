@@ -13,27 +13,13 @@ import (
 	"gorm.io/gorm"
 )
 
-// 角色与权限的管理。
-//
-// RBAC 从一开始就在每个地方强制执行——每条后台
-// 路由都声明自己需要的权限——但角色本身既看不见
-// 也改不了。角色来自迁移和引导脚本，于是运营要
-// 给一个账号配角色，就只能先知道它的数字 id；
-// 新岗位要用的角色更是根本建不出来。接口文档甚
-// 至让运营「在角色管理里」授权，而那个界面并不
-// 存在。
-//
-// 这里每一次写入都受同一条规则约束，和 createUser
-// 已经在用的那条一样：谁也不能授予自己没有的权限。
-// 没有这条，customer_admin 就能造出一个带着任何人类
-// 审核者都没批准过的权限的账号，而审计记录还会如实
-// 把这次提权记成一次日常操作。
+// 本文件实现角色管理与权限字典查询。
+// 写操作仅允许授予操作者已持有的权限，防止通过角色编辑或账号分配提升权限。
 
 // roleCodePattern 约束角色编码：小写字母开头，后接小写字母、数字或下划线，共 3–64 位。
 var roleCodePattern = regexp.MustCompile(`^[a-z][a-z0-9_]{2,63}$`)
 
-// RoleRow 是角色列表接口返回的一行：一个角色（一份权限的命名打包），
-// 加上运营侧做判断要用的附带信息——绑定的权限编码、已挂账号数、内置标记。
+// RoleRow 是角色列表投影，包含权限编码、绑定账号数量及内置角色标记。
 type RoleRow struct {
 	ID          uint64   `json:"id"`                   // 角色主键
 	Code        string   `json:"code"`                 // 角色编码，小写字母开头 3–64 位；账号记录的是 id，这里用于展示与自检
@@ -56,19 +42,9 @@ type PermissionRow struct {
 
 // registerRoles 挂载角色与权限字典的接口：角色增删改查，权限字典只读。
 func (a ResourceAPI) registerRoles(r *gin.Engine) {
-	// 角色列表保留它一直以来的 admin_user.read 这道门：
-	// 后台账号表单本来就调它来填角色选择器，收窄这道门会让
-	// 所有非超管运营都建不了账号。它现在多返回的字段是原来那
-	// 三个的超集。
-	//
-	// role.read / role.create / role.update 早就是种在种子
-	// 数据里、无人使用的权限，它们等的就是这个界面。
+	// 角色列表使用 admin_user.read，供后台账号表单和角色管理界面读取。
 	r.GET("/api/v1/admin/roles", a.Auth.Require("admin_user.read"), a.listRoles)
-	// 权限字典用和角色列表相同的权限把门：它只描述
-	// 存在哪些权限，不授予任何东西，而能选角色的人也
-	// 需要看见这个角色能做什么。种子数据里没有
-	// role.read，在这里另造一个只会把一项能力拆成
-	// 两个几乎一样的编码。
+	// 权限字典使用 admin_user.read，仅返回可选权限，不授予权限。
 	r.GET("/api/v1/admin/permissions", a.Auth.Require("admin_user.read"), a.listPermissions)
 	r.POST("/api/v1/admin/roles", a.Auth.Require("role.create"), a.createRole)
 	r.PUT("/api/v1/admin/roles/:id", a.Auth.Require("role.update"), a.updateRole)
@@ -104,8 +80,7 @@ func retiredPermission(code string) bool {
 		strings.HasPrefix(code, "alert.rule.") || strings.HasPrefix(code, "alert.subscription.") || code == "settings.ota.update" || code == "membership.create" || code == "alert.risk_config.update" || code == "pricing.template.create"
 }
 
-// listRoles 列出未删除的角色，按 id 升序。权限编码和账号数逐行另查后填进同一行，
-// 一次请求一个 R 返回完整行，避免前端为了画角色列表再发 N 次请求。
+// listRoles 按 ID 升序返回未删除角色，附带权限编码及关联账号数。
 func (a ResourceAPI) listRoles(c *gin.Context) {
 	var rows []RoleRow
 	if err := a.Store.AdminDB.WithContext(c.Request.Context()).Table("role AS r").
@@ -131,10 +106,7 @@ func (a ResourceAPI) listRoles(c *gin.Context) {
 	httpapi.OK(c, gin.H{"items": rows})
 }
 
-// listPermissions 列出全部权
-// 限，按模块、编码排序，平铺返回（分组由前端做）
-// 它就是角色编辑器勾选权限时对着的那张表；因为分
-// 组在前端做，这里只平铺，模块名挂在每一行上。
+// listPermissions 按模块、编码排序返回权限列表，分组由前端处理。
 func (a ResourceAPI) listPermissions(c *gin.Context) {
 	rows := []PermissionRow{}
 	if err := a.Store.AdminDB.WithContext(c.Request.Context()).Table("permission").
@@ -160,13 +132,8 @@ type roleInput struct {
 	Permissions []string `json:"permissions"` // 要授予的权限编码，必须非空、不重复，且只能来自调用者自己已持有的权限
 }
 
-// validate 校验角色输入，其中最关键的一条
-// 是权限只能从 codes（调用者已持有的权限）
-// 里选，且必须非空、不重复；否则这套权限模型就只是
-// 建议性的了：角色是一打包权限，放任一个账号在够
-// 不着的地方拼出一包，这套模型就退化成参考意见而不
-// 是强制。内置角色走同一个校验，但 update
-// Role 会把它的权限集合锁住，只改名称和说明。
+// validate 要求角色权限非空、不重复，且全部属于调用者已持有的权限。
+// 内置角色更新时仅允许修改名称和说明，权限集合保持固定。
 func (in roleInput) validate(codes []string) error {
 	if !roleCodePattern.MatchString(in.Code) || in.Name == "" || len([]rune(in.Name)) > 128 {
 		return errRoleInput
@@ -267,9 +234,7 @@ func (a ResourceAPI) updateRole(c *gin.Context) {
 		resourceFailure(c, err)
 		return
 	}
-	// 内置角色承载运营自身的访问权限。放开改它的
-	// 权限集合，就等于让最后一个管理员把所有人都锁
-	// 在门外，所以名称和说明还能改，授权不能改。
+	// 内置角色仅允许修改名称和说明，其权限集合固定，避免破坏基础管理权限。
 	var auditPending []auditEntry
 	err = a.auditedTransaction(c, a.Store.AdminDB, &auditPending, func(tx *gorm.DB) error {
 		if before.IsBuiltin {
@@ -315,22 +280,8 @@ func replaceRolePermissions(tx *gorm.DB, roleID uint64, codes []string) error {
 	return nil
 }
 
-// deleteRole 下线一个没人挂
-// 着的角色（软删除），但先拒绝三种情况。
-//
-// 一、内置角色承载运营自身的访
-// 问权限，删了可能把最后一个管
-// 理员关在自己的后台门外。二、角
-// 色下还有账号时不删，那些账号
-// 会在这一刻无声地丢掉全部权
-// 限，运营必须先自己把账号改派
-// 去，而悄悄替他们改派比逼他们
-// 自己动手更糟。三、也不能删自己
-// 正在使用的角色，这和前两者是
-// 同一种自锁，只是换了一条路。
-//
-// 整行做软删除，是为了让审计记录和
-// 历史操作人名称仍能解析到角色。
+// deleteRole 软删除角色，保留历史审计引用。
+// 内置角色、仍有关联账号的角色及调用者当前角色均不可删除。
 func (a ResourceAPI) deleteRole(c *gin.Context) {
 	id, ok := pathID(c)
 	if !ok {

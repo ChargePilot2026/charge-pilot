@@ -43,9 +43,7 @@ type endResult struct {
 	} `json:"meter"`
 }
 
-// SyncBatch 只有在 central 提交了最终读数之后才处理 BB。
-// 在此之前 gateway 一直占着这个枪口，
-// 别的订单没法把它抢去用。
+// SyncBatch 在 central 提交最终读数后处理 BB；此前 gateway 保留端口占用，防止新订单复用。
 func (s EndSynchronizer) SyncBatch(ctx context.Context) (int, error) {
 	if s.GatewayDB == nil || s.ServiceToken == "" {
 		return 0, errors.New("charge end synchronizer is not configured")

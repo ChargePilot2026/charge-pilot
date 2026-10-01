@@ -9,9 +9,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// Dashboard 是管理端首页看板的只读数据源，只持有连接、不保存任何状态。
-// UserDB 指向用户库，订单、金额与用户指标从 charge_order 和 user 统计；
-// AdminDB 指向管理库，站点、设备与告警数量分别从所属表统计。
+// Dashboard 从 central_db 查询订单、用户、站点、设备和告警指标，仅持有数据库连接。
 type Dashboard struct{ UserDB, AdminDB *gorm.DB }
 
 // TrendDay 是首页趋势图的一格，按东八区自然日聚合已结束的充电订单。
@@ -21,8 +19,7 @@ type TrendDay struct {
 	SettledCents    int64  `json:"settled_cents"`    // 当天已结束订单的合计金额,单位分
 }
 
-// Metrics 是首页看板一次读取的订单、用户、站点、设备和告警指标，以及最近 7 天趋势。
-// 任一子查询失败就整体返回错误，前端显示“数据暂不可用”而不是半份数据。
+// Metrics 保存首页业务指标及近 7 日趋势；任一查询失败均返回错误，避免展示不完整数据。
 type Metrics struct {
 	ChargingOrders       int64      `json:"charging_orders"`        // 当前状态为 charging(充电中)的订单数
 	TodayOrders          int64      `json:"today_orders"`           // 今日(北京时间)创建的未删除订单数，包含未启动订单

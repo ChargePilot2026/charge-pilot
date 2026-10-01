@@ -14,25 +14,12 @@ import (
 	"gorm.io/gorm"
 )
 
-// settlementCleanup 摘掉一次 settlementFixture 留下的全部痕迹。
-//
-// 这些夹具写的是共享开发库，不是每轮现建的库：站点名是裸 UUID、分账模板
-// 挂在站点上、计费单和结算行挂在模板上。少了这一步，每跑一次结算集成测试
-// 就往 admin_db 塞一个站点，几轮之后后台的站点列表被测试垃圾淹没，demo
-// 站点被挤到最后一页，结算包也因为库越滚越大而开始偶发失败。
-//
-// 删除顺序与写入顺序相反：先摘按结算单号落库的收款凭据与计费单，再摘
-// 结算头与它的参与方金额，最后才轮到分账模板和站点。少删一张表，孤儿行
-// 就会顶住下一轮的唯一键。
-//
-// settlementFloor 兜住另一种痕迹：调度器跑一遍会把库里所有到期的计费单都结掉，
-// 不只是本测试造的那一张。这些顺带结出来的行按结算单号认不出来（它们属于别的
-// 计费单），只能按"本轮之前库里最大 id"划线，清理时把线以上的一并摘掉。
+// settlementCleanup 清理结算夹具及本轮调度产生的结算记录。
+// 按依赖顺序删除凭据、计费、结算明细、模板和站点；以测试前最大结算 ID 限定新增记录。
 func settlementCleanup(t *testing.T, stationName, calculationNo string, month string) {
 	t.Helper()
 	billingDB := openSettlementDB(t, "TEST_BILLING_DATABASE_URL")
-	// 记下本轮开始时结算表的最大主键。清理时凡是更大的都是这轮新写的——它可能
-	// 是本测试结的，也可能是调度器顺手把别人的待结算一起结了。
+	// 记录结算表主键水位，清理本轮新增的结算记录，包括批处理生成的其他待结算夹具。
 	var floor int64
 	if err := billingDB.Raw("SELECT COALESCE(MAX(id),0) FROM settlement").Row().Scan(&floor); err != nil {
 		t.Fatalf("读取结算表水位失败: %v", err)
@@ -45,8 +32,7 @@ func settlementCleanup(t *testing.T, stationName, calculationNo string, month st
 		}{
 			{billingDB, "DELETE FROM settlement_party_amount WHERE settlement_id > " + strconv.FormatInt(floor, 10)},
 			{billingDB, "DELETE FROM settlement WHERE id > " + strconv.FormatInt(floor, 10)},
-			// settlement 按 created_month 做 RANGE 分区，分区键进 WHERE 才好
-			// 让分区裁剪生效；漏掉它不是错，但会让清理扫全表。
+			// 清理条件包含 created_month 分区键，支持分区裁剪。
 			{billingDB, "DELETE FROM settlement_party_amount WHERE settlement_id IN (SELECT id FROM settlement WHERE created_month = '" + month + "' AND order_no = (SELECT order_no FROM fee_calculation WHERE calculation_no = '" + calculationNo + "'))"},
 			{billingDB, "DELETE FROM settlement WHERE created_month = '" + month + "' AND fee_calculation_id = (SELECT id FROM fee_calculation WHERE calculation_no = '" + calculationNo + "')"},
 			{billingDB, "DELETE FROM fee_receipt WHERE calculation_no = '" + calculationNo + "'"},
@@ -57,8 +43,7 @@ func settlementCleanup(t *testing.T, stationName, calculationNo string, month st
 		}
 		for _, statement := range statements {
 			if err := statement.db.Exec(statement.query).Error; err != nil {
-				// 清理失败必须喊出来。静默吞掉的话，这一轮的垃圾会一直留在
-				// 库里，下一轮测试再被它绊倒，而症状指向的是完全无关的地方。
+				// 清理失败报告测试错误，避免残留结算夹具影响后续运行。
 				t.Errorf("清理结算夹具失败 (%v): %s", err, statement.query)
 			}
 		}
@@ -247,20 +232,17 @@ func TestSettlementRejectsInvalidTemplateRatios(t *testing.T) {
 		t.Skip("disposable MySQL required")
 	}
 	ctx := context.Background()
-	// 9000 个基点永远无法结算；
-	// 解析器必须拒绝这个模板，
-	// 而不是悄悄按一个失衡的比例把钱付出去。
+	// 验证分账比例合计不等于 10000 基点时拒绝结算。
 	_, stationID, _ := settlementFixture(t, ctx, "mode_a", []int32{5000, 4000}, 100, 100)
 	resolver := SplitResolver{AdminDB: openSettlementDB(t, "TEST_ADMIN_DATABASE_URL")}
 	if _, err := resolver.Resolve(ctx, stationID); err == nil {
 		t.Fatal("unbalanced ratios accepted")
 	}
-	// 完全没绑模板的站点必须明确报错，
-	// 而不是产出一份零值的结算单。
+	// 验证未绑定模板的站点返回明确错误，不生成零值结算。
 	var bare uint64
 	name := "bare-" + uuid.NewString()
 	adminDB := openSettlementDB(t, "TEST_ADMIN_DATABASE_URL")
-	// 这个站点不挂分账模板，所以走不了 settlementFixture 的清理，只能自己摘。
+	// 该夹具未绑定模板，需要独立清理站点。
 	t.Cleanup(func() {
 		if err := adminDB.Exec("DELETE FROM station WHERE name = ?", name).Error; err != nil {
 			t.Errorf("清理无模板站点夹具失败: %v", err)
@@ -335,7 +317,5 @@ func actualFee(electric, service int64) (fee actualFeeType) {
 	return actualFeeType{ElectricCents: electric, ServiceCents: service, TotalCents: electric + service}
 }
 
-// 结算写入方直接接收定价结果类型；
-// 这个别名让测试辅助函数保持易读，
-// 又不用把 pricing 包导入两次。
+// 别名供结算测试辅助函数直接接收 pricing 结果类型。
 type actualFeeType = pricing.ActualFee

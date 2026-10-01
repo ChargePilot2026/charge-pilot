@@ -54,16 +54,8 @@ func TestActualBillingPersistsAndRefundsOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// cleanupBillingFixture 摘掉一条 fixture 留下的全部痕迹。
-	//
-	// 这条链从 user 一路铺到 billing_db：计费单、收款凭据、投递记录、人工
-	// 复核单、退款单都在外面。一次跑测留下的是一条永远不会被结算掉的计费
-	// 单——SettlementsDue 按创建时间取最老的一批待结算，几十条这样的孤儿
-	// 攒下来，会把后来真正要结算的计费单挤出取数窗口，结算包的测试开始
-	// 随机失败，而症状看上去像是排序写错了。
-	//
-	// 删除顺序与写入顺序相反：先摘按订单号认的计费侧，再摘按支付单/订单
-	// 认的用户侧，最后才轮到用户本身。少删一张，孤儿行就顶住下一轮的唯一键。
+	// cleanupBillingFixture 按依赖顺序清理计费、凭据、复核、退款、支付、订单及用户夹具。
+	// 清理使用本轮订单和支付标识，避免残留计费记录占用后续调度的取数窗口。
 	cleanupBillingFixture := func(name string) {
 		t.Cleanup(func() {
 			statements := []struct {
@@ -75,10 +67,7 @@ func TestActualBillingPersistsAndRefundsOnce(t *testing.T) {
 				{billingDB, "DELETE FROM fee_delivery WHERE charge_order_id IN (SELECT charge_order_id FROM fee_calculation WHERE order_no = ?)", []any{name}},
 				{billingDB, "DELETE FROM fee_receipt WHERE calculation_no IN (SELECT calculation_no FROM fee_calculation WHERE order_no = ?)", []any{name}},
 				{billingDB, "DELETE FROM fee_calculation WHERE order_no = ?", []any{name}},
-				// 退款会往 event_outbox 写两条事件（退款请求、退款成功）。outbox
-				// 是只追加的，没有外键，订单删了它还在，于是每跑一次就多两条，
-				// 而它们的 event_id 由退款单号推出，重复触发会撞唯一键。这句
-				// 必须在删订单之前跑——子查询还要靠订单行认人。
+				// 先按订单归属清理退款 outbox，再删除订单，避免失去定位夹具的关联记录。
 				{userDB, "DELETE FROM event_outbox WHERE JSON_UNQUOTE(JSON_EXTRACT(envelope_json, '$.charge_order_id')) IN (SELECT CAST(id AS CHAR) FROM charge_order WHERE order_no = ?)", []any{name}},
 				{userDB, "DELETE FROM charge_event_log WHERE charge_order_id IN (SELECT id FROM charge_order WHERE order_no = ?)", []any{name}},
 				{userDB, "DELETE FROM charge_meter_review WHERE charge_order_id IN (SELECT id FROM charge_order WHERE order_no = ?)", []any{name}},
@@ -101,8 +90,7 @@ func TestActualBillingPersistsAndRefundsOnce(t *testing.T) {
 			}
 			for _, statement := range statements {
 				if err := statement.db.Exec(statement.query, statement.args...).Error; err != nil {
-					// 清理失败必须喊出来：静默吞掉的话，垃圾会一直留在库里，
-					// 下一轮测试再被它绊倒，而症状指向完全无关的地方。
+					// 清理失败必须报告测试错误，防止残留夹具影响后续运行。
 					t.Errorf("清理计费夹具失败 (%v): %s", err, statement.query)
 				}
 			}

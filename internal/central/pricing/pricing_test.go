@@ -52,9 +52,7 @@ func TestChargeModeExecutorSplit(t *testing.T) {
 }
 
 func TestCostRefusesDeviceBilledModes(t *testing.T) {
-	// 设备计费的电价表不带任何费率，因此根本无从计算。引擎必须明说这一点，
-	// 而不是给出一个看起来合理的数字：给一张已经付过钱的账单再造一个数字是
-	// 一次对账事故，不是可以四舍五入带过的细节。
+	// 验证设备计费规则不允许调用服务端费率计算，避免报价与实收来源混用。
 	for _, mode := range []ChargeMode{ModeDeviceDuration, ModeDeviceEnergy, ModeDevicePower} {
 		spec := Spec{Mode: mode}
 		if err := ValidateSpec(spec); err != nil {
@@ -80,12 +78,11 @@ func TestPeriodChainInvariants(t *testing.T) {
 	if err := ValidateSpec(base([]Period{{EndMinute: 1440, ElectricCents: 100}})); err != nil {
 		t.Fatalf("a single all-day period must be valid: %v", err)
 	}
-	// 不到午夜就结束的链，会让夜间那一段没有任何电价。
+	// 时段链未覆盖至午夜时应拒绝，避免夜间缺失电价。
 	if err := ValidateSpec(base([]Period{{EndMinute: 720, ElectricCents: 100}})); err == nil {
 		t.Fatal("a chain that does not reach 1440 must be rejected")
 	}
-	// 两个时段用相同的结束分钟：存成起止时间对时会无声地重叠，
-	// 存成链时这个不递增的值会被当场抓住。
+	// 相同结束分钟违反时段链严格递增约束。
 	if err := ValidateSpec(base([]Period{{EndMinute: 720, ElectricCents: 100}, {EndMinute: 720, ElectricCents: 200}})); err == nil {
 		t.Fatal("a non-increasing chain must be rejected")
 	}
@@ -100,13 +97,11 @@ func TestTierChainInvariants(t *testing.T) {
 	if err := ValidateSpec(spec([]Tier{{MaxWatts: 1000, ElectricCents: 100}})); err != nil {
 		t.Fatalf("a single rung must be valid: %v", err)
 	}
-	// 中间有洞的阶梯没法给落在洞里的读数定价，所以不从 0 开始的阶梯
-	// 会被直接拒掉。
+	// 验证阶梯从 0 开始且连续覆盖，拒绝存在计价空档的规则。
 	if err := ValidateSpec(spec([]Tier{{MaxWatts: 1000, ElectricCents: 100}, {MaxWatts: 2000, ElectricCents: 200}, {MaxWatts: 1500, ElectricCents: 300}})); err == nil {
 		t.Fatal("a ladder whose ceilings do not strictly increase must be rejected")
 	}
-	// 电量电价表根本没有阶梯；带一个就等于带一个没人读的字段，
-	// 而总有人会相信它是生效的。
+	// 电量计费不支持阶梯，配置阶梯时必须拒绝。
 	energy := Spec{Mode: ModeServerEnergy, Electric: &ElectricLine{Basis: BasisEnergy,
 		Periods: []Period{{EndMinute: 1440, ElectricCents: 100, Tiers: []Tier{{MaxWatts: 1000, ElectricCents: 200}}}}}}
 	if err := ValidateSpec(energy); err == nil {
@@ -115,8 +110,7 @@ func TestTierChainInvariants(t *testing.T) {
 }
 
 func TestModeAndBasisMustAgree(t *testing.T) {
-	// 一台按峰值功率配置的设备却挂着一份按电量计价的电价表，
-	// 就会按一个谁也没同意过的口径收钱。
+	// 最大功率模式不得使用电量电价口径。
 	spec := Spec{Mode: ModeServerMaxPower, Electric: &ElectricLine{Basis: BasisEnergy, Periods: []Period{{EndMinute: 1440, ElectricCents: 100}}}}
 	if err := ValidateSpec(spec); err == nil {
 		t.Fatal("a mode that disagrees with its own basis must be rejected")
@@ -155,8 +149,7 @@ func TestCostRealtimePowerUsesTheRungTheReadingFallsIn(t *testing.T) {
 	if fee.TotalCents != 200 {
 		t.Fatalf("total = %d cents, want 200", fee.TotalCents)
 	}
-	// 超过最高档时仍按最高档的费率；最高档是上界，而不是一个一旦越过
-	// 这次充电就没法计价的限额。
+	// 验证超过最高功率档时继续使用最高档费率。
 	fee, err = Cost(spec, hourUsage(1000, 5000))
 	if err != nil {
 		t.Fatalf("Cost above the top rung: %v", err)
@@ -168,7 +161,7 @@ func TestCostRealtimePowerUsesTheRungTheReadingFallsIn(t *testing.T) {
 
 func TestCostRealtimePowerRungBoundaryIsInclusiveBelow(t *testing.T) {
 	spec := realtimeSpec()
-	// 正好等于某个上界时，读数仍留在下面那个更便宜的档里。
+	// 功率等于档位上界时仍归入该档。
 	fee, err := Cost(spec, hourUsage(1000, 2000))
 	if err != nil {
 		t.Fatalf("Cost: %v", err)
@@ -208,9 +201,7 @@ func TestSchemeRejectsUnconfirmedCoefficientOrder(t *testing.T) {
 }
 
 func TestUnsegmentedMeterAcrossAnEnergyTariffChangeGoesToReview(t *testing.T) {
-	// 一条回归防线：均匀性判断曾经只比功率阶梯，于是每份电量电价表在一天里的
-	// 每个小时看起来都是平的。跨过电价变更点的充电就会靠「各时段大概分到多少
-	// 电量」这句猜测结算——这是少收，而且没有任何复核环节会发现它。
+	// 验证全天均匀性检查包含电量费率，避免跨时段变化被误判为可均摊计量。
 	spec := Spec{Mode: ModeServerEnergy, Electric: &ElectricLine{Basis: BasisEnergy, Periods: []Period{
 		{EndMinute: 720, ElectricCents: 50},
 		{EndMinute: 1440, ElectricCents: 80},
@@ -274,8 +265,7 @@ func TestSettleServerBilledCapOnlyEverLowers(t *testing.T) {
 }
 
 func TestSettleDeviceBilledTakesItsMoneyFromWhatWasPaid(t *testing.T) {
-	// 充电用户付了 100 分，账单就是 100 分。计价引擎里没有任何东西有发言权，
-	// 哪怕算出来的数正好不一样。
+	// 设备计费按实际付款 100 分结算，不使用服务端重新计算的费用。
 	spec := Spec{Mode: ModeDeviceDuration}
 	offer := Offer{ID: 1, StationID: 1, Name: "1元60分钟", Mode: "duration", PriceCents: 100, DurationMinutes: 60}
 	meter := ActualMeter{StartedAt: time.Now(), EndedAt: time.Now().Add(time.Hour), ChargedWh: 5000, ChargedSeconds: 3600}
@@ -331,8 +321,7 @@ func TestControlInstructionValidPerMode(t *testing.T) {
 	if (ControlInstruction{Mode: ModeDevicePower, BalanceCents: 100}).Valid() {
 		t.Fatal("a power instruction with no ladder must be invalid")
 	}
-	// 服务端计费的充电从来不会拿到控制指令：它由平台计价，
-	// 充电板只负责上报。
+	// 验证服务端计费不生成设备自主计费指令；设备仅执行控制和上报计量。
 	if (ControlInstruction{Mode: ModeServerEnergy, Minutes: 60}).Valid() {
 		t.Fatal("a server-billed instruction must be invalid")
 	}
@@ -356,8 +345,7 @@ func TestDecideStopOnlyFiresUnderACap(t *testing.T) {
 	if !plan.ShouldStop || plan.AccruedCents != 100 {
 		t.Fatalf("plan = %+v, want a stop at 100 cents", plan)
 	}
-	// 设备计费的充电绝不会被平台提前切掉；这个决定属于充电板，
-	// 和它对着干会停掉一笔平台并不欠费的充电。
+	// 设备计费由设备控制结束，不触发平台费用停机。
 	devicePlan, err := DecideStop(Spec{Mode: ModeDeviceDuration}, usage, time.Hour)
 	if err != nil {
 		t.Fatalf("DecideStop: %v", err)
@@ -368,8 +356,7 @@ func TestDecideStopOnlyFiresUnderACap(t *testing.T) {
 }
 
 func TestFirmwareLimitsAreEnforced(t *testing.T) {
-	// 充电板把刷卡充电存在一个以分钟计的无符号 16 位字段里，
-	// 超过这个值它会直接拒绝，而不是截断。
+	// 验证刷卡时长不能超过协议 uint16 分钟字段上限，不进行截断。
 	spec := energySpec()
 	spec.CardMaxMinutes = 4321
 	if err := ValidateSpec(spec); err == nil {
@@ -381,9 +368,7 @@ func TestFirmwareLimitsAreEnforced(t *testing.T) {
 	}
 }
 
-// 消费封顶只有在「上限是拿结算将会用的同一份计量试算出来的」时才值得拥有。
-// 两条路径一旦不一致，充电就会比金额该有的时刻更早或更晚停止，
-// 而这两个数字单看哪一个都不像错的。
+// 费用上限判断与最终结算必须使用相同计量和计价口径。
 func TestStopAtMeterUsesTheSameMeterValidationAsSettlement(t *testing.T) {
 	spec := energySpec()
 	spec.SpendCapCents = 150
@@ -411,8 +396,7 @@ func TestStopAtMeterUsesTheSameMeterValidationAsSettlement(t *testing.T) {
 	}
 }
 
-// 封顶为 0 不是「上限是 0 分」。它的意思是运营方没有设，
-// 于是充电在开始时下发给充电板的那份额度用完时结束。
+// 验证消费封顶为 0 表示未配置上限；设备仍受下发时长或电量额度限制。
 func TestStopAtMeterWithoutACapNeverStops(t *testing.T) {
 	rule := Rule{ID: 7, Version: 2, Spec: energySpec()}
 	start := time.Date(2026, 1, 2, 10, 0, 0, 0, beijing)
@@ -429,8 +413,7 @@ func TestStopAtMeterWithoutACapNeverStops(t *testing.T) {
 	}
 }
 
-// 设备计费的充电在自己的额度用完时由充电板结束。插手进去就是去和充电板抢
-// 一次平台并不付费的充电的控制权，哪怕那份电价表恰好带着一个封顶也一样。
+// 设备计费由设备自身额度控制结束，即使费率配置了封顶金额也不触发平台停机。
 func TestStopAtMeterLeavesDeviceBilledSessionsToTheDevice(t *testing.T) {
 	spec := Spec{
 		Mode:          ModeDeviceDuration,
@@ -451,8 +434,7 @@ func TestStopAtMeterLeavesDeviceBilledSessionsToTheDevice(t *testing.T) {
 	}
 }
 
-// 用一份本来就没法结算的计量去量封顶，那是留给计费复核的问题，
-// 不是在充电进行到一半时切断别人充电的理由。
+// 验证无效计量不触发消费封顶停机，交由计费核实流程处理。
 func TestStopAtMeterSendsAnUnsoundMeterToReviewRatherThanStopping(t *testing.T) {
 	spec := energySpec()
 	spec.SpendCapCents = 1

@@ -79,8 +79,7 @@ func resultConsumer(t *testing.T, userDB, workerDB *gorm.DB) (ResultConsumer, fu
 	}
 }
 
-// 一笔已结算的退款，无论渠道把事件重投多少次，
-// 钱都只能变动一次。
+// 重复退款成功事件不得重复变更余额。
 func TestRefundResultPostsExactlyOnce(t *testing.T) {
 	if os.Getenv("TEST_USER_DATABASE_URL") == "" || os.Getenv("TEST_WORKER_DATABASE_URL") == "" || os.Getenv("TEST_STREAM_REDIS_URL") == "" {
 		t.Skip("disposable MySQL and Redis required")
@@ -91,9 +90,7 @@ func TestRefundResultPostsExactlyOnce(t *testing.T) {
 	defer closeConsumer()
 
 	stream := "refund_succeeded_stream"
-	// handler 是通过消费组做 ack 的，
-	// 所以这个组必须先存在，
-	// 且要与生产启动后的状态一致。
+	// 预先创建消费组，使确认操作与生产消费状态一致。
 	consumer.Stream.XGroupCreateMkStream(ctx, stream, consumer.consumerGroup(), "0")
 
 	payload, _ := json.Marshal(RefundResult{
@@ -114,8 +111,7 @@ func TestRefundResultPostsExactlyOnce(t *testing.T) {
 	if status != "success" {
 		t.Fatalf("refund status = %q, want success", status)
 	}
-	// 回执表以退款记录为主键，
-	// 所以重复投递不可能再添一条。
+	// 验证重复结果事件不新增退款成功回执。
 	var receipts int64
 	userDB.Table("refund_success_receipt").
 		Where("refund_record_id IN (SELECT id FROM refund_record WHERE refund_no = ?)", refundNo).Count(&receipts)
@@ -133,8 +129,7 @@ func TestRefundResultPostsExactlyOnce(t *testing.T) {
 	}
 }
 
-// 渠道报出的金额与申请金额不一致时绝不能入账；
-// 那描述的是另一笔退款。
+// 渠道金额与申请金额不一致时必须拒绝入账。
 func TestRefundResultRejectsAmountMismatch(t *testing.T) {
 	if os.Getenv("TEST_USER_DATABASE_URL") == "" || os.Getenv("TEST_WORKER_DATABASE_URL") == "" || os.Getenv("TEST_STREAM_REDIS_URL") == "" {
 		t.Skip("disposable MySQL and Redis required")
@@ -160,9 +155,7 @@ func TestRefundResultRejectsAmountMismatch(t *testing.T) {
 	}
 }
 
-// 畸形负载重试也永远不会成功，
-// 所以它直接进死信流，
-// 而不是堵住整个消费组。
+// 验证畸形载荷直接转死信，不阻塞消费组。
 func TestRefundResultDeadLettersUnparseablePayload(t *testing.T) {
 	if os.Getenv("TEST_USER_DATABASE_URL") == "" || os.Getenv("TEST_WORKER_DATABASE_URL") == "" || os.Getenv("TEST_STREAM_REDIS_URL") == "" {
 		t.Skip("disposable MySQL and Redis required")

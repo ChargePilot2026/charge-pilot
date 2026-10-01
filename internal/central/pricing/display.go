@@ -1,7 +1,6 @@
 package pricing
 
-// Display 是小程序被允许展示的内容。它只影响呈现、从不改变实际收费，
-// 所以它被放在 Spec 之外。
+// Display 控制用户端展示，不参与计费计算。
 type Display struct {
 	// 充电运行过程中展示。
 	ShowEnergy bool `json:"show_energy"`

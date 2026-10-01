@@ -5,9 +5,7 @@ import (
 	"testing"
 )
 
-// 整站电价表就是 device_id 为空的那条规则。要它的时候过去跑的是与查设备规则
-// 同一条查询，只是少了设备过滤，于是一个从未整站定价、却给某个桩单独定了价的
-// 站点，会把那台设备的费率当成整站费率报出去。
+// 站点规则查询仅接受 device_id 为空的默认规则，不得将设备专属规则作为站点规则返回。
 func TestStationRuleIsNeverADeviceRule(t *testing.T) {
 	store, done := offerTestStore(t)
 	defer done()
@@ -35,8 +33,7 @@ func TestStationRuleIsNeverADeviceRule(t *testing.T) {
 		t.Fatalf("整站口径返回了设备规则，err=%v", err)
 	}
 
-	// 同一台设备仍然能解析到自己的规则：这次收窄不能顺手破坏它本来要保护的
-	// 那条覆盖路径。
+	// 设备规则仍应覆盖站点默认规则。
 	rule, err := store.ActiveDeviceRule(exec, stationID, "DEV-ONLY")
 	if err != nil {
 		t.Fatalf("设备规则查不到: %v", err)

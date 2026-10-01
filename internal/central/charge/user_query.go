@@ -21,10 +21,8 @@ var (
 	ErrNotOwner      = errors.New("无权查看该订单")
 )
 
-// UserQueryAPI 提供客户充电过程中需要的只读视图：
-// 实时快照、背后的遥测曲线，
-// 以及他自己的订单历史。
-// 遥测数据在 gateway_db 里，所以曲线走网关的服务令牌接口读取，而不是在这里另开一条连接。
+// UserQueryAPI 提供用户实时状态、遥测曲线及订单历史。
+// 遥测由 gateway_db 管理，通过带服务令牌的网关接口读取。
 type UserQueryAPI struct {
 	Auth           identity.SessionAuthenticator
 	DB             *gorm.DB
@@ -55,9 +53,7 @@ func (a UserQueryAPI) Register(r *gin.Engine) {
 	r.GET("/api/v1/user/charge/:order_no", a.detail)
 }
 
-// resolveOrder 载入订单并证明调用者拥有它。
-// 归属检查发生在读取任何东西之前，
-// 所以别人的订单与不存在的订单无从分辨。
+// resolveOrder 读取订单并校验用户归属；越权与不存在返回相同错误。
 func (a UserQueryAPI) resolveOrder(c *gin.Context, orderNo string) (ChargeOrderRecord, bool) {
 	userID, ok := a.Auth.Authenticate(c)
 	if !ok {
@@ -208,8 +204,7 @@ func (a UserQueryAPI) curve(c *gin.Context) {
 	window := a.window(strings.TrimSpace(c.Query("window")))
 	ctx := c.Request.Context()
 
-	// 遥测归网关所有；
-	// 那边的故障就如实报出来，而不是被抹平成一条空曲线。
+	// 网关遥测查询失败时返回错误，不将故障转换为空曲线。
 	var telemetry gatewayTelemetry
 	if err := a.Gateway.GetJSON(ctx, a.GatewayURL, a.ServiceToken,
 		fmt.Sprintf("/api/v1/internal/devices/%s/telemetry?port_no=%d&from=%s&to=%s",
@@ -235,8 +230,7 @@ func (a UserQueryAPI) curve(c *gin.Context) {
 	})
 }
 
-// 订单模型用的是 sql.Null* 列，
-// 直接序列化会把驱动内部结构泄进 JSON，所以这里逐个解包成普通值。
+// 逐字段转换 sql.Null*，保留 NULL 语义，避免驱动内部结构进入 JSON。
 func nullTime(v sql.NullTime) any {
 	if !v.Valid {
 		return nil
@@ -338,8 +332,7 @@ func (a UserQueryAPI) historyCurve(c *gin.Context) {
 	})
 }
 
-// fee 读取一笔订单的结算金额。
-// 计费跑完之后，回执才是客户还欠多少的权威记录。
+// fee 从已确认的计费回执读取订单费用及未结金额。
 func (a UserQueryAPI) fee(ctx context.Context, orderID uint64) (electric, service, total, shortfall int64, ok bool) {
 	var receipt ChargeFeeRecord
 	if err := a.DB.WithContext(ctx).Where("charge_order_id = ?", orderID).Take(&receipt).Error; err != nil {
@@ -404,9 +397,7 @@ func (a UserQueryAPI) history(c *gin.Context) {
 		return
 	}
 	rows := []historyRow{}
-	// 费用金额存在 charge_fee_receipt.result_json 里面，
-	// 没法通过 join 选出来；
-	// 所以先读这一页订单，再把恰好属于这一页的回执合并进来。
+	// 费用保存在 charge_fee_receipt.result_json 中，分页读取订单后批量加载对应回执并解析金额。
 	if err := base.Select("id, order_no, device_id, port_no, status, started_at, ended_at, charged_kwh, charged_seconds, discount_cents").
 		Order("id DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&rows).Error; err != nil {
 		httpapi.Write(c, 503, 5003, "订单暂时无法读取", nil)
@@ -460,10 +451,7 @@ func (a UserQueryAPI) detail(c *gin.Context) {
 		payload["shortfall_cents"] = shortfall
 	}
 	if order.PaymentOrderID.Valid {
-		// 列名是显式映射的；
-		// GORM 无法从 Go 字段名推断列名，否则会悄悄读到零值。
-		// 列名是显式映射的；
-		// GORM 无法从 Go 字段名推断列名，否则会悄悄读到零值。
+		// 显式映射数据库列名，避免 GORM 名称推导产生零值。
 		var payment struct {
 			OrderNo       string `gorm:"column:order_no" json:"order_no"`
 			TotalCents    int64  `gorm:"column:total_cents" json:"total_cents"`

@@ -67,12 +67,7 @@ func Serve(ctx context.Context, endpoints []Endpoint, sink Sink, maxConnections 
 							connMu.Unlock()
 							<-limit
 						}()
-						// 以前以错误结束的会话是无声的：未知设备、格式不对的
-						// 注册消息，或者板子读不懂的载荷，都是什么地方都没写
-						// 就关掉了 socket，运维唯一能看到的症状就只是
-						// "这台桩始终没上线"。会话的正常结束不算错误，
-						// 不记日志；这与板子自己那个静默分支
-						// 需要的区分是同一回事。
+						// 记录注册、协议解码等异常会话的结束原因；正常断开不记为错误。
 						if err := adapter.ServeConn(ctx, conn, sink); err != nil && ctx.Err() == nil {
 							log.Printf("device session ended on %s: %v", adapter.Name(), err)
 						}

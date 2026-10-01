@@ -12,19 +12,12 @@ import (
 	"gorm.io/gorm"
 )
 
-// SessionAPI 提供设备连接的会话审计维护能力。
-//
-// 一条 session 记录通常由服务它的进程在连接结束时关闭。
-// 仍然开着的那些，就是进程在会话中途死掉的那些，
-// 它们会悄无声息地堆积起来，所以这个接口
-// 就是运维用来把它们找出来并关掉的入口。
+// SessionAPI 提供设备会话审计及遗留会话清理接口。
+// 正常连接由所属进程关闭，进程退出后遗留的开放记录由运维清理。
 type SessionAPI struct {
 	DB           *gorm.DB
 	ServiceToken string
-	// IdleThreshold 是一条会话静默多久之后才被视为被遗弃。
-	// 它是下限而非保证：一条仍然连着、只是不吭声的设备，
-	// 只要它的进程还活着就永远不会被回收，
-	// 因为只有那个进程自己知道连接还握在手里。
+	// IdleThreshold 是候选会话的最小静默时间；所属进程仍活跃时不回收连接。
 	IdleThreshold time.Duration
 	// MaxRows 限制单次清理的规模，避免积压过大时把一个长事务吊住；
 	// 调用方重跑一次就行。
@@ -56,10 +49,7 @@ type IdleSession struct {
 	LastActiveAt time.Time `json:"last_active_at"`
 }
 
-// idleQuery 匹配仍然开着、且在阈值之内没有任何动静的会话。
-// ended_at IS NULL 是"会话未关闭"的标记，所以一条已经正常关闭的会话
-// 永远不会被回收：它的计数器是最终值，
-// 重新盖一遍时间戳等于改写真实的记录。
+// idleQuery 查询超过静默阈值且 ended_at 为 NULL 的会话，不修改已正常关闭的记录。
 func (a SessionAPI) idleQuery(ctx context.Context, db *gorm.DB) *gorm.DB {
 	if db == nil {
 		db = a.DB
@@ -105,8 +95,7 @@ func (a SessionAPI) listIdle(c *gin.Context) {
 	})
 }
 
-// CleanupIdle 关闭被遗弃的会话，并补上正常断连时本该写入的终态字段，
-// 这样一条被回收的记录不会被误当成还活着的会话。
+// CleanupIdle 关闭遗留会话并补齐断连终态字段。
 func (a SessionAPI) cleanupIdle(c *gin.Context) {
 	if !a.authorized(c) {
 		return
@@ -114,9 +103,7 @@ func (a SessionAPI) cleanupIdle(c *gin.Context) {
 	ctx := c.Request.Context()
 	now := time.Now().UTC()
 
-	// 候选行在同一个事务里读出并关闭，每条 update 都会重新检查
-	// ended_at IS NULL，所以在读取和写入之间被活跃进程关掉的会话不会被
-	// 盖成"被遗弃"。
+	// 在同一事务中读取并关闭候选会话；更新再次检查 ended_at IS NULL，避免覆盖并发正常关闭的记录。
 	var closed int64
 	err := a.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var candidates []deviceSessionKey
@@ -125,8 +112,7 @@ func (a SessionAPI) cleanupIdle(c *gin.Context) {
 			return err
 		}
 		for _, key := range candidates {
-			// 这一行是用读它时拿到的 id 和月份寻址的，所以中途被别人
-			// 关掉的那条会话不会在这里被误盖。
+			// 用读取时的 ID 和分区月份寻址，并保留开放状态条件，防止覆盖已关闭会话。
 			month := time.Date(key.CreatedMonth.UTC().Year(), key.CreatedMonth.UTC().Month(), key.CreatedMonth.UTC().Day(), 0, 0, 0, 0, time.UTC)
 			result := tx.Table("device_session").
 				Where("id = ? AND created_month = ? AND ended_at IS NULL", key.ID, month).
@@ -151,10 +137,7 @@ func (a SessionAPI) cleanupIdle(c *gin.Context) {
 	})
 }
 
-// deviceSessionKey 定位一行。该表按 created_month 分区，
-// 而这一列属于主键，所以必须两列一起才能确定是哪一行。
-// created_month 是 DATE，比较时按日期比，
-// 而不是按它写入时携带的那个时间戳。
+// deviceSessionKey 使用 ID 与 created_month 联合主键定位会话；月份按 DATE 比较。
 type deviceSessionKey struct {
 	ID           uint64    `gorm:"column:id"`
 	CreatedMonth time.Time `gorm:"column:created_month"`

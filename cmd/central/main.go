@@ -72,8 +72,8 @@ func run(ctx context.Context) error {
 	}
 	wechat.SetHttpClient(xhttp.NewClient().SetTimeout(5 * time.Second))
 	gin.SetMode(gin.ReleaseMode)
-	// 指标端点不做鉴权，抓取器因此不必持有运营会话；它只暴露路由名、状态码和耗时。
-	// registry 是在 NewRouter 之前传进去的，这样记录用的中间件会在任何路由注册之前装好。
+	// 在注册路由前安装指标中间件，覆盖全部 HTTP 请求。
+	// 指标端点无需运营会话，仅暴露路由模板、状态码与耗时。
 	metrics := httpapi.NewMetrics("central")
 	router := httpapi.NewRouter(metrics)
 	metrics.Register(router)
@@ -96,7 +96,7 @@ func run(ctx context.Context) error {
 	regulatory.API{Queue: regulatory.Queue{DB: adminDB}, ServiceToken: cfg.ServiceToken}.Register(router)
 	billing.Service{Store: billing.Store{DB: billingORM}, Orders: charge.BillingOrders{DB: userORM}, Splits: billing.SplitResolver{AdminDB: adminORM}, ServiceToken: cfg.ServiceToken,
 		Bills: charge.BillIssuer{Store: charge.BillStore{DB: userORM}}}.Register(router)
-	admin.ResourceAPI{Store: admin.ResourceStore{AdminDB: adminORM, UserDB: userORM, BillingDB: billingORM}, Auth: adminAPI, GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken, ExportDir: os.Getenv("EXPORT_DIR"), PhoneKey: []byte(cfg.PhoneEncryptionKey)}.Register(router)
+	admin.ResourceAPI{Store: admin.ResourceStore{AdminDB: adminORM, UserDB: userORM, BillingDB: billingORM}, Auth: adminAPI, GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken, ExportDir: os.Getenv("EXPORT_DIR")}.Register(router)
 	exportCleanup := admin.ExportTask{Store: admin.ResourceStore{AdminDB: adminORM}, ExportDir: os.Getenv("EXPORT_DIR")}
 	go func() {
 		ticker := time.NewTicker(time.Hour)
@@ -152,7 +152,6 @@ func run(ctx context.Context) error {
 		Auth:   identity.SessionAuthenticator{JWT: jwt, Sessions: identity.Sessions{Redis: cache}, Users: identity.UserStore{DB: userORM}},
 		UserDB: userORM, AdminDB: adminORM, GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken,
 		Gateway: serviceclient.Client{Timeout: 8 * time.Second}, Prepay: prepay,
-		PhoneKey:         []byte(cfg.PhoneEncryptionKey),
 		DevelopmentPhone: cfg.LoginMode == "development",
 		PhoneExchange: func(ctx context.Context, code string) (string, error) {
 			result, err := wechat.GetPhoneNumber(ctx, code)

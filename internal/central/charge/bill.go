@@ -14,9 +14,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// BillStore 负责在一笔充电计价完成后开给客户看的账单。
-// 金额取自计费回执，
-// 所以账单永远不会与实际收取的费用对不上。
+// BillStore 根据计费回执生成用户账单，金额以已确认的结算结果为准。
 type BillStore struct{ DB *gorm.DB }
 
 type Bill struct {
@@ -41,9 +39,7 @@ type Bill struct {
 	Read           bool       `json:"read" gorm:"-"`
 }
 
-// Issue 为已结算的充电写账单。
-// 可以重复调用：
-// charge_order_id 上的唯一键让重放成为空操作，而不是第二张账单。
+// Issue 为已结算订单生成账单；charge_order_id 唯一键保证重复调用不新增账单。
 func (s BillStore) Issue(ctx context.Context, chargeOrderID uint64) (Bill, bool, error) {
 	if s.DB == nil || chargeOrderID == 0 {
 		return Bill{}, false, errors.New("bill store is not configured")
@@ -68,7 +64,7 @@ func (s BillStore) Issue(ctx context.Context, chargeOrderID uint64) (Bill, bool,
 	}
 	var receipt ChargeFeeRecord
 	if err := s.DB.WithContext(ctx).Where("charge_order_id = ?", order.ID).Take(&receipt).Error; err != nil {
-		// 还没有费用说明计费没跑完，账单稍后才会有。
+		// 计费未完成时尚无账单。
 		return Bill{}, false, nil
 	}
 	electric, service, total, ok := receipt.Fees()
@@ -95,7 +91,7 @@ func (s BillStore) Issue(ctx context.Context, chargeOrderID uint64) (Bill, bool,
 	billNo := "BILL" + fmt.Sprintf("%020d", order.ID)
 	issuedAt := time.Now().UTC()
 	if order.StartedAt != nil {
-		// 账单属于充电发生的那个时间点，而不是它被定价的时间点。
+		// 账单日期使用充电发生时间，不使用计费执行时间。
 		issuedAt = order.StartedAt.Add(0)
 	}
 	month := time.Date(issuedAt.Year(), issuedAt.Month(), 1, 0, 0, 0, 0, time.UTC)
@@ -109,8 +105,7 @@ func (s BillStore) Issue(ctx context.Context, chargeOrderID uint64) (Bill, bool,
 	}
 	var billID uint64
 	err = s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// 唯一键让这次插入天然幂等；
-		// 重放只会找到已有账单，而不是再建一张。
+		// 通过订单唯一键复用已有账单，保证插入幂等。
 		existing := int64(0)
 		if err := tx.Table("charge_bill").
 			Where("charge_order_id = ? AND created_month = ?", order.ID, month).Count(&existing).Error; err != nil {
@@ -130,8 +125,7 @@ func (s BillStore) Issue(ctx context.Context, chargeOrderID uint64) (Bill, bool,
 		if err := tx.Raw("SELECT LAST_INSERT_ID()").Scan(&billID).Error; err != nil {
 			return err
 		}
-		// 账单是订单故事的一部分，
-		// 所以客户能在他们本来就在看的那条时间线里看到它。
+		// 将账单事件追加到订单时间线，供用户查询结算记录。
 		eventID := uuid.NewSHA1(uuid.NameSpaceURL, []byte("bill-issued:"+billNo)).String()
 		return tx.Create(&ChargeEventLogRecord{
 			ChargeOrderID: order.ID, EventID: eventID, Event: "bill_issued", Actor: "billing",
@@ -146,8 +140,7 @@ func (s BillStore) Issue(ctx context.Context, chargeOrderID uint64) (Bill, bool,
 	return bill, true, err
 }
 
-// Load 按计费任务知道的那个充电
-// 订单 id 返回这一笔充电的账单。
+// Load 按充电订单 ID 查询账单。
 func (s BillStore) Load(ctx context.Context, chargeOrderID uint64) (Bill, error) {
 	bill := Bill{}
 	err := s.DB.WithContext(ctx).Table("charge_bill").
@@ -156,8 +149,7 @@ func (s BillStore) Load(ctx context.Context, chargeOrderID uint64) (Bill, error)
 	return bill, err
 }
 
-// LoadByID 按账单 id 返回账单，
-// 客户侧接口就是按它寻址的。
+// LoadByID 按用户和账单 ID 查询用户账单。
 func (s BillStore) LoadByID(ctx context.Context, userID, billID uint64) (Bill, error) {
 	bill := Bill{}
 	err := s.DB.WithContext(ctx).Table("charge_bill").
@@ -173,9 +165,7 @@ func (s BillStore) Settle(ctx context.Context, chargeOrderID uint64) error {
 		Updates(map[string]any{"status": "settled", "settled_at": gorm.Expr("UTC_TIMESTAMP(3)")}).Error
 }
 
-// SettleWhenClear 在预付金额加上已
-// 退金额已经覆盖这笔充电后关闭账单，
-// 这样钱确实退回去之后账单不会一直挂在那里未付。
+// SettleWhenClear 在无欠费且预付金额加已退款金额覆盖总费用时结清账单。
 func (s BillStore) SettleWhenClear(ctx context.Context, chargeOrderID uint64) error {
 	bill, err := s.Load(ctx, chargeOrderID)
 	if err != nil || bill.Status != "issued" {
@@ -190,8 +180,7 @@ func (s BillStore) SettleWhenClear(ctx context.Context, chargeOrderID uint64) er
 	return s.Settle(ctx, chargeOrderID)
 }
 
-// ListBills 按最新优先分页返回某个客户的账单。
-// 只有该客户本人可读，所以归属条件是写在查询里的，而不是事后补一道校验。
+// ListBills 按时间倒序分页查询用户账单，SQL 始终包含用户归属条件。
 func (s BillStore) ListBills(ctx context.Context, userID uint64, page, pageSize int) ([]Bill, int64, error) {
 	base := s.DB.WithContext(ctx).Table("charge_bill").Where("user_id = ?", userID)
 	var total int64
@@ -214,8 +203,7 @@ func (s BillStore) ListBills(ctx context.Context, userID uint64, page, pageSize 
 		var reads []struct {
 			BillID uint64 `gorm:"column:bill_id"`
 		}
-		// charge_bill_read 与账单共享同一个分区月份，
-		// 所以键的两部分都要匹配。
+		// 账单已读记录使用账单 ID 和相同的分区月份共同寻址。
 		if err := s.DB.WithContext(ctx).Table("charge_bill_read").
 			Select("bill_id").Where("user_id = ? AND bill_id IN ?", userID, ids).Find(&reads).Error; err == nil {
 			seen := map[uint64]bool{}
@@ -294,8 +282,7 @@ func (a BillHTTP) detail(c *gin.Context) {
 		httpapi.BadRequest(c, "账单编号无效")
 		return
 	}
-	// 账单 id 本身就在查询里带着客户条件，
-	// 所以别的账号的账单与不存在的账单无从分辨。
+	// 查询同时限制账单 ID 和用户 ID，使越权访问与记录不存在返回一致错误。
 	bill, err := a.Bills.LoadByID(c.Request.Context(), userID, id)
 	if err != nil {
 		httpapi.Write(c, 404, 1004, "账单不存在", nil)

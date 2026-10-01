@@ -177,8 +177,7 @@ func TestRejectedStartQueuesRefundAtomicallyAndIdempotently(t *testing.T) {
 
 }
 
-// 渠道可能已经受理了退款却丢掉了 HTTP 响应。
-// 恢复必须去查同一笔退款，而不是再发起一次资金划转。
+// 模拟渠道已受理退款但 HTTP 响应丢失；恢复流程查询原退款，不重复发起资金划转。
 type lostRefundResponse struct {
 	result  payment.RefundResult
 	creates int

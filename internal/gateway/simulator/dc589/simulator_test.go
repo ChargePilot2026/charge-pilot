@@ -17,12 +17,9 @@ import (
 	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol/dc589"
 )
 
-// 这些测试让模拟板通过真实 TCP socket 面对真实的网关适配器。
-// 假服务器证明不了组帧、会话协商或载荷
-// 校验，而这三样正是本工具存在的理由。
+// 通过实际 TCP 和网关适配器验证组帧、会话协商及载荷校验。
 
-// recordingSink 记录网关从板子解析出的内容，
-// 这样测试断言的是解码后的值而不是字节。
+// recordingSink 记录网关解码后的事件，供测试断言业务字段。
 type recordingSink struct {
 	mu       sync.Mutex
 	events   []protocol.Event
@@ -67,9 +64,7 @@ func (s *recordingSink) deviceID() string {
 
 func (s *recordingSink) heartbeatCount() int { return len(s.ofType(protocol.Heartbeat)) }
 
-// serveGateway 在真实端口上跑真实适配器。
-// 它使用的 registry 会一并返回，
-// 好让测试像控制层那样下发命令，而不是直接伸手进板子的连接里。
+// serveGateway 在回环端口启动适配器，并返回 registry，供测试通过控制路径下发命令。
 func serveGateway(t *testing.T, ctx context.Context, sink protocol.Sink) (string, *protocol.Registry) {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -117,8 +112,7 @@ func (w testWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// 能注册并发心跳的板子必须被真实适配器看懂，
-// 这是任何场景有意义的前提。
+// 确认模拟器注册和心跳可被真实协议适配器解析。
 func TestSimulatorRegistersAndHeartbeats(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
@@ -129,19 +123,14 @@ func TestSimulatorRegistersAndHeartbeats(t *testing.T) {
 	config.Gateway = address
 	go func() { _ = Run(ctx, config) }()
 
-	// 板子登录后平台会立刻告诉它心跳周期，它就采用这个值。
-	// 模拟器自己配置的周期只是它在此之前用的，
-	// 所以一个假定它会按自己速度一直跳的测试，
-	// 断言的是协议并不具备的行为：
-	// 自 5.8.6 起间隔由服务器说了算。
+	// 验证注册后采用平台下发的心跳周期；模拟器默认周期仅在设置到达前生效。
 	waitFor(t, 8*time.Second, func() bool { return sink.heartbeatCount() >= 1 })
 	if got := sink.deviceID(); got != config.Identity.BoardID {
 		t.Fatalf("gateway saw device %q, want %q", got, config.Identity.BoardID)
 	}
 }
 
-// 充电链路才是本工具的意义所在：启动命令、确认、
-// 计量，然后是一份网关能绑回订单的收尾上报。
+// 验证启动、确认、计量、停止及结束上报的完整充电链路。
 func TestSimulatorRunsAChargeToCompletion(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
@@ -150,18 +139,13 @@ func TestSimulatorRunsAChargeToCompletion(t *testing.T) {
 
 	config := quietConfig(t, ScenarioByEnergy)
 	config.Gateway = address
-	// 按电量来算的话，一分钟的充电会超过测试时长，
-	// 所以改用停止命令驱动场景，这也是真实路径。
+	// 使用远程停止驱动结束场景，避免等待完整授权额度耗尽。
 	config.Scenario = ScenarioStopOnCommand
-	// 取 3600.0W，
-	// 于是充电一秒就是整整一毫瓦时。在 150W 默认值下，
-	// 短测试得到的读数会被截断成 0，
-	// 这也正是下面的断言考究的是一致性而不是「非零即可」的原因。
+	// 设置功率为 3600 W，每秒产生 1 Wh（1000 mWh），使短充电读数超过协议整瓦时分辨率。
 	config.PowerDeciWatts = 36000
 	go func() { _ = Run(ctx, config) }()
 
-	// 等注册完成，
-	// 然后像控制层那样经 registry 下发启动命令。
+	// 注册完成后经 registry 下发启动命令。
 	session := commandSession()
 	order := [8]byte{0, 0, 0, 0, 0, 0, 0x01, 0x23}
 	command := protocol.Command{Kind: protocol.CommandStart, SessionID: session, Port: 1, OrderBCD: order, Mode: 0, Quantity: 60}
@@ -171,14 +155,10 @@ func TestSimulatorRunsAChargeToCompletion(t *testing.T) {
 
 	waitFor(t, 10*time.Second, func() bool { return len(sink.ofType(protocol.StartResult)) > 0 })
 
-	// 让板子计够时间，使收尾上
-	// 报里的时长和电量都大到可比；
-	// 立刻停止只能证明帧对得上。3600.0W
-	// 下三秒就是整整三瓦时，
-	// 正好让读数宽过帧自身的分辨率。
+	// 3600 W 运行 3 秒产生 3 Wh，超过上报分辨率，可验证结束读数。
 	time.Sleep(3 * time.Second)
 
-	// 让板子停止；它应当确认并上报充电结束。
+	// 停止命令应获得确认及充电结束上报。
 	stop := protocol.Command{Kind: protocol.CommandStop, SessionID: session, Port: 1}
 	if err := commandThrough(t, registry, config.Identity.BoardID, stop); err != nil {
 		t.Fatal(err)
@@ -196,16 +176,14 @@ func TestSimulatorRunsAChargeToCompletion(t *testing.T) {
 	if ends.EnergyMilliKWh == 0 {
 		t.Fatal("a charge that ran delivered no energy")
 	}
-	// 结算必须和板子一路报上来的功率一致，
-	// 否则钱据以结算的电量就不是桩实际取的电量。
+	// 验证结算电量与上报功率积分一致。
 	assertEnergyAgrees(t, ends.EnergyMilliKWh, ends.ChargedSeconds, ends.PowerDeciWatts)
 	if len(sink.ofType(protocol.StopResult)) == 0 {
 		t.Fatal("the stop acknowledgement never reached the gateway")
 	}
 }
 
-// 被拒的启动才是驱动退款路径的东西，
-// 所以失败必须是一个格式良好的结果，而不是沉默。
+// 验证启动拒绝通过有效结果帧返回，供平台执行失败和退款处理。
 func TestSimulatorCanRefuseAStart(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
@@ -252,8 +230,7 @@ func TestSimulatorReportsAFault(t *testing.T) {
 	}
 }
 
-// reconnect 场景验证的正是：被替换掉的会
-// 话会被当成一条新连接，而不是旧连接的延续。
+// 验证重连生成新会话，不沿用旧连接的审计记录。
 func TestSimulatorReconnectsAsANewSession(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
@@ -265,8 +242,7 @@ func TestSimulatorReconnectsAsANewSession(t *testing.T) {
 	config.ReconnectAfter = 200 * time.Millisecond
 	go func() { _ = Run(ctx, config) }()
 
-	// 每次重连都会重新注册一次；
-	// 两次就足以证明板子真的回来了，而不是第一次尝试还挂着。
+	// 等待至少两次注册，确认设备已经完成一次重连。
 	waitFor(t, 15*time.Second, func() bool {
 		return len(sink.ofType(protocol.Heartbeat)) >= 2
 	})
@@ -288,13 +264,8 @@ func waitFor(t *testing.T, limit time.Duration, done func() bool) struct{} {
 	return struct{}{}
 }
 
-// commandSession 是测试下发命令时用的会话。
-//
-// 生产中控制层从联系板子之前持久化的充电命令记录里读这个值；
-// 网关从不会把会话交还给 sink，
-// 板子也只是原样回显服务器放进帧头的会
-// 话。在这里造一个就复现了这条流程，而
-// commandThrough 本身会等到板子可路由为止。
+// commandSession 模拟控制层在命令持久化时分配的会话号，设备按帧头原样回显。
+// commandThrough 等待设备可路由后发送命令。
 func commandSession() [6]byte { return [6]byte{0xA1, 0xB2, 0xC3, 0xD4, 0xE5, 0xF6} }
 
 func waitForEnd(t *testing.T, sink *recordingSink, limit time.Duration) protocol.Event {
@@ -311,8 +282,7 @@ func waitForEnd(t *testing.T, sink *recordingSink, limit time.Duration) protocol
 	return protocol.Event{}
 }
 
-// commandThrough 像控制层那样把命令路由到板子：按设备 id，
-// 经适配器持有的 registry。
+// commandThrough 经适配器 registry 按设备 ID 路由命令。
 func commandThrough(t *testing.T, registry *protocol.Registry, deviceID string, command protocol.Command) error {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -331,30 +301,19 @@ func commandThrough(t *testing.T, registry *protocol.Registry, deviceID string, 
 	}
 }
 
-// scriptedGateway 接入一块板子，转发测试推给它的任何东西。
-//
-// 它跑的是真实编解码器和真实 socket，
-// 所以组帧与载荷校验仍被真正验证到。
-// 它唯一不做的是自己决定下发哪些下行。
-// 这个区别很关键：完整适配器适合证明两端互通，
-// 却不适合证明「平台要求某件事时板子会怎么做」，
-// 因为一旦由适配器来选，
-// 「端口块出现是因为我们要求了」与「端口块总是出现」就分不出来了。
+// scriptedGateway 使用真实编解码器和 TCP，由测试显式指定下行帧。
+// 用于隔离验证设备对平台指令的响应，避免适配器默认行为掩盖遥测开关等状态差异。
 type scriptedGateway struct {
 	address  string
 	session  [6]byte
 	traffic  *boardTraffic
 	downlink chan dc589.Frame
-	// clock 是服务器回答对时请求时声称的时间，registerClock 是它盖进注册回包的那个。
-	// 分成两个字段是因为：
-	// 一块正确处理了 A1 随后又忽略 A9 的板子，只要两者一
-	// 致看上去就完全正常——而这正是测试必须先走出来的状态，
-	// 否则根本看不出差别。
+	// clock 与 registerClock 分别控制校时和注册应答时间，用不同值验证设备处理后续 0xA9。
 	clock         time.Time
 	registerClock time.Time
 }
 
-// boardTraffic 是板子发出过的全部帧，按顺序排列。
+// boardTraffic 按发送顺序返回设备上行帧。
 type boardTraffic struct {
 	mu     sync.Mutex
 	frames []dc589.Frame
@@ -372,12 +331,7 @@ func (b *boardTraffic) add(frame dc589.Frame) {
 	b.mu.Unlock()
 }
 
-// waitFor 返回 `from` 及其之后第一帧满足 match 的帧。
-//
-// 用下标而不是按内容重新匹配，才能让测试
-// 断言*同一条*命令在一个会话内改变了形态。
-// 端口遥测开关没法用别的方式证明：
-// 一直发扩展格式的板子和一直听话的板子，在一半的状态下产生的流量完全相同。
+// waitFor 按帧索引从 from 开始查找匹配帧，供测试验证同一会话内的状态变化。
 func (b *boardTraffic) waitFor(t *testing.T, limit time.Duration, from int, match func(dc589.Frame) bool) dc589.Frame {
 	t.Helper()
 	deadline := time.Now().Add(limit)
@@ -484,7 +438,7 @@ func (g *scriptedGateway) push(t *testing.T, frame dc589.Frame) {
 	}
 }
 
-// startCharge 让板子开始充电，就像一笔已付款的订单那样。
+// startCharge 模拟已付款订单下发启动命令。
 func (g *scriptedGateway) startCharge(t *testing.T, port byte, mode dc589.ChargeMode, quantity uint16) {
 	t.Helper()
 	frame, err := dc589.BuildStart(dc589.StartCommand{
@@ -509,20 +463,11 @@ func isHeartbeat(frame dc589.Frame) bool { return frame.Command == dc589.Heartbe
 
 func hasPortStatus(frame dc589.Frame) bool { return len(frame.Data) > 17 }
 
-// A8 是板子索要时间，A9 是服务器回答，
-// 所以服务器从不下发 A8，
-// 板子也从来收不到 A8。
-// 于是处理 A8 根本不可达，而服务器确实下发的 A9 则掉进 default 分支被丢弃。
-// 服务器每次连接都在提供校正的同时，
-// 板子却一直用自己未校正的时钟给每笔结算打戳。
+// 验证设备主动发送 0xA8 请求，并处理服务器的 0xA9 校时响应。
 func TestBoardAsksForTimeAndSettlesOnTheServerClock(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
-	// 注册回包和后来的对时请求被故意设成不
-	// 一致。只读 A1 的板子此后整个会话都会偏上两者的差值，而这
-	// 正是现场一块桩登录后时钟漂移时的情形：
-	// 平台每次连接都主动提供校正，
-	// 板子却走了过去。
+	// 注册与后续校时使用不同时间，验证设备继续校正时钟，不仅依赖首次注册。
 	registerClock := time.Now()
 	serverClock := registerClock.Add(2 * time.Hour)
 	gateway := serveScriptedGateway(t, ctx, serverClock)
@@ -534,8 +479,7 @@ func TestBoardAsksForTimeAndSettlesOnTheServerClock(t *testing.T) {
 	config.Log = log.New(logs, "", 0)
 	go func() { _ = Run(ctx, config) }()
 
-	// 板子是主动索要而不是等着被告知：对时
-	// 事件是时钟校正在会话审计里唯一显形之处。
+	// 验证设备主动请求校时，并生成可观察的协议事件。
 	waitFor(t, 8*time.Second, func() bool {
 		_, ok := gateway.traffic.first(dc589.TimeRequest)
 		return ok
@@ -562,10 +506,7 @@ func TestBoardAsksForTimeAndSettlesOnTheServerClock(t *testing.T) {
 	}
 }
 
-// 自 5.8.6 起端口块只在平台要求时才出现，
-// 所以这个开关就是 A6 的全部意义。
-// 板子记下了它却从不读取，
-// 于是「本版本无视指令」与「没有充电在进行」会产出同一个 17 字节心跳。
+// 验证自 5.8.6 起端口遥测块受 0xA6 开关控制，不混淆关闭遥测与无充电端口。
 func TestBoardHonoursThePortTelemetryFlag(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
@@ -575,7 +516,7 @@ func TestBoardHonoursThePortTelemetryFlag(t *testing.T) {
 	config.Gateway = gateway.address
 	go func() { _ = Run(ctx, config) }()
 
-	// 开关关着时板子必须退回短格式。
+	// 关闭遥测扩展时必须使用短格式。
 	off, err := dc589.BuildHeartbeatInterval(gateway.session, 1, false)
 	if err != nil {
 		t.Fatal(err)
@@ -586,7 +527,7 @@ func TestBoardHonoursThePortTelemetryFlag(t *testing.T) {
 		t.Fatal("the board reported ports after the platform had switched them off")
 	}
 
-	// 有一笔充电在进行，所以这时必须出现扩展格式。
+	// 充电进行中且遥测已启用，心跳必须使用带端口数据的扩展格式。
 	gateway.startCharge(t, 1, dc589.ByTime, 60)
 	on, err := dc589.BuildHeartbeatInterval(gateway.session, 1, true)
 	if err != nil {
@@ -603,9 +544,7 @@ func TestBoardHonoursThePortTelemetryFlag(t *testing.T) {
 		t.Fatalf("the extended heartbeat did not carry the charging port: %+v", heartbeat.ChargingPorts)
 	}
 
-	// 而且在充电中途再关掉也必须立刻生效。
-	// 这一步不可能蒙混过关：
-	// 一直发扩展格式的板子同样能心安理得地满足上一条断言。
+	// 充电中关闭遥测扩展后，下一次上报应立即切换为短格式。
 	mark = gateway.traffic.mark()
 	gateway.push(t, off)
 	if got := gateway.traffic.waitFor(t, 8*time.Second, mark, isHeartbeat); hasPortStatus(got) {
@@ -613,9 +552,7 @@ func TestBoardHonoursThePortTelemetryFlag(t *testing.T) {
 	}
 }
 
-// 板子答不了的下行过去会无影无踪，
-// 两边都没有记录，
-// 于是「模拟器没实现」与「网关没发」从外面看无法区分。
+// 未实现的下行命令应记日志，便于区分未发送与未处理。
 func TestUnprocessedDownlinkIsNamedAndSurvives(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
@@ -629,9 +566,7 @@ func TestUnprocessedDownlinkIsNamedAndSurvives(t *testing.T) {
 
 	waitFor(t, 8*time.Second, func() bool { return gateway.traffic.mark() > 0 })
 
-	// 0xE0 是网关已有编解码器、
-	// 却还没有调用方的功率控制，
-	// 所以它正是那种「本来会到达然后丢失」的命令的典型形态。
+	// 验证设备处理 0xE0 功率控制命令，并产生对应响应。
 	frame, err := dc589.SetNoTiering(gateway.session)
 	if err != nil {
 		t.Fatal(err)
@@ -650,10 +585,7 @@ func TestUnprocessedDownlinkIsNamedAndSurvives(t *testing.T) {
 	gateway.traffic.waitFor(t, 8*time.Second, mark, isHeartbeat)
 }
 
-// 零值不是一张合法的参数表，
-// 所以从未被配置过的板子会在自己的校验里失败，对一次读操作回「拒绝」
-// ——在压根没人发过费率的情况下告诉平台费率没送达。
-// 这次读必须回的是一张真实的表。
+// 验证未配置设备返回合法的初始参数表，而非因零值范围错误拒绝读取。
 func TestParameterReadAnswersWithTheStoredTable(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
@@ -684,11 +616,7 @@ func TestParameterReadAnswersWithTheStoredTable(t *testing.T) {
 	}
 }
 
-// newTestBoard 给板子一条真实的内存连接。
-//
-// 跑到上限的充电会通过链路上报结束，
-// 所以一个把充电走到完成的单元测试需要有个地方可写。
-// 连接为 nil 会让断言变成段错误而不是一个结果。
+// newTestBoard 提供可写的内存连接，供完成充电的单元测试接收结束帧。
 func newTestBoard(t *testing.T, config Config) *board {
 	t.Helper()
 	conn, peer := net.Pipe()
@@ -697,8 +625,7 @@ func newTestBoard(t *testing.T, config Config) *board {
 	return newBoard(config.withDefaults(), conn)
 }
 
-// captureLog 收集板子的日志行，
-// 好让测试断言某件事确实被上报了，而不是被吞掉。
+// captureLog 收集模拟器日志，用于验证协议处理结果被记录。
 type captureLog struct {
 	mu    sync.Mutex
 	lines []string
@@ -722,17 +649,10 @@ func (c *captureLog) contains(substr string) bool {
 	return false
 }
 
-// 按电量下单时数量单位是瓦时，而线路不带单位，
-// 所以唯一能说明它含义的就是充电模式。
-// 当成秒数读会让一笔 1Wh 的订单一秒就结束，
-// 随后还按好几瓦时上报，
-// 于是用户被按远超实际送出量的金额计费，而结算里看不出任何异常。
+// 验证电量模式的授权数量按 Wh 解释，不误用为时长。
 func TestEnergyOrderDoesNotTreatItsQuantityAsSeconds(t *testing.T) {
 	board := newTestBoard(t, quietConfig(t, ScenarioByEnergy))
-	// 这里直接持有这笔充电而不从 map 里读回来：
-	// 计量有错的板子会提前结束并把自己从 map 里摘掉，
-	// 查询一个不存在的 key 会把这件事变成
-	// nil 解引用，而不是测试真正要做的断言。
+	// 直接保存充电会话引用，避免提前完成并移出 map 后测试发生 nil 访问。
 	running := &charge{port: 1, mode: dc589.ByEnergy, targetMilliWh: 1000}
 	board.charging[1] = running
 
@@ -740,17 +660,13 @@ func TestEnergyOrderDoesNotTreatItsQuantityAsSeconds(t *testing.T) {
 	if running.complete() {
 		t.Fatalf("a 1Wh order finished after one second; its quantity is being read as a duration")
 	}
-	// 150W 每 36/1500 秒填满一毫瓦时，所以一秒买到 41.67mWh。
+	// 150 W 持续 1 秒产生约 41.67 mWh。
 	if got := running.chargedMilliWh(); got != 41 {
 		t.Fatalf("after one second at 150W the meter read %d mWh, want 41", got)
 	}
 }
 
-// 板子上报的电量与它上报的功率必须是同一个数字来源。
-// 它们过去是两个互不相干的常数——电表每个
-// tick 固定存 3600 mWh，而板子声称 150W—
-// —等于心跳里的功率和结算里的电量之间差
-// 24 倍，而结算正是钱据以移动的数字。
+// 验证累计电量由上报功率和实际经过时间积分产生，不使用独立固定增量。
 func TestMeteredEnergyFollowsTheReportedPower(t *testing.T) {
 	config := quietConfig(t, ScenarioByEnergy)
 	config.PowerDeciWatts = 1500 // 150.0W
@@ -765,25 +681,20 @@ func TestMeteredEnergyFollowsTheReportedPower(t *testing.T) {
 	if got := running.chargedMilliWh(); got != 2500 {
 		t.Fatalf("60s at 150W metered %d mWh, want 2500", got)
 	}
-	// 心跳在两种计费模式下都用秒作单位，
-	// 所以按电量下单的充电要按它当前取的功率推算。
-	// 若按电量数字那样只报一个没有时长的值，
-	// 等于告诉平台这笔充电刚开始就结束了。
+	// 验证电量模式的剩余时间按当前功率推算，心跳中的单位仍为秒。
 	if got := board.remainingSecs(running); got != 180 {
 		t.Fatalf("the heartbeat would have reported %d seconds left, want 180", got)
 	}
 }
 
-// 整条链必须自洽：板子上报的功率决定它的计量速率，
-// 速率决定买到的电量要充多久，
-// 订单结束以电表为准，而不是碰巧与某个时钟一致。
+// 验证功率、计量速率和授权电量一致，电量模式按电表读数完成充电。
 func TestEnergyOrderEndsWhenTheMeterReachesThePurchasedEnergy(t *testing.T) {
 	config := quietConfig(t, ScenarioByEnergy)
 	config.PowerDeciWatts = 1500 // 150.0W
 	board := newTestBoard(t, config)
 	board.charging[1] = &charge{port: 1, mode: dc589.ByEnergy, targetMilliWh: 5 * 1000}
 
-	// 150.0W 每 24 秒填满 1000mWh，所以 5Wh 是两分钟的充电。
+	// 150 W 每 24 秒产生 1 Wh；5 Wh 需要 120 秒。
 	ticks := 0
 	for ticks = 1; ticks <= 600; ticks++ {
 		board.advance()
@@ -796,8 +707,7 @@ func TestEnergyOrderEndsWhenTheMeterReachesThePurchasedEnergy(t *testing.T) {
 	}
 }
 
-// 按时间下单由时钟封顶，而它上报的电量同样来自那个功率，
-// 不来自某个常数。
+// 按时长充电在额度耗尽时结束，电量仍按实际功率积分计算。
 func TestTimeOrderEndsWhenItsClockRunsOut(t *testing.T) {
 	board := newTestBoard(t, quietConfig(t, ScenarioByTime))
 	board.charging[1] = &charge{port: 1, mode: dc589.ByTime, remaining: 3 * time.Second}
@@ -807,27 +717,18 @@ func TestTimeOrderEndsWhenItsClockRunsOut(t *testing.T) {
 	if board.charging[1].complete() {
 		t.Fatal("a three second order finished after two seconds")
 	}
-	// 板子还占着这个端口，这是该结论的另一半。
+	// 验证设备仍占用该端口。
 	board.advance()
 	if _, running := board.charging[1]; running {
 		t.Fatal("a three second order was still running after three seconds")
 	}
 }
 
-// assertEnergyAgrees 用板子一并上
-// 报的功率和时长校验一份结算的电量。
-//
-// 电量单位是毫千瓦时，也就是网关事件承载的单
-// 位，也正是帧里整瓦时字段换算到的单位。
-// 容差取该单位的十分之一加一，
-// 因为帧按整瓦时计数，只跑了几秒的充
-// 电不可能比它自身的分辨率卡得更准。
-// 宽到足以吸收这种取整的容差，也会把电表过去上报的那个 24 倍偏差一并吸收掉，
-// 所以容差只放在这一处，而不是随着短充电略有偏差在各调用点被逐个放宽。
+// assertEnergyAgrees 根据上报功率和时长计算预期电量，与结算的 milli-kWh（1 Wh）比较。
+// 容差覆盖整瓦时取整及有限时间偏差，并集中定义，避免各测试任意放宽。
 func assertEnergyAgrees(t *testing.T, milliKWh, seconds, deciWatts uint32) {
 	t.Helper()
-	// 一毫瓦时是板子累加器每秒的 36 个单位，而一毫千瓦时是这些单位的一千倍，
-	// 所以两次换算在这里正好抵消。
+	// 将 0.1 W 与秒相乘后除以 36000，得到 milli-kWh；1 milli-kWh 等于 1 Wh。
 	want := uint64(deciWatts) * uint64(seconds) / (deciWattSecondsPerMilliWh * 1000)
 	slack := want/10 + 1
 	got := uint64(milliKWh)
@@ -837,10 +738,7 @@ func assertEnergyAgrees(t *testing.T, milliKWh, seconds, deciWatts uint32) {
 	}
 }
 
-// 结算是钱据以移动的数字，
-// 所以它承载的电量必须与板子一路报上来的功率和时长一致。
-// 取功率定得足够高，让这个数字能扛过
-// 帧的整瓦时分辨率而不被截断成 0。
+// 验证结束上报电量与功率及持续时间一致；使用足够功率避免整瓦时量化为零。
 func TestSettlementEnergyAgreesWithTheReportedPower(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
@@ -868,7 +766,6 @@ func TestSettlementEnergyAgreesWithTheReportedPower(t *testing.T) {
 	if report.PowerDeciWatts != 36000 {
 		t.Fatalf("the settlement reported %d deciwatts, want 36000", report.PowerDeciWatts)
 	}
-	// 3600.0W 的一秒是 1000mWh，
-	// 所以这笔充电每跑一秒应该计量到约一毫瓦时。
+	// 3600 W 每秒产生 1 Wh，即 1000 mWh；累计读数应按实际持续时间增加。
 	assertEnergyAgrees(t, report.ChargedMWh/1000, report.ChargedSeconds, report.PowerDeciWatts)
 }

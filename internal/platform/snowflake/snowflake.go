@@ -11,10 +11,9 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// IDs use 41 timestamp bits, 10 node bits and 12 sequence bits. The shared
-// user database serializes every allocation, so its node is always zero.
-// Persisting the timestamp/sequence also prevents reuse after a process restart
-// or clock rollback. An allocation commits with the business record using it.
+// ID 由 41 位时间戳、10 位节点号和 12 位序列号组成。
+// central_db 串行分配，节点号固定为零；持久化时间戳和序列号，避免重启或时钟回拨导致重复。
+// 编号分配与使用该编号的业务记录在同一事务中提交。
 const (
 	epochMillis  int64 = 1577836800000 // 2020-01-01T00:00:00Z
 	sequenceBits       = 12

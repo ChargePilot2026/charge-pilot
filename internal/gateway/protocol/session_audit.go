@@ -6,11 +6,8 @@ import (
 	"time"
 )
 
-// Transport 标识连接的种类。这些取值恰好就是
-// gateway_db.device_session.protocol 允许的那些（tcp 与 mqtt 两个值的 ENUM），
-// 刻意取传输方式而不是厂商适配器名：这一列回答的是"这台设备是怎么连上来的"，
-// 而厂商信息从 device 行就能取到。
-// 这里写 "dc589" 这类适配器名，MySQL 会直接拒绝。
+// Transport 记录 tcp 或 mqtt，与 device_session.protocol 枚举一致。
+// 该字段表示传输方式，不填写 dc589 等设备协议名称。
 type Transport string
 
 const (
@@ -18,15 +15,8 @@ const (
 	TransportMQTT Transport = "mqtt"
 )
 
-// SessionAudit 累加每条连接的流量计数器，这样一条会话只要在连接结束时
-// 写一次库就够了。
-//
-// 这些计数器刻意留在内存里，只在 detach 时落盘。
-// 每帧都写会把一次数据库往返放到 TCP 热路径上，
-// 让一台疯狂发帧的设备有能力把自己的连接卡死。
-// 进程死掉时仍在累加的计数器会丢，这是有意做的取舍：
-// 审计要回答的是"这条连接挂了多久、搬了多少数据"，
-// 而丢一行是可以补救的，卡住的 socket 不是。
+// SessionAudit 在内存累加连接流量，并在关闭时一次写入数据库，避免每帧访问存储。
+// 进程异常退出时未落盘计数可能丢失，遗留会话由后续清理处理。
 type SessionAudit struct {
 	transport  Transport
 	remoteAddr string
@@ -38,9 +28,7 @@ type SessionAudit struct {
 	framesIn  atomic.Int64
 	framesOut atomic.Int64
 	lastSeen  atomic.Int64 // 最近一帧的 UnixNano
-	// unknown 是一小撮本版本选择不去处理的命令字节。
-	// 它是定长而不是一个会增长的 map，这样一台狂发未知命令的设备
-	// 就不能借此让自己的会话行无限膨胀下去。
+	// unknown 使用定长命令集合，限制未知命令审计数据的大小。
 	unknownMu sync.Mutex
 	unknown   [256]bool
 }
@@ -58,8 +46,7 @@ func NewSessionAudit(transport Transport, sessionID, remoteAddr string, startedA
 	return audit
 }
 
-// Inbound 记录一个收到的帧。dataLen 是载荷长度，不是成帧之后的长度，
-// 这样审计统计的才是协议实际承载的量。
+// Inbound 记录接收帧及载荷字节数；dataLen 不含帧头。
 func (a *SessionAudit) Inbound(dataLen int, at time.Time) {
 	if a == nil {
 		return
@@ -79,11 +66,7 @@ func (a *SessionAudit) Outbound(dataLen int, at time.Time) {
 	a.lastSeen.Store(at.UnixNano())
 }
 
-// Unknown 记录"某条命令收到了但被有意忽略"这件事。
-//
-// 这里记的是集合而不是计数，这样运维才能把"这块板子讲的是
-// 我们实现范围的超集"和"这块板子一切正常"区分开。
-// 正是这个区别，让一条被跳过的命令从无头案变成待办事项。
+// Unknown 记录收到但未处理的命令集合，用于识别超出实现范围的设备上报。
 func (a *SessionAudit) Unknown(command byte) {
 	if a == nil {
 		return
@@ -93,8 +76,7 @@ func (a *SessionAudit) Unknown(command byte) {
 	a.unknownMu.Unlock()
 }
 
-// UnknownCommands 列出被跳过的那些互不相同的命令字节，
-// 按升序返回，这样多次运行之间取值是稳定的。
+// UnknownCommands 按升序返回去重后的未知命令字节。
 func (a *SessionAudit) UnknownCommands() []int {
 	if a == nil {
 		return nil
@@ -126,9 +108,7 @@ type SessionRecord struct {
 	FramesOut   int64
 }
 
-// Snapshot 冻结计数器。endedAt 由调用方传入而不是在这里取当前时间，
-// 这样调用方可以给这一行标上它关闭的原因，
-// 这个值也与连接实际返回的错误对得上。
+// Snapshot 生成流量快照，endedAt 与结束原因由调用方依据实际连接终态提供。
 func (a *SessionAudit) Snapshot(deviceID, closeReason string, endedAt time.Time) SessionRecord {
 	if a == nil {
 		return SessionRecord{}

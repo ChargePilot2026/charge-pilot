@@ -48,8 +48,8 @@ func run(ctx context.Context) error {
 	}
 	sink := store.MySQLSink{DB: orm}
 	gin.SetMode(gin.ReleaseMode)
-	// 指标端点不做鉴权，抓取器因此不必持有运营会话；它只暴露路由名、状态码和耗时。
-	// registry 是在 NewRouter 之前传进去的，这样记录用的中间件会在任何路由注册之前装好。
+	// 在注册路由前安装指标中间件，覆盖全部 HTTP 请求。
+	// 指标端点无需运营会话，仅暴露路由模板、状态码与耗时。
 	metrics := httpapi.NewMetrics("gateway")
 	zone, offset := time.Now().Zone()
 	log.Printf("gateway starting http=%s dc589=%s max_connections=%d idle_heartbeat_seconds=%d charging_heartbeat_seconds=%d debug_heartbeat=%t timezone=%s offset_seconds=%d", cfg.HTTPAddr, cfg.DC589Addr, cfg.MaxConnections, dc589.DefaultHeartbeatSeconds, dc589.ChargingHeartbeatSeconds, cfg.DebugHeartbeat, zone, offset)

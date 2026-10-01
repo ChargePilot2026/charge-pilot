@@ -7,12 +7,8 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// registerPricing 只保留站点维度的视图。创建规则已不再是直接写入：
-// 先建一个模板，再把它应用到某个站点，
-// 所以那些"创建时就要绑定站点"的接口已经移除。
-//
-// registerPricing 只保留站点维度的只读与停用能力。计费规则已不再直接创建：先建
-// 计费模板，再把它应用到某个站点，因此那些"创建时就要绑定站点"的旧接口已经移除。
+// registerPricing 注册站点规则的只读与停用接口。
+// 新规则由充电方案发布流程生成，不通过此处直接创建。
 func (a ResourceAPI) registerPricing(r *gin.Engine) {
 	r.GET("/api/v1/admin/settings/charge-rules", a.Auth.Require("pricing.read"), a.pricingRules)
 	r.GET("/api/v1/admin/settings/pricing-rule-templates/:id/usage", a.Auth.Require("pricing.read"), a.pricingTemplateUsage)

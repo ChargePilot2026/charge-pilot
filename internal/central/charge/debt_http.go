@@ -12,9 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// DebtAPI 让客户看到自己还欠多少并把它还掉。
-// 金额永远取自库里存的欠款，绝不取自请求体，
-// 所以被篡改的客户端改不了实际收取的数额。
+// DebtAPI 提供用户欠费查询和支付接口，应付金额始终读取数据库，不接受客户端金额覆盖。
 type DebtAPI struct {
 	Auth     identity.SessionAuthenticator
 	Debts    DebtStore

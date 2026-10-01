@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,7 +16,6 @@ import (
 	"github.com/ChargePilot2026/charge-pilot/internal/central/payment"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/auth"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/dbconn"
-	"github.com/ChargePilot2026/charge-pilot/internal/platform/phonecrypto"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/serviceclient"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -68,12 +68,10 @@ func accountRouter(t *testing.T, userDB, adminDB *gorm.DB, userID uint64) http.H
 	UserAccountAPI{
 		Auth:   identity.SessionAuthenticator{JWT: jwt, Sessions: identity.Sessions{Redis: client}, Users: identity.UserStore{DB: userDB}},
 		UserDB: userDB, AdminDB: adminDB, Gateway: serviceclient.Client{},
-		PhoneKey:         []byte("account-test-phone-key-32-bytes!"),
 		DevelopmentPhone: true, Prepay: payment.Simulator{},
 	}.Register(router)
 	DevelopmentPaymentAPI{Auth: identity.SessionAuthenticator{JWT: jwt, Sessions: identity.Sessions{Redis: client}, Users: identity.UserStore{DB: userDB}}, DB: userDB, Store: PaymentCallbackStore{DB: userDB, ExpectedProvider: "simulation", ExpectedMerchantID: "local-simulation", ExpectedAppID: "wx_local_dev"}}.Register(router)
-	// gin 的 Use 只对其后注册的路由生效，
-	// 所以 bearer token 改由这个 wrapper 打到每个请求上。
+	// 使用请求包装器注入 Bearer 令牌，覆盖已注册路由；Gin 的 Use 只影响后续注册路由。
 	return &authenticatedRouter{Engine: router, token: token}
 }
 
@@ -108,8 +106,7 @@ func callJSON(t *testing.T, router http.Handler, method, path string, body any) 
 	return response.Code, envelope
 }
 
-// TestPhoneBindRejectsNumberAlreadyOwned —— 一个手机号只能对应一个账号。
-// 这道检查必须发生在写入之前，否则两个账号可能短暂共用同一个号码。
+// TestPhoneBindRejectsNumberAlreadyOwned 验证手机号唯一绑定、明文存储及解绑状态。
 func TestPhoneBindRejectsNumberAlreadyOwned(t *testing.T) {
 	if os.Getenv("TEST_USER_DATABASE_URL") == "" || os.Getenv("TEST_ADMIN_DATABASE_URL") == "" || os.Getenv("TEST_REDIS_URL") == "" {
 		t.Skip("disposable MySQL and Redis required")
@@ -119,13 +116,14 @@ func TestPhoneBindRejectsNumberAlreadyOwned(t *testing.T) {
 
 	first, second := createTwoUsers(t, userDB)
 	t.Cleanup(func() {
-		userDB.Exec("UPDATE user SET phone_enc = NULL, phone_hash = NULL WHERE id IN ?", []uint64{first, second})
+		userDB.Exec("UPDATE user SET phone = NULL WHERE id IN ?", []uint64{first, second})
+		userDB.Exec("DELETE FROM wallet_account WHERE user_id IN ?", []uint64{first, second})
 		userDB.Exec("DELETE FROM user WHERE id IN ?", []uint64{first, second})
 	})
 	router := accountRouter(t, userDB, adminDB, second)
 
 	// 第二个账号要认领第一个账号已经占用的号码。
-	if err := userDB.Exec("UPDATE user SET phone_hash = ? WHERE id = ?", phonecrypto.Hash("13900000001"), first).Error; err != nil {
+	if err := userDB.Exec("UPDATE user SET phone = ? WHERE id = ?", "13900000001", first).Error; err != nil {
 		t.Fatal(err)
 	}
 	code, body := callJSON(t, router, "POST", "/api/v1/user/phone/bind", map[string]any{"phone": "13900000001"})
@@ -138,27 +136,74 @@ func TestPhoneBindRejectsNumberAlreadyOwned(t *testing.T) {
 		t.Fatalf("malformed phone returned %d, want 400", code)
 	}
 	// 未被占用的号码绑定成功，返回时已做脱敏。
-	if code, body := callJSON(t, router, "POST", "/api/v1/user/phone/bind", map[string]any{"phone": "13900000002"}); code != 200 {
+	if code, body := callJSON(t, router, "POST", "/api/v1/user/phone/bind", map[string]any{"phone": " 13900000002 "}); code != 200 {
 		t.Fatalf("bind returned %d: %s", code, body["message"])
 	}
 	var stored struct {
-		Encrypted []byte `gorm:"column:phone_enc"`
-		Hash      string `gorm:"column:phone_hash"`
+		Phone *string
 	}
-	if err := userDB.Table("user").Select("phone_enc, phone_hash").Where("id = ?", second).Take(&stored).Error; err != nil {
+	if err := userDB.Table("user").Select("phone").Where("id = ?", second).Take(&stored).Error; err != nil {
 		t.Fatal(err)
 	}
-	if len(stored.Encrypted) == 0 || stored.Hash != phonecrypto.Hash("13900000002") {
-		t.Fatal("phone was not stored encrypted with its hash")
+	if stored.Phone == nil || *stored.Phone != "13900000002" {
+		t.Fatal("phone was not stored as normalized plaintext")
 	}
-	// 明文不允许出现在存储 blob 里的任何位置。
-	if json.Valid(stored.Encrypted) && string(stored.Encrypted) == "13900000002" {
-		t.Fatal("phone was stored in the clear")
+	if err := userDB.Exec("INSERT INTO wallet_account(user_id) VALUES(?)", second).Error; err != nil {
+		t.Fatal(err)
+	}
+	profile, err := (identity.UserStore{DB: userDB}).Profile(t.Context(), second)
+	if err != nil || !profile.PhoneBound {
+		t.Fatalf("profile binding state: %+v %v", profile, err)
+	}
+	if code, _ := callJSON(t, router, "POST", "/api/v1/user/phone/unbind", nil); code != 200 {
+		t.Fatalf("unbind returned %d", code)
+	}
+	var remaining int64
+	if err := userDB.Table("user").Where("id = ? AND phone IS NULL", second).Count(&remaining).Error; err != nil || remaining != 1 {
+		t.Fatalf("unbind did not clear phone: %d %v", remaining, err)
+	}
+	profile, err = (identity.UserStore{DB: userDB}).Profile(t.Context(), second)
+	if err != nil || profile.PhoneBound {
+		t.Fatalf("profile unbinding state: %+v %v", profile, err)
 	}
 }
 
-// TestWalletRefundFreezesBalanceOnClaim —— 钱包退款一申请就冻结资金，之后批准才是真正打款。
-// 没有这道冻结，同一笔余额可能同时供一笔充电和一笔退款。
+func TestConcurrentPhoneBindingKeepsOneOwner(t *testing.T) {
+	if os.Getenv("TEST_USER_DATABASE_URL") == "" || os.Getenv("TEST_ADMIN_DATABASE_URL") == "" || os.Getenv("TEST_REDIS_URL") == "" {
+		t.Skip("disposable MySQL and Redis required")
+	}
+	db := openAccountDB(t, "TEST_USER_DATABASE_URL")
+	adminDB := openAccountDB(t, "TEST_ADMIN_DATABASE_URL")
+	first, second := createTwoUsers(t, db)
+	t.Cleanup(func() { db.Exec("DELETE FROM user WHERE id IN ?", []uint64{first, second}) })
+	routers := []http.Handler{accountRouter(t, db, adminDB, first), accountRouter(t, db, adminDB, second)}
+	start := make(chan struct{})
+	statuses := make(chan int, 2)
+	var group sync.WaitGroup
+	for _, router := range routers {
+		group.Go(func() {
+			<-start
+			code, _ := callJSON(t, router, "POST", "/api/v1/user/phone/bind", map[string]any{"phone": "13900000009"})
+			statuses <- code
+		})
+	}
+	close(start)
+	group.Wait()
+	close(statuses)
+	counts := map[int]int{}
+	for code := range statuses {
+		counts[code]++
+	}
+	if counts[200] != 1 || counts[409] != 1 {
+		t.Fatalf("binding responses: %v", counts)
+	}
+	var owners int64
+	if err := db.Table("user").Where("phone = ?", "13900000009").Count(&owners).Error; err != nil || owners != 1 {
+		t.Fatalf("phone owners: %d %v", owners, err)
+	}
+}
+
+// TestWalletRefundFreezesBalanceOnClaim 验证退款申请立即冻结对应余额，防止同一资金同时消费与退款。
 func TestWalletRefundFreezesBalanceOnClaim(t *testing.T) {
 	if os.Getenv("TEST_USER_DATABASE_URL") == "" || os.Getenv("TEST_ADMIN_DATABASE_URL") == "" || os.Getenv("TEST_REDIS_URL") == "" {
 		t.Skip("disposable MySQL and Redis required")

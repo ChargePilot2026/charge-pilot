@@ -36,7 +36,7 @@ func TestDashboardUsesBeijingDatesAndOnlySettledFees(t *testing.T) {
 		t.Fatal(err)
 	}
 	dashboard := Dashboard{UserDB: userORM, AdminDB: adminORM}
-	// 16：00 UTC 就是北京时间的零点；昨天那一行不能算进今天。
+	// 16:00 UTC 为次日北京时间零点，前一日记录不计入今日统计。
 	now := time.Date(2030, 1, 2, 16, 30, 0, 0, time.UTC)
 	before, err := dashboard.Read(ctx, now)
 	if err != nil {

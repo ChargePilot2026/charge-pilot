@@ -7,18 +7,15 @@ import (
 	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol"
 )
 
-// TestUnknownCommandDoesNotKillTheConnection 锁定了厂商文档自己的措辞所要求的
-// 那条健壮性规则：文档把平台参数请求、充电分档上报和远程控制应答都标成
-// 「有的主板会发、有的不发」。一个碰到不认识的命令就断连接的构建，会让每块
-// 跑着老固件的主板都失联，而这个故障看上去像网络问题，而不是缺了个功能。
+// TestUnknownCommandDoesNotKillTheConnection 验证未知但格式正确的命令不会关闭连接。
+// 兼容固件可选上报；畸形帧仍按协议错误处理。
 func TestUnknownCommandDoesNotKillTheConnection(t *testing.T) {
 	frame := Frame{Command: 0xC7, Session: [6]byte{1, 2, 3, 4, 5, 6}, Data: []byte{0}}
 	raw, err := Encode(frame)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	// 这帧是良构的：它是不认识，不是畸形。解码器必须把它交还回来，
-	// 好让 adapter 能跳过它。
+	// 该帧格式正确但命令未知，解码器应返回帧，由适配器记录并跳过。
 	decoded, err := Decode(raw)
 	if err != nil {
 		t.Fatalf("a well-formed unknown command must still decode: %v", err)
@@ -29,8 +26,7 @@ func TestUnknownCommandDoesNotKillTheConnection(t *testing.T) {
 }
 
 func TestStartRejectsLongRunModes(t *testing.T) {
-	// 文档说明长时变体不用于常规运营。它们同时会绕过平台设定的
-	// 时间与电量上限，所以一次普通充电请求不该能走到那里。
+	// 验证普通充电请求拒绝长时模式，保持平台时间与电量上限。
 	for _, mode := range []ChargeMode{LongTime, LongEnergy, LongPlatformBilling} {
 		if _, err := BuildStart(StartCommand{Session: [6]byte{1}, Port: 1, OrderBCD: [8]byte{1}, Mode: mode, Quantity: 60}); err == nil {
 			t.Fatalf("long-run mode %d must be rejected for a routine start", mode)
@@ -44,8 +40,7 @@ func TestStartRejectsLongRunModes(t *testing.T) {
 }
 
 func TestStartRejectsReservedChargeTypes(t *testing.T) {
-	// 2（按金额计费）和 3（充满自停）在文档里是保留的，硬件两者
-	// 都没实现。开放它们会产出一个主板根本满足不了的启动。
+	// 拒绝保留类型及排障长时模式；普通启动仅接受已实现且受额度约束的模式。
 	for _, mode := range []ChargeMode{2, 3, 5, 9, 13} {
 		if mode.IsNormal() {
 			t.Fatalf("charge type %d must not be treated as normal", mode)

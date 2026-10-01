@@ -134,9 +134,7 @@ type Queue struct{ DB *sql.DB }
 
 var ErrEventConflict = errors.New("event_id already exists with different content")
 
-// Enqueue 按 event_id 幂等。
-// 同一个事件 ID 不能带着改过的 type、key 或 data 再次入队，
-// 所以重试无法悄悄改写一条审计事实。
+// Enqueue 按 event_id 幂等入队；同 ID 的 type、key 或 data 不一致时拒绝，避免重写事件事实。
 func (q Queue) Enqueue(ctx context.Context, event Event) (bool, error) {
 	data, err := ValidateEvent(event)
 	if err != nil {

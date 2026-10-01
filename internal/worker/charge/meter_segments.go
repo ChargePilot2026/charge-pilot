@@ -21,9 +21,7 @@ func (s EndSynchronizer) meterSegments(ctx context.Context, command workerCharge
 		return nil, nil
 	}
 	var rows []workerDeviceEventRow
-	// BB 的事件 ID 圈定了这份不可变证据集的范围。
-	// 在 BB 之后才落库的延迟心跳
-	// 改不了重放时生成的结束结果负载。
+	// 以 BB 事件 ID 固定心跳证据范围，排除结束后落库的延迟心跳，保证重放结果一致。
 	err := s.GatewayDB.WithContext(ctx).Where("device_id=? AND event_type='heartbeat' AND id<=? AND received_at>=? AND received_at<=?", end.DeviceID, endID, command.AckAt.Time, end.ReceivedAt).Order("id").Limit(10081).Find(&rows).Error
 	if err != nil {
 		return nil, err

@@ -13,35 +13,29 @@ import (
 	"github.com/ChargePilot2026/charge-pilot/internal/central/identity"
 	"github.com/ChargePilot2026/charge-pilot/internal/central/payment"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/httpapi"
-	"github.com/ChargePilot2026/charge-pilot/internal/platform/phonecrypto"
+	"github.com/ChargePilot2026/charge-pilot/internal/platform/phone"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/serviceclient"
 	"github.com/gin-gonic/gin"
+	"github.com/go-sql-driver/mysql"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
-// UserAccountAPI 提供小程序需要、
-// 而服务此前从未暴露过的客户侧账户视图：钱包、
-// 优惠券、发票、公告、附近站点、手机号绑定和自助故障上报。
+// UserAccountAPI 提供钱包、优惠券、发票、公告、附近站点、手机号绑定及用户故障上报接口。
 type UserAccountAPI struct {
-	Auth         identity.SessionAuthenticator
-	UserDB       *gorm.DB
-	AdminDB      *gorm.DB
-	GatewayURL   string
-	ServiceToken string
-	Gateway      serviceclient.Client
-	Prepay       PrepayProvider
-	// PhoneKey 用来加密落库的手机号。
-	// 手机号不能以明文躺在库里，
-	// 而且每个要读它们的部署都必须提供同一把密钥。
-	PhoneKey         []byte
+	Auth             identity.SessionAuthenticator
+	UserDB           *gorm.DB
+	AdminDB          *gorm.DB
+	GatewayURL       string
+	ServiceToken     string
+	Gateway          serviceclient.Client
+	Prepay           PrepayProvider
 	DevelopmentPhone bool
 	PhoneExchange    func(context.Context, string) (string, error)
 }
 
-// Register 挂载账户相关路由。每个处理器都自己做鉴权，
-// 这样会话缺失时直接返回 401，而不是带着 user id 为 0 去查库。
+// Register 注册用户账户路由；各处理器先验证会话，缺失或无效时返回 401。
 func (a UserAccountAPI) Register(r *gin.Engine) {
 	r.GET("/api/v1/user/wallet/balance", a.walletBalance)
 	r.GET("/api/v1/user/wallet/txns", a.walletTxns)
@@ -517,8 +511,7 @@ func (a UserAccountAPI) announcements(c *gin.Context) {
 	}
 	ctx := c.Request.Context()
 	now := time.Now().UTC()
-	// 客户看到的是全局公告，
-	// 加上限定在可达站点范围内的那些；不在有效期内的公告一律不返回。
+	// 返回有效期内的全局公告，以及当前用户可达站点范围内的公告。
 	base := a.AdminDB.WithContext(ctx).Table("announcement").
 		Where("deleted_at IS NULL AND status = 'published' AND start_at <= ? AND (end_at IS NULL OR end_at >= ?)", now, now)
 	var rows []struct {
@@ -678,40 +671,31 @@ func (a UserAccountAPI) bindPhone(c *gin.Context) {
 		}
 		in.Phone = phone
 	}
-	if !phonecrypto.Valid(in.Phone) {
+	in.Phone = phone.Normalize(in.Phone)
+	if !phone.Valid(in.Phone) {
 		httpapi.BadRequest(c, "请输入有效的中国大陆手机号")
 		return
 	}
-	if len(a.PhoneKey) == 0 {
-		// 拒绝比存下一个平台保护不了的号码安全。
-		httpapi.Write(c, 503, 5003, "手机号加密未配置，暂不可绑定", nil)
-		return
-	}
-	hash := phonecrypto.Hash(in.Phone)
-	encrypted, err := phonecrypto.Encrypt(a.PhoneKey, in.Phone)
-	if err != nil {
-		httpapi.Write(c, 503, 5003, "手机号保护失败，请稍后重试", nil)
-		return
-	}
-	err = a.UserDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
-		// 唯一哈希正是防止一个号码挂到两个账号上的那道闸。
+	err := a.UserDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+		// 查询提供明确的冲突提示，唯一索引兜底并发绑定。
 		var holder int64
-		if err := tx.Table("user").Where("phone_hash = ? AND id <> ? AND deleted_at IS NULL", hash, userID).Count(&holder).Error; err != nil {
+		if err := tx.Table("user").Where("phone = ? AND id <> ? AND deleted_at IS NULL", in.Phone, userID).Count(&holder).Error; err != nil {
 			return err
 		}
 		if holder > 0 {
 			return errPhoneTaken
 		}
 		return tx.Table("user").Where("id = ? AND deleted_at IS NULL", userID).
-			Updates(map[string]any{"phone_enc": encrypted, "phone_hash": hash}).Error
+			Updates(map[string]any{"phone": in.Phone}).Error
 	})
+	var duplicate *mysql.MySQLError
 	switch {
-	case errors.Is(err, errPhoneTaken):
+	case errors.Is(err, errPhoneTaken) || errors.As(err, &duplicate) && duplicate.Number == 1062:
 		httpapi.Write(c, 409, 2009, "该手机号已绑定其他账号", nil)
 	case err != nil:
 		resourceWriteFailure(c, err)
 	default:
-		httpapi.OK(c, gin.H{"bound": true, "phone_masked": phonecrypto.Mask(in.Phone)})
+		httpapi.OK(c, gin.H{"bound": true, "phone_masked": phone.Mask(in.Phone)})
 	}
 }
 
@@ -722,7 +706,7 @@ func (a UserAccountAPI) unbindPhone(c *gin.Context) {
 	}
 	err := a.UserDB.WithContext(c.Request.Context()).Table("user").
 		Where("id = ? AND deleted_at IS NULL", userID).
-		Updates(map[string]any{"phone_enc": nil, "phone_hash": nil}).Error
+		Updates(map[string]any{"phone": nil}).Error
 	if err != nil {
 		resourceWriteFailure(c, err)
 		return
@@ -773,8 +757,7 @@ func (a UserAccountAPI) reportFault(c *gin.Context) {
 		if err := tx.Raw("SELECT LAST_INSERT_ID()").Scan(&id).Error; err != nil {
 			return err
 		}
-		// assigned_to 是 NOT NULL 且目前还没有运营接手，
-		// 所以开单第一步的操作人记为提交的客户本人。
+		// 新报障尚未指派运营人员，assigned_to 为必填字段，初始记录提交用户。
 		return tx.Table("device_fault_report_event").Create(map[string]any{
 			"report_id": id, "event_type": "reported", "from_status": "", "to_status": "open",
 			"actor_id": userID, "assigned_to": userID, "user_visible": true, "note": "用户提交报修",
@@ -926,8 +909,7 @@ func (a UserAccountAPI) applyInvoice(c *gin.Context) {
 		httpapi.Write(c, 503, 5003, "订单暂时无法读取", nil)
 		return
 	}
-	// 只有已结算的充电才能开票；
-	// 其它状态开出来的是一笔还没收到的钱。
+	// 仅已结算的充电订单可申请发票。
 	if order.Status != "completed" && order.Status != "refunding" && order.Status != "refunded" {
 		httpapi.Write(c, 409, 2009, "订单尚未完成，暂不能申请发票", nil)
 		return

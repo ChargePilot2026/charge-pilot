@@ -58,8 +58,7 @@ func settleRefundWallet(tx *gorm.DB, r RefundRecord) error {
 	return tx.Table("wallet_refund_part").Where("refund_record_id=?", r.ID).Update("settled", true).Error
 }
 
-// 渠道明确返回终态失败时把预占退回钱包；
-// 响应未知时则刻意继续预占，直到对账为止。
+// 渠道确认终态失败时释放退款预占；结果未知时保留预占，等待对账。
 func releaseFailedWalletRefund(tx *gorm.DB, r RefundRecord) error {
 	if r.BizType != "wallet_recharge" {
 		return nil

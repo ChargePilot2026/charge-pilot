@@ -763,8 +763,7 @@ CREATE TABLE `user` (
   `unionid` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '微信开放平台用户统一标识',
   `nickname` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '用户昵称',
   `avatar_url` varchar(512) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '用户头像 URL',
-  `phone_enc` varbinary(255) DEFAULT NULL COMMENT 'AES_ENCRYPT 加密',
-  `phone_hash` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '查询用 SHA-256 hash(不可逆)',
+  `phone` varchar(11) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '明文中国大陆手机号；未绑定为 NULL',
   `gender` enum('unknown','male','female') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'unknown' COMMENT '用户性别；unknown 未知、male 男、female 女',
   `status` enum('active','frozen') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'active' COMMENT '当前业务状态；取值 active / frozen',
   `first_seen_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '首次识别用户时间',
@@ -776,7 +775,7 @@ CREATE TABLE `user` (
   `inviter_id` bigint unsigned DEFAULT NULL COMMENT '介绍人 user.id，绑定后不可自行更改',
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_openid` (`openid`,`deleted_at`),
-  UNIQUE KEY `uk_phone_hash` (`phone_hash`),
+  UNIQUE KEY `uk_phone` (`phone`),
   KEY `idx_status` (`status`),
   KEY `idx_user_inviter` (`inviter_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='终端用户';

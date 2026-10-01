@@ -229,10 +229,8 @@ func (s BillingOrders) Apply(ctx context.Context, result billing.Result) error {
 		if err := tx.Model(&ChargeOrderRecord{}).Where("id=?", order.ID).Updates(map[string]any{"electric_cents": result.ElectricCents, "service_cents": result.ServiceCents, "total_cents": result.TotalCents}).Error; err != nil {
 			return err
 		}
-		// 订单类活动在这里求值，
-		// 而不是在设备发出结束帧时求值，
-		// 因为门槛在费用算出来之前无法判定。
-		// 这段代码位于回执插入之后，所以重放的结算会提前返回，永远不会发第二次券。
+		// 费用计算完成并写入回执后求值订单活动，确保金额门槛准确。
+		// 重放结算在回执检查时提前返回，不重复发券。
 		applyOrderCampaigns(tx, order, result.TotalCents)
 		var reserved int64
 		if err := tx.Model(&RefundRecord{}).Select("COALESCE(SUM(refund_cents),0)").Where("payment_order_id=? AND status IN ('pending','processing') AND deleted_at IS NULL", payment.ID).Scan(&reserved).Error; err != nil {
@@ -292,13 +290,8 @@ func settlementNotice(eventID string, order ChargeOrderRecord, display pricing.D
 	return data
 }
 
-// applyOrderCampaigns 发放这笔订单挣到的门槛券或节日券。
-//
-// 结算是资金路径：券绝不能让它失败或回滚。
-// 规则不适用不算错误，
-// 规则报错则记录日志后吞掉，因为另一个选择——
-// 中止事务——会让一笔真实发生、
-// 已经完成的充电开不出账单。发放在订单号上是幂等的，所以事后重试或人工重跑都可以安全地重新求值。
+// applyOrderCampaigns 根据已结算订单求值门槛券和节日券。
+// 规则不适用时跳过；规则错误仅记录日志，不中止资金结算。订单事件键保证重复求值不重复发券。
 func applyOrderCampaigns(tx *gorm.DB, order ChargeOrderRecord, totalCents int64) {
 	now := time.Now().UTC()
 	for _, trigger := range []string{"threshold_redeem", "holiday"} {

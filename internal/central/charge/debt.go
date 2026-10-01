@@ -19,9 +19,7 @@ var (
 	ErrDebtConflict = errors.New("欠费状态已变化，请刷新后重试")
 )
 
-// Debt 是一笔充电实际花费超过客户预付的那部分金额。
-// 它由计费任务产生、之后才追收，
-// 因此充电主流程不会因为收取差额而阻塞。
+// Debt 保存结算费用超出预付金额的欠费，由计费任务生成并独立追收。
 type Debt struct {
 	ID               uint64     `json:"id" gorm:"column:id"`
 	DebtNo           string     `json:"debt_no" gorm:"column:debt_no"`
@@ -119,8 +117,7 @@ func (s DebtStore) ListDebts(ctx context.Context, userID uint64, status string, 
 	return rows, total, nil
 }
 
-// OpenDebtPayment 创建用于追收欠款的支付订单。
-// 金额正好是未结余额，所以一个过期的页面无法多收钱。
+// OpenDebtPayment 按数据库中的未结余额创建欠费支付单，防止过期页面改变应收金额。
 func (s DebtStore) OpenDebtPayment(ctx context.Context, debtID uint64, clientRequestID string) (uint64, string, int64, string, error) {
 	if clientRequestID == "" || uuid.Validate(clientRequestID) != nil {
 		return 0, "", 0, "", ErrPaymentIntentConflict
@@ -216,22 +213,19 @@ func (s DebtStore) loadPayer(tx *gorm.DB, userID uint64, openID *string) error {
 	return nil
 }
 
-// SavePrepay 缓存渠道参数，
-// 让重试的请求复用同一个 prepay id，而不是在渠道侧再造一个。
+// SavePrepay 缓存渠道预支付参数，供重试复用相同 prepay_id。
 func (s DebtStore) SavePrepay(ctx context.Context, paymentOrderID uint64, params payment.PrepayParams) error {
 	encoded, err := json.Marshal(params)
 	if err != nil {
 		return err
 	}
-	// charge_prepay 以支付订单为键，所以重发只是替换这份快照。
+	// charge_prepay 以支付订单为键，重复保存更新同一份渠道参数快照。
 	return s.DB.WithContext(ctx).Where("payment_order_id = ?", paymentOrderID).
 		Clauses(clause.OnConflict{UpdateAll: true}).
 		Create(map[string]any{"payment_order_id": paymentOrderID, "params_json": string(encoded)}).Error
 }
 
-// SettleDebt 把一张验签通过的渠道回单应用到欠款上。
-// charge_debt_receipt 上的唯一键让重复回调成为空操作而不是重复入账，
-// 欠款也只有在被完全覆盖之后才关闭。
+// SettleDebt 应用已验签回单，通过 charge_debt_receipt 唯一键防止重复入账；余额结清后关闭欠费。
 func (s DebtStore) SettleDebt(ctx context.Context, paymentOrderID uint64, paidCents int64, channelRef string) (bool, error) {
 	if paidCents <= 0 || channelRef == "" {
 		return false, ErrDebtConflict

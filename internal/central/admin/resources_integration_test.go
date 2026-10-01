@@ -24,8 +24,7 @@ import (
 )
 
 func TestAdminPagesIntegration(t *testing.T) {
-	// 四个库缺一不可：只设了 admin 一个就去连另外三个，报出来的是 "invalid MySQL URL"，
-	// 看起来像代码坏了，其实是没配齐环境。
+	// 仅在全部数据库和 Redis 测试连接已配置时执行集成测试。
 	for _, key := range []string{
 		"TEST_ADMIN_DATABASE_URL", "TEST_USER_DATABASE_URL",
 		"TEST_BILLING_DATABASE_URL", "TEST_GATEWAY_DATABASE_URL",
@@ -49,19 +48,8 @@ func TestAdminPagesIntegration(t *testing.T) {
 	}
 	adb, udb, bdb, gdb := open("TEST_ADMIN_DATABASE_URL"), open("TEST_USER_DATABASE_URL"), open("TEST_BILLING_DATABASE_URL"), open("TEST_GATEWAY_DATABASE_URL")
 
-	// 本测试用一组固定的标识符搭出整套夹具，所以在没有做清理的情况下，对
-	// 某一个库而言它只能跑过一次：第二次跑会在它遇到的第一个唯一键上撞车，
-	// 并报出的是一个产品缺陷，而真正的原因其实是它自己上一轮跑完留下的那些
-	// 残迹。它所创建的一切都在这里被删掉，按各自所属的那个库分组，匹配的时候
-	// 用的是它自己用到的那些标记，而不是按 id 去认——因为 id 正是每次跑都会
-	// 变的东西。
-	//
-	// 失败的语句会被报出来，而不是被吞掉。一条被悄悄跳过的 delete，和一条真
-	// 正删干净的 delete 看起来完全一样，直到下一轮跑在上面绊了一跤才暴露出来。
-	// event_outbox 是只追加的，它以由所发生的事情推导出来的 event id 为键，
-	// 所以本轮写下去的那一行，正是下一轮会绊到的那一行。事先记下这张表原本
-	// 到了哪里，就能只删掉本轮写下去的那些行，而且不碰本来就存在的行，这比
-	// 去猜它的命名规则要稳健得多。
+	// 按依赖顺序删除本轮夹具，使用稳定标识和本轮创建的主键限定范围。
+	// 记录清理错误；Outbox 按测试前的最大 ID 清理新增事件，避免影响已有记录。
 	floors := map[*gorm.DB]int64{}
 	outboxTable := func(db *gorm.DB) string {
 		if db == adb {
@@ -75,10 +63,7 @@ func TestAdminPagesIntegration(t *testing.T) {
 			floors[db] = floor
 		}
 	}
-	// 站点在跑到一半时会被改名（分页站点 → 更新站点），所以创建时记下的名字
-	// 到清理时已经对不上了：按名字删等于什么都没删，每跑一次就往站点列表里
-	// 塞一条，几轮之后 demo 站点被挤出首页。这里按接口回给本轮的主键删——
-	// 改名动不了主键。
+	// 站点可能在测试中改名，因此按创建响应中的主键清理。
 	var pagesStationID uint64
 	t.Cleanup(func() {
 		const (
@@ -87,8 +72,7 @@ func TestAdminPagesIntegration(t *testing.T) {
 			pagesTemplates = "name IN ('集成计费模板','坏时段','空档位','设备计费带费率','模式与费率不符','改价后的模板','模板副本','并发模板','已绑定模板','名称可更新','分页站点','更新站点','上下架套餐','旧版单位测试模板','旧版单位测试副本')"
 			pagesPayment   = "order_no LIKE 'PAGES_%' OR wechat_transaction_id LIKE 'SIMPAGES%'"
 		)
-		// 本轮没建出站点时（测试提前失败）退化成 id = 0，删不到任何东西，
-		// 不会误伤库里原有的站点。
+		// 未创建站点时使用 id=0 条件，避免清理已有业务站点。
 		pagesStations := "id = 0"
 		if pagesStationID != 0 {
 			pagesStations = "id = " + strconv.FormatUint(pagesStationID, 10)
@@ -98,39 +82,28 @@ func TestAdminPagesIntegration(t *testing.T) {
 			stmts []string
 		}{
 			{adb, []string{
-				// 导出任务记着自己的创建人，所以必须排在账号之前删：反过来子查询就在
-				// 这些账号里找不到人，本轮创建的导出任务就会因此活下来，下一轮用同样
-				// request id 的那个请求就被它卡住。
+				// 先删除账号关联的导出任务，再删除账号，确保归属子查询仍可匹配。
 				"DELETE FROM export_task WHERE task_no LIKE 'PAGES_%' OR task_no LIKE 'EXPBB000000%' OR requested_by IN (SELECT id FROM admin_user_role WHERE username LIKE 'pages-%')",
 				"DELETE FROM admin_user_role WHERE username LIKE 'pages-%'",
 				"DELETE FROM finance_reconcile_log WHERE reconcile_type = 'wechat_pay' AND reconcile_date IN ('2026-09-15','2026-10-01')",
 				"DELETE FROM split_party WHERE split_template_id IN (SELECT id FROM split_template WHERE code LIKE 'PAGES_%')",
 				"DELETE FROM split_template WHERE code LIKE 'PAGES_%'",
-				// 上架动作把套餐模板复制成一条按站点售卖的 charge_offer。两者都不
-				// 清就会一版版攒起来：套餐模板池里堆着几十条同名模板，售卖记录还
-				// 指向早就删掉的站点，变成后台再也查不出来的孤儿。
+				// 按夹具标识清理站点。
 				"DELETE FROM station WHERE " + pagesStations,
-				// 一条没被这次清理掉、活过了清理时机的计费规则会保留着它的版本计数，
-				// 于是下一轮的 apply 就会被当成版本冲突拒掉——这种报错读起来像是一个
-				// 产品缺陷，其实并不是。
+				// 清理计费规则及其版本状态，避免后续测试的方案发布发生版本冲突。
 				"DELETE FROM pricing_publication WHERE rule_id IN (SELECT id FROM pricing_rule WHERE template_id IN (SELECT id FROM pricing_template WHERE " + pagesTemplates + "))",
-				// 这条没绑定的历史遗留规则既不属于任何一个模板，也不属于任何一个站点，
-				// 所以只能直接按名字点名删——它是这里唯一一个两处引用都够不着的夹具。
+				// 未关联站点或方案的历史规则按夹具名称清理。
 				"DELETE FROM pricing_rule WHERE name = 'legacy unbound' OR template_id IN (SELECT id FROM pricing_template WHERE " + pagesTemplates + ") OR station_id IN (SELECT id FROM station WHERE " + pagesStations + ")",
 				"DELETE FROM pricing_template WHERE " + pagesTemplates,
 				"DELETE FROM announcement WHERE title = '测试公告' OR title LIKE '%pages%'",
 				"DELETE FROM webhook_subscription WHERE name = '测试订阅' OR name LIKE '%pages%' OR url LIKE '%pages%'",
-				// 匹配的是板子本身，而不是它随哪一批导入进来的：一批失败的导入照样
-				// 会记下它当时见到的那个板子身份，而挡下下一次针对同一块板子的那次
-				// 尝试的，正是留下来的这一行。
+				// 按设备编号清理导入身份记录，覆盖失败任务留下的幂等状态。
 				"DELETE FROM device_meta WHERE " + pagesDevices,
 				"DELETE FROM device_import_identity WHERE " + pagesDevices,
 				"DELETE FROM device_import WHERE import_id IN ('33333333-3333-4333-8333-333333333333','33333333-3333-4333-8333-333333333334')",
 			}},
 			{udb, []string{
-				// 退款链路挂在固定的 request id 上，会在它后面的五张表里留下数据行；
-				// 审核记录和回执都是从这张单据派生出来的，所以必须先删，否则它们就
-				// 会像定价规则当初那样，把这张单据变成一个查不到主人的孤儿。
+				// 先清理退款的审核记录和回执，再删除由固定 request_id 识别的退款夹具。
 				"DELETE FROM refund_success_receipt WHERE refund_record_id IN (SELECT id FROM refund_record WHERE user_id IN (SELECT id FROM user WHERE " + pagesUsers + "))",
 				"DELETE FROM wallet_refund_part WHERE refund_record_id IN (SELECT id FROM refund_record WHERE user_id IN (SELECT id FROM user WHERE " + pagesUsers + "))",
 				"DELETE FROM refund_review WHERE refund_record_id IN (SELECT id FROM refund_record WHERE user_id IN (SELECT id FROM user WHERE " + pagesUsers + "))",
@@ -144,10 +117,7 @@ func TestAdminPagesIntegration(t *testing.T) {
 				"DELETE FROM feedback WHERE user_id IN (SELECT id FROM user WHERE " + pagesUsers + ")",
 				"DELETE FROM device_fault_report WHERE " + pagesDevices,
 				"DELETE FROM wallet_risk_freeze_link WHERE request_id IN ('55555555-5555-4555-8555-555555555555','88888888-8888-4888-8888-888888888888','44444444-4444-4444-8444-444444444444')",
-				// 审核表和解冻表记的都是谁签的字。正因为记了人，它们就成了每一轮各
-				// 自的一份：每一轮跑起来都会新造一个审核人账号，所以上一轮遗留下来
-				// 的那条审核记录，读起来就像是另一个人发起的重放，于是被当作冲突而
-				// 拒掉下去，而不是被当成一次正常的新审核。
+				// 审核记录引用本轮创建的账号，必须一并清理，避免后续审核被判为他人重放。
 				"DELETE FROM wallet_risk_review WHERE request_id IN ('55555555-5555-4555-8555-555555555555','88888888-8888-4888-8888-888888888888')",
 				"DELETE FROM wallet_risk_release WHERE request_id IN ('55555555-5555-4555-8555-555555555555','88888888-8888-4888-8888-888888888888')",
 				"DELETE FROM risk_freeze_log WHERE user_id IN (SELECT id FROM user WHERE " + pagesUsers + ")",
@@ -162,10 +132,7 @@ func TestAdminPagesIntegration(t *testing.T) {
 			{gdb, []string{
 				"DELETE FROM device_port WHERE " + pagesDevices,
 				"DELETE FROM device WHERE " + pagesDevices,
-				// 开通只有在请求逐字重复的情况下才是幂等的，所以一条「上一轮留下、而
-				// 那一轮的 vendor 行后来已经被删掉」的记录，并不是什么无害的重复：
-				// 它身上带着的是那个旧的 vendor id，于是下一次尝试就会以参数不匹配被
-				// 拒掉下去，而不是被当成一条全新的记录接受掉。
+				// 清理开通请求的幂等记录，避免旧 vendor_id 导致下次开通内容冲突。
 				"DELETE FROM device_provision WHERE " + pagesDevices,
 				"DELETE FROM vendor WHERE vendor_code = 'PAGES_VENDOR'",
 			}},
@@ -307,7 +274,7 @@ func TestAdminPagesIntegration(t *testing.T) {
 	call(adminToken, "GET", "billing/meter-reviews?status=invalid", nil, 400)
 	station := gin.H{"name": "分页站点", "longitude": 116.3, "latitude": 39.9, "status": "active"}
 	sid := data(call(adminToken, "POST", "stations", station, 200))["id"]
-	// 记下主键，清理时按它删：这个站点稍后会被改名，按名字认不准。
+	// 保存创建响应主键，供站点改名后清理。
 	pagesStationID = uint64(sid.(float64))
 	parties := []gin.H{{"party_code": "operator", "party_name": "运营方", "ratio_bp": 6000},
 		{"party_code": "property", "party_name": "物业", "ratio_bp": 4000, "bank_account": "6222000012345678"}}
@@ -339,8 +306,7 @@ func TestAdminPagesIntegration(t *testing.T) {
 	call(adminToken, "POST", templatePath+"/parties", gin.H{"parties": parties}, 409)
 	call(adminToken, "PUT", templatePath, gin.H{"name": "已绑定模板", "mode": "mode_b", "status": "active"}, 409)
 	call(adminToken, "PUT", templatePath, gin.H{"name": "名称可更新", "mode": "mode_a", "status": "active"}, 200)
-	// 站点 code 从 admin_db/0044 起就已经没有了。还在传 code 的客户端会被明确
-	// 告知这件事，而不是让它被悄悄丢掉。
+	// 验证旧客户端提交已移除的站点 code 字段时得到明确参数错误。
 	station["code"] = "PAGES_STATION"
 	call(adminToken, "POST", "stations", station, 400)
 	station["name"] = "更新站点"
@@ -418,14 +384,11 @@ func TestAdminPagesIntegration(t *testing.T) {
 	exec(gdb, "INSERT INTO vendor(vendor_code,vendor_name,adapter_class,protocol,status) VALUES ('PAGES_VENDOR','页面测试','dc589','tcp','enabled')")
 	var vid uint64
 	gdb.Table("vendor").Where("vendor_code='PAGES_VENDOR'").Pluck("id", &vid)
-	// 这个站点已经跑在一份按计量计费的费率上，所以进到这里的每一块板子都
-	// 必须申报自己能上报些什么。能力是随这一次导入一起传进来的，因为按一
-	// 一台一台的方式去给整批设备做分类，并不是谁会去做的事。
+	// 验证导入设备按所属协议满足站点计费模式的能力要求。
 	batch := gin.H{"import_id": "33333333-3333-4333-8333-333333333333", "devices": []gin.H{{"device_id": "PAGESDEV01", "vendor_id": vid, "station_id": sid, "port_count": 2, "model": "测试型号", "charge_mode": "server_energy", "reports_energy": true, "reports_segmented_power": true}}}
 	call(adminToken, "POST", "device-imports", batch, 200)
 	call(adminToken, "POST", "device-imports", batch, 200)
-	// 什么都不申报的板子进不了按计量计费的站点。整批会被拒掉，而不是放进
-	// 来一半，并且报错信息里还会点名指出是哪一块板子。
+	// 验证协议能力不兼容时拒绝整批导入，并指出不兼容设备。
 	call(adminToken, "POST", "device-imports", gin.H{"import_id": "33333333-3333-4333-8333-333333333334", "devices": []gin.H{{"device_id": "PAGESDEV02", "vendor_id": vid, "station_id": sid, "port_count": 2}}}, 200)
 	call(adminToken, "GET", "devices?keyword=PAGESDEV01", nil, 200)
 	call(adminToken, "GET", "settings/device-capabilities?station_id="+fmt.Sprintf("%v", sid)+"&device_id=PAGESDEV01", nil, 200)
@@ -433,13 +396,8 @@ func TestAdminPagesIntegration(t *testing.T) {
 	for _, retired := range []string{"settings/pricing-templates", "settings/package-templates", "settings/charge-rules", "settings/device-pricing", "settings/station-policies", "settings/switch-tasks", "ota/packages", "ota/schedules", "alert-rules", "alert-subscriptions"} {
 		call(adminToken, "GET", retired, nil, 404)
 	}
-	// 每一个读接口都要走一遍，而不是只走那些自以为会受影响的那些接口。
-	//
-	// Go 代码里写了、数据库却不接受的列或表达式，既不是编译错误，也不是
-	// 单元测试失败——它是一个 500，只有拿真实的查询去打真实的 schema 才
-	// 查得出来。这里就有一个这样的查询躲过了整整一轮评审，因为那个接口压
-	// 根就没被调用过：IF() 只接三个参数，而列表查询却传了四个进去，于是套
-	// 餐模板页在这段时间里全程都在返回 503，一直都是这样。
+	// 遍历后台读接口，验证实际 SQL 与初始化 schema 兼容。
+	// 该检查覆盖编译无法发现的列缺失、函数参数错误及查询映射问题。
 	for _, path := range []string{
 		"settings/charging-schemes",
 		"settings/device-capabilities?station_id=" + fmt.Sprintf("%v", sid) + "&device_id=PAGESDEV01",
@@ -452,8 +410,7 @@ func TestAdminPagesIntegration(t *testing.T) {
 	} {
 		call(adminToken, "GET", path, nil, 200)
 	}
-	// 真实的数据行用来跑通计费明细的联表、人工预占、双人签核、渠道对账，
-	// 以及渠道回执重复到达时的那一笔记账方式。
+	// 使用真实数据验证计费关联、退款预占、双人审核、对账及重复回执幂等入账。
 	exec(udb, "INSERT INTO payment_order(order_no,biz_type,biz_id,user_id,pay_method,total_cents,paid_cents,wechat_transaction_id,status,created_month) VALUES ('PAGES_PAY','charge',0,?,'wechat',1000,1000,'SIMPAGES_PAY','paid',DATE_FORMAT(UTC_TIMESTAMP(),'%Y-%m-01'))", uid)
 	var payID, orderID uint64
 	udb.Table("payment_order").Where("order_no='PAGES_PAY'").Pluck("id", &payID)
@@ -493,8 +450,7 @@ func TestAdminPagesIntegration(t *testing.T) {
 	if refunded != 400 {
 		t.Fatal("duplicate or absent refund", refunded)
 	}
-	// 钱包退款的审核通过时只预占可用余额；完成时释放掉这笔预占，同时扣
-	// 掉渠道所确认的那笔金额，而且只会扣一次，不会重复扣。
+	// 审核通过预占可用余额；成功回执释放预占并按渠道金额扣款，重复回执不得重复扣款。
 	exec(udb, "INSERT INTO wallet_account(user_id,balance_cents,status) VALUES (?,500,'frozen')", uid)
 	exec(udb, "INSERT INTO payment_order(order_no,biz_type,biz_id,user_id,pay_method,total_cents,paid_cents,wechat_transaction_id,status,created_month) VALUES ('PAGES_RECHARGE','wallet_recharge',99,?,'wechat',500,500,'SIMPAGES_RECHARGE','paid',DATE_FORMAT(UTC_TIMESTAMP(),'%Y-%m-01'))", uid)
 	exec(udb, "INSERT INTO risk_freeze_log(user_id,trigger_rule,frozen_action) VALUES (?,'wallet_refund_frequency','wallet')", uid)
@@ -524,7 +480,7 @@ func TestAdminPagesIntegration(t *testing.T) {
 		t.Fatalf("wallet %+v", wallet)
 	}
 
-	// 确认已经走到终态失败的那笔退款，会释放钱包上的那笔预占，但不会扣款。
+	// 渠道确认终态失败后释放退款预占，不扣减余额。
 	exec(udb, "INSERT INTO risk_freeze_log(user_id,trigger_rule,frozen_action) VALUES (?,'wallet_refund_frequency','wallet')", uid)
 	udb.Table("risk_freeze_log").Where("user_id=?", uid).Order("id DESC").Limit(1).Pluck("id", &freezeID)
 	failedReq := "88888888-8888-4888-8888-888888888888"

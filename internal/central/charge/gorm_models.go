@@ -189,9 +189,7 @@ func isMySQLDuplicate(err error) bool {
 	return errors.As(err, &mysqlErr) && mysqlErr.Number == 1062
 }
 
-// ChargeFeeRecord 是一笔订单的结算费用。
-// 金额放在 result_json 里，
-// 因为它们由计价引擎作为一个整体签名产出；在这里做解析能让那份契约只存在于一个地方。
+// ChargeFeeRecord 保存订单结算回执，费用明细在计价引擎输出的 result_json 中。
 type ChargeFeeRecord struct {
 	ChargeOrderID  uint64 `gorm:"column:charge_order_id;primaryKey"`
 	CalculationNo  string `gorm:"column:calculation_no"`

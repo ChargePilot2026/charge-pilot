@@ -8,9 +8,7 @@ import (
 // RFC 6238 的测试向量是实现 TOTP 的标准参照；
 // 在这里用它们，意味着验证器 App 与本服务不会各自漂移。
 func TestVerifyTOTPAcceptsRFC6238Vectors(t *testing.T) {
-	// 公开的种子就是 ASCII 串 "12345678901234567890"。RFC 6238
-	// 列的是 8 位口令；本服务发的是 6 位，取的是同一批截断值，
-	// 正好是验证器 App 默认显示的那一串。
+	// 使用 RFC 6238 的 ASCII 种子 12345678901234567890，验证本服务的 6 位 TOTP 截断结果。
 	const seed = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
 	cases := []struct {
 		seconds int64

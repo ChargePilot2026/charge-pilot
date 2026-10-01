@@ -21,8 +21,8 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// ImportDevice 是批量导入里的一行设备声明：设备编号、归属厂商、所在站点、端口数、型号与计量能力。
-// 计量能力放在导入里是为了让一批设备一次性完成分类——没被分类的设备会被所有需要电表的计费方式拒绝，等于整批不可计费。
+// ImportDevice 描述批量导入的设备身份、厂商、站点、端口数、型号及计费模式。
+// 设备计量能力由所选协议确定。
 type ImportDevice struct {
 	ProtocolAdapter string  `json:"protocol_adapter"` // Resolved by the server from the selected vendor; never trust the client.
 	DeviceID        string  `json:"device_id"`        // 设备编号，全局唯一，8–32 位字母数字及 _ -，大小写不敏感判重
@@ -30,10 +30,7 @@ type ImportDevice struct {
 	StationID       uint64  `json:"station_id"`       // 所属站点 ID，必须非 0 且该站点处于 active
 	PortCount       uint8   `json:"port_count"`       // 充电端口数，必须非 0
 	Model           *string `json:"model"`            // 型号，可空；非空时最多 128 字
-	// 计量能力放在导入里，是为了让一批设备一次就分类完，
-	// 而这也是回填这些字段唯一实际可行的办法：
-	// 从没被分类过的设备会被所有需要电表的计费方式拒绝，
-	// 所以这些字段空着不填，等于整批设备都不可计价。
+	// 兼容导入字段；实际计量能力按协议计算，不依赖客户端人工声明。
 	ChargeMode            string `json:"charge_mode"`             // 计费方式，取值为计费引擎认可的六种模式之一；留空表示不覆盖
 	ReportsEnergy         bool   `json:"reports_energy"`          // 是否上报电量，引擎据此决定该设备能否用带电表的计费方式
 	ReportsSegmentedPower bool   `json:"reports_segmented_power"` // 是否上报分段功率，同上
@@ -78,9 +75,8 @@ func requireImportScope(c *gin.Context, scope DataScope, devices []ImportDevice)
 	return true
 }
 
-// createImport 提交一批设备导入（1–100 台）。先逐行校验编号格式、站点归属、端口数和计费方式合法性，
-// 再在同一事务里做三重幂等与一致性检查：同 import_id 内容一致则原样返回；device_import_identity 保证
-// 同一设备编号的历史内容不被改写；只有真正新到的设备才校验计量能力。全部通过后落一条 pending 任务并立即执行。
+// createImport 校验 1–100 台设备的编号、归属、端口和计费模式。
+// 事务内校验请求及设备身份幂等性，仅对新增设备执行能力检查；保存 pending 任务后执行导入。
 func (a ResourceAPI) createImport(c *gin.Context) {
 	var in struct {
 		ImportID string         `json:"import_id"` // 导入任务号，UUID，作为幂等键
@@ -101,9 +97,7 @@ func (a ResourceAPI) createImport(c *gin.Context) {
 			return
 		}
 		if d.ChargeMode != "" && !validDeviceChargeMode(d.ChargeMode) {
-			// 在这里校验，而不是等到执行时才校验。一批设备只导入一次，
-			// 几个月后才发现其中某一行带着引擎算不出价的计费方式，
-			// 这种学法代价太高。
+			// 提交任务前校验计费模式，避免保存无法执行的导入。
 			httpapi.BadRequest(c, "设备 "+d.DeviceID+" 的计费方式无效")
 			return
 		}
@@ -178,17 +172,12 @@ func (a ResourceAPI) createImport(c *gin.Context) {
 				return errConflict
 			}
 		}
-		// 只检查真正新到的板子。已经在本站点里的板子，
-		// 跑的就是它进场时站点在收的那个计费方式；
-		// 拒绝把它重新导入，等于为一个重新导入之前就已经成立、
-		// 而且这次导入也没改变的情况，挡住一次例行纠正。
+		// 仅新增设备需要能力校验；已归属本站点的设备保持已有配置。
 		arriving, err := newDevicesOnly(tx, in.Devices)
 		if err != nil {
 			return err
 		}
-		// 按整批校验，所以要么整批导入被拒，要么整批放行：
-		// 一半能计价一半不能计价的设备队，
-		// 运营得先手工对账才能开始计费。
+		// 整批设备统一校验，任一设备不兼容时拒绝整批导入。
 		if err := checkImportAgainstStation(tx, arriving); err != nil {
 			var blocked *errMeteringBlocked
 			if errors.As(err, &blocked) {
@@ -202,10 +191,7 @@ func (a ResourceAPI) createImport(c *gin.Context) {
 		}
 		return resourceAudit(tx, p, "create", "device_import", 0, nil, in, c.ClientIP(), in.ImportID)
 	})
-	// 上面的处理器已经把拒绝写进响应了，
-	// 所以通用失败路径不能再往上叠第二份 body：
-	// 一个响应里塞两份 JSON 文档，任何客户端都读不了，
-	// 运营看到的还会是笼统的数据库错误，而不是这批设备被拒的真正原因。
+	// 校验失败已写入响应，立即返回，避免追加第二份 JSON 响应。
 	if errors.Is(err, errAlreadyReported) {
 		return
 	}
@@ -226,10 +212,8 @@ func (a ResourceAPI) retryImport(c *gin.Context) {
 	a.runImport(c, c.Param("import_id"))
 }
 
-// runImport 执行一个导入任务：取出存档的设备清单，调网关的内部开通接口（10 秒超时、带服务令牌），
-// 网关确认成功后再把真正不存在于 device_meta 的设备补建进去。
-// 已存在的设备不做任何改写，只在厂商或站点对不上时报冲突——导入是设备上线记录，不是重新分类。
-// 网关调用失败时把任务标成 failed 并记下原因，attempts +1，等待重试；已 completed 的任务直接原样返回。
+// runImport 调用网关开通接口后补建尚不存在的设备元数据；请求超时为 10 秒。
+// 已有设备不覆盖配置，厂商或站点不一致时拒绝。失败任务记录原因并递增 attempts；已完成任务保持幂等。
 func (a ResourceAPI) runImport(c *gin.Context, id string) {
 	scope, ok := a.stationScope(c)
 	if !ok {
@@ -295,10 +279,7 @@ func (a ResourceAPI) runImport(c *gin.Context, id string) {
 				"model": d.Model, "status": "enabled",
 				"protocol_adapter": d.ProtocolAdapter,
 			}
-			// 已存在的设备保持它原来被分类成的样子。
-			// 导入是设备上线记录，不是重新分类；
-			// 因为重新导入漏填了字段就把已声明的计量能力覆盖掉，
-			// 等于一瞬间让整个站点的板子都不可计价。
+			// 已存在的设备保持原配置；重复导入不得以缺省字段覆盖其能力或计费设置。
 			if d.ChargeMode != "" {
 				row["charge_mode"] = d.ChargeMode
 			}

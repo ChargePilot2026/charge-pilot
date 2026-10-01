@@ -32,8 +32,7 @@ func (c Compensation) Request(ctx context.Context, orderNo, commandID string) er
 	return c.Devices.Send(ctx, job.DeviceID, job.Wire)
 }
 
-// RetryStopping 同时覆盖进程重启，以及 START 写入结果不确定之后
-// 又重新连回来的设备。它绝不会发出第二条 START。
+// RetryStopping 在进程重启或 START 结果不确定后的设备重连时重试停止，不创建第二条 START。
 func (c Compensation) RetryStopping(ctx context.Context) error {
 	jobs, err := c.Store.StoppingJobs(ctx)
 	if err != nil {

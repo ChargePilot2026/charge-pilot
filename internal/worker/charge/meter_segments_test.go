@@ -22,20 +22,12 @@ func TestMeasuredSegmentsUseElapsedCumulativeMeter(t *testing.T) {
 	if err != nil || fee.TotalCents != 99 {
 		t.Fatalf("measured tariff %+v %v", fee, err)
 	}
-	// 这份上报是在费率分界之后才到的；
-	// 真正定位边界前那 200 Wh 的是它自己的已用时钟，
-	// 而不是到达时间。
-	//
-	// 没有分段数据时，引擎只能把电量均摊，
-	// 而在会话中途会变的费率下，
-	// 均摊等于在猜运维会被收多少钱。
-	// 这种情况会转人工复核，而不是直接结算。
+	// 验证分段边界按设备已用时长定位，不使用消息到达时间。
+	// 跨费率变化且缺少分段计量时进入人工核实，不按均摊直接结算。
 	if _, err := pricing.PriceActual(rule, pricing.ActualMeter{StartedAt: start, EndedAt: end.EndedAt, ChargedWh: 1000, ChargedSeconds: 3600}); !errors.Is(err, pricing.ErrMeterReview) {
 		t.Fatalf("an unsegmented meter across a tariff change must go to review, got %v", err)
 	}
-	// 单一费率是另一种情况：
-	// 均摊的结果是精确的，
-	// 所以同一份计量无需人工过目就能结算。
+	// 验证单一费率允许均摊未分段计量，无需人工核实。
 	flat := pricing.Rule{ID: 1, Version: 1, Spec: pricing.Spec{Mode: pricing.ModeServerEnergy,
 		Electric: &pricing.ElectricLine{Basis: pricing.BasisEnergy, Periods: []pricing.Period{{EndMinute: 1440, ElectricCents: 50}}}}}
 	if _, err := pricing.PriceActual(flat, pricing.ActualMeter{StartedAt: start, EndedAt: end.EndedAt, ChargedWh: 1000, ChargedSeconds: 3600}); err != nil {

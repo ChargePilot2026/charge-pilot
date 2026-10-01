@@ -3,9 +3,7 @@ package charge
 import "testing"
 
 func TestHTTPSImageRejectsNonTLS(t *testing.T) {
-	// 反馈图片会回显给客服看，
-	// 所以一个非 TLS 或带脚本的链接是注入载体，
-	// 而不只是格式偏好问题。
+	// 验证反馈附件拒绝非 HTTPS 及脚本链接，避免在客服页面回显不安全 URL。
 	accepted := []string{
 		"https://cdn.example.com/a.jpg",
 		"https://cdn.example.com/a.jpg?x=1&y=2",

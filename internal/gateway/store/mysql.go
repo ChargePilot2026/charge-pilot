@@ -40,13 +40,7 @@ func (s MySQLSink) Register(ctx context.Context, registration protocol.Registrat
 		return errors.New("gateway database is unavailable")
 	}
 	var device deviceRow
-	// 厂商是按适配器类别匹配的，不是按它的业务编码。
-	// vendor_code 是给运维看的标识（形如 "V-DC589"），说明不了
-	// 设备讲的是什么协议；adapter_class 才是标明方言的那个字段，
-	// 开通接口在创建设备之前检查的也正是它。
-	// 改用 vendor_code 去匹配协议名，结果是任何已开通的设备
-	// 都注册不上，而这个故障一直没人发现，
-	// 因为监听器把由此产生的错误丢掉了。
+	// 按厂商 adapter_class 校验协议匹配；vendor_code 为业务标识，不代表设备协议。
 	err := s.DB.WithContext(ctx).Table("device AS d").Select("d.id").
 		Joins("JOIN vendor AS v ON v.id = d.vendor_id").
 		Where("d.device_id = ? AND d.status = 'enabled' AND d.deleted_at IS NULL AND v.adapter_class = ? AND v.status = 'enabled' AND v.deleted_at IS NULL", registration.DeviceID, registration.Protocol).
@@ -81,16 +75,8 @@ func (s MySQLSink) Record(ctx context.Context, event protocol.Event) error {
 		return fmt.Errorf("marshal device event: %w", err)
 	}
 	key := eventKey(event)
-	// outbox 里装的是全平台统一的那种信封——event_id、event_type、
-	// source、occurred_at 加一个 data 载荷——因为这就是每个消费方
-	// 都会解析、平台其余部分也都在发布的那个结构。
-	// 如果直接发裸事件，下游什么都读不了：事件自己的字段名是
-	// "Type" 而非 "event_type"，消费方按类型去查自然一无所获，
-	// 这条记录随后就被丢弃了。
-	//
-	// device_event.event_json 则原样保留事件本身，
-	// 因为那一列是重放的凭据；重新编码一遍，
-	// 意味着你重放的东西已经不再是板子当初发来的东西。
+	// Outbox 使用统一事件信封：event_id、event_type、source、occurred_at 和 data。
+	// 消费者按信封路由；device_event.event_json 另行保留解码事件及原始载荷，供诊断和重放。
 	envelope, err := json.Marshal(map[string]any{
 		"event_id":    key,
 		"event_type":  string(event.Type),
@@ -153,12 +139,8 @@ func (s MySQLSink) Record(ctx context.Context, event protocol.Event) error {
 	}, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 }
 
-// stopAckAccepted 判断停止回执是否意味着充电已经结束。
-//
-// 0x10 是干净停止，0x01 表示端口本来就是空闲的，两者到达的终态相同。
-// 0x00（无此端口）和 0x04（端口故障）则不然：
-// 平台要求结束一次充电却被告知没结束，
-// 这必须记录下来，而不是随手丢掉。
+// stopAckAccepted 判断停止是否已达到终态：0x10 为停止成功，0x01 为端口已空闲。
+// 0x00 表示端口不存在，0x04 表示故障，不作为成功处理。
 func stopAckAccepted(code uint8) bool { return code == 0x10 || code == 0x01 }
 
 func applyUserStopAck(ctx context.Context, tx *gorm.DB, event protocol.Event) error {
@@ -178,8 +160,7 @@ func applyUserStopAck(ctx context.Context, tx *gorm.DB, event protocol.Event) er
 		}
 		return nil
 	}
-	// 设备拒绝了。没有这段处理，这一行会永远停在 "sent"，
-	// 没人能区分"充电还在跑"和"压根没被要求停止过"。
+	// 设备拒绝停止时持久化失败结果，避免命令持续停留在 sent 状态。
 	if command.Status == "sent" {
 		return tx.Model(&chargeStopCommandRow{}).Where("command_id = ? AND status = 'sent'", command.CommandID).
 			Updates(map[string]any{
@@ -238,9 +219,8 @@ func applyStopAck(ctx context.Context, tx *gorm.DB, event protocol.Event) error 
 	if err != nil {
 		return err
 	}
-	// 0x10 表示输出已停；0x01 表示端口本来就是空闲的。设备拒绝时
-	// 命令会留在 "stopping"，因为端口确实还在充电，
-	// 假装已经停了等于把一个正在用的端口放出去。
+	// 0x10 表示停止输出，0x01 表示端口已空闲。
+	// 设备拒绝停止时保留 stopping 状态，不提前释放端口。
 	if !stopAckAccepted(event.ResultCode) {
 		return nil
 	}
@@ -261,8 +241,7 @@ func applyStopAck(ctx context.Context, tx *gorm.DB, event protocol.Event) error 
 }
 
 func insertMeasurements(ctx context.Context, tx *gorm.DB, event protocol.Event) error {
-	// 边写边收集，这样汇总表能按每种粒度一条语句写完，
-	// 而不是一个指标一条。
+	// 收集本批样本，按汇总粒度批量更新，避免逐指标执行 SQL。
 	rollup := make([]AggregateSample, 0, 8)
 	insert := func(port sql.NullInt16, metric, value string) error {
 		rollup = append(rollup, AggregateSample{DeviceID: event.DeviceID, Port: port, Metric: metric,

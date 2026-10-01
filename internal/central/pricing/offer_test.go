@@ -10,8 +10,7 @@ import (
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/dbconn"
 )
 
-// 这些用例需要真实数据库：它们守的缺陷在 SQL 里而不在 Go 里，
-// 假的实现会无条件同意查询本来应该查出的任何结果，也就等于什么都没验。
+// 使用真实数据库验证规则查询与 SQL 过滤条件。
 
 func offerTestStore(t *testing.T) (Store, func()) {
 	t.Helper()

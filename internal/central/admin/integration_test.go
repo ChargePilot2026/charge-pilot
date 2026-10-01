@@ -63,14 +63,8 @@ func TestAdminLoginLifecycle(t *testing.T) {
 	if err := store.Bootstrap(ctx, username, "Not-a-password-reset"); err != nil {
 		t.Fatal(err)
 	}
-	// Bootstrap 只负责初始化一套全新安装，绝不重置已有密码，
-	// 所以对着一个已经有账号的库，它会正确地拒绝建号。
-	// 下面要验的是完整的登录生命周期，
-	// 于是这里直接按"全新安装之后本该留下的样子"把这个账号准备好，
-	// 而不是让 bootstrap 再做一遍——
-	// 共享的开发库并不空，
-	// 悄悄依赖它为空，正是这个测试曾经因为
-	// 跟登录毫无关系的原因失败的原因。
+	// 直接创建登录生命周期测试夹具，避免依赖共享数据库为空。
+	// Bootstrap 仅初始化空安装，不覆盖已有管理员口令。
 	var created int
 	if err := db.QueryRow("SELECT COUNT(*) FROM admin_user_role WHERE username = ?", username).Scan(&created); err != nil {
 		t.Fatal(err)
@@ -90,8 +84,7 @@ func TestAdminLoginLifecycle(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// 而且这条规则本身值得写出来，而不是只留一个暗示：
-	// 在一套不是全新的安装上，bootstrap 必须对已有的东西原样不动。
+	// 验证已有管理员账号时 Bootstrap 不覆盖账号或口令。
 	if err := store.Bootstrap(ctx, "bootstrap-must-not-appear", "Never-created-2026"); err != nil {
 		t.Fatal(err)
 	}

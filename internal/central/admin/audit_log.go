@@ -9,8 +9,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// Gateway changes have already committed remotely, so their audit is written
-// after the gateway response. Central business changes use auditedTransaction.
+// 网关变更由远端提交，收到响应后记录运营审计。
+// central 内的业务变更与审计通过 auditedTransaction 在同一事务提交。
 func (a ResourceAPI) auditToAdmin(c *gin.Context, action, target string, id uint64, before, after any, requestID string) {
 	if err := resourceAudit(a.Store.AdminDB.WithContext(c.Request.Context()), c.MustGet("admin_profile").(Profile), action, target, id, before, after, c.ClientIP(), firstNonEmpty(requestID, httpapi.RequestID(c))); err != nil {
 		log.Printf("gateway audit failed action=%s target=%s id=%d: %v", action, target, id, err)
@@ -28,8 +28,7 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-// auditRow 是 central_db.audit_log 的一行，即审计查询的返回结构。
-// 多数列可空（未带请求号、未取到客户端 IP 等），所以用指针表达"可能没有"。
+// auditRow 映射 central_db.audit_log；可空字段使用指针保留 NULL 语义。
 type auditRow struct {
 	ID         uint64  `json:"id"`          // 审计记录主键
 	ActorID    uint64  `json:"actor_id"`    // 操作的后台账号 ID
@@ -40,9 +39,7 @@ type auditRow struct {
 	TargetID   *string `json:"target_id"`   // 目标主键（字符串形式）；指针，未指定时为 null
 	RequestID  *string `json:"request_id"`  // 关联请求号；指针，取不到时为 null
 	ClientIP   *string `json:"client_ip"`   // 客户端 IP；指针，取不到时为 null
-	// 用 *string 而不是 *[]byte：encoding/json 会把 []byte 渲染成
-	// base64，运营拿到手的就是一串读不懂的 blob，而不是他核对
-	// 这次改动要用的快照。
+	// 快照使用 *string 返回 JSON 文本，避免 []byte 被 encoding/json 编码为 base64。
 	BeforeJSON *string   `json:"before_json"` // 变更前快照；指针，新建记录时为 null
 	AfterJSON  *string   `json:"after_json"`  // 变更后快照；指针，新建记录时为 null
 	CreatedAt  time.Time `json:"created_at"`  // 记录时间
@@ -53,13 +50,8 @@ func (a ResourceAPI) registerAuditLogs(r *gin.Engine) {
 	r.GET("/api/v1/admin/audit-logs", a.Auth.Require("audit.read"), a.listAuditLogs)
 }
 
-// listAuditLogs 是 GET /api/v1/admin/audit-logs 的处理函数：按模块、
-// 动作、操作人、目标类型和时间区间分页查询审计记录，按 ID 倒序。
-// 审计只有写的一侧、没有读的一侧就等于没有审计：运营可以在一个
-// 什么都没记下来的界面上动手，事后无从回查这次改动。
-//
-// 时间参数须为 RFC 3339，不合法直接写 400；分页参数与其它列表
-// 接口一致。
+// listAuditLogs 按模块、动作、操作人、目标类型及时间分页查询审计记录，按 ID 倒序。
+// 时间参数必须符合 RFC3339；分页或时间参数无效时返回 400。
 func (a ResourceAPI) listAuditLogs(c *gin.Context) {
 	page, ok := parsePage(c, "")
 	if !ok {
@@ -67,9 +59,7 @@ func (a ResourceAPI) listAuditLogs(c *gin.Context) {
 	}
 	out := Page[auditRow]{Items: []auditRow{}, Page: page.Page, PageSize: page.PageSize}
 
-	// 筛选条件先收齐，然后同一个查询建两遍：count 与列表各调一次
-	// 带 Session 的语句，会让 count 里的 SELECT count(*) 泄漏进
-	// 第二条语句，列清单被悄悄抹掉。
+	// Count 与列表查询分别构造 GORM 语句，避免计数操作修改后续查询的投影。
 	var (
 		module, action, actor, target string
 		from, to                      *time.Time
@@ -96,7 +86,7 @@ func (a ResourceAPI) listAuditLogs(c *gin.Context) {
 		return
 	}
 
-	// 闭包把筛选条件封装起来，Count 和列表查询各调一次，保证两边口径完全一致。
+	// 复用筛选闭包，确保 Count 与列表使用相同过滤条件。
 	filtered := func() *gorm.DB {
 		q := a.Store.AdminDB.WithContext(c.Request.Context()).Table("audit_log")
 		if module != "" {
@@ -124,9 +114,7 @@ func (a ResourceAPI) listAuditLogs(c *gin.Context) {
 		return
 	}
 	var rows []auditRow
-	// CAST(... AS CHAR) 是必需的：MySQL 交回的 JSON 列是它的内部二进制
-	// 形式，到运营手里就成了一串 base64 blob，而不是他核对这次改动
-	// 需要的快照。
+	// 将 JSON 列 CAST 为 CHAR 后扫描到字符串，统一快照的文本表示。
 	if err := filtered().
 		Select("id, actor_id, actor_name, module, action, target_type, target_id, request_id, client_ip, " +
 			"CAST(before_json AS CHAR) AS before_json, CAST(after_json AS CHAR) AS after_json, created_at").

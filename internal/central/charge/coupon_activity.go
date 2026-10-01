@@ -13,13 +13,10 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// errActivityNotApplicable 表示这次事件没有任何规则够得着（规则过期、
-// 预算用尽或并发里输掉了竞争）。调用方把它当作正常结果吞掉，
-// 而不是失败——求值只汇报发了什么，其余一律略过。
+// errActivityNotApplicable 表示规则过期、预算不足或并发领取未成功；调用方将其视为正常跳过。
 var errActivityNotApplicable = errors.New("no activity rule applies")
 
-// activityRule 是引擎真正用到的规则字段子集。
-// 用结构体而不是 map 来读，schema 变更就不会悄悄改变行为。
+// activityRule 是活动求值所需的类型化数据库字段投影。
 type activityRule struct {
 	ID              uint64        `gorm:"column:id"`
 	TriggerType     string        `gorm:"column:trigger_type"`
@@ -33,9 +30,7 @@ type activityRule struct {
 	EndAt           time.Time     `gorm:"column:end_at"`
 }
 
-// activityEvent 说明发生了什么。
-// EventKey 必须在重试之间保持稳定：
-// 同一个现实事实必须算出同一个键，因为正是这个键让发放幂等。
+// activityEvent 描述触发事件；EventKey 必须在重试间保持稳定，以生成相同的发放幂等键。
 type activityEvent struct {
 	TriggerType string
 	UserID      uint64
@@ -57,14 +52,9 @@ type activityResult struct {
 	Already    bool   `json:"already_granted"`
 }
 
-// ApplyActivityRules 发放客户这次事件够得着的全部券。
-// 它在结算触发事实的那个事务内部被调用，
-// 所以规则绝不会为一笔随后回滚的支付付出券。
-//
-// 券本身存放在 coupon 表里；规则只决定何时发一张券，以及这次活动最远能跑到哪一步。
-// 每次发放都带着一个确定性的 source_event_id，由规则、客户和触发事实推导出来。
-// 正是它让重放的事件变成空操作而不是第二张券：同一个触发永远算出同一个键，
-// 而 coupon_grant_request 背后的唯一约束会把重复变成一个可以直接吞掉的重复键错误。
+// ApplyActivityRules 在触发事件的业务事务中发放符合条件的优惠券。
+// 规则限定时间、预算和领取条件；奖励券来自 coupon 表。
+// 规则、用户及事件共同生成 source_event_id，由 coupon_grant_request 唯一约束防止重复发放。
 func ApplyActivityRules(tx *gorm.DB, event activityEvent) ([]activityResult, error) {
 	if event.UserID == 0 || event.EventKey == "" || event.Now.IsZero() {
 		return nil, errActivityNotApplicable
@@ -104,10 +94,7 @@ func activeRules(tx *gorm.DB, event activityEvent) ([]activityRule, error) {
 func grantFromRule(tx *gorm.DB, rule activityRule, event activityEvent) (activityResult, error) {
 	result := activityResult{RuleID: rule.ID, CouponID: rule.CouponID}
 
-	// 客户不能邀请自己，
-	// 邀请人也必须是真正用过平台的人。
-	// 少了后一道检查，
-	// 攻击者可以批量注册一批新号、让它们互相邀请，把活动预算掏空。
+	// 禁止自邀；邀请人必须已有已完成充电或已结算充值，防止空账号互邀消耗活动预算。
 	if rule.TriggerType == "invite_reward" {
 		if event.InviterID == 0 || event.InviterID == event.UserID {
 			return result, errActivityNotApplicable
@@ -121,10 +108,8 @@ func grantFromRule(tx *gorm.DB, rule activityRule, event activityEvent) (activit
 		}
 	}
 
-	// 这里锁住规则行，
-	// 避免两个并发事件都读到还剩预算并各花掉最后一份。
-	// 表名是显式给的：
-	// 否则 GORM 会从结构体名推导出"activity_rules"，而那不是一张真表。
+	// 锁定活动规则行后检查预算，串行化并发发放。
+	// 显式指定 coupon_activity_rule 表名，避免 GORM 按结构体名推导。
 	var locked activityRule
 	if err := tx.Table("coupon_activity_rule").Clauses(clause.Locking{Strength: "UPDATE"}).
 		Where("id = ? AND status = 'active' AND deleted_at IS NULL", rule.ID).Take(&locked).Error; err != nil {
@@ -156,11 +141,8 @@ func grantFromRule(tx *gorm.DB, rule activityRule, event activityEvent) (activit
 		return result, errActivityNotApplicable
 	}
 
-	// 券被删掉后规则还留在表里（规则和券是两张表，删券不删规则）。这时直接
-	// 写发放记录会留下一张指向不存在券的券：用户钱包里多出一张永远核销不了
-	// 的券，券的库存与单人限领统计也被污染，而且发放记录的 source_event_id
-	// 由规则主键算出，下一次同一笔订单再触发就会撞唯一键——一次坏配置能顶
-	// 住后面所有结算。规则不适用比发放一张幽灵券更接近真相。
+	// 发放前校验券仍存在且可用；删除券不会自动删除规则。
+	// 无效券直接跳过，避免生成无法核销的记录、消耗库存或占用幂等键。
 	var couponExists int64
 	if err := tx.Table("coupon").
 		Where("id = ? AND status = 'active'", locked.CouponID).
@@ -188,8 +170,7 @@ func grantFromRule(tx *gorm.DB, rule activityRule, event activityEvent) (activit
 		return result, err
 	}
 
-	// 邀请人的奖励单独发放，走他自己那份单人预算，
-	// 这样一个活跃邀请人既掏不空被邀请人的额度，反过来也一样。
+	// 邀请人与被邀请人的奖励分别占用各自的单人额度。
 	if rule.TriggerType == "invite_reward" && rule.InviterCouponID.Valid && rule.InviterCouponID.Int64 > 0 {
 		granted, err := grantToInviter(tx, rule, event, eventID)
 		if err != nil {
@@ -213,8 +194,7 @@ func grantToInviter(tx *gorm.DB, rule activityRule, event activityEvent, eventID
 		perUser = 1
 	}
 	if used >= int64(perUser) {
-		// 被邀请人照样拿到自己的奖励；
-		// 跳过的只是邀请人那一侧，所以邀请人触顶不会让客户损失他应得的券。
+		// 邀请人达到领取上限时仅跳过邀请人奖励，不影响被邀请人的奖励。
 		return false, nil
 	}
 	inviterEvent := activityEvent{UserID: event.InviterID, Now: event.Now}
@@ -230,10 +210,7 @@ func grantToInviter(tx *gorm.DB, rule activityRule, event activityEvent, eventID
 	return true, nil
 }
 
-// grantSourceFor 把触发类型映射到 coupon_grant 的 source 取值集合。
-// 该列是早于活动表存在的枚举，
-// 只认 "activity" 和 "invite_reward"，
-// 所以各个触发类型都记在它所属的活动名下，而不是记在各自的名字下。
+// grantSourceFor 将活动触发类型映射到 coupon_grant 支持的 activity 或 invite_reward 来源。
 func grantSourceFor(triggerType string) string {
 	if triggerType == "invite_reward" {
 		return "invite_reward"
@@ -241,15 +218,8 @@ func grantSourceFor(triggerType string) string {
 	return "activity"
 }
 
-// activityEventID 推导幂等键。同一条规则、
-// 同一个触发永远算出同一个键，
-// 所以重放的支付或结算只会找到已有的发放记录，而不会再次发券。
-//
-// 规则用主键标识，而不是用 code。
-// 发放记录的 source_event_id 就是拿这个键做种子的，
-// 而行 id 和 code 一样稳定——
-// 它不会在活动上线之后被人偷偷改掉，code 却会。
-// 可选的 scope 把邀请人的发放与被邀请人自己的分开，免得一条规则触发一次就撞上自己。
+// activityEventID 根据规则主键、用户、事件键和可选 scope 生成确定性发放键。
+// 重复事件使用相同键；scope 区分邀请人与被邀请人的奖励，避免互相冲突。
 func activityEventID(ruleID uint64, event activityEvent, scope ...string) string {
 	var key strings.Builder
 	key.WriteString(fmt.Sprint(ruleID))
@@ -260,8 +230,7 @@ func activityEventID(ruleID uint64, event activityEvent, scope ...string) string
 	return hex.EncodeToString(sum[:16])
 }
 
-// grantExpiry 同时尊重券自身的有效期和活动结束时间，
-// 这样券不会活得比发出它的那次活动更久。
+// grantExpiry 返回券有效期与活动结束时间中的较早值。
 func grantExpiry(tx *gorm.DB, rule activityRule, now time.Time) time.Time {
 	var coupon struct {
 		ValidHours int          `gorm:"column:valid_hours"`
@@ -287,9 +256,7 @@ func countRuleGrants(tx *gorm.DB, rule activityRule) (int64, error) {
 	return granted, err
 }
 
-// isEstablishedUser 判断邀请人是否真的用过平台：
-// 有一笔已完成的充电，或一笔已结算的充值。
-// 仅注册的空号挣不到推荐奖励，这正是挡住一圈空账号刷奖励的那道闸。
+// isEstablishedUser 判断邀请人是否存在已完成充电或已结算充值；仅注册的用户不满足条件。
 func isEstablishedUser(tx *gorm.DB, userID uint64) (bool, error) {
 	var orders int64
 	if err := tx.Table("charge_order").

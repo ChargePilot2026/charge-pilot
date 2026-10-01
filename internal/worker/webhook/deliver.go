@@ -30,8 +30,7 @@ type WebhookDeliverer struct {
 	Streams   []string
 }
 
-// event_types 是 JSON 列，没法直接扫进 []string 字段，
-// 所以单独查出来再解码。
+// event_types 为 JSON 列，先读取文本，再解码为字符串切片。
 type webhookSubscription struct {
 	ID         uint64   `gorm:"column:id"`
 	Name       string   `gorm:"column:name"`
@@ -51,8 +50,7 @@ type webhookEvent struct {
 	Data       json.RawMessage `json:"data"`
 }
 
-// ErrDeliveryRejected 标记一类不可恢复的失败：订阅方拒绝的 4xx 请求体
-// 重试也救不回来，所以这条记录直接进死信状态。
+// ErrDeliveryRejected 表示不可恢复的订阅端 4xx 拒绝，结果直接进入死信状态。
 var ErrDeliveryRejected = errors.New("webhook endpoint rejected the event")
 
 func (d WebhookDeliverer) client() *http.Client {
@@ -69,9 +67,7 @@ func (d WebhookDeliverer) batchSize() int {
 	return 100
 }
 
-// PublishBatch 从配置的流上消费待处理事件，并投递给每个匹配的订阅。
-// 投递状态在 Redis ack 之前就已落库，
-// 因此崩溃之后是重放而不是丢事件。
+// PublishBatch 消费配置流并投递匹配订阅，先持久化投递状态再确认 Redis 消息，支持崩溃后重放。
 func (d WebhookDeliverer) PublishBatch(ctx context.Context) (int, error) {
 	if d.AdminDB == nil || d.Stream == nil {
 		return 0, errors.New("webhook deliverer is not configured")
@@ -102,14 +98,8 @@ func (d WebhookDeliverer) PublishBatch(ctx context.Context) (int, error) {
 		for _, entry := range entries {
 			event, err := parseStreamEntry(entry.Values)
 			if err != nil {
-				// 这条记录本消费者读不懂，就不由本消费者来删。
-				// 这些流是共享的，它对拥有它的服务来说可能完全合法 ——
-				// 在这里删掉曾把所有设备事件直接删光，因为设备事件把类型写成
-				// "Type"，而这个解析器找的是外层的 "event_type"。
-				// 跳过它，把它留给它的主人；
-				// 并把这件事明确记下来，
-				// 正是这样才把数据里那个无声的缺口
-				// 变成运维看得见的东西。
+				// 无法解析的共享流记录不由此消费者确认或删除。
+				// 记录跳过原因，保留消息供所属服务处理。
 				log.Printf("webhook delivery skipped an unreadable %s entry %s: %v", stream, entry.ID, err)
 				continue
 			}
@@ -128,9 +118,7 @@ func (d WebhookDeliverer) PublishBatch(ctx context.Context) (int, error) {
 
 const consumerGroup = "webhook-delivery"
 
-// EventStreams 列出订阅可以挂载的流。
-// 它们与 outbox publisher 写入的流名一致，
-// 所以把一个新的事件类型路由到 webhook 投递不需要额外配置。
+// EventStreams 返回可订阅流，其名称与 Outbox 发布目标一致。
 var EventStreams = []string{
 	"charge_events_stream",
 	"charge_started_stream",
@@ -142,7 +130,7 @@ var EventStreams = []string{
 	"device_event_stream",
 }
 
-// streams 返回配置的事件流，未配置时用标准那一组。
+// streams 返回配置的事件流；未配置时使用标准事件流。
 func (d WebhookDeliverer) streams(ctx context.Context) ([]string, error) {
 	if len(d.Streams) > 0 {
 		return d.Streams, nil
@@ -231,8 +219,7 @@ func (d WebhookDeliverer) subscriptions(ctx context.Context, eventType string) (
 	for _, row := range types {
 		var decoded []string
 		if len(row.EventTypes) > 0 {
-			// 畸形负载只是匹配不到任何订阅，
-			// 而不是让其他所有订阅都投不出去。
+			// 无效载荷不匹配订阅，跳过该记录，不中止其他投递。
 			_ = json.Unmarshal(row.EventTypes, &decoded)
 		}
 		byID[row.ID] = decoded
@@ -270,8 +257,7 @@ func (d WebhookDeliverer) deliverOne(ctx context.Context, sub webhookSubscriptio
 	if err := netguard.ValidatePublicHTTPS(sub.URL); err != nil {
 		return d.log(ctx, sub, event, string(body), nil, nil, err, attempt, 0)
 	}
-	// 签名覆盖的是实际发出的那些字节，订阅方校验的是它真正收到的那份负载，
-	// 而不是某个重新序列化出来的变体。
+	// 签名覆盖实际发送的请求体字节，不对载荷重新序列化。
 	timestamp := time.Now().UTC().Unix()
 	signature := signPayload(sub.Secret, timestamp, body)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, sub.URL, bytes.NewReader(body))
@@ -291,8 +277,7 @@ func (d WebhookDeliverer) deliverOne(ctx context.Context, sub webhookSubscriptio
 		return d.log(ctx, sub, event, string(body), nil, nil, err, attempt, elapsed.Milliseconds())
 	}
 	defer resp.Body.Close()
-	// 只读取响应的有限前缀；落库的日志既留得住诊断信息，
-	// 又不会让超大响应把表撑爆。
+	// 只读取有限长度的响应前缀，限制诊断日志大小。
 	responseBytes, readErr := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
 	if readErr != nil {
 		readErr = fmt.Errorf("read webhook response: %w", readErr)

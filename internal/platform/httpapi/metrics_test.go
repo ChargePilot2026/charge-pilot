@@ -28,9 +28,7 @@ func scrape(t *testing.T, router http.Handler) string {
 	return recorder.Body.String()
 }
 
-// route 标签必须是匹配到的那个模板。本项目的路径里嵌了
-// 设备 ID 和订单号，所以按原始路径打标签会每次请求都新造一条
-// 时间序列，把抓取直接搞挂。
+// 验证 route 标签使用路由模板，避免设备 ID 或订单号形成大量独立时间序列。
 func TestMetricsLabelRoutesByTemplateNotRawPath(t *testing.T) {
 	router := metricsRouter()
 	for _, id := range []string{"device-aaa", "device-bbb", "device-ccc"} {
@@ -53,8 +51,7 @@ func TestMetricsLabelRoutesByTemplateNotRawPath(t *testing.T) {
 	}
 }
 
-// 一个没匹配到任何路由的请求必须收敛到同一个标签，
-// 否则未认证的扫描器就能随意撑大序列数量。
+// 未匹配路由的请求应共用一个指标标签，避免任意路径增加时间序列数量。
 func TestMetricsCollapseUnmatchedRequests(t *testing.T) {
 	router := metricsRouter()
 	for i := range 3 {
@@ -90,8 +87,7 @@ func TestMetricsExposeValidExposition(t *testing.T) {
 			t.Fatalf("exposition missing %q:\n%s", want, body)
 		}
 	}
-	// 每一行非注释内容都必须带上 service 标签，或者属于 HELP/TYPE
-	// 那一组，而且不允许有空行。
+	// 每行指标必须携带 service 标签；HELP、TYPE 声明除外，不允许空行。
 	for line := range strings.SplitSeq(strings.TrimSpace(body), "\n") {
 		if strings.HasPrefix(line, "#") {
 			continue

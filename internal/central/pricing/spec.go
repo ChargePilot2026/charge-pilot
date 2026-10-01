@@ -20,9 +20,8 @@ var (
 
 const maxRateCents = 1000000
 
-// Tier 是功率阶梯中的一档。这里只存上界：某一档的下界永远是上一档的上界加一瓦，
-// 编辑器正是靠这一点保证各档不会重叠。两端各自独立存储才会让一份电价表中间漏出
-// 空档——而阶梯里的空档，意味着落在空档里的那次充电根本无法计价。
+// Tier 表示功率阶梯的一个档位，仅保存上界；下界由上一档上界加 1 W 推导。
+// 连续上界表示保证阶梯不重叠、不留计价空档。
 type Tier struct {
 	// MaxWatts 是含端点的上界。第一档下限为 0，各档上界必须严格递增。
 	MaxWatts int `json:"max_watts"`
@@ -32,31 +31,26 @@ type Tier struct {
 	ServiceCents int64 `json:"service_cents,omitempty"`
 }
 
-// Period 是一天中的一个分时段。一天被存成一条「结束分钟」的链，而不是一组独立的
-// 起止时间对，理由与阶梯只存上界相同：链装不下空档，而一对起止时间太容易漏。
+// Period 表示一天中的费率时段，以严格递增的结束分钟组成连续覆盖链。
 type Period struct {
 	ServiceCents int64 `json:"service_cents,omitempty"`
 	// EndMinute 是从零点起的分钟数，取值 1..1440。数值必须严格递增，且最后一个
 	// 必须正好是 1440，这样一整天才被完整覆盖，既没有空档也没有重叠。
 	EndMinute int `json:"end_minute"`
-	// ElectricCents 是该时段的单一电价，也是电量口径下唯一会用到的费率字段：
-	// 电量电价表没有阶梯，给它加一个就等于加一个没人读的字段。
+	// ElectricCents 是电量计费的单一电价，单位分/kWh；该口径不使用阶梯。
 	ElectricCents int64 `json:"electric_cents,omitempty"`
 	// Tiers 是该时段内适用的功率阶梯；电量口径下为空。
 	Tiers []Tier `json:"tiers,omitempty"`
 }
 
-// ElectricLine 给出电费本身。服务端计费模式必须有它，设备计费模式则没有：
-// 设备计费的充电在整套系统里都不存在电价，也就不存在可以拿来电费的
-// 任何东西。
+// ElectricLine 表示服务端电价配置；设备计费模式不配置服务端电价。
 type ElectricLine struct {
 	Basis   ServerBasis `json:"basis"`
 	Periods []Period    `json:"periods"`
 }
 
-// ServiceLine 给出服务费的算法。nil 的 *ServiceLine 与 ServiceNone 口径都表示
-// 不收服务费；之所以保留指针，是为了让编辑器来回保存时「没有配置」和
-// 「配置成零」仍然可区分。
+// ServiceLine 定义服务费算法；nil 和 ServiceNone 均不收费。
+// 指针保留未配置与显式配置零费率的区别，供编辑器往返保存。
 type ServiceLine struct {
 	Basis           ServiceBasis `json:"basis"`
 	CentsPerKWh     int64        `json:"cents_per_kwh,omitempty"`
@@ -73,9 +67,7 @@ const (
 	ChannelCard    Channel = "card"
 )
 
-// ChannelMultiplier 以基点表示倍数，10000 即 1.0x。它只作用于电费一项：真实后台
-// 把卡费率显示成电费上的一个倍率，所以在这里把服务费倍率一起折进来，
-// 等于凭空造一个电价表从未发布过的折扣。
+// ChannelMultiplier 以基点表示电费倍率，10000 为 1.0；不影响服务费。
 type ChannelMultiplier struct {
 	TempBP int32 `json:"temp_bp"`
 	CardBP int32 `json:"card_bp"`
@@ -94,9 +86,9 @@ func (m *ChannelMultiplier) electricBP(channel Channel) int32 {
 	return 10000
 }
 
-// TimeCharge 携带的是决定「按时长计费的充电怎么结束」的设置，而不是它花多少钱。
+// TimeCharge 保存按时长充电的停止条件，不定义费率。
 type TimeCharge struct {
-	// StopWhenFull 让电池充满即结束充电，而不是把时间跑完。
+	// StopWhenFull 启用设备充满自停，不等待时长耗尽。
 	StopWhenFull bool `json:"stop_when_full"`
 	// MaxMinutes 限制按时长计费的最长分钟数，0 表示不限。
 	MaxMinutes uint16 `json:"max_minutes,omitempty"`
@@ -105,14 +97,11 @@ type TimeCharge struct {
 	FloatSeconds        uint16 `json:"float_seconds,omitempty"`
 }
 
-// Spec 是一份自包含的、完整的充电计价描述。预估与结算都把同一个结构喂给 Cost，
-// 两者因此不可能各算各的而对不上。
+// Spec 包含完整计价配置，预估与结算共用此结构和 Cost 引擎。
 type Spec struct {
 	Scheme *Scheme    `json:"scheme,omitempty"`
 	Mode   ChargeMode `json:"mode"`
-	// Electric 只在服务端计费模式下被读取。设备计费模式把它留成零值，
-	// ValidateSpec 会拒绝任何试图设置它的电价表——设备计费电价表上的费率
-	// 是一个永远用不到的费率，而总有一天会有人相信它是生效的。
+	// Electric 仅用于服务端计费；设备计费必须为零值，ValidateSpec 拒绝无效费率配置。
 	Electric *ElectricLine `json:"electric,omitempty"`
 	// Service 是独立的第二条线。两条线可以任意组合——按电量收电费配按小时收
 	// 服务费就是真实且常见的一种组合。
@@ -126,13 +115,12 @@ type Spec struct {
 	LossRateBP int32 `json:"loss_rate_bp,omitempty"`
 	// FreeMinutes 表示充电在这么多分钟内结束时整单免单，0 表示不启用该免单。
 	FreeMinutes int `json:"free_minutes,omitempty"`
-	// MinElectricCents 只兜底电费一项，服务费永远不会被拿来当找零用。
+	// MinElectricCents 为电费最低收费，单位为分，不调整服务费。
 	MinElectricCents int64 `json:"min_electric_cents,omitempty"`
 	// TimeCharge 只对按时长计费的充电生效。
 	TimeCharge *TimeCharge `json:"time_charge,omitempty"`
-	// SpendCapCents 是运行中的服务端计费充电可选的花费上限。0 表示不设上限，
-	// 此时充电在平台下发的时间或电量耗尽时结束。它是产品控制而不是协议要求：
-	// 充电板仍然照自己那份额度行事。
+	// SpendCapCents 是服务端计费的消费上限，单位为分；0 表示未配置。
+	// 未配置时仍保留设备下发的时间或电量额度限制。
 	SpendCapCents int64 `json:"spend_cap_cents,omitempty"`
 	// StopGraceSeconds 是平台要求设备停止之后，等待多久才把这次充电视为失控。
 	StopGraceSeconds int `json:"stop_grace_seconds,omitempty"`
@@ -140,8 +128,7 @@ type Spec struct {
 	DefaultChargeWay string `json:"default_charge_way,omitempty"`
 	// CardMaxMinutes 是允许的刷卡充电最长时长。
 	CardMaxMinutes uint16 `json:"card_max_minutes,omitempty"`
-	// Display 是小程序允许展示的内容。它从不改变实际收费，这正是它与 spec 并列
-	// 而不是嵌在 spec 里面的原因。
+	// Display 控制用户端呈现，与实际计费参数独立。
 	Display Display `json:"display"`
 }
 
@@ -190,8 +177,7 @@ type Fee struct {
 	BillableWh    uint64        `json:"billable_wh"`
 }
 
-// ValidateSpec 由发布与计价共用：编辑器接受的电价表，必须永远也是结算链路
-// 真能执行的那一种。
+// ValidateSpec 共用于发布和计费，确保已发布规则满足结算执行条件。
 func ValidateSpec(spec Spec) error {
 	if !spec.Mode.Valid() {
 		return ErrInvalidPricing
@@ -219,8 +205,7 @@ func ValidateSpec(spec Spec) error {
 		}
 	}
 	if spec.CardMaxMinutes > 4320 {
-		// 固件里的刷卡充电是一个以分钟计的无符号 16 位字段，超过这个值会被
-		// 充电板直接拒绝，而不是被静默截断。
+		// 刷卡时长使用 uint16 分钟字段，超出范围时拒绝，不截断数值。
 		return ErrInvalidPricing
 	}
 	if spec.TimeCharge != nil {
@@ -239,8 +224,7 @@ func ValidateSpec(spec Spec) error {
 		}
 	}
 	if !spec.Mode.ServerBilled() {
-		// 设备计费的电价表完全不带费率。与其放出一份看起来有计价、其实没计价的
-		// 电价表，不如把多余的费率直接拒掉。
+		// 设备计费不使用服务端费率，拒绝携带无效费率的规则。
 		if spec.Electric != nil || spec.Service != nil || spec.Multiplier != nil {
 			return ErrInvalidPricing
 		}
@@ -250,8 +234,7 @@ func ValidateSpec(spec Spec) error {
 		return ErrInvalidPricing
 	}
 	if spec.Electric.Basis != spec.Mode.BasisFor() {
-		// 计费模式与电价表必须描述同一份东西。一台按峰值功率配置的设备却挂着一份
-		// 按电量计价的电价表，就会按一个谁也没同意过的口径收钱。
+		// 计费模式必须与电价口径一致。
 		return ErrInvalidPricing
 	}
 	for _, period := range spec.Electric.Periods {
@@ -278,9 +261,8 @@ func ValidateTemplateSpec(spec Spec) error {
 	return nil
 }
 
-// compilePeriods 把存储的时段链展开成按分钟的查表，链的不变量也在这里落地：
-// 结束分钟严格递增、起点为零、终点为 1440。这一条规则就让空档与重叠在
-// 表示上不可能出现，所以不必再写一个独立的覆盖检查。
+// compilePeriods 将时段链展开为按分钟索引的费率表。
+// 结束分钟必须严格递增并覆盖 [0, 1440)，保证全天无空档或重叠。
 func compilePeriods(periods []Period) ([1440]Period, error) {
 	var schedule [1440]Period
 	if len(periods) == 0 || len(periods) > 48 {
@@ -350,12 +332,10 @@ func clockMinute(value string) (int, error) {
 	return hour*60 + minute, nil
 }
 
-// specIsUniformOver 报告这次充电的每一分钟是否按同一种方式计价。若是，把电量
-// 均摊就不是一句近似而是精确结果，未分段的计量因此可以不经复核直接结算。
+// specIsUniformOver 判断区间内计费规则是否恒定；恒定时未分段电量可均摊结算。
 func specIsUniformOver(spec Spec, start, end time.Time) bool {
 	if spec.Electric == nil || (spec.Electric.Basis != BasisEnergy && spec.Electric.Basis != BasisRealtimePower) {
-		// 峰值功率与一口价电价表不从时钟上读费率：前者只看峰值，后者全天一个价，
-		// 所以均摊永远不会把它们算错。
+		// 峰值功率及全天固定费率不依赖时段变化，均摊不会改变计费结果。
 		return true
 	}
 	schedule, err := compilePeriods(spec.Electric.Periods)
@@ -376,9 +356,8 @@ func specIsUniformOver(spec Spec, start, end time.Time) bool {
 	return true
 }
 
-// sameRate 报告两个时段的计价是否完全相同。单一电价与阶梯要一起比，因为一个口径
-// 只会带其中之一：只比阶梯的话，每一份电量电价表都会因为两边阶梯都为空而显得
-// 均匀。跨过电价变更点的充电就会靠「各时段电量大致均分」这句猜测结算。
+// sameRate 比较单一电价和阶梯，判断两个时段费率是否完全一致。
+// 仅比较阶梯会误将不同的电量电价视为相同，导致跨费率电量错误分摊。
 func sameRate(a, b Period) bool {
 	if a.ElectricCents != b.ElectricCents || a.ServiceCents != b.ServiceCents || len(a.Tiers) != len(b.Tiers) {
 		return false

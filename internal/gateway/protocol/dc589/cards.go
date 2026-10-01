@@ -15,9 +15,8 @@ type CardSwipe struct {
 	LocalDebitTenths byte // Hardware setting, never the platform's charge amount.
 }
 
-// The four reserved bytes carry no documented event sequence or remove-card
-// indication. Each newly emitted B6 is a physical presentation, according to
-// the configured firmware behavior; application retries use the stored UUID.
+// 四个保留字节未定义事件序号或拔卡标志。
+// 按配置的固件行为将新发出的 B6 视为物理刷卡；应用重试复用已保存的 UUID。
 func ParseCardSwipe(f Frame) (CardSwipe, error) {
 	if f.Command != OnlineCardSwipe || len(f.Data) != 10 || f.Data[0] == 0 {
 		return CardSwipe{}, ErrPayload

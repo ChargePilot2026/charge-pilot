@@ -18,15 +18,8 @@ var (
 	errOrderNotReady  = errors.New("order is not a completed order of this user")
 )
 
-// submitFeedback 让工单队列形成闭环。
-// 管理端能列出和回复反馈，
-// 却没有任何入口能产生反馈行，
-// 所以队列永远是空的；小程序也没有渠道去反馈一笔已完成充电的问题。
-//
-// "一单一反馈"这条规则是在持有 charge_order 行锁时校验的。
-// 正是这把锁把同一笔订单的两个并发提交串行化：
-// 没有它，
-// 两个事务都可能读到"还没有反馈"然后各自插入。
+// submitFeedback 为用户已完成的订单提交反馈。
+// 事务中锁定 charge_order 后校验归属、状态和已有反馈，保证每个订单最多提交一次。
 func (a UserAccountAPI) submitFeedback(c *gin.Context) {
 	userID, ok := a.userID(c)
 	if !ok {
@@ -88,8 +81,7 @@ func (a UserAccountAPI) submitFeedback(c *gin.Context) {
 			DeviceID string
 			Status   string
 		}
-		// charge_order 按 created_month 分区，
-		// 所以这行是按主键寻址的，不走任何二级查询。
+		// 订单表按 created_month 分区，此处按订单主键定位需要加锁的记录。
 		if err := tx.Table("charge_order").Clauses(clause.Locking{Strength: "UPDATE"}).
 			Where("id = ? AND deleted_at IS NULL", orderID).Take(&order).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -119,8 +111,7 @@ func (a UserAccountAPI) submitFeedback(c *gin.Context) {
 	})
 	switch {
 	case errors.Is(tx, errOrderNotReady):
-		// 别人的订单与不存在的订单必须无从分辨，
-		// 所以两者返回同一个 not-found 错误码。
+		// 越权订单与不存在的订单使用相同 not-found 响应，避免泄露订单存在性。
 		httpapi.Write(c, 404, 1004, "订单不存在或不可评价", nil)
 	case errors.Is(tx, errFeedbackExists):
 		httpapi.Write(c, 409, 2009, "该订单已评价", nil)
@@ -131,9 +122,7 @@ func (a UserAccountAPI) submitFeedback(c *gin.Context) {
 	}
 }
 
-// httpsImage 把反馈附件限制在 TLS 域名上。
-// 这个链接会回显给工单队列里的其他客服，
-// 所以一个明文 HTTP 或 javascript 的 URL 会把内部页面变成投放载体。
+// httpsImage 校验反馈附件使用 HTTPS 域名链接，拒绝明文 HTTP 和脚本 URL。
 func httpsImage(raw string) bool {
 	if len(raw) == 0 || len(raw) > 512 || strings.TrimSpace(raw) != raw {
 		return false

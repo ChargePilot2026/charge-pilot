@@ -65,9 +65,7 @@ func TOTPURI(issuer, account, secret string) (string, error) {
 	}).String(), nil
 }
 
-// VerifyTOTP 用共享密钥校验口令。比较是常数时间的，
-// 而且每个可接受的时间步都会试一遍，
-// 所以没法靠响应时间区分"口令填错了"和"时间步不对"。
+// VerifyTOTP 使用常数时间比较并检查全部允许的时间步，减少验证码和时钟偏移的时序泄露。
 
 // VerifyTOTP 用共享密钥校验动态口令，容差为当前时间步的前后各一步。口令先做长度和
 // 全数字校验，再对每个可接受的时间步用常数时间比较，任一时间步命中即通过。
@@ -122,11 +120,7 @@ func hotp(key []byte, counter uint64) (string, error) {
 	return fmt.Sprintf("%0*d", totpDigits, mod), nil
 }
 
-// TOTPCode 吐出当前时间步的口令：登记接口要把它回显出来，
-// 好让运营在启用 MFA 之前先确认验证器确实能用。
-
-// TOTPCode 返回当前时间步的验证码，供绑定接口回显，让管理员在开启 MFA 前先确认
-// 验证器确实能用。只认当前步，不做时间步容差。
+// TOTPCode 返回当前时间步的验证码，供 MFA 登记验证使用；不应用时间步容差。
 func TOTPCode(secret string, now time.Time) (string, error) {
 	normalized := strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(secret), " ", ""))
 	key, err := base32Encoding.DecodeString(normalized)

@@ -10,13 +10,7 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// 投递器与拥有这些流的服务共用同一批流。
-// 所以一条它读不懂的记录并不是它可以销毁的记录：
-// 删掉一条曾把所有设备事件直接删光，
-// 因为设备事件把类型写在 "Type" 里，
-// 而这个解析器预期的那层信封把它叫作 "event_type"。
-// 这条记录必须留下来，
-// 让拥有它的服务仍能读到。
+// 验证 Webhook 消费者保留无法识别的共享流记录，不确认或删除其他服务拥有的事件。
 func TestUnreadableEntryIsLeftForItsOwner(t *testing.T) {
 	adminURL, redisURL := os.Getenv("TEST_ADMIN_DATABASE_URL"), os.Getenv("TEST_STREAM_REDIS_URL")
 	if adminURL == "" || redisURL == "" {
@@ -42,9 +36,7 @@ func TestUnreadableEntryIsLeftForItsOwner(t *testing.T) {
 	_ = stream.Del(ctx, name).Err()
 	t.Cleanup(func() { _ = stream.Del(ctx, name).Err() })
 
-	// gateway 记录设备事件的方式：
-	// 类型写在 "Type" 里，
-	// 而根本没有叫 event_type 的字段。
+	// 设备原始事件使用 Type 字段，不含 event_type，需兼容该载荷格式。
 	entry, err := stream.XAdd(ctx, &redis.XAddArgs{Stream: name, Values: map[string]any{
 		"event_id": "evt-1", "source": "gateway",
 		"payload": `{"Type":"heartbeat","DeviceID":"9000000000000001","Protocol":"dc589"}`,
@@ -53,8 +45,7 @@ func TestUnreadableEntryIsLeftForItsOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 这里没有配置任何订阅，所以投递本身无事可做；
-	// 本测试要看的正是这条记录在此之前与之后会怎样。
+	// 不配置订阅，单独验证未识别记录在消费前后仍然保留。
 	deliverer := webhook.WebhookDeliverer{AdminDB: adminORM, Stream: stream, Streams: []string{name}}
 	if _, err := deliverer.PublishBatch(ctx); err != nil {
 		t.Fatal(err)

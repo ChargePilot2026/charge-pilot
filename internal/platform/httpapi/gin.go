@@ -29,9 +29,7 @@ func NewRouter(metrics ...*Metrics) *gin.Engine {
 	router := gin.New()
 	_ = router.SetTrustedProxies(nil)
 	router.Use(gin.Recovery(), Trace())
-	// 这个中间件在路由表建好之后才装上，所以请求结束时 FullPath
-	// 已经能解析出来；没匹配到路由的请求会收敛到同一个标签，
-	// 而不是各自的原始路径。
+	// 请求结束后读取 FullPath 路由模板；未匹配路径使用统一标签，限制指标基数。
 	for _, m := range metrics {
 		if m != nil {
 			router.Use(m.Middleware())

@@ -33,8 +33,8 @@ func (a ResourceAPI) invoices(c *gin.Context) {
 	httpapi.OK(c, gin.H{"items": rows})
 }
 
-// financeActor 取出当前管理员，校验其既是 customer_finance 角色又确实持有指定审核
-// 权限，不满足直接 403。发票审核和计量核实共用这道闸门。
+// financeActor 校验当前管理员为 customer_finance 且持有指定审核权限，失败返回 403。
+// 发票审核和计量核实共用此校验。
 func (a ResourceAPI) financeActor(c *gin.Context, permission string) (Profile, bool) {
 	p := c.MustGet("admin_profile").(Profile)
 	if p.Role != "customer_finance" || !hasPermission(p, permission) {
@@ -44,11 +44,9 @@ func (a ResourceAPI) financeActor(c *gin.Context, permission string) (Profile, b
 	return p, true
 }
 
-// reviewInvoice 处理发票审批与驳回，动作由路由路径决定。审批走双人双审：首审只登记
-// 发票链接并转入 awaiting_second，二审必须与首审不是同一个人、状态确实在
-// awaiting_second、且提交的链接与首审完全一致才真正开票，同时首审账号和权限必须
-// 仍然有效。驳回则单人事毕即可。事务内对申请单加行锁并要求它仍处于 pending，
-// 否则按并发冲突回 409。
+// reviewInvoice 处理审批和驳回，事务内锁定申请并校验当前审核状态。
+// 审批要求两个不同且仍有权限的审核人，第二签必须确认同一发票链接；驳回由单人完成。
+// 不满足状态或审核条件时返回 409。
 func (a ResourceAPI) reviewInvoice(c *gin.Context) {
 	id, ok := pathID(c)
 	if !ok {

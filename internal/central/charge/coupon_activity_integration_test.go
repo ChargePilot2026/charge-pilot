@@ -29,7 +29,7 @@ func activityDB(t *testing.T) *gorm.DB {
 	return orm
 }
 
-// lastID 读取上一条 INSERT 在这条连接上创建的那一行的 id。
+// lastID 读取当前连接最近一次 INSERT 生成的主键。
 func lastID(t *testing.T, orm *gorm.DB) uint64 {
 	t.Helper()
 	var id uint64
@@ -191,12 +191,7 @@ func TestExpiredAndDisabledRulesDoNotGrant(t *testing.T) {
 	}
 }
 
-// 一条指向已删券的规则不发放，也不该留下任何痕迹。
-//
-// 规则和券分属两张表，删券不会连带删规则。原来的写法照样往 coupon_grant 里
-// 写一行：用户钱包里多出一张永远核销不了的券，券的库存与单人限领统计被污染。
-// 更麻烦的是发放记录的 source_event_id 由规则主键算出来，同一笔订单再次触发
-// 就会撞上 uk_coupon_grant_source_event——一次坏配置能顶住后面所有结算。
+// 验证奖励券已删除时不生成发放记录、不消耗库存或领取次数，也不占用事件幂等键。
 func TestRulePointingAtDeletedCouponGrantsNothing(t *testing.T) {
 	orm := activityDB(t)
 	fx := newActivityFixture(t, orm, "first_recharge", 1, 0)
@@ -248,7 +243,7 @@ func TestInviteRewardRequiresEstablishedInviter(t *testing.T) {
 	if got := runActivity(t, orm, activityEvent{TriggerType: "invite_reward", UserID: fx.userID, EventKey: fx.eventKey, InviterID: otherID, Now: now}); len(got) != 0 {
 		t.Fatalf("an unused inviter was rewarded: %+v", got)
 	}
-	// 邀请人有一笔已结算的充值之后才算合格。
+	// 邀请人须已有一笔结算完成的充值。
 	if err := orm.Exec(`INSERT INTO payment_order
 		(order_no, biz_type, biz_id, user_id, pay_method, total_cents, paid_cents, status, created_month)
 		VALUES (?, 'wallet_recharge', 0, ?, 'wechat', 1000, 1000, 'paid', ?)`, "AC"+uuid.NewString()[:8], otherID, utcDate()).Error; err != nil {

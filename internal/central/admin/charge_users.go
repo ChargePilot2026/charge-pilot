@@ -5,16 +5,12 @@ import (
 	"time"
 
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/httpapi"
-	"github.com/ChargePilot2026/charge-pilot/internal/platform/phonecrypto"
+	"github.com/ChargePilot2026/charge-pilot/internal/platform/phone"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
 
-// 充电用户（charge user）是 central_db.user 里的 C 端用户，和 central_db 的后台管理员账号是两回事。
-//
-// 此前后台能看到订单、反馈、报障，但每处都只带一个裸的 user_id：客服接到投诉时
-// 无从知道这个人是谁、怎么联系他，运营想核对一个用户的消费也只能挨个翻订单。
-// 这个资源补的就是这段断层——它是后台第一个以"人"而不是以"单"为入口的视图。
+// 本文件提供 central_db.user 的充电用户查询，不操作后台管理员账号。
 
 // ChargeUserRow 是后台充电用户列表的一行。
 type ChargeUserRow struct {
@@ -31,9 +27,7 @@ type ChargeUserRow struct {
 	CreatedAt time.Time  `json:"created_at" gorm:"column:created_at"`        // 记录创建时间
 
 	// 以下几列不在主查询里联表，由 decorateChargeUsers 按当页 ID 批量回填。
-	// 手机号尤其只能这么做：user.phone_enc 是 AES-GCM 密文，phone_hash 是不可逆的
-	// SHA-256，库里没有任何可排序、可模糊匹配的明文列，LIKE 无从下手。
-	Phone        string  `json:"phone" gorm:"-"`         // 完整手机号，由 phone_enc 解密而来；未绑号为空串
+	Phone        string  `json:"phone" gorm:"-"`         // 完整明文手机号；未绑号为空串
 	PhoneBound   bool    `json:"phone_bound" gorm:"-"`   // 是否已绑定手机号
 	BalanceCents int64   `json:"balance_cents" gorm:"-"` // 钱包可用余额（分）
 	FrozenCents  int64   `json:"frozen_cents" gorm:"-"`  // 钱包冻结金额（分）
@@ -42,11 +36,7 @@ type ChargeUserRow struct {
 	LastOrderAt  *string `json:"last_order_at" gorm:"-"` // 最近一次下单时间；指针，从未下过单为 null
 }
 
-// TableName 把这个结构体指回 central_db.user。
-//
-// 不能省。GORM 默认按结构体名推导表名，ChargeUserRow 会被推成 charge_user_rows，
-// 而真实表名是 user——少了这一行，列表和详情都会以"表不存在"失败，而报错信息
-// 只说读不到数据，不提表名。ChargeUserDetail 内嵌本结构体，共用同一个方法。
+// TableName 将列表与内嵌该结构的详情模型映射到 user 表，避免 GORM 推导错误表名。
 func (ChargeUserRow) TableName() string { return "user" }
 
 // ChargeUserDetail 是单个充电用户的档案，列表行的超集。
@@ -59,7 +49,7 @@ type ChargeUserDetail struct {
 	FaultReports  int64                  `json:"fault_reports"`  // 该用户提交的报障单数
 }
 
-// ChargeUserOrderBrief 是档案里附带的订单摘要，字段取客服场景真正要看的那些。
+// ChargeUserOrderBrief 是用户档案中的最近订单摘要，包含业务、支付状态和关键时间。
 type ChargeUserOrderBrief struct {
 	OrderID        uint64  `json:"order_id" gorm:"column:id"`                     // 订单主键
 	OrderNo        string  `json:"order_no" gorm:"column:order_no"`               // 订单号，用户报障时会向客服念这个
@@ -73,13 +63,12 @@ type ChargeUserOrderBrief struct {
 	StartedAt      *string `json:"started_at" gorm:"column:started_at"`           // 开始充电时间；指针，未开始为 null
 }
 
-// chargeUserDetailOrderLimit 限制档案里附带的最近订单条数。客服要的是"最近发生了什么"，
-// 不是完整历史——完整历史由订单页按 user_id 过滤承担。
+// chargeUserDetailOrderLimit 限制档案中的最近订单数；完整历史通过订单列表按 user_id 查询。
 const chargeUserDetailOrderLimit = 20
 
 // chargeUserStat 是一次性聚合出来的派生数据，避免列表页按行查库。
 type chargeUserStat struct {
-	PhoneEnc     []byte     // 该用户的手机号密文
+	Phone        string     // 该用户的明文手机号
 	BalanceCents int64      // 钱包可用余额（分）
 	FrozenCents  int64      // 钱包冻结金额（分）
 	OrderCount   int64      // 历史订单数
@@ -87,10 +76,8 @@ type chargeUserStat struct {
 	LastOrderAt  *time.Time // 最近下单时间
 }
 
-// registerChargeUsers 挂载充电用户的只读接口。
-//
-// 整个资源只有读权限，没有建号、改状态、解冻这些写操作。冻结是风控的动作，
-// 不在这里重复开一个入口——两个入口能各自改同一列，迟早出现"一边解冻一边还在拦截"。
+// registerChargeUsers 注册只读列表和详情接口，要求 charge_user.read 权限。
+// 账号冻结和解冻由风控流程处理。
 func (a ResourceAPI) registerChargeUsers(r *gin.Engine) {
 	r.GET("/api/v1/admin/charge-users", a.Auth.Require("charge_user.read"), a.chargeUsers)
 	r.GET("/api/v1/admin/charge-users/:id", a.Auth.Require("charge_user.read"), a.chargeUser)
@@ -98,9 +85,7 @@ func (a ResourceAPI) registerChargeUsers(r *gin.Engine) {
 
 // chargeUsers 分页列出充电用户。
 //
-// 关键词匹配昵称、openid 和手机号。手机号走 phone_hash 等值匹配：库里存的是密文加
-// 不可逆哈希，没有可 LIKE 的明文，所以只支持输入完整 11 位号码精确查询，输入"后四位"
-// 这类片段查不出来。这是加密存储的必然代价，不是搜索失灵。
+// 关键词匹配昵称、openid 和手机号；完整手机号精确查询，号码片段支持模糊查询。
 func (a ResourceAPI) chargeUsers(c *gin.Context) {
 	q, ok := parsePage(c, "active frozen")
 	if !ok {
@@ -139,12 +124,7 @@ func (a ResourceAPI) chargeUser(c *gin.Context) {
 	httpapi.OK(c, detail)
 }
 
-// decorateChargeUsers 批量回填列表行的派生列：解密手机号、联钱包、统计订单。
-//
-// 解密只能逐条做，所以这一步的成本与当页条数成正比。page_size 上限 100 有相当一部分
-// 就是这个原因——再放大，一次列表请求会明显变慢。
-//
-// 没有配置密钥时不解密，但整页照常返回：看不到号码总比看不到用户强。
+// decorateChargeUsers 批量回填手机号、钱包余额与订单统计。
 func (a ResourceAPI) decorateChargeUsers(ctx context.Context, rows []ChargeUserRow) error {
 	if len(rows) == 0 {
 		return nil
@@ -170,12 +150,8 @@ func (a ResourceAPI) decorateChargeUsers(ctx context.Context, rows []ChargeUserR
 			formatted := stat.LastOrderAt.UTC().Format(time.RFC3339)
 			rows[i].LastOrderAt = &formatted
 		}
-		if len(stat.PhoneEnc) > 0 {
-			rows[i].PhoneBound = true
-			if phone, err := phonecrypto.Decrypt(a.PhoneKey, stat.PhoneEnc); err == nil {
-				rows[i].Phone = phone
-			}
-		}
+		rows[i].Phone = stat.Phone
+		rows[i].PhoneBound = stat.Phone != ""
 	}
 	return nil
 }
@@ -188,46 +164,44 @@ func (s ResourceStore) ChargeUsers(ctx context.Context, q PageQuery) ([]ChargeUs
 		query = query.Where("status = ?", q.Status)
 	}
 	if q.Keyword != "" {
-		// 完整 11 位手机号走哈希等值匹配；其余情况按昵称或 openid 模糊匹配。
-		// 两条分支互斥，否则一个手机号既当哈希又当 LIKE 片段，永远查不到。
-		if phonecrypto.Valid(q.Keyword) {
-			query = query.Where("phone_hash = ?", phonecrypto.Hash(q.Keyword))
+		if phone.Valid(q.Keyword) {
+			query = query.Where("phone = ?", phone.Normalize(q.Keyword))
 		} else {
 			pattern := likePattern(q.Keyword)
-			query = query.Where("nickname LIKE ? ESCAPE '!' OR openid LIKE ? ESCAPE '!' OR unionid LIKE ? ESCAPE '!'", pattern, pattern, pattern)
+			query = query.Where("nickname LIKE ? ESCAPE '!' OR openid LIKE ? ESCAPE '!' OR unionid LIKE ? ESCAPE '!' OR phone LIKE ? ESCAPE '!'", pattern, pattern, pattern, pattern)
 		}
 	}
 	var total int64
 	if err := query.Session(&gorm.Session{}).Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
-	// 默认按最近登录倒序：客服找人的第一诉求是"这个人最近来过吗"，
-	// 而不是"最早注册的是谁"。从未登录过的用户 last_login_at 为 NULL，排在最后。
+	// 按最近登录时间和 ID 倒序排列；last_login_at 为 NULL 的用户排在末尾。
 	err := query.Order("last_login_at DESC, id DESC").
 		Offset((q.Page - 1) * q.PageSize).Limit(q.PageSize).Find(&out).Error
 	return out, total, err
 }
 
-// ChargeUserStats 一次性取回一批用户的手机号密文、钱包余额与订单聚合，避免按行查库。
+// ChargeUserStats 一次性取回一批用户的手机号、钱包余额与订单聚合，避免按行查库。
 func (s ResourceStore) ChargeUserStats(ctx context.Context, ids []uint64) (map[uint64]chargeUserStat, error) {
 	stats := make(map[uint64]chargeUserStat, len(ids))
 
 	var users []struct {
-		ID       uint64 `gorm:"column:id"`
-		PhoneEnc []byte `gorm:"column:phone_enc"`
+		ID    uint64  `gorm:"column:id"`
+		Phone *string `gorm:"column:phone"`
 	}
 	if err := s.UserDB.WithContext(ctx).Raw(
-		"SELECT id, phone_enc FROM user WHERE id IN ?", ids).Scan(&users).Error; err != nil {
+		"SELECT id, phone FROM user WHERE id IN ?", ids).Scan(&users).Error; err != nil {
 		return nil, err
 	}
 	for _, u := range users {
 		stat := stats[u.ID]
-		stat.PhoneEnc = u.PhoneEnc
+		if u.Phone != nil {
+			stat.Phone = *u.Phone
+		}
 		stats[u.ID] = stat
 	}
 
-	// 一个用户理论上只有一个未删除的钱包行，但用 LEFT JOIN 而不是假定唯一，
-	// 免得历史数据里出现两条时静默丢一条。
+	// 批量查询未删除的钱包记录；不假定历史数据严格满足每用户单一钱包。
 	var wallets []struct {
 		UserID       uint64 `gorm:"column:user_id"`
 		BalanceCents int64  `gorm:"column:balance_cents"`
@@ -245,8 +219,7 @@ func (s ResourceStore) ChargeUserStats(ctx context.Context, ids []uint64) (map[u
 		stats[w.UserID] = stat
 	}
 
-	// 累计消费只认已计费的订单：未计费或已取消的订单 total_cents 可能为 NULL，
-	// COALESCE 成 0 后再求和，与"还没产生费用"的口径一致。
+	// 累计消费仅统计已计费金额；NULL 通过 COALESCE 按 0 处理。
 	var orders []struct {
 		UserID      uint64     `gorm:"column:user_id"`
 		OrderCount  int64      `gorm:"column:order_count"`
@@ -285,9 +258,8 @@ func (s ResourceStore) ChargeUserDetail(ctx context.Context, id uint64, orderLim
 	}
 
 	detail.RecentOrders = []ChargeUserOrderBrief{}
-	// 站点 ID 不在 charge_order 上，要经 charge_payment_intent 关联——该表对
-	// charge_order_id 建了唯一键，一单至多一条意图，LEFT JOIN 不会放大行数。
-	// 没走过支付流程的早期订单没有对应意图，station_id 留 null。
+	// 通过 charge_payment_intent 补充站点 ID，其订单唯一键保证连接不增加行数。
+	// 缺少支付意图的历史订单返回 NULL 站点。
 	if err := s.UserDB.WithContext(ctx).Raw(`
 		SELECT c.id, c.order_no, c.device_id, i.station_id, c.status, c.business_status, c.payment_status, c.total_cents,
 		       c.created_at, c.started_at
@@ -299,12 +271,8 @@ func (s ResourceStore) ChargeUserDetail(ctx context.Context, id uint64, orderLim
 		return detail, err
 	}
 
-	// 券与报障只取计数，不取明细：客服要判断的是"这人是不是薅券薅得多"，
-	// 具体是哪几张券在订单页里按 user_id 查更合适。
-	//
-	// 扫进一个只含三个计数的小结构体，不能直接 Scan(&detail)：ChargeUserDetail 里
-	// 带着 RecentOrders 切片，GORM 会把它当成关联字段去解析，然后以"未定义外键"
-	// 拒绝整条查询——报错发生在解析阶段，跟 SQL 对不对无关。
+	// 仅聚合优惠券和报障数量，不加载明细。
+	// 使用独立计数结构扫描，避免 GORM 将详情模型的 RecentOrders 切片解析为数据库关联。
 	var counts struct {
 		CouponGranted int64 `gorm:"column:coupon_granted"`
 		CouponUnused  int64 `gorm:"column:coupon_unused"`

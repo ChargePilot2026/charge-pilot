@@ -13,11 +13,7 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// resourceCodePattern 守住那些还留在系统里、由运营手工填写的业务编码。
-// 站点编码原先也走这里，已随 0044 迁移删掉；
-// 现在剩下的只有分账模板编码和参与方编码。
-// resourceCodePattern 约束运营手工填写的业务编码：只允许字母、数字、下划线、短横，1–64 位。
-// 站点编码原先也走这里，已随 0044 迁移删除，现在只剩分账模板编码和参与方编码。
+// resourceCodePattern 限制分账模板和参与方编码为 1–64 位字母、数字、下划线或短横线。
 var resourceCodePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
 // splitTemplateRow 是分账模板（split_template 表）的行映射。
@@ -41,7 +37,7 @@ type splitPartyRow struct {
 	BankName        *string `json:"bank_name,omitempty" gorm:"column:bank_name"` // 开户行；nil 表示未登记
 }
 
-// splitPartyInput 是分账参与方的写入入参，比例用基点整数表达，避免浮点误差把 10000 凑不齐。
+// splitPartyInput 是分账参与方写入参数，比例使用基点整数，避免浮点求和误差。
 type splitPartyInput struct {
 	PartyCode   string  `json:"party_code"`   // 参与方编码，同一模板下不可重复，须匹配 resourceCodePattern
 	PartyName   string  `json:"party_name"`   // 参与方名称，非空且不超过 128 个字符

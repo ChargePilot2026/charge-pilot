@@ -13,9 +13,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// OpsAPI 暴露 worker 的运维接口：流积压深度、死信清单和手动重放。
-// 它受 service token 保护，
-// 所以只有平台能发起重放，浏览器不行。
+// OpsAPI 提供流积压、死信查询和手动重放接口，全部要求服务令牌。
 type OpsAPI struct {
 	WorkerDB     *gorm.DB
 	ServiceToken string

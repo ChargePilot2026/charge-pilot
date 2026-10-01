@@ -62,8 +62,7 @@ func TestRecordSessionPersistsConnectionAudit(t *testing.T) {
 	}
 }
 
-// 重试的关闭不能让调用方失败：第二次写入携带的是同样的
-// 终态数字，所以覆盖才是正确行为。
+// 重复关闭应成功，并保留相同终态统计。
 func TestRecordSessionIsIdempotentForTheSameSession(t *testing.T) {
 	sink := sessionDB(t)
 	ctx := context.Background()
@@ -126,8 +125,7 @@ func TestRecordSessionDerivesPartitionFromStartTime(t *testing.T) {
 	}
 }
 
-// 两个键缺任何一个，这一行都无法归属，所以宁可拒绝，
-// 也不写成一条孤儿记录。
+// 会话联合键任一字段缺失时必须拒绝写入。
 func TestRecordSessionRejectsMissingIdentity(t *testing.T) {
 	sink := sessionDB(t)
 	ctx := context.Background()
@@ -139,10 +137,7 @@ func TestRecordSessionRejectsMissingIdentity(t *testing.T) {
 	}
 }
 
-// protocol 这一列是 tcp 与 mqtt 两个值的 ENUM，不是自由文本。
-// 曾经有一个 "dc589" 这样的适配器名一路走到了这个 INSERT，
-// MySQL 把它截断了，而这种事只有数据库自己才拦得住，
-// 所以这里直接断言允许的取值，把这份词表固定在一处。
+// protocol 仅允许 tcp、mqtt 传输方式，不能写入 dc589 等适配器名称。
 func TestRecordSessionRejectsTransportOutsideTheEnum(t *testing.T) {
 	sink := sessionDB(t)
 	ctx := context.Background()
@@ -155,9 +150,7 @@ func TestRecordSessionRejectsTransportOutsideTheEnum(t *testing.T) {
 		RemoteAddr: "10.0.0.10:54000", StartedAt: started,
 		LastActive: started, EndedAt: started, CloseReason: "device_closed",
 	}
-	// 在非严格模式下，这里会插入一个空字符串并悄悄丢掉传输方式，
-	// 所以测试断言的是这个值被拒绝，
-	// 而不是接受服务器模式所允许的任何结果。
+	// 无论 MySQL 是否启用严格模式，非法传输方式均应在写入前被拒绝。
 	if err := sink.RecordSession(ctx, record); err == nil {
 		var row deviceSessionRow
 		sink.DB.WithContext(ctx).Where("session_id = ?", sessionID).Take(&row)
@@ -167,8 +160,7 @@ func TestRecordSessionRejectsTransportOutsideTheEnum(t *testing.T) {
 	}
 }
 
-// monthOf 与 RecordSession 推导分区键的方式保持一致：
-// DATE 这一列不携带时分秒，所以查询也必须拿零点来比。
+// monthOf 与 RecordSession 使用相同分区键算法，按 DATE 的零点时间比较。
 func monthOf(t time.Time) time.Time {
 	u := t.UTC()
 	return time.Date(u.Year(), u.Month(), u.Day(), 0, 0, 0, 0, time.UTC)
@@ -176,8 +168,7 @@ func monthOf(t time.Time) time.Time {
 
 func recordSuffix(t *testing.T) string {
 	t.Helper()
-	// 这一列是 VARCHAR(64)，而 session_id 本身已经带了前缀，
-	// 所以这里裁掉后缀，而不是任由 MySQL 拒绝这次插入。
+	// session_id 含固定前缀，裁剪夹具后缀以满足 VARCHAR(64) 长度限制。
 	seed := t.Name() + time.Now().Format("150405.000000")
 	if len(seed) > 24 {
 		seed = seed[len(seed)-24:]

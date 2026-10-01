@@ -29,7 +29,7 @@
 | 导入 | GET/POST `/device-imports`；POST `/device-imports/{import_id}/retry` | CSV 预览后提交 JSON，每批 1–100；gateway 幂等建档，再落 admin 元数据；失败保留批次供显式重试 |
 | 充电订单 | GET `/orders`、`/orders/{id}`、`/orders/{id}/timeline`、`/orders/{id}/process` | 仅充电业务；分页及订单号、设备、站点、业务状态、支付状态、启动来源、时间筛选；显示实际充电时长与累计成功退款金额；详情包含功率曲线页签 |
 | 支付订单 | GET `/payment-orders` | 只读支付流水，包含充电付款与钱包充值；支持订单号精确查询及业务类型、支付状态、支付方式和创建时间范围（created_from/created_to）筛选；不把充值列为充电订单 |
-| 充电用户 | GET `/charge-users`、`/charge-users/{id}` | 后台第一个以"人"而非以"单"为入口的视图：列表给昵称、完整手机号、状态、订单数、累计消费、钱包余额与最后登录，档案再给最近 20 笔订单（业务状态与支付状态分别展示，保留原内部 status）及券/报障计数。只读，不含建号与解冻。手机号按完整号码精确搜索，输入后四位查不出来（库中只有密文与不可逆哈希） |
+| 充电用户 | GET `/charge-users`、`/charge-users/{id}` | 后台第一个以"人"而非以"单"为入口的视图：列表给昵称、完整手机号、状态、订单数、累计消费、钱包余额与最后登录，档案再给最近 20 笔订单（业务状态与支付状态分别展示，保留原内部 status）及券/报障计数。只读，不含建号与解冻。手机号保存明文，支持完整号码精确搜索与号码片段模糊搜索 |
 | 管理员 | GET/POST `/users`；GET `/roles`；PUT/DELETE `/admin-users/{id}` | 新建账号，密码 12–72 字节 bcrypt；只可分配不超出操作者权限的有效角色；支持资料、角色和状态管理，角色未改变的资料保存不撤销会话 |
 | 告警 | GET `/alerts`；POST `/alerts/{id}/ack` | 设备主动上报告警列表与确认；烟雾、温度和设备故障由 worker 同步，正常心跳可自动恢复 |
 | 优惠券 | GET/POST `/coupons`；PUT `/coupons/{id}`；GET `/coupons/{id}/stats`；POST `/coupons/{id}/grants` | 模板编辑、计数、按用户发放；限总量/个人额度与有效期，UUID 幂等；时长券使用 free_minutes；支付核销未接入 |
@@ -256,7 +256,7 @@
 
 ### 手机号
 
-- `POST /user/phone/bind`：绑定手机号。号码以 AES-256-GCM 加密存储（`phone_enc`），另存 SHA-256 `phone_hash` 做唯一性约束；返回掩码号码。**未配置 `PHONE_ENCRYPTION_KEY` 时拒绝绑定**，不会退化为明文存储。
+- `POST /user/phone/bind`：绑定手机号。号码以明文保存到 `user.phone`，由 `uk_phone` 唯一索引防止重复绑定；绑定响应仍返回掩码号码。生产环境验证微信授权凭证，开发环境允许测试号码。
 - `POST /user/phone/unbind`：解绑。
 
 平台暂未接入短信验证码通道，因此绑定接口不校验验证码。在没有真实短信能力前伪造验证会让任何人都能绑定他人号码，故此处留待后续补充。

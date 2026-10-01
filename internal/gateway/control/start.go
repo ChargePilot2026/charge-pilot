@@ -48,8 +48,7 @@ func (s StartService) Start(ctx context.Context, orderNo string) (store.StartRes
 	}
 	reservation.Status = "sent"
 	if err := s.Devices.Send(ctx, paid.DeviceID, reservation.Wire); err != nil {
-		// 一次半截的 TCP 写入可能已经抵达设备。所以在尝试补偿性的 STOP 之前，
-		// 先把 stopping 落库；这里绝不能重发 START。
+		// 部分 TCP 写入可能已触发设备执行；先持久化 stopping 再尝试补偿 STOP，禁止重发 START。
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if persistErr := s.Store.MarkStartStopping(cleanupCtx, reservation.CommandID, err); persistErr != nil {

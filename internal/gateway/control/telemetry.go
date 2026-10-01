@@ -13,8 +13,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// TelemetryAPI 把设备读数提供给 central。telemetry 按 ts 分区，所以查询窗口
-// 总是有界的，分区键也必然出现在查询条件里。
+// TelemetryAPI 提供设备读数查询；telemetry 按 ts 分区，所有查询必须包含有界时间窗口。
 type TelemetryAPI struct {
 	DB           *gorm.DB
 	ServiceToken string
@@ -40,8 +39,7 @@ func (a TelemetryAPI) authorized(c *gin.Context) bool {
 	return true
 }
 
-// CurvePoint 的每个指标都可为空：设备只上报它自己测得到的那几项，
-// 调用方要按缺口渲染，而不是拿 0 填。
+// CurvePoint 的指标允许 NULL，表示设备未上报；调用方应保留曲线缺口，不补零。
 type CurvePoint struct {
 	TS           string   `json:"ts"`
 	PowerW       *float64 `json:"power_w"`
@@ -112,9 +110,7 @@ func (a TelemetryAPI) curve(c *gin.Context) {
 		httpapi.Write(c, http.StatusServiceUnavailable, 5003, "telemetry unavailable", nil)
 		return
 	}
-	// 响应里会告诉调用方当前看的是哪种分辨率。不给这个信息的话，一条由
-	// 小时汇总出来的 24 小时曲线和一条按秒的曲线长得一模一样，没人能看出
-	// 明细其实被降级过。
+	// 返回实际查询分辨率，便于调用方识别原始读数与聚合曲线。
 	label := "raw"
 	switch table {
 	case "telemetry_aggregate_15min":
@@ -142,10 +138,7 @@ func (a TelemetryAPI) readPort(ctx context.Context, deviceID string, portNo int,
 		Name string    `gorm:"column:metric"`
 		Raw  []byte    `gorm:"column:value_num"`
 	}
-	// 长窗口没法从原始表里取：一台几秒上报一次的设备会攒出几万行，
-	// 下面的行数预算就会悄悄只返回最新的一段，
-	// 而响应却声称覆盖了整个窗口。
-	// 窗口宽到会出这种事时，就改从汇总表出数据。
+	// 长窗口使用汇总表，避免原始样本超过行数预算后仅返回窗口尾部。
 	rows := []reading{}
 	if table == "telemetry" {
 		query := a.DB.WithContext(ctx).Table("telemetry").
@@ -236,16 +229,8 @@ func (a TelemetryAPI) maxPoints() int {
 	return 2000
 }
 
-// chooseSource 挑那张真正答得了这个请求的表。
-//
-// 只要点数预算宽裕地覆盖整个窗口，就优先用原始表，
-// 因为付得起的话，逐秒明细永远比汇总更有用。
-// 超出之后，多天窗口用小时汇总，其余用 15 分钟汇总。
-//
-// 这个估算刻意偏宽松：一条原始样本就是一行，
-// 而一秒的读数里可以有好几个指标。
-// 过于急着选汇总表会白白丢掉运维还负担得起的明细；
-// 过于急着选原始表则正是这里要防的静默截断。
+// chooseSource 根据窗口和点数预算选择查询表。
+// 预算可覆盖整个窗口时使用原始样本；超限时多天窗口使用小时汇总，其余使用 15 分钟汇总。
 func chooseSource(from, to time.Time, limit int) (time.Duration, string) {
 	buckets := int(to.Sub(from) / time.Second)
 	if buckets <= 0 || limit <= 0 {

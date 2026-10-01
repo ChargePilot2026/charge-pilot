@@ -37,8 +37,7 @@ type Account struct {
 // TableName 指明 Account 映射到 admin_user_role（表名与模型名不一致，必须显式指定）。
 func (Account) TableName() string { return "admin_user_role" }
 
-// Profile 是已通过鉴权的操作人身份，挂在 gin 上下文的 admin_profile 上，
-// 权限判断和审计记录都取自它。刻意不携带口令散列等任何敏感字段。
+// Profile 保存鉴权后的管理员身份、权限及审计信息，存于 gin 上下文 admin_profile，不包含口令散列。
 type Profile struct {
 	AuthVersion uint64   `json:"-"`             // 凭证版本号，与账号一致，用于校验令牌是否已失效
 	ID          uint64   `json:"admin_user_id"` // 账号主键
@@ -76,7 +75,7 @@ func (s Store) Bootstrap(ctx context.Context, username, password string) error {
 		if err := tx.Model(&Account{}).Where("deleted_at IS NULL").Count(&count).Error; err != nil {
 			return err
 		}
-		// 只初始化一套全新安装，绝不重置已有口令。
+		// 仅在空安装中初始化管理员账号，不覆盖已有口令。
 		if count > 0 {
 			return nil
 		}
@@ -129,9 +128,7 @@ func (s Store) Login(ctx context.Context, username, password, ip string) (Accoun
 			return audit(tx, account, "login_failed", ip)
 		}
 		if account.MFAEnabled {
-			// 口令是对的，但还差一个二次因素。
-			// 这次登录还没走完，所以不发会话，
-			// 成功状态也只在验证码校验通过之后才写。
+			// 口令已验证；启用 MFA 的账号需完成二次验证后才记录登录成功并发放会话。
 			account.Status = "active"
 			return nil
 		}
@@ -150,12 +147,7 @@ func (s Store) Login(ctx context.Context, username, password, ip string) (Accoun
 	return account, nil
 }
 
-// CompleteMFA 校验 TOTP 动态口令，通过后才把这次登录标记为成功并写登录时间。
-// 动态口令错误同样计入失败次数，因此无法脱离口令单独暴力破解验证码。
-//
-// CompleteMFA 校验二次因素，通过之后才把这次登录标记为成功。
-// 验证码填错同样计入锁定计数，
-// 所以没法绕开口令单独暴力破解验证码。
+// CompleteMFA 校验 TOTP，成功后更新登录时间；错误验证码计入账号锁定计数。
 func (s Store) CompleteMFA(ctx context.Context, accountID uint64, code, ip string) (Account, error) {
 	var account Account
 	var denied error
@@ -196,8 +188,7 @@ func (s Store) CompleteMFA(ctx context.Context, accountID uint64, code, ip strin
 	return account, nil
 }
 
-// deniedMFA 处理 MFA 阶段"账号查不到"的情况：记为凭据错误并让事务正常结束，
-// 真正的错误照常向上返回。
+// deniedMFA 将账号不存在记录为凭据错误，并正常结束事务；存储错误继续向上传递。
 func deniedMFA(tx *gorm.DB, err error, accountID uint64, denied *error, ip string) error {
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		*denied = ErrCredentials

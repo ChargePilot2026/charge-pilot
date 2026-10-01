@@ -14,8 +14,8 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// DeviceSynchronizer 将设备主动上报的故障直接转成告警，不依赖遥测阈值规则。
-// processed_at 只在管理库提交成功后推进，保留故障报告供失败重试与历史补录。
+// DeviceSynchronizer 将设备故障上报转换为告警，不依赖遥测阈值。
+// 仅在 central_db 提交成功后推进 processed_at，支持失败重试与历史补录。
 type DeviceSynchronizer struct {
 	GatewayDB *gorm.DB
 	AdminDB   *gorm.DB

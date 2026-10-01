@@ -2,8 +2,7 @@ package netguard
 
 import "testing"
 
-// 这些用例编码的是安全边界：订阅永远不能触达宿主机、集群或云元数据服务，
-// 同时一个普通的公网 HTTPS 端点必须仍然可用。
+// 验证拒绝宿主机、集群及云元数据目标，同时允许普通公网 HTTPS 地址。
 func TestValidatePublicHTTPSBlocksInternalTargets(t *testing.T) {
 	blocked := []string{
 		"https://localhost/hook",

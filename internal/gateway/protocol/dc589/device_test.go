@@ -7,9 +7,7 @@ import (
 	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol"
 )
 
-// 设备端编码器与服务端解析器是同一份契约的两半。某个字段只在一侧挪位
-// 照样能编译，所以这些测试直接断言这种对偶性：Build* 产出的东西，
-// 必须原封不动地从配对的 Parse* 里出来。
+// 验证设备编码与服务端解析的往返一致性，覆盖字段偏移、单位和固定宽度约束。
 
 func testIdentity() DeviceIdentity {
 	return DeviceIdentity{
@@ -50,8 +48,7 @@ func TestBuildRegistrationRoundTripsThroughServerParser(t *testing.T) {
 	}
 }
 
-// 协议文档里那份厂商样例帧是唯一已知可用的帧，所以这里逐字节复现它，
-// 以证明编码器与文档一致，而不只是与我们自己的解析器一致。
+// 逐字节比较厂商样例帧，独立验证编码器符合协议文档。
 func TestBuildRegistrationMatchesVendorSample(t *testing.T) {
 	frame, err := BuildRegistration(testIdentity())
 	if err != nil {
@@ -83,8 +80,7 @@ func TestBuildRegistrationRejectsNonNumericBoardID(t *testing.T) {
 	}
 }
 
-// 含字母的 SIM 必须以十六进制存活下来而不是被拒掉，这正是服务端的
-// decodeIdentifier 在入口处做的事。
+// 验证含字母的 SIM 标识按十六进制保留，不在注册阶段拒绝。
 func TestBuildRegistrationCarriesNonDecimalIdentifierAsHex(t *testing.T) {
 	identity := testIdentity()
 	identity.SIM = "8986000000000000AB01"
@@ -276,8 +272,7 @@ func TestBuildFaultAndTimeRequestMatchServerExpectations(t *testing.T) {
 	}
 }
 
-// 启动命令的设备端一半，是把服务端的一条命令变成一次正在跑的充电，
-// 所以服务端的编码器与设备端的解析器必须一致。
+// 验证服务端启动编码与设备端解析一致，能够创建正确的充电会话。
 func TestParseStartCommandRoundTripsServerBuild(t *testing.T) {
 	session := [6]byte{1, 2, 3, 4, 5, 6}
 	order := [8]byte{0, 0, 0, 0, 0, 0, 0x12, 0x34}
@@ -326,13 +321,9 @@ func TestParseRegisterReplyAdoptsServerTime(t *testing.T) {
 	}
 }
 
-// A9 是主板得知平台认为此刻是几点时间的唯一途径，而模拟器的结算又是
-// 按主板自己打的时间戳计时的。在 ParseTimeReply 存在之前，这个帧收
-// 下来就被丢掉，于是这一对命令的两半根本谈不上对偶。
+// 校时请求和应答应互相对应，设备采用应答时间更新本地时钟。
 func TestParseTimeReplyRoundTripsServerBuild(t *testing.T) {
-	// 故意不用宿主机本地时区：该帧携带的是不带偏移量的民用时间，
-	// 所以处在别的时区的调用方读回来仍必须是同一时刻，而不是偏移
-	// 过的另一个。
+	// 使用不同于宿主机的时区，验证无偏移民用时间按协议时区还原为同一时刻。
 	server := time.Date(2026, 9, 29, 16, 30, 45, 0, time.FixedZone("UTC+9", 9*3600))
 	frame := BuildTimeReply([6]byte{1, 2, 3, 4, 5, 6}, server)
 	at, err := ParseTimeReply(frame)
@@ -347,9 +338,7 @@ func TestParseTimeReplyRoundTripsServerBuild(t *testing.T) {
 	}
 }
 
-// 自打这个编解码器写出来起，网关就一直会解析 C2，却没有任何代码能
-// 产出一帧，所以遥测路径从任何代码路径都到不了。这份上报说的是时间
-// 不是钱：分档折掉的是剩余小时数，这正是服务端读 MinutesAfter 的原因。
+// 验证 0xC2 上报的时间折算及档位编号，折扣作用于剩余时长。
 func TestBuildChargingBandRoundTripsThroughTheServerParser(t *testing.T) {
 	frame, err := BuildChargingBand(ChargingBandReport{
 		Port: 2, BandBefore: 1, BandAfter: 3,
@@ -386,13 +375,9 @@ func TestBuildChargingBandRefusesABandOutsideOneToFive(t *testing.T) {
 	}
 }
 
-// 注册应答与时间应答用同一种编码携带同一时刻，而主板靠前者校时、又会
-// 靠后者重新校时。用不同时区回答这两帧，会让主板每次连接都看到服务
-// 器自我修正了 8 小时，并采纳这个修正——于是跑在 UTC 容器里的网关，
-// 会送给充电桩一个恰好偏离它本该消除的那个时差的时钟。
+// 注册应答和校时应答必须使用相同的协议时区编码同一时刻。
 func TestRegisterReplyAndTimeReplyAgreeOnTheSameInstant(t *testing.T) {
-	// 处在协议并不使用的时区的宿主，这既是容器的常态，也是两者唯一
-	// 可能不一致的情形。
+	// 使用 UTC 宿主时间验证协议时区转换。
 	host := time.Date(2026, 9, 29, 18, 39, 2, 0, time.UTC)
 	_, registeredAt, err := ParseRegisterReply(BuildRegisterReply([6]byte{1, 2, 3, 4, 5, 6}, host))
 	if err != nil {

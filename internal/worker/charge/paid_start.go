@@ -15,9 +15,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// PaidStarter 会不断重试由回调创建的已支付订单，
-// 直到 gateway 接受它们那条持久化的 START 命令为止。
-// 重复调用本身由 gateway 保证安全。
+// PaidStarter 重试已支付订单，直到 gateway 接受持久化 START 命令；重复调用由 gateway 保证幂等。
 type PaidStarter struct {
 	UserDB       *gorm.DB
 	GatewayURL   string

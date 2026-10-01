@@ -1,7 +1,5 @@
-// Package netguard 拒掉那些会让调用方触达平台不应暴露的基础设施的出站目标，
-// 比如回环网卡或云厂商的元数据端点。
-// 它放在 platform 里，是因为 central 与 worker
-// 都必须执行完全相同的这条规则。
+// Package netguard 校验出站目标，阻止访问回环、云元数据等内部基础设施。
+// central 与 worker 共用相同的目标限制。
 package netguard
 
 import (
@@ -17,16 +15,14 @@ import (
 // 因为一个主机名可能稍后才开始解析到内网地址。
 var ErrTargetBlocked = errors.New("订阅地址指向非公网目标，已拒绝")
 
-// ValidatePublicHTTPS 拒掉一切不是公网 HTTPS 的目标。
-// 在创建时拦下，是为了让内网目标根本没机会进表；
-// 在投递时再查一遍，则堵住了 DNS 重绑定这一种情况。
+// ValidatePublicHTTPS 校验目标使用 HTTPS 且不指向本机、内网或云元数据地址。
+// 创建和投递时均需调用，投递前重新解析 DNS 以降低重绑定风险。
 func ValidatePublicHTTPS(raw string) error {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil {
 		return ErrTargetBlocked
 	}
-	// URL 里的 userinfo 是典型的凭据泄露写法，
-	// 在 webhook 目标里没有存在的余地。
+	// 拒绝非 HTTPS、缺少主机或携带 userinfo 凭据的目标地址。
 	if parsed.Scheme != "https" || parsed.Hostname() == "" || parsed.User != nil {
 		return ErrTargetBlocked
 	}
@@ -38,7 +34,7 @@ func ValidatePublicHTTPS(raw string) error {
 		return nil
 	}
 	lowered := strings.ToLower(strings.TrimSuffix(host, "."))
-	// 这些主机名永远意味着"就是本机"或者"集群内部"。
+	// 拒绝代表本机或集群内部的主机名。
 	for _, blocked := range []string{"localhost", "ip6-localhost", "ip6-loopback"} {
 		if lowered == blocked || strings.HasSuffix(lowered, "."+blocked) {
 			return ErrTargetBlocked
@@ -52,8 +48,7 @@ func ValidatePublicHTTPS(raw string) error {
 	if lowered == "metadata.google.internal" || lowered == "metadata.goog" {
 		return ErrTargetBlocked
 	}
-	// 先解析再放行：一个指向内网地址的公网名字，
-	// 正是攻击者会用的那种情况。
+	// 解析主机名后检查全部地址，拒绝域名指向内网的请求。
 	addresses, err := net.LookupIP(host)
 	if err != nil {
 		// 解析不出来的主机，同样也不可能是能用的端点。
@@ -85,9 +80,7 @@ func isPrivateAddress(ip net.IP) bool {
 		if v4[0] == 192 && v4[1] == 0 && v4[2] == 0 {
 			return true
 		}
-		// 198.18.0.0/15 是留给基准测试用的，但好几个开发用的 DNS 解析器
-		// 也会拿它来应答每一个公网名字。把它一并拦掉，
-		// 就会误伤这些网络上的合法端点，所以这里放行。
+		// 当前策略允许 198.18.0.0/15 基准测试网段，以兼容开发环境的 DNS 映射。
 		return false
 	}
 	// IPv6 唯一本地地址（fc00：：/7）。

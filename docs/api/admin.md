@@ -224,8 +224,8 @@ admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故�
 
 两个必须写下来的边界：
 
-- **手机号按完整号码精确查询。** `user.phone_enc` 是 AES-GCM 密文，`phone_hash` 是不可逆摘要，库里没有任何可 `LIKE` 的明文列，所以关键词为完整 11 位号码时走哈希等值匹配，否则走昵称 / openid / unionid 模糊匹配。输入"后四位"这类片段查不出来，这是加密存储的必然代价，不是搜索失灵。
-- **`charge_user.read` 就是全部充电用户手机号的访问控制边界。** 列表解密 `phone_enc` 并按完整号码展示，因为按手机号找人正是客服的主要手段。持有该权限等同于持有一份手机号名册，因此只授予 `customer_admin` 与 `customer_cs`，且授权动作本身应纳入审计。加密防的是数据库裸读，不防后台本身。
+- **手机号查询**：`user.phone` 保存明文。完整 11 位号码精确查询；号码片段与昵称、openid、unionid 支持模糊查询。
+- **访问控制**：列表与详情直接读取完整手机号，仍要求 `charge_user.read` 权限。
 
 资源是纯只读的：没有建号、改状态、解冻入口。冻结是风控动作，不在这里开第二个入口——两个入口能各自改同一列，迟早出现"一边解冻一边还在拦截"。
 
@@ -545,7 +545,7 @@ admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故�
 1. 校验 `username` 唯一(`uk_admin_user_role_username`)
 2. 校验 `role_id` 在 `role` 表中存在 + `status='enabled'` + `built_in=TRUE`(允许分配预置角色)
 3. **生成初始密码**:16 字符随机串(字母 + 数字 + 特殊字符),argon2id 哈希
-4. INSERT `admin_user_role(status='pending', must_change_password=TRUE, password_hash=...)` + 加密 `email_enc` / `phone_enc`
+4. INSERT `admin_user_role(status='pending', must_change_password=TRUE, password_hash=...)`；当前联系电话保存到明文 `phone` 字段，其余账号字段以 central 初始化 SQL 和实际接口为准
 5. **发送初始密码**:`send_via='email'` → 邮件模板;`'sms'` → 短信(预留,本期未接短信网关);`'none'` → 仅返回明文
 6. 写 `audit_log(action='user.create', actor_id=$current_user.id, after_snapshot=...)`
 7. **事务边界**:INSERT + audit_log 同事务;邮件发送失败不回滚(异步重试)
@@ -862,7 +862,7 @@ admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故�
 | --- | --- | --- | --- |
 | `page` | int | 1 | — |
 | `page_size` | int | 20 | 最大 100 |
-| `keyword` | string | — | 完整 11 位手机号走哈希等值匹配；其余按昵称 / openid / unionid 模糊匹配 |
+| `keyword` | string | — | 完整手机号精确查询；其余按手机号片段 / 昵称 / openid / unionid 模糊匹配 |
 | `status` | enum | — | `active` / `frozen` |
 
 **响应(200)**:
@@ -902,7 +902,7 @@ admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故�
 
 **业务逻辑**:主查询只取 `user` 表本身(排除软删除)，按 `last_login_at DESC, id DESC` 排序——客服找人的第一诉求是"这个人最近来过吗"，不是"最早注册的是谁"；从未登录过的用户 `last_login_at` 为 NULL，排在最后。手机号、钱包、订单聚合不在主查询里联表，由 `decorateChargeUsers` 按当页 ID 批量回填：手机号只能逐条解密，成本与当页条数成正比，这也是 `page_size` 上限 100 的原因之一。
 
-派生数据取自三条独立的聚合查询：手机号密文来自 `user.phone_enc`；余额与冻结金额来自 `wallet_account`(用 LEFT JOIN 而非假定唯一)；订单数、累计消费与最近下单时间来自 `charge_order` 按 `user_id` 分组，累计消费只认有金额的订单，`total_cents` 为 NULL 的未计费订单经 COALESCE 成 0，与"还没产生费用"的口径一致。未配置 `PHONE_ENCRYPTION_KEY` 时不解密手机号，但整页照常返回——看不到号码总比看不到用户强。
+手机号从 `user.phone` 批量读取；余额与冻结金额来自 `wallet_account`；订单数、累计消费与最近下单时间来自 `charge_order` 按 `user_id` 聚合。累计消费仅统计已计费金额，NULL 按 0 处理。未绑定号码返回空字符串，无需加密密钥。
 
 ### `GET /api/v1/admin/charge-users/{user_id}`
 

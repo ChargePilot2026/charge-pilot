@@ -8,22 +8,11 @@ import (
 	"testing"
 )
 
-// requirePattern 匹配路由守卫传进去的权限参数。这个测试的全部目的
-// 就是抓住"代码里写了权限名、却从没往 permission 表里种下去"的权限，
-// 而这种字符串唯一会出现的地方
-// 就是源码本身。
+// requirePattern 提取路由守卫的权限编码，用于检查 permission 种子是否完整。
 var requirePattern = regexp.MustCompile(`Require\("([a-z][a-z0-9_.]*)"\)`)
 
-// TestEveryGuardedPermissionExists 守的是一种别的测试都看不见的故障模式：
-// 一条挂在"从没写进 permission 表"的权限码后面的路由，
-// 既不是编译错误，也不是单元测试失败，
-// 它是一个对所有人永远静默返回 403 的接口。
-//
-// 这里真的发生过。新加的一条路由要求 "device.update"，
-// 而这个权限并不存在——系统里只有 device.read 和 device.import，
-// 没有第三个 device 权限——于是任何角色都调不了这个接口，
-// 超级管理员也不行，因为 Require 没有旁路。
-// 之所以一直没人发现，是因为这个接口从没被调用过。
+// TestEveryGuardedPermissionExists 验证路由声明的权限均已写入权限表且可被授予。
+// 缺少权限种子会使受保护接口对全部角色返回 403，编译检查无法发现此问题。
 func TestEveryGuardedPermissionExists(t *testing.T) {
 	if os.Getenv("TEST_ADMIN_DATABASE_URL") == "" {
 		t.Skip("disposable MySQL required")
@@ -43,11 +32,7 @@ func TestEveryGuardedPermissionExists(t *testing.T) {
 		seeded[row.Code] = true
 	}
 
-	// 从仓库根目录开始扫，所以任何服务里新加的守卫都能被覆盖，
-	// 而不只是本包里的那些。
-	// 测试跑在本包目录下，仓库根在上面三层；
-	// 从那里扫才能覆盖任何服务新加的守卫，
-	// 而不是只有本包的那些。
+	// 从仓库根目录扫描权限守卫，覆盖全部服务；本测试目录距仓库根三层。
 	root := filepath.Join("..", "..", "..")
 	entries, err := filepath.Glob(filepath.Join(root, "internal", "*", "*.go"))
 	if err != nil {
@@ -62,8 +47,7 @@ func TestEveryGuardedPermissionExists(t *testing.T) {
 		t.Fatalf("only %d source files were scanned; the root path is wrong", len(entries))
 	}
 
-	// 只为证明"拒绝确实生效"而存在的固定权限码。测试要的是一个谁都没持有的权限，
-	// 那说明测试成功了，而不是漏了种子数据。
+	// 固定测试权限专用于验证拒绝分支，不属于业务权限种子。
 	fixtures := map[string]bool{"nonexistent.permission": true}
 
 	used := map[string]bool{}
@@ -94,11 +78,7 @@ func TestEveryGuardedPermissionExists(t *testing.T) {
 	}
 }
 
-// 没人持有的权限就是没人能用的路由；
-// 没人能被授予的权限，就是永远没法通过角色编辑器修好的路由。
-// 所以计量声明恰好只发给那些负责接入硬件的角色，
-// 好让"能给站点定价的人"不会自动变成"能认定它那些板子能计量什么的人"——
-// 否则能力校验就只是走个形式。
+// 验证计量管理权限的种子及角色授权范围，避免形成无法授予的接口权限。
 func TestManualCapabilityPermissionIsRemoved(t *testing.T) {
 	if os.Getenv("TEST_ADMIN_DATABASE_URL") == "" {
 		t.Skip("disposable MySQL required")

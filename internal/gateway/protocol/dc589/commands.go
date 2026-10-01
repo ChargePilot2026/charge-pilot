@@ -16,15 +16,10 @@ const (
 	RemoteResult   byte = 0xA3
 	Heartbeat      byte = 0xA4
 	HeartbeatReply byte = 0xA5
-	// HeartbeatInterval 设置心跳周期，并且从 5.8.6 起还决定主板是否在
-	// 每次心跳里带上各端口遥测。第二个字段才是要紧的：不设它，
-	// 平台就只能将就主板出厂时的默认值，并且分不清「没有端口在充电」
-	// 和「这个版本不上报端口」。
+	// HeartbeatInterval 设置心跳周期及端口遥测开关；自 5.8.6 起两者均由平台下发。
 	HeartbeatInterval byte = 0xA6
 	HeartbeatSetReply byte = 0xA7
-	// TimeRequest 是主板向服务端索要本地民用时间，TimeReply 是服务
-	// 端的回答。给它们起名字，是为了让链路两端不再把这一对命令当
-	// 成裸的十六进制字面量来提。
+	// TimeRequest 请求平台本地民用时间，TimeReply 返回校时应答。
 	TimeRequest byte = 0xA8
 	TimeReply   byte = 0xA9
 	StartCharge byte = 0xB7
@@ -74,9 +69,7 @@ func ParseRegistration(frame Frame) (Registration, error) {
 	}, nil
 }
 
-// 文档把模块号和 SIM 值称作 BCD，但它自己给的 SIM 示例里就有一个
-// C 半字节。这里把这类标识原样保留成大写十六进制，而不是在注册阶段
-// 就把设备拒掉。
+// 模块及 SIM 标识按原始半字节解码为大写十六进制，兼容厂商样例中的非十进制值。
 func decodeIdentifier(data []byte) string {
 	if result, err := decodeBCD(data); err == nil {
 		return result
@@ -90,12 +83,7 @@ const (
 	ByTime          ChargeMode = 0
 	ByEnergy        ChargeMode = 1
 	PlatformBilling ChargeMode = 4
-	// 厂商保留了 2（按金额计费）和 3（充满自停），但同时说明硬件
-	// 两者都没实现，所以这里刻意不开放。
-	//
-	// 10/11/12 是长时变体，主板会一直供电，直到时间或电量耗尽、或
-	// 收到远程停止。文档白纸黑字说这种模式不用于常规运营，所以一次
-	// 普通的充电请求到不了它。
+	// 拒绝硬件未实现的模式 2、3，以及不用于常规运营的长时模式 10、11、12。
 	LongTime            ChargeMode = 10
 	LongEnergy          ChargeMode = 11
 	LongPlatformBilling ChargeMode = 12
@@ -106,11 +94,8 @@ var NormalChargeModes = map[ChargeMode]bool{
 	ByTime: true, ByEnergy: true, PlatformBilling: true,
 }
 
-// IsNormal 报告该模式是否可以用于一次普通充电。
-//
-// 长时模式是被排除掉，而不只是不推荐。它们为排障而存在，而且会
-// 绕过平台设定的时间与电量上限，放任一次日常请求走到那里，就等于
-// 取消了设备最多能被占用多久的唯一约束。
+// IsNormal 判断模式是否可用于普通充电。
+// 排障长时模式绕过时间和电量上限，必须排除。
 func (m ChargeMode) IsNormal() bool { return NormalChargeModes[m] }
 
 type StartCommand struct {
@@ -124,11 +109,8 @@ type StartCommand struct {
 	Quantity         uint16 // 依 Mode 而定为分钟或 0.001 kWh
 }
 
-// BuildStart 使用扫码消费类型（2）或在线卡类型（3），在线卡携带卡号和余额。
-// 业务层必须在调用它之前完成支付授权。
-//
-// 长时模式被直接拒绝。它们是厂商能力而不是产品选项，而这里是每一个
-// 启动请求都必经的唯一收口。
+// BuildStart 编码扫码类型 2 或在线卡类型 3 的启动命令，卡模式包含卡号和余额。
+// 调用方必须先完成支付授权；长时变体不允许通过普通启动入口。
 func BuildStart(command StartCommand) (Frame, error) {
 	if command.Port == 0 || !command.Mode.IsNormal() || command.Quantity == 0 {
 		return Frame{}, ErrPayload
@@ -183,11 +165,7 @@ func ParseCommandResult(frame Frame) (CommandResult, error) {
 func BuildRegisterReply(session [6]byte, now time.Time) Frame {
 	data := make([]byte, 7)
 	data[0] = 0 // 已连接
-	// 和 BuildTimeReply 出于同一个理由做换算。主板靠这一帧校时，
-	// 而服务端回答主板自己发出的时间请求时，用的是同一时刻的同一种
-	// 编码，所以一帧要是漏了换算，就等于告诉主板这两者相差了网关
-	// 宿主机与协议所带民用时区之间的时差——跑在 UTC 上的容器就是
-	// 8 小时，而这个偏差随后还会被主板当成修正值采纳。
+	// 注册与校时响应使用相同的协议民用时区编码，避免宿主机时区造成时间偏移。
 	encodeTime(data[1:], now.In(chinaLocation))
 	return Frame{Command: RegisterReply, Session: session, Data: data}
 }
@@ -202,14 +180,8 @@ func BuildTimeReply(session [6]byte, now time.Time) Frame {
 	return Frame{Command: 0xA9, Session: session, Data: data}
 }
 
-// BuildHeartbeatInterval 向主板索要心跳周期，并开关各端口遥测。
-//
-// 发这一帧不是可有可无的例行公事。从 5.8.6 起，端口块只有在平台
-// 主动要求时才出现在心跳里，所以从不发它的平台等于听任主板出厂默认
-// 值——「我们拿不到端口遥测」于是和「什么都没在充电」变得无法区分。
-//
-// 发这一帧同时也把读超时定死了，因为厂商的规定是漏掉三次心跳，而
-// 不是某个绝对秒数。
+// BuildHeartbeatInterval 编码 0xA6，设置心跳周期及端口遥测开关。
+// 发送后按三次心跳缺失规则设置读超时，不依赖设备出厂周期。
 func BuildHeartbeatInterval(session [6]byte, seconds uint16, portStatus bool) (Frame, error) {
 	if seconds == 0 {
 		return Frame{}, ErrPayload
@@ -272,8 +244,7 @@ func BuildHeartbeatSetReply(setting HeartbeatSetting) Frame {
 	return Frame{Command: HeartbeatSetReply, Data: []byte{code}}
 }
 
-// ParseHeartbeatInterval 读取 0xA6 下行帧。端口状态标志决定每次
-// 心跳到底带不带各端口遥测，所以它是被返回出来，而不是悄悄生效。
+// ParseHeartbeatInterval 解码 0xA6，返回周期和端口遥测开关。
 func ParseHeartbeatInterval(frame Frame) (HeartbeatSetting, error) {
 	if frame.Command != HeartbeatInterval || len(frame.Data) != 3 {
 		return HeartbeatSetting{}, ErrPayload

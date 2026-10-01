@@ -5,8 +5,7 @@ import (
 	"regexp"
 )
 
-// Simulator 只在显式开启本地开发用 PAYMENT_MODE 时才接上线。
-// 它返回的不是微信支付凭证。
+// Simulator 仅在 PAYMENT_MODE=simulation 时使用，返回模拟支付参数。
 type Simulator struct{}
 
 var simulationOrderNumber = regexp.MustCompile(`^(P[1-9][0-9]{4,18}|PAY[A-Za-z0-9]+)$`)

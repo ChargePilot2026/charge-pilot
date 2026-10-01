@@ -85,8 +85,7 @@ func fakeGateway(points []map[string]any) *httptest.Server {
 	}))
 }
 
-// TestUserCurveReadsTelemetryValues —— 曲线是从网关遥测里读的，
-// 所以少了 value_num 的映射，这里就会表现为整条曲线全是 null。
+// TestUserCurveReadsTelemetryValues 验证网关遥测 value_num 正确映射到用户曲线。
 func TestUserCurveReadsTelemetryValues(t *testing.T) {
 	if os.Getenv("TEST_USER_DATABASE_URL") == "" {
 		t.Skip("disposable MySQL required")
@@ -109,8 +108,7 @@ func TestUserCurveReadsTelemetryValues(t *testing.T) {
 	gateway := fakeGateway(points)
 	defer gateway.Close()
 
-	// 需要真实会话：
-	// 曲线处理器走的是和生产一样的鉴权器，所以测试要签一个 token 并注册进去。
+	// 使用真实会话认证路径，签发测试令牌并登记对应会话。
 	redisURL := os.Getenv("TEST_REDIS_URL")
 	if redisURL == "" {
 		t.Skip("redis required")
@@ -210,8 +208,7 @@ func TestUserCurveReadsTelemetryValues(t *testing.T) {
 	}
 }
 
-// TestUserHistoryAndDetailExposeFees —— 计费金额存在费用回执里，
-// 订单列表必须把它们显示出来，而不是显示成 0。
+// TestUserHistoryAndDetailExposeFees 验证订单列表与详情从计费回执展示实际费用。
 func TestUserHistoryAndDetailExposeFees(t *testing.T) {
 	if os.Getenv("TEST_USER_DATABASE_URL") == "" || os.Getenv("TEST_REDIS_URL") == "" {
 		t.Skip("disposable MySQL and Redis required")
@@ -339,16 +336,12 @@ func TestUserDetailHidesForeignOrder(t *testing.T) {
 	orderID, ownerID := curveFixture(t, ctx, "QA-CURVE-DEV")
 	var orderNo string
 	userDB, _ := dbconn.Open(ctx, os.Getenv("TEST_USER_DATABASE_URL"))
-	// 用 t.Cleanup 而不是 defer 关连接：defer 在函数体退出时先跑，那时下面
-	// 注册的清理还没轮到，连接已经关了，清理报 "sql: database is closed"
-	// 然后把冒名账号永久留在库里。t.Cleanup 后进先出，晚注册的先跑。
+	// 使用 t.Cleanup 关闭连接，使后注册的数据清理先执行；defer 会提前关闭连接，导致清理失败。
 	t.Cleanup(func() { userDB.Close() })
 	orm, _ := dbconn.WrapGORM(userDB)
 	orm.Table("charge_order").Where("id = ?", orderID).Pluck("order_no", &orderNo)
 
-	// 第二个账号不能读到第一个账号的订单。
-	// 这个冒名账号只在本测试里存在，名字带 qa-intruder- 前缀就是为了能被认出来
-	// 摘掉：不清的话，后台「充电用户」列表里会一版版多出叫"用户 #900xxx"的空账号。
+	// 第二个账号不得读取第一个账号的订单；清理时按 qa-intruder- 前缀删除测试账号。
 	intruderOpenID := "qa-intruder-" + uuid.NewString()[:8]
 	orm.Exec("INSERT INTO user(openid) VALUES(?)", intruderOpenID)
 	t.Cleanup(func() {

@@ -52,8 +52,7 @@ func (s CouponStore) AvailableCoupons(ctx context.Context, userID uint64) ([]Cou
 	return rows, err
 }
 
-// Quote 计算一张券对给定费用能减多少。
-// 它不改动任何状态，所以客户可以在支付前先预览。
+// Quote 只读计算优惠券减免额，不核销券，供支付前预览。
 func (s CouponStore) Quote(ctx context.Context, userID, grantID uint64, totalCents int64) (int64, error) {
 	grant, err := s.load(ctx, userID, grantID)
 	if err != nil {
@@ -62,8 +61,7 @@ func (s CouponStore) Quote(ctx context.Context, userID, grantID uint64, totalCen
 	return discountFor(grant, totalCents)
 }
 
-// discountFor 套用券的规则。
-// 减免额以费用为上限，这样一张券永远不会把一笔充电算成负数。
+// discountFor 应用优惠规则，减免额不超过本次费用，保证应付金额非负。
 func discountFor(grant CouponGrant, totalCents int64) (int64, error) {
 	if totalCents <= 0 || grant.MinCharge > totalCents {
 		return 0, ErrCouponThreshold
@@ -104,9 +102,7 @@ func discountFor(grant CouponGrant, totalCents int64) (int64, error) {
 // 用于充电规则没有给出每分钟服务费的情况。
 const serviceRatePerMinute = 0
 
-// Redeem 核销券并把减免额应用到支付订单。
-// 发放行在事务内被加锁并校验状态，
-// 所以两笔并发支付不可能用掉同一张券。
+// Redeem 在事务中锁定并校验发放记录，核销后将减免额应用到支付单，防止并发重复使用。
 func (s CouponStore) Redeem(ctx context.Context, userID, grantID uint64, orderNo string, paymentOrderID uint64, totalCents int64) (int64, error) {
 	var discount int64
 	err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -139,8 +135,7 @@ func (s CouponStore) Redeem(ctx context.Context, userID, grantID uint64, orderNo
 	return discount, nil
 }
 
-// Release 在券对应的支付始终没有完成时把它退回，
-// 这样支付失败不会永久吃掉客户的折扣。
+// Release 在支付未完成时释放优惠券占用。
 func (s CouponStore) Release(ctx context.Context, userID, paymentOrderID uint64) error {
 	return s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var row struct {
@@ -239,8 +234,7 @@ func redeemCouponInTx(tx *gorm.DB, intent PaymentIntentRecord, order PaymentOrde
 	}).Error
 }
 
-// CouponAPI 暴露客户可用的券。
-// 核销本身发生在支付确认的那一刻，所以这个接口按设计只读。
+// CouponAPI 提供用户优惠券的只读视图；核销由支付确认流程执行。
 type CouponAPI struct {
 	Auth    identity.SessionAuthenticator
 	Coupons CouponStore

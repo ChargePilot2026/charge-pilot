@@ -94,7 +94,7 @@ func testEndKeepsPortOwned(t *testing.T, consumer uint8) {
 	if err := db.QueryRowContext(ctx, "SELECT status FROM device_port WHERE id = ?", portID).Scan(&state); err != nil || state != "charging" {
 		t.Fatalf("port released early: %s %v", state, err)
 	}
-	// 存下来的那份请求在原始测量数据被删掉之后依然不变。
+	// 删除原始计量事件后，持久化的结束请求仍应保持不变。
 	if _, err := db.ExecContext(ctx, "DELETE FROM device_event WHERE device_id=? AND event_type='heartbeat'", deviceID); err != nil {
 		t.Fatal(err)
 	}

@@ -918,7 +918,7 @@ Wechatpay-Nonce: ...
 **业务逻辑**:
 1. 校验 JWT 拿 user_id
 2. 查 `user_db.user`(主键)+ `wallet_account`(1:1)+ `coupon_grant` COUNT(`status='unused'`)+ `membership_card`
-3. 手机号绑定状态:`phone_hash IS NOT NULL → true`,不返回明文
+3. 手机号绑定状态:`phone IS NOT NULL AND phone <> '' → true`,不返回明文
 
 **错误码**:
 - `1001`(标准)
@@ -948,8 +948,8 @@ Wechatpay-Nonce: ...
 
 **业务逻辑**:
 1. 服务端使用微信小程序 access token 调用 `wxa/business/getuserphonenumber` 消费一次性凭证；access token 缓存于业务 Redis。
-2. 校验微信返回的手机号格式并在服务端计算 SHA-256，不接收客户端自报手机号或哈希，不持久化明文。
-3. 事务内检查手机号未绑定其他有效账号并更新当前用户；`user.phone_hash` 由唯一索引保证并发绑定冲突返回 409。
+2. 校验微信返回的中国大陆手机号，去除首尾空白后明文保存到 `user.phone`。生产环境不接收客户端自报号码；开发环境允许测试号码。
+3. 事务内检查手机号未绑定其他有效账号并更新当前用户；`user.phone` 由唯一索引保证并发绑定冲突返回 409。
 4. 微信凭证过期或微信服务暂不可用时不修改账号，用户重新授权后可重试。手机号绑定赠券尚未配置模板来源，当前不发放奖励。
 
 **错误码**:
@@ -964,7 +964,7 @@ Wechatpay-Nonce: ...
 **请求体**:无
 **响应**:`{ "code": 0, "data": { "unbound": true } }`
 
-解除当前用户的手机号哈希绑定并清除兼容字段 `phone_enc`。解除后该手机号可由其他账号重新绑定；再次绑定仍需完成微信手机号授权。
+解除当前用户的手机号绑定，将 `user.phone` 设为 NULL。解除后该手机号可由其他账号重新绑定；再次绑定仍需完成微信手机号授权。
 
 ---
 

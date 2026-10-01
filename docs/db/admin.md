@@ -21,7 +21,7 @@
 | 时间戳 | `created_at` / `updated_at`,类型 `DATETIME(3)` | 无 |
 | **软删除** | **本期启用**:业务表加 `deleted_at DATETIME(3) NULL` + `deleted_by BIGINT UNSIGNED NULL`;删除 = `UPDATE ... SET deleted_at = NOW()`;**所有查询默认 `WHERE deleted_at IS NULL`**;`idx_*_deleted_at` 索引 | **配置 / 日志类表不软删**:角色 / 权限 / 白标 / 公告 / 审计日志 / 推送日志 |
 | 金额 | `BIGINT`(单位:**分**) | 无 |
-| 加密字段 | `VARBINARY` + MySQL `AES_ENCRYPT`(§ 9.3) | 仅敏感字段(管理员邮箱 / 备用手机号) |
+| 联系电话 | `VARCHAR` 明文存储 | 当前字段以 central 初始化 SQL 为准 |
 | 状态字段 | `ENUM(...)` + 配套 comment | 仅业务状态字段 |
 | 索引命名 | `pk_` / `uk_` / `idx_` / `fk_` 前缀 | 无 |
 | 外键 | **不声明**(跨服务事务用最终一致性,§ 4.3 + § 5.4) | 无 |
@@ -91,7 +91,7 @@
 | `password_hash` | `VARCHAR(255)` | NOT NULL | — | argon2id 哈希(§ 9.3,默认参数 `m=19456, t=2, p=1`) |
 | `display_name` | `VARCHAR(64)` | NOT NULL | — | 显示名(界面展示,如"张三 / 客户运营") |
 | `email_enc` | `VARBINARY(255)` | NULL | NULL | 邮箱 AES_ENCRYPT 密文(可选,用于找回密码 / 告警通知) |
-| `phone_enc` | `VARBINARY(255)` | NULL | NULL | 备用手机号 AES_ENCRYPT 密文(可选) |
+| `phone` | `VARCHAR(32)` | NULL | NULL | 管理员联系电话，明文存储(可选) |
 | `role_id` | `BIGINT UNSIGNED` | NOT NULL | — | 关联 `role.id`(主角色,**一期一账号一角色**;二期可多角色) |
 | `status` | `ENUM('active','locked','disabled','pending')` | NOT NULL | `'pending'` | 状态:active 正常 / locked 临时锁定 / disabled 停用(离职)/ pending 待激活(初始密码未改) |
 | `last_login_at` | `DATETIME(3)` | NULL | NULL | 最近登录时间 |
@@ -809,7 +809,7 @@
 | `bank_account_name` | `VARCHAR(64)` | NULL | NULL | 银行账户名 |
 | `bank_account_no_enc` | `VARBINARY(255)` | NULL | NULL | 银行账号 AES_ENCRYPT 密文(§ 9.3) |
 | `bank_name` | `VARCHAR(64)` | NULL | NULL | 开户行 |
-| `contact_phone_enc` | `VARBINARY(255)` | NULL | NULL | 联系电话 AES_ENCRYPT |
+| `contact_phone` | `VARCHAR(32)` | NULL | NULL | 联系电话，明文存储 |
 | `remark` | `VARCHAR(256)` | NULL | NULL | 备注 |
 | `created_at` | `DATETIME(3)` | NOT NULL | — | 创建时间 |
 | `updated_at` | `DATETIME(3)` | NOT NULL | — | 更新时间 |

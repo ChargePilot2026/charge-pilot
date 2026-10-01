@@ -89,9 +89,7 @@ type queuedReport struct {
 	LeaseToken string
 }
 
-// RunBatch 用租约抢占已落库的事件；
-// 发送失败的仍留在队列里，按有界的指数退避重试，
-// 这样接收方离线也不会丢数据。
+// RunBatch 以租约领取持久化事件；失败事件保留，按有界指数退避重试。
 func (d Deliverer) RunBatch(ctx context.Context) (int, error) {
 	if d.DB == nil || d.Sender == nil {
 		return 0, errors.New("regulatory deliverer not configured")

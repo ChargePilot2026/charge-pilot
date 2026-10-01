@@ -12,11 +12,8 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// couponRow 是优惠券模板（central_db.coupon）的一行，列表、创建入参、审计快照共用它。
-// 注意这里没有 Code 字段：券不再有业务编码，以主键 id 唯一标识
-// （迁移 central_db/0037 删除了 coupon.code 与 active_code，并给 coupon_redemption 补了 coupon_id）。
-// 三种优惠形式互斥，且各自的取值字段只有一个非空：
-// amount 填 DiscountValueCents，percentage 填 DiscountPercent，time_free 填 FreeMinutes。
+// couponRow 表示优惠券模板，供列表、创建参数和审计快照共用，以主键 id 标识。
+// 优惠类型互斥：amount 使用 DiscountValueCents，percentage 使用 DiscountPercent，time_free 使用 FreeMinutes。
 type couponRow struct {
 	ID                 uint64           `json:"id"`                   // 券模板主键，也是券的唯一标识；创建时必须为 0，由数据库自增
 	Name               string           `json:"name"`                 // 券名称，非空且不超过 128 字符
@@ -166,15 +163,12 @@ func (a ResourceAPI) couponStats(c *gin.Context) {
 	httpapi.OK(c, gin.H{"total_quota": coupon.TotalQuota, "granted_count": stats.GrantedCount, "unused_count": stats.UnusedCount, "used_count": stats.UsedCount, "expired_count": stats.ExpiredCount, "usage_rate": rate})
 }
 
-// requestIDPattern 要求发放请求号是标准 UUID 形态：后台人工发放可能被重复点击或重试，
-// 这个号是幂等的唯一依据，格式不统一就挡不住重复发放。
+// requestIDPattern 校验 UUID 请求号，供发券幂等回执使用。
 var requestIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
-// grantCoupon 是 POST /api/v1/admin/coupons/：id/grants 的处理函数：给指定用户发一张券。
-// 同一个 request_id 重复提交只会返回首次发放的券 ID（幂等回执 coupon_grant_request），
-// 但请求号对应的券和用户必须与本次一致，否则返回 409。
-// 发券前校验券是否生效期内、用户是否正常、总量与单人额度是否用尽，全部在事务内并加行锁；
-// 券的到期时间取"领取后有效期"与券自身结束时间中较早的一个。
+// grantCoupon 在事务中锁定模板并校验有效期、用户状态、总量及单人额度，再向用户发券。
+// 同一 request_id、模板和用户返回首次券 ID；同号不同内容返回 409。
+// 到期时间取领取后有效期与模板结束时间的较早值。
 func (a ResourceAPI) grantCoupon(c *gin.Context) {
 	id, ok := pathID(c)
 	if !ok {

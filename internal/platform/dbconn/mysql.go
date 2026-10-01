@@ -67,8 +67,7 @@ func Open(ctx context.Context, raw string) (*sql.DB, error) {
 	return db, nil
 }
 
-// WrapGORM 在一个已校验并 ping 过的 MySQL 连接池之上配置应用使用的 ORM。
-// Goose 仍然使用 Open 返回的那个 database/sql 句柄。
+// WrapGORM 在已校验的 MySQL 连接池上配置 ORM，Goose 共用 Open 返回的 database/sql 句柄。
 func WrapGORM(db *sql.DB) (*gorm.DB, error) {
 	if db == nil {
 		return nil, errors.New("nil MySQL pool")

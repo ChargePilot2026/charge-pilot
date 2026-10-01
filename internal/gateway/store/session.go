@@ -9,9 +9,7 @@ import (
 	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol"
 )
 
-// deviceSessionRow 对应 gateway_db.device_session。该表按 created_month
-// 分区，所以这一列属于主键，
-// 每次读写都必须带上它。
+// deviceSessionRow 映射 device_session；created_month 为分区键和联合主键的一部分，读写必须保留。
 type deviceSessionRow struct {
 	ID           uint64    `gorm:"column:id;primaryKey"`
 	SessionID    string    `gorm:"column:session_id"`
@@ -26,23 +24,14 @@ type deviceSessionRow struct {
 	BytesOut     int64     `gorm:"column:bytes_out"`
 	FramesIn     int64     `gorm:"column:frames_in"`
 	FramesOut    int64     `gorm:"column:frames_out"`
-	// created_month 是 DATE，所以读回来是时间值，写入时需要格式化。
+	// created_month 为 DATE，查询得到时间值，写入时格式化为日期。
 	CreatedMonth time.Time `gorm:"column:created_month"`
 }
 
 func (deviceSessionRow) TableName() string { return "device_session" }
 
-// RecordSession 写入一条设备连接的终态。
-//
-// 这一行的键是 (session_id， created_month)，而 created_month 由开始时间
-// 推导、不是由结束时间推导：一条跨过午夜才关闭的连接，
-// 完整地属于它开始的那一天；如果从结束时间去推导，
-// 这一行就可能落进另一个分区，而之后读同一条会话时搜的却是
-// 最初那个分区。
-//
-// 同一条会话被写两次按成功处理。重连风暴或者重试的关闭
-// 都可能走到这条路径上，而第二行携带的是同样的数字，
-// 所以覆盖比返回一个调用方无从处理的错误更安全。
+// RecordSession 保存连接终态，以 session_id 和开始时间对应的 created_month 寻址。
+// 跨月结束不改变分区归属；同会话重复写入更新已有记录，保持关闭操作幂等。
 func (s MySQLSink) RecordSession(ctx context.Context, record protocol.SessionRecord) error {
 	if s.DB == nil {
 		return errors.New("gateway database is unavailable")
@@ -66,9 +55,7 @@ func (s MySQLSink) RecordSession(ctx context.Context, record protocol.SessionRec
 		FramesOut:    record.FramesOut,
 		CreatedMonth: month,
 	}
-	// 存在性是显式检查的，而不是依赖 upsert：
-	// 这张表是分区表，推断出来的冲突目标会生成一句空的
-	// ON DUPLICATE KEY 子句，MySQL 会把它当语法错误拒掉。
+	// 显式检查记录存在性并分别更新或插入，避免依赖分区表的 GORM 冲突目标推导。
 	var existing int64
 	if err := s.DB.WithContext(ctx).Model(&deviceSessionRow{}).
 		Where("session_id = ? AND created_month = ?", row.SessionID, month).

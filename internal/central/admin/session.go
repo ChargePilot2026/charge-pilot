@@ -18,12 +18,11 @@ import (
 // 不向外区分具体是哪一种失效。
 var ErrInvalidRefresh = errors.New("invalid or expired refresh token")
 
-// refreshTTL 是刷新令牌（也就是会话）在 Redis 里的存活时间：7 天。
-// 每次轮换都用 KEEPTTL 保留它，所以这是会话的绝对寿命，不因刷新而无限延长。
+// refreshTTL 定义会话的 7 天绝对寿命；刷新轮换使用 KEEPTTL，不延长过期时间。
 const refreshTTL = 7 * 24 * time.Hour
 
-// sessionRecord 是存放在 Redis 里的一条会话/挑战记录，JSON 编码。
-// Redis 只存这个，不存刷新令牌明文：外部拿到的是令牌，Redis 里只有令牌的散列。
+// sessionRecord 是 Redis 中以 JSON 保存的会话或挑战记录。
+// 刷新令牌仅保存摘要，不保存明文。
 type sessionRecord struct {
 	AuthVersion uint64   `json:"version"`            // 账号的权限版本号，改密码/改角色后会变，用于让旧会话立刻失效
 	AdminID     uint64   `json:"uid"`                // 后台账号 id
@@ -59,10 +58,8 @@ func (s Sessions) Create(ctx context.Context, account Account) (string, string, 
 	return sid, token, nil
 }
 
-// rotateScript 是轮换刷新令牌的 Lua 脚本，整个校验与改写在 Redis 里一次完成，
-// 避免两个并发请求拿到同一枚旧令牌各自换出新会话。
-// 散列对不上直接失败；换成功时把旧散列压进 previous（最多留 32 个），
-// 并用 KEEPTTL 保留原来的 7 天过期时间，不因为轮换而延长会话寿命。
+// rotateScript 原子校验并轮换刷新令牌摘要，防止并发操作覆盖会话。
+// 保留最多 32 个旧摘要以支持并发重试，并以 KEEPTTL 保持绝对过期时间。
 var rotateScript = redis.NewScript(`
 local value = redis.call('GET', KEYS[1])
 if not value then return false end
@@ -76,9 +73,8 @@ redis.call('SET', KEYS[1], cjson.encode(record), 'KEEPTTL')
 return value
 `)
 
-// Rotate 用一枚刷新令牌换出新令牌，返回新会话代表的账号、sid 和新令牌。
-// 令牌对不上（含已被别人轮换掉）时返回 ErrInvalidRefresh。
-// 旧令牌被换掉后并不是立刻作废：它还在 previous 里，客户端并发重试时仍能换一次。
+// Rotate 校验当前或 previous 中的刷新令牌摘要，返回账号、SID 与新刷新令牌。
+// 未匹配任何有效摘要时返回 ErrInvalidRefresh。
 func (s Sessions) Rotate(ctx context.Context, token string) (Account, string, string, error) {
 	sid, oldSecret, ok := parseRefresh(token)
 	if !ok {
@@ -106,8 +102,7 @@ func (s Sessions) Rotate(ctx context.Context, token string) (Account, string, st
 	return Account{ID: record.AdminID, Username: record.Username, AuthVersion: record.AuthVersion}, sid, "ART_" + sid + "." + newSecret, nil
 }
 
-// Revoke 注销一个会话（退出登录）：令牌格式非法或散列对不上都返回 ErrInvalidRefresh。
-// 当前密钥和 previous 里的旧密钥都能删掉会话，所以刚轮换过的那枚旧令牌也能用来退出。
+// Revoke 校验令牌格式及当前或 previous 摘要后删除会话；验证失败返回 ErrInvalidRefresh。
 func (s Sessions) Revoke(ctx context.Context, token string) error {
 	sid, secret, ok := parseRefresh(token)
 	if !ok {
@@ -136,8 +131,7 @@ end
 return 0
 `)
 
-// Exists 判断这个 sid 对应的会话是否还在。sid 为空一律当作不存在。
-// 只看存在与否，不回读账号信息。
+// Exists 判断非空 sid 对应的会话是否存在，不加载账号信息。
 func (s Sessions) Exists(ctx context.Context, sid string) (bool, error) {
 	if sid == "" {
 		return false, nil
@@ -149,8 +143,7 @@ func (s Sessions) Exists(ctx context.Context, sid string) (bool, error) {
 // sessionKey 把会话 id 拼成 Redis 键，统一前缀便于按前缀排查和清理。
 func sessionKey(sid string) string { return "admin:session:" + sid }
 
-// digest 算刷新令牌的 sha256 散列（十六进制）。Redis 里只存散列，
-// 拿到 Redis 内容也换不出可用的刷新令牌。
+// digest 返回刷新令牌的 SHA-256 十六进制摘要，供 Redis 校验使用。
 func digest(secret string) string {
 	sum := sha256.Sum256([]byte(secret))
 	return hex.EncodeToString(sum[:])
@@ -186,8 +179,7 @@ func parseRefresh(token string) (string, string, bool) {
 	return parts[0], parts[1], true
 }
 
-// Matches 判断某个会话是否仍属于这个账号，且账号的权限版本号没有变过。
-// 改密码或改角色会让 AuthVersion 变，此时旧会话立即判否。
+// Matches 校验会话所属账号及权限版本；改密或改角色提升 AuthVersion，使旧会话失效。
 func (s Sessions) Matches(ctx context.Context, sid string, id, version uint64) (bool, error) {
 	if sid == "" {
 		return false, nil
@@ -210,12 +202,10 @@ func (s Sessions) Matches(ctx context.Context, sid string, id, version uint64) (
 // 或者已经被一次成功的二次验证用掉了。
 var ErrInvalidMFAChallenge = errors.New("invalid or expired mfa challenge")
 
-// mfaChallengeTTL 限定一个已验过密码还能用多久——在必须补上二次验证之前。
-// 它被刻意设得很短。
+// mfaChallengeTTL 限制密码验证通过后完成二次验证的时间窗口。
 const mfaChallengeTTL = 5 * time.Minute
 
-// BeginMFA 把一次没走完的登录挂起。此时还不存在会话，
-// 所以挑战里只带账号身份，拿它碰不到任何 API。
+// BeginMFA 创建仅含账号身份的短期登录挑战；挑战不能代替 API 会话。
 func (s Sessions) BeginMFA(ctx context.Context, account Account) (string, error) {
 	token, err := randomPart(32)
 	if err != nil {
@@ -231,10 +221,8 @@ func (s Sessions) BeginMFA(ctx context.Context, account Account) (string, error)
 	return token, nil
 }
 
-// ResolveMFA 原子地消费掉这个挑战，免得同一个验证码被拿去开两个会话。
-// 验证码填错时不能把挑战烧掉，因为账号主人还得重试；
-// 只有成功时那种 Lua GETDEL 式的消费发生在这里，
-// 所以本函数只返回账号 id，由调用方去注销旧会话。
+// ResolveMFA 仅在校验成功时原子消费登录挑战并返回账号 ID。
+// 验证码错误时保留挑战以允许重试，不直接创建会话。
 func (s Sessions) ResolveMFA(ctx context.Context, token string) (uint64, error) {
 	token = strings.TrimSpace(token)
 	if token == "" {

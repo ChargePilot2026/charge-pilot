@@ -53,8 +53,8 @@ func Decode(raw []byte) (Frame, error) {
 	return Frame{Command: raw[2], Session: session, Data: bytes.Clone(raw[9 : len(raw)-1])}, nil
 }
 
-// ReadFrame 从 TCP 流里读出一个完整帧，因为 TCP 的包边界未必与帧边界对齐。
-// 它故意对坏分帧直接报错，而不是替一台未认证的设备默默往后扫字节。
+// ReadFrame 从 TCP 字节流读取完整帧，不依赖网络包边界。
+// 畸形帧直接返回错误，不尝试为未认证设备扫描并恢复分帧。
 func ReadFrame(reader *bufio.Reader) (Frame, error) {
 	var head [2]byte
 	if _, err := io.ReadFull(reader, head[:]); err != nil {

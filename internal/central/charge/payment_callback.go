@@ -57,11 +57,7 @@ func (s PaymentCallbackStore) Apply(ctx context.Context, payment VerifiedPayment
 	digest := callbackDigest(payment)
 	var callbackResult PaymentCallbackResult
 	err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// 先定位支付订单，
-		// 因为对两类业务来说 merchant_order_no 都等于 order_no。
-		// 钱包充值不创建支付意图，
-		// 先查意图会把每一笔充值回调都拒掉：
-		// 客户付了钱、渠道收了钱，平台却拒收通知，钱包始终没到账。
+		// 先按渠道商户单号定位支付订单，再按业务类型分流；钱包充值不创建支付意图。
 		var order PaymentOrderRecord
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 			Where("order_no = ?", payment.MerchantOrderNo).Take(&order).Error; err != nil {
@@ -148,9 +144,7 @@ func (s PaymentCallbackStore) Apply(ctx context.Context, payment VerifiedPayment
 			return nil
 		}
 
-		// 券留到此刻才核销，
-		// 因为钱是真的到账了；
-		// 这样后来被退款的支付不会永久吃掉客户的折扣。
+		// 支付确认到账后才核销优惠券。
 		if intent.CouponGrantID != 0 {
 			if err := redeemCouponInTx(tx, intent, order, chargeNoFor(order.ID)); err != nil {
 				return err
@@ -244,12 +238,8 @@ func callbackDigest(payment VerifiedPayment) string {
 
 func decimalAmount(amount int64) string { return strconv.FormatInt(amount, 10) }
 
-// settleWalletRecharge 为验签通过的钱包充值入账。
-//
-// 跑到这里钱已经在渠道那边了，
-// 所以钱包即使被冻结或处于其它不可用状态也必须入账：
-// 此处拒绝会让客户的钱凭空短少，
-// 而我方没有任何记录可查。被冻结的钱包只是在这笔解冻之前用不了，冻结本就是这个意思。
+// settleWalletRecharge 对验签通过且金额匹配的渠道充值入账。
+// 钱包冻结或其他不可用状态不阻止资金记账；可用性限制仅影响后续消费。
 func settleWalletRecharge(tx *gorm.DB, order PaymentOrderRecord, payment VerifiedPayment, digest string, paidAt time.Time, result *PaymentCallbackResult) error {
 	// wallet_recharge_request 以客户端请求号为键；
 	// 它既没有代理主键也没有软删除列，request_id 是唯一的抓手。
@@ -279,10 +269,8 @@ func settleWalletRecharge(tx *gorm.DB, order PaymentOrderRecord, payment Verifie
 	if digestErr == nil && previousDigest.RequestDigest != digest {
 		return ErrPaymentCallbackConflict
 	}
-	// 重放的通知不能第二次给钱包入账。
-	// 充值没有业务行可供绑定 biz_id，
-	// 所以已结算的支付订单本身就是凭据：
-	// 已支付、同一笔渠道交易、同一金额，以及同一份验签载荷摘要。
+	// 已结算支付单作为充值幂等凭据。
+	// 重放必须匹配渠道交易、金额和验签载荷摘要，不再次增加钱包余额。
 	if order.Status == "paid" || order.Status == "partial_refunded" || order.Status == "refunded" {
 		if digestErr != nil || !order.WechatTransactionID.Valid ||
 			order.WechatTransactionID.String != payment.TransactionID || order.PaidCents != payment.PaidCents {
@@ -334,9 +322,7 @@ func settleWalletRecharge(tx *gorm.DB, order PaymentOrderRecord, payment Verifie
 	}).Error; err != nil {
 		return err
 	}
-	// 首充活动就在这个事务里求值，
-	// 所以奖励绝不会为一笔随后回滚的入账付出。
-	// 规则不适用不算错误，也永远不会让结算失败。
+	// 在充值事务内求值首充奖励；事务回滚时奖励一并回滚。规则不适用时跳过，不阻止结算。
 	if _, err := ApplyActivityRules(tx, activityEvent{
 		TriggerType: "first_recharge",
 		UserID:      order.UserID,

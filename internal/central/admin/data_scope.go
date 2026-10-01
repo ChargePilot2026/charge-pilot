@@ -9,12 +9,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// DataScope 限制一个账号能读哪些站点和厂商。
-// 没有任何范围行的账号在其角色权限内不受限，
-// 这样既让最常见的情况保持简单，又不会把配了范围的那个账号放宽。
-//
-// 一个账号在 admin_data_scope 表上的数据范围，限制它能看到哪些站点和厂商。
-// 库表里一行是"一个范围项"，下面的 StationIDs / VendorIDs 是读出来后按类型归并的内存视图。
+// DataScope 将账号的站点、厂商范围项归并为内存集合。
+// 无范围记录或 Unrestricted=true 时，不附加数据范围限制；角色权限仍需单独校验。
 type DataScope struct {
 	AdminUserID  uint64   `gorm:"column:admin_user_id"` // 账号 ID
 	ScopeType    string   `gorm:"column:scope_type"`    // 范围类型：station 限站点 / vendor 限厂商
@@ -27,13 +23,8 @@ type DataScope struct {
 // TableName 指明 DataScope 映射到 admin_data_scope。
 func (DataScope) TableName() string { return "admin_data_scope" }
 
-// LoadDataScope 读出账号的数据范围。运营持有通配角色时返回空的不受限范围，
-// 因为内置的客户管理员本来就是全平台的破窗账号
-// （出问题时用来应急的那个）。
-//
-// LoadDataScope 读出账号的数据范围，并按范围类型归并到 StationIDs / VendorIDs。
-// 一行记录都没有即视为不受限（Unrestricted=true）：这是最常见的情况，
-// 也不会让确实配置了范围的账号被放宽。
+// LoadDataScope 按类型加载账号的站点、厂商范围。
+// 通配角色或无范围记录的账号返回 Unrestricted=true。
 func LoadDataScope(ctx context.Context, db *gorm.DB, p Profile) (DataScope, error) {
 	scope := DataScope{AdminUserID: p.ID}
 	rows := []DataScope{}
@@ -55,11 +46,8 @@ func LoadDataScope(ctx context.Context, db *gorm.DB, p Profile) (DataScope, erro
 	return scope, nil
 }
 
-// ApplyStations 把查询收窄到范围内的站点。列表为空表示这个账号可以看到所有站点，
-// 所以不追加任何条件。
-//
-// ApplyStations 给查询加上站点范围过滤。column 是调用方的站点列名（如 t.station_id），
-// 不受限或范围内没有站点时原样返回，不加任何条件。
+// ApplyStations 为指定站点列追加范围过滤；column 由调用方提供，如 t.station_id。
+// Unrestricted 为真或站点范围为空时，不追加条件。
 func (s DataScope) ApplyStations(query *gorm.DB, column string) *gorm.DB {
 	if s.Unrestricted || len(s.StationIDs) == 0 {
 		return query
@@ -77,9 +65,7 @@ func (s DataScope) ApplyVendors(query *gorm.DB, column string) *gorm.DB {
 	return query.Where(column+" IN ?", s.VendorIDs)
 }
 
-// AllowsStation 报告单个站点是否可见。
-//
-// AllowsStation 判断单个站点是否可见，供详情接口在取出记录后做归属校验。
+// AllowsStation 判断站点是否在可见范围内，供详情接口执行归属校验。
 func (s DataScope) AllowsStation(id uint64) bool {
 	if s.Unrestricted || len(s.StationIDs) == 0 {
 		return true
@@ -92,11 +78,7 @@ func (s DataScope) AllowsStation(id uint64) bool {
 	return false
 }
 
-// FieldMask 为"必须看到这条记录、但不该看到原始值"的角色遮蔽敏感列，
-// 比如客服去读用户的手机号这个场景。
-//
-// FieldMask 是按角色配置的字段遮蔽规则：角色能看到这条记录，但不该看到其中的原始值
-// （客服能查用户、但看不到完整手机号）。规则行来自 admin_field_mask 表。
+// FieldMask 描述按角色配置的响应字段遮蔽规则。
 type FieldMask struct {
 	RoleID uint64 `gorm:"column:role_id"` // 规则所属角色 ID
 	Fields []MaskedField
@@ -137,11 +119,7 @@ func (m FieldMask) Hide(resource, field string) bool {
 	return false
 }
 
-// MaskRow 把一行 JSON 结构数据里命中遮蔽规则的键置空，
-// 于是同一条遮蔽规则不用逐个手写投影，就能同时管住列表和详情响应。
-//
-// MaskRow 就地把一行 map 里命中遮蔽规则的字段替换成占位符。
-// 只处理行里已存在的键，缺失的键不补，因此不会凭空多出字段。
+// MaskRow 就地将已有字段中命中脱敏规则的值替换为占位符，不补充缺失字段。
 func (m FieldMask) MaskRow(resource string, row map[string]any) map[string]any {
 	if row == nil {
 		return nil
@@ -157,7 +135,7 @@ func (m FieldMask) MaskRow(resource string, row map[string]any) map[string]any {
 	return row
 }
 
-// maskPlaceholder 是被遮蔽字段的固定占位值，让前端能看出"这里有值但你看不到"。
+// maskPlaceholder 是被遮蔽字段的固定响应占位值。
 const maskPlaceholder = "***"
 
 // MaskSlice 对一个列表响应里的每一行套用 MaskRow。
@@ -173,12 +151,8 @@ func (m FieldMask) MaskSlice(resource string, rows []map[string]any) []map[strin
 // errScopeConflict 表示范围配置本身不合法（类型未知、ID 不存在、数量越界），统一按 409 返回。
 var errScopeConflict = errors.New("数据范围与现有记录冲突")
 
-// validateScope 在存库之前校验范围 ID 确实存在，
-// 这样打错一个 ID 也不会事后悄悄变成空范围（也就是不受限）。
-//
-// validateScope 校验待保存的范围 ID 真实存在，数量须在 1–500 之间。
-// 这一步不能省：范围记录存空等于"不受限"，一个打错的 ID 会悄悄把账号变成全平台可见。
-// scopeType 只接受 station 与 vendor，其余一律按冲突返回。
+// validateScope 校验范围类型为 station 或 vendor，ID 数量为 1–500，且对应记录存在。
+// 空范围表示不受限，保存前必须排除无效 ID。
 func (a ResourceAPI) validateScope(ctx context.Context, scopeType string, ids []uint64) error {
 	if len(ids) == 0 || len(ids) > 500 {
 		return errScopeConflict

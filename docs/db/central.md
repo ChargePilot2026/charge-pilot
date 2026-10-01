@@ -10,6 +10,12 @@
 
 实际旧开发库有 131 张业务表，清理 26 张后保留 105 张；每库另有 goose_db_version。旧空 chargepilot schema 同步移除。
 
+## 手机号存储
+
+`user.phone` 使用 `VARCHAR(11) NULL` 保存明文手机号，唯一索引 `uk_phone` 防止重复绑定。未绑定或解绑后为 NULL。已移除密文、哈希列及 `PHONE_ENCRYPTION_KEY` 配置；后台支持完整号码和片段搜索，用户绑定响应仍返回脱敏号码。
+
+2026-10-01 开发库变更前已备份为 `.tmp/dev-db-before-plain-phone-20261001-181823.sql`，SHA-256 为 `FA017B39C2F2BCCF2896363DC90A9F110CD3B90F17F1912390D4E60069FDDC10`。原有 2 个用户均未绑定号码，无需解密回填；字段变更保留原有用户和业务记录，central 已重启。
+
 ## 删除清单
 
 | 原库 | 删除的表 | 原因 |

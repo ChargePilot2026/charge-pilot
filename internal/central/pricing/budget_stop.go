@@ -2,10 +2,8 @@ package pricing
 
 import "errors"
 
-// BudgetStopAtMeter keeps stopping separate from final settlement. Missing
-// power fragments must not disable a budget forever: price a conservative
-// lower bound, and stop only once even that bound reaches the purchase price.
-// A final fee is returned only when both bounds agree, or strict pricing works.
+// BudgetStopAtMeter 以费用下界判断预算停机，避免缺失功率片段导致停机规则失效。
+// 仅当下界达到购买金额时停机；最终费用须上下界一致或通过严格计价才能返回。
 func BudgetStopAtMeter(rule Rule, offer *Offer, meter ActualMeter) (StopPlan, *Fee, error) {
 	if offer == nil || !offer.Valid() || offer.Mode != "amount" || !rule.Spec.Mode.ServerBilled() {
 		return StopPlan{}, nil, ErrInvalidPricing
@@ -41,9 +39,8 @@ func BudgetStopAtMeter(rule Rule, offer *Offer, meter ActualMeter) (StopPlan, *F
 	return plan, &Fee{ElectricCents: electric, ServiceCents: service, TotalCents: electric + service}, nil
 }
 
-// Bounds reuse the normal engine's complete-minute rounding, time periods and
-// charging policy. Only the temporary tariff/evidence copies are changed;
-// original telemetry and the final settlement meter remain untouched.
+// 上下界计算沿用计价引擎的整分钟取整、时段和计费策略。
+// 仅修改临时费率与证据副本，保留原始遥测和最终结算读数。
 func budgetBound(rule Rule, meter ActualMeter, upper bool) (Fee, error) {
 	if ValidateSpec(rule.Spec) != nil || rule.Spec.Electric == nil {
 		return Fee{}, ErrInvalidPricing

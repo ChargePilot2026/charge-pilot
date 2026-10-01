@@ -11,9 +11,8 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// registerCasework 挂载客服工单的两条线：用户反馈（feedback）和设备故障报修（device_fault_report）。
-// 反馈可回复可关闭；报修多出"处理历史"和"指派/解决"两个动作，状态流转 open → dispatched → fixed → closed。
-// 读与写的权限分开：看工单用 feedback.read / fault.read，回复、指派、解决各自独立。
+// registerCasework 注册反馈和设备报修路由，分别校验读取与操作权限。
+// 反馈支持回复、关闭；报修支持指派、处理历史和 open → dispatched → fixed → closed 状态流转。
 func (a ResourceAPI) registerCasework(r *gin.Engine) {
 	r.GET("/api/v1/admin/feedback", a.Auth.Require("feedback.read"), func(c *gin.Context) { a.caseList(c, "feedback", "pending processed closed") })
 	r.POST("/api/v1/admin/feedback/:id/reply", a.Auth.Require("feedback.reply"), a.replyFeedback)
@@ -23,8 +22,7 @@ func (a ResourceAPI) registerCasework(r *gin.Engine) {
 	r.POST("/api/v1/admin/device-fault-reports/:id/resolve", a.Auth.Require("fault.resolve"), a.resolveFault)
 }
 
-// stringIDs 把若干列的值统一转成字符串，避免 MySQL 驱动在 []map[string]any 里把 BIGINT 变成科学计数法，
-// 前端拿到的 id 因此是字符串形式。nil 值原样保留，表示该列在本行为空。
+// stringIDs 将指定 BIGINT 列转为字符串，避免前端数字精度丢失；NULL 保持不变。
 func stringIDs(rows []map[string]any, keys ...string) {
 	for _, row := range rows {
 		for _, key := range keys {
@@ -35,9 +33,8 @@ func stringIDs(rows []map[string]any, keys ...string) {
 	}
 }
 
-// caseList 是反馈与报修两类工单共用的列表实现，表名和允许的状态集合由调用方传入。
-// 返回前把图片列从 images_json 改名成 images 并保证是数组（没有图为空数组，不是 null），
-// 免得前端每处都要判空。
+// caseList 复用反馈与报修列表查询，表名和合法状态由调用方指定。
+// 响应将 images_json 转为 images 数组，无图片时返回空数组。
 func (a ResourceAPI) caseList(c *gin.Context, table, statuses string) {
 	q, ok := parsePage(c, statuses)
 	if !ok {
@@ -116,8 +113,8 @@ func (a ResourceAPI) replyFeedback(c *gin.Context) {
 	httpapi.OK(c, gin.H{"saved": true})
 }
 
-// faultHistory 分页返回一条报修工单的流转历史（device_fault_report_event），含每次状态变化的操作人、备注和对用户是否可见。
-// 先确认报修单存在再查事件，避免对不存在的工单返回一个空列表（看起来像"没有历史"）。
+// faultHistory 分页读取报修单的流转事件、操作人、备注及可见性。
+// 先校验工单存在，不存在时返回错误，避免与无历史记录混淆。
 func (a ResourceAPI) faultHistory(c *gin.Context) {
 	id, ok := pathID(c)
 	if !ok {
@@ -152,17 +149,15 @@ func (a ResourceAPI) faultHistory(c *gin.Context) {
 	httpapi.OK(c, out)
 }
 
-// faultRow 是报修工单在流转处理中真正用到的三列最小投影。
+// faultRow 是报修状态流转所需的最小字段投影。
 type faultRow struct {
 	ID         uint64  // 报修单主键
 	Status     string  // 当前状态：open 待受理 / dispatched 已指派 / fixed 已修复 / closed 已关闭
 	AssignedTo *uint64 // 当前处理人 ID，nil 表示还没人接手
 }
 
-// dispatchFault 把报修单指派给某个处理人，状态推进到 dispatched。
-// 处理人必须存在且拥有 fault.resolve 权限，否则指派出去也没人能处理完。
-// 已有处理人时记 reassigned 事件而非 dispatched，并写一条对用户可见的处理记录。
-// 重复指派给同一人是幂等的。
+// dispatchFault 校验处理人存在且持有 fault.resolve 权限，将报修置为 dispatched。
+// 已有处理人时记录 reassigned，否则记录 dispatched；处理历史对用户可见，同人重复指派幂等。
 func (a ResourceAPI) dispatchFault(c *gin.Context) {
 	id, ok := pathID(c)
 	if !ok {

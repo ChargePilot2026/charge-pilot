@@ -26,10 +26,8 @@ type ActualMeter struct {
 
 type ActualFee = Fee
 
-// PriceActual 从不把均匀分摊出来的预估值当成计量。电量分段只有在前后两段的
-// 实际费率一致时才允许跨过费率边界；缺失或自相矛盾的变价费率读数一律送去复核。
-//
-// 算术本身是 Cost 的：这个函数只负责判断上报的这份计量是否可信到可以交出去。
+// PriceActual 校验计量证据后调用 Cost 计价，不将均匀分摊的估算值视为实际计量。
+// 电量片段仅可跨越相同费率边界；变价区间的读数缺失或矛盾时要求核实。
 func PriceActual(rule Rule, meter ActualMeter) (Fee, error) {
 	usage, err := usageFromMeter(rule, meter)
 	if err != nil {
@@ -38,12 +36,8 @@ func PriceActual(rule Rule, meter ActualMeter) (Fee, error) {
 	return Cost(rule.Spec, usage)
 }
 
-// usageFromMeter 把一条计量记录转成引擎要计价的 Usage。
-//
-// 这里的校验才是实质内容而不是走过场：它决定上报的这份计量是否可信到可以交给
-// Cost。它之所以单独成一个函数，是因为消费封顶必须拿结算将要用的同一份计量
-// 来试算——用更宽松的读数去量封顶，就会得到一个在错误时刻触发的封顶，
-// 而在账单出错之前没有人会发现。
+// usageFromMeter 校验计量记录并转换为 Cost 所需的 Usage。
+// 消费封顶与最终结算共用此校验，保持计量有效性及计费结果一致。
 func usageFromMeter(rule Rule, meter ActualMeter) (Usage, error) {
 	if meter.ReviewRequired {
 		return Usage{}, ErrMeterReview
@@ -94,13 +88,8 @@ func usageFromMeter(rule Rule, meter ActualMeter) (Usage, error) {
 	return usage, nil
 }
 
-// StopAtMeter 判断一次运行中的充电是否已经触到它那份电价表所声明的消费封顶，
-// 依据是一条计量记录。
-//
-// 这条计量走的是与结算完全相同的校验，所以一次充电绝不会因为一个本来就没法
-// 开票的读数而被切断。一份引擎已经算不出价的电价表，或者一个并非服务端计费的
-// 模式，得到的会是一份明说这件事的计划而不是一个错误：拿一份引擎拒绝执行的
-// 电价表推出来的停止规则，不构成切断别人充电的理由。
+// StopAtMeter 使用结算相同的计量校验判断服务端计费是否达到消费上限。
+// 计量或规则无效、模式不适用时返回说明原因的计划，不依据无效数据停机。
 func StopAtMeter(rule Rule, meter ActualMeter) (StopPlan, error) {
 	usage, err := usageFromMeter(rule, meter)
 	if err != nil {

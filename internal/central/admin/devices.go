@@ -38,13 +38,11 @@ type Device struct {
 	Tags             []string           `json:"tags" gorm:"-"` // 对外标签数组；数据库 NULL 统一读为空数组。
 	TagsJSON         *string            `json:"-" gorm:"column:tags_json"`
 	UpdatedAt        time.Time          `json:"updated_at"` // 资料编辑的并发校验值，使用 UTC 毫秒精度。
-	// 这块板能上报什么，以及它当前按什么口径计费。
-	// 这些信息就挂在设备行上，运营不必再打开定价页面
-	// 去弄清某个计费规则为什么在这儿用不了。
+	// 设备协议支持的计量能力与当前计费模式，用于展示计费兼容性。
 	ProtocolAdapter       string `json:"protocol_adapter"`
 	ChargeMode            string `json:"charge_mode"`                      // 该设备当前实际生效的计费方式，取自 pricing 引擎的 ChargeMode（server_realtime_power / server_max_power / server_energy / device_duration / device_energy / device_power）。
-	ReportsEnergy         bool   `json:"reports_energy" gorm:"-"`          // 协议帧里是否带电量：false 表示这块板报不了电量，只有时长口径能落到它身上。
-	ReportsSegmentedPower bool   `json:"reports_segmented_power" gorm:"-"` // 协议帧里是否带分段功率：功率档位口径需要它，为 false 时该设备无法应用。
+	ReportsEnergy         bool   `json:"reports_energy" gorm:"-"`          // 协议是否支持电量上报；按电量计费要求此能力。
+	ReportsSegmentedPower bool   `json:"reports_segmented_power" gorm:"-"` // 协议是否支持分段功率上报；按功率计费要求此能力。
 }
 
 // DevicePortStatus 保留设备原始状态码和采样时刻，未上报的状态不默认为空闲。
@@ -60,8 +58,7 @@ func (s ResourceStore) deviceQuery(ctx context.Context) *gorm.DB {
 	return s.AdminDB.WithContext(ctx).Table("device_meta AS d").Joins("LEFT JOIN station AS s ON s.id=d.station_id AND s.deleted_at IS NULL").Where("d.deleted_at IS NULL")
 }
 
-// deviceColumns 是设备列表与详情共用的列清单。刻意不含站点编码——迁移 central_db/0044
-// 之后 station 表已经没有 code 列了。
+// deviceColumns 是设备列表和详情共用的查询列。
 const deviceColumns = "d.id,d.device_id,d.station_id,d.vendor_id,d.model,d.serial_no,d.status,d.warranty_until,d.tags_json,d.updated_at,d.charge_mode,d.protocol_adapter,s.name AS station_name"
 
 // normalizeMetadata 隐藏内部 JSON 存储形式，并让所有日期保持数据库的 UTC 毫秒精度。

@@ -10,8 +10,7 @@ import (
 	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol"
 )
 
-// recordingSink 留住 adapter 产出的每一个 event，好让测试能断言运维事后
-// 真正看得到的东西。
+// recordingSink 收集适配器产生的事件，供测试断言解码结果与运维审计内容。
 type recordingSink struct {
 	mu     sync.Mutex
 	events []protocol.Event
@@ -42,9 +41,7 @@ func (s *recordingSink) findConfigResults() []protocol.Event {
 	return out
 }
 
-// serveWithFrames 在一个真实回环 socket 上跑一次 adapter 会话，喂给它一次
-// 登录再喂上给定的若干帧，然后返回 sink。它是从「主板发了这个」到「运维
-// 看得到这个」的最短路径，也正是这些测试关心的性质。
+// serveWithFrames 通过回环 TCP 建立适配器会话，发送注册及指定帧并返回记录事件的 sink。
 func serveWithFrames(t *testing.T, replies []Frame) *recordingSink {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -74,8 +71,7 @@ func serveWithFrames(t *testing.T, replies []Frame) *recordingSink {
 	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	// adapter 会先发注册应答，再发索要心跳周期的 0xA6。在后台把它
-	// 写出的东西读空，以免它阻塞被测的那些帧。
+	// 后台读取注册应答及 A6 心跳周期请求，避免下行写入阻塞被测上报帧。
 	go func() {
 		buf := make([]byte, 512)
 		for {
@@ -116,10 +112,7 @@ func serveWithFrames(t *testing.T, replies []Frame) *recordingSink {
 	return sink
 }
 
-// 一块拒绝参数表的主板是在告诉我们究竟哪个字段越界了。这些应答在被
-// 处理之前会落到 unknown 分支里，于是拒绝被记成「发了个我们不认识的
-// 命令」，原因也没了——这跟停止路径当初在 0x00 和 0x04 上犯的是同一
-// 个错，而且发生在一条没人走过的路径上，因为根本没有东西发过那个请求。
+// 参数表拒绝应记录具体错误原因，不能归为未知命令。
 func TestConfigRejectionIsRecordedRatherThanCalledUnknown(t *testing.T) {
 	// 错误码 5 是文档里的「刷卡扣费金额超出范围」。
 	sink := serveWithFrames(t, []Frame{{Command: ConfigAck, Data: []byte{5}}})
@@ -152,8 +145,7 @@ func TestConfigAcceptanceAndRefusalAreDistinguishable(t *testing.T) {
 	}
 }
 
-// 主板自报当前配置是健康链路上的正常流量，所以同样不该被算成不认识的
-// 命令——而且字节必须原样保留，因为 RawPayload 就是重放记录。
+// 验证配置主动上报被识别为正常命令，并保留 RawPayload 原始字节。
 func TestConfigReportIsNotTreatedAsUnknown(t *testing.T) {
 	table := ConfigTable{RunMode: 0, LocalCoinTime: 10, LocalCardTime: 20, CardAmountCents: 500,
 		TemperatureGuard: 0xFF, FloatSeconds: 300, FloatDeciWatts: 100, RemoveSeconds: 60}
@@ -172,8 +164,7 @@ func TestConfigReportIsNotTreatedAsUnknown(t *testing.T) {
 	if len(results[0].RawPayload) != len(report.Data) {
 		t.Fatalf("raw payload = %d bytes, want the %d that arrived", len(results[0].RawPayload), len(report.Data))
 	}
-	// 这个构建读不懂的上报，会以「读不懂」的形式仍然可见，而不是被
-	// 存成一个看着挺正常的二进制块。
+	// 验证无法解析的上报记录明确错误，不伪装为有效配置。
 	sink = serveWithFrames(t, []Frame{{Command: ConfigReport, Data: []byte{0, 1, 2}}})
 	results = sink.findConfigResults()
 	if len(results) == 0 || results[0].ResultCode != 0xFF {

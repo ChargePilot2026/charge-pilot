@@ -50,7 +50,7 @@ type orderProcessIdentity struct {
 
 var errOrderProcess = errors.New("充电过程暂时无法读取，请稍后重试")
 
-// parseOrderProcessQuery 拒绝空值、重复游标和超限分页，避免悄悄回落到第一页。
+// parseOrderProcessQuery 拒绝空值、重复游标和超限分页参数。
 func parseOrderProcessQuery(c *gin.Context) (orderProcessQuery, bool) {
 	q := orderProcessQuery{Limit: 1000}
 	values := c.Request.URL.Query()

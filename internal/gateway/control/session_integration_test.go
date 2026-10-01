@@ -41,9 +41,7 @@ func sessionRouter(t *testing.T, api SessionAPI) *gin.Engine {
 	return router
 }
 
-// decodeCleanup 从响应信封里读出 data 部分。每个 handler 的响应
-// 都包在 {code， message， data} 里，所以这个计数必须从 data 内部读，
-// 而不是从顶层读。
+// decodeCleanup 从统一响应信封的 data 字段解析清理计数。
 func decodeCleanup(t *testing.T, raw []byte) struct {
 	Closed int64 `json:"closed"`
 } {
@@ -82,8 +80,7 @@ func callSession(t *testing.T, router *gin.Engine, method, path, token string) *
 
 const sessionToken = "session-audit-test-token"
 
-// seedOpenSession 插入一条看起来像是"进程中途死掉"的会话：
-// 仍然是开着的，而且静默时间已经超过阈值。
+// seedOpenSession 创建未结束且已超过静默阈值的遗留会话夹具。
 func seedOpenSession(t *testing.T, orm *gorm.DB, sessionID, deviceID string, idleFor time.Duration) time.Time {
 	t.Helper()
 	started := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
@@ -181,8 +178,7 @@ func TestCleanupIdleClosesAbandonedSessionsOnly(t *testing.T) {
 	}
 }
 
-// 重复跑一次清理必须是空操作而不是重复计数，因为这个接口
-// 本来就是设计成按计划反复跑的。
+// 验证重复清理不再次更新已关闭会话，也不重复累计回收数量。
 func TestCleanupIdleIsRepeatable(t *testing.T) {
 	router := sessionRouter(t, SessionAPI{ServiceToken: sessionToken, IdleThreshold: 10 * time.Minute})
 	db := sessionTestDB

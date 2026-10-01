@@ -24,8 +24,7 @@ func openFinanceDB(t *testing.T, key string) *gorm.DB {
 	return orm
 }
 
-// settledParty 建一个 active 的分账模板加一张 paid 的结算单，
-// 让这个参与方有一笔真实、可提现的余额。
+// settledParty 创建 active 分账模板和 paid 结算单，为参与方提供可提现余额。
 func settledParty(t *testing.T, ctx context.Context, code string, ratio int32, pool int64) (partyID uint64) {
 	t.Helper()
 	adminDB := openFinanceDB(t, "TEST_ADMIN_DATABASE_URL")
@@ -33,22 +32,14 @@ func settledParty(t *testing.T, ctx context.Context, code string, ratio int32, p
 	suffix := uuid.NewString()[:8]
 	template := "tpl-" + suffix
 	party := "party-" + suffix
-	// 这套夹具铺了分账模板、参与方、结算单、参与方金额、提现单五条链，一条都
-	// 不清就等于每次跑测都往开发库倒一套。后台「分账明细」「提现打款」两页读的
-	// 就是这些表，几轮之后运营看到的是几十条同名模板和一堆互不相干的提现单，
-	// 分不清哪条是真业务数据。
-	//
-	// 清理按本轮造出来的标识逐张表倒着删：提现单挂在参与方上，参与方金额挂在
-	// 结算单上，结算单挂在模板上。少删一张就留下孤儿行，下一轮的
-	// uk_fee_generation 之类的唯一键就会撞上。
+	// 按本轮夹具标识清理提现、参与方金额、结算单、参与方和模板，先删依赖记录再删主记录。
 	t.Cleanup(func() {
 		statements := []struct {
 			db    *gorm.DB
 			query string
 			args  []any
 		}{
-			// 提现单只按参与方编号认——它建在 billing 库、参与者建在 admin 库，
-			// 跨库没法用子查询认人。调用方一律用同一个参与方编号建单。
+			// 提现夹具按参与方编号清理，与建单时使用的编号保持一致。
 			{billingDB, "DELETE FROM withdraw_request WHERE party_code = ?", []any{code}},
 			{billingDB, "DELETE FROM settlement_party_amount WHERE settlement_id IN (SELECT id FROM settlement WHERE settlement_no = ?)", []any{"STL-" + suffix}},
 			{billingDB, "DELETE FROM settlement WHERE settlement_no = ?", []any{"STL-" + suffix}},
@@ -72,7 +63,7 @@ func settledParty(t *testing.T, ctx context.Context, code string, ratio int32, p
 	}
 	adminDB.Table("split_party").Where("party_code = ?", party).Pluck("id", &partyID)
 	settlementNo := "STL-" + suffix
-	// uk_fee_generation 每次计费唯一，所以夹具得自己占一个 id。
+	// 为夹具分配独立计费 ID，满足 uk_fee_generation 唯一约束。
 	var highest struct {
 		Value *int64 `gorm:"column:value"`
 	}
@@ -96,8 +87,7 @@ func settledParty(t *testing.T, ctx context.Context, code string, ratio int32, p
 	return partyID
 }
 
-// 运营自己建出来的提现单必须能被审批通过：这条 pending 记录已经占住了余额，
-// 所以审批时不能再把它算成另一笔竞争性的占用。
+// 验证审批排除本单已占用的余额，避免将申请金额重复计入占用。
 func TestWithdrawalCanBeApprovedAndPaid(t *testing.T) {
 	if os.Getenv("TEST_BILLING_DATABASE_URL") == "" || os.Getenv("TEST_ADMIN_DATABASE_URL") == "" {
 		t.Skip("disposable MySQL required")
@@ -120,7 +110,7 @@ func TestWithdrawalCanBeApprovedAndPaid(t *testing.T) {
 	if available, err := store.AvailableCents(ctx, nil, partyID); err != nil || available != 10000 {
 		t.Fatalf("available after reservation = %d (%v), want 10000", available, err)
 	}
-	// 审批必须把同一张提现单排除掉，否则它永远批不过。
+	// 审批余额检查必须排除当前提现单。
 	var row struct {
 		ID uint64 `gorm:"column:id"`
 	}

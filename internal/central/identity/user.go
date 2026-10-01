@@ -123,7 +123,7 @@ func (s UserStore) Active(ctx context.Context, id uint64) (bool, error) {
 
 func (s UserStore) Profile(ctx context.Context, id uint64) (Profile, error) {
 	var row profileRow
-	result := s.DB.WithContext(ctx).Raw(`SELECT u.id, u.nickname, u.avatar_url, u.phone_hash, u.first_seen_at,
+	result := s.DB.WithContext(ctx).Raw(`SELECT u.id, u.nickname, u.avatar_url, u.phone, u.first_seen_at,
 		w.balance_cents, w.frozen_cents,
 		(SELECT COUNT(*) FROM coupon_grant AS g WHERE g.user_id = u.id AND g.status = 'unused' AND g.expired_at > NOW(3) AND g.deleted_at IS NULL) AS coupon_unused_count
 		FROM user AS u JOIN wallet_account AS w ON w.user_id = u.id AND w.deleted_at IS NULL
@@ -134,7 +134,7 @@ func (s UserStore) Profile(ctx context.Context, id uint64) (Profile, error) {
 	if result.RowsAffected != 1 {
 		return Profile{}, gorm.ErrRecordNotFound
 	}
-	profile := Profile{UserID: row.ID, Nickname: row.Nickname.String, AvatarURL: row.AvatarURL.String, PhoneBound: row.PhoneHash.Valid, RegisteredAt: row.FirstSeenAt.UTC(), CouponUnusedCount: row.CouponUnusedCount}
+	profile := Profile{UserID: row.ID, Nickname: row.Nickname.String, AvatarURL: row.AvatarURL.String, PhoneBound: row.Phone.Valid && row.Phone.String != "", RegisteredAt: row.FirstSeenAt.UTC(), CouponUnusedCount: row.CouponUnusedCount}
 	profile.Wallet.AvailableCents = row.BalanceCents
 	profile.Wallet.FrozenCents = row.FrozenCents
 	return profile, nil
@@ -167,7 +167,7 @@ type profileRow struct {
 	ID                uint64
 	Nickname          sql.NullString
 	AvatarURL         sql.NullString
-	PhoneHash         sql.NullString
+	Phone             sql.NullString
 	FirstSeenAt       time.Time
 	BalanceCents      int64
 	FrozenCents       int64

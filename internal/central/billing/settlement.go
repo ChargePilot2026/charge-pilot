@@ -14,8 +14,7 @@ import (
 
 var ErrNoSplitTemplate = errors.New("站点未配置分账模板，无法生成分账")
 
-// SplitTemplate 解析站点生效的分账契约。central_db 归 central 所有，
-// 所以模板直接在那里读取，绝不走跨库 SQL。
+// SplitTemplate 从 central_db 读取站点生效的分账契约，不跨库查询。
 type SplitTemplate struct {
 	ID      uint64
 	Code    string
@@ -30,10 +29,7 @@ type SplitTemplate struct {
 // SplitResolver 代表计费模块读取 central_db。
 type SplitResolver struct{ AdminDB *gorm.DB }
 
-// Resolve 返回绑定在该站点上的生效模板。
-// 模板缺失、已删除、已停用或内部不自洽时一律报错，
-// 而不是静悄悄地按零分账，
-// 这样站点绝不会在没有分账记录的情况下被计费。
+// Resolve 读取站点绑定的有效模板；模板缺失、删除、停用或比例无效时返回错误。
 func (r SplitResolver) Resolve(ctx context.Context, stationID uint64) (SplitTemplate, error) {
 	if r.AdminDB == nil {
 		return SplitTemplate{}, errors.New("split resolver is not configured")
@@ -87,9 +83,8 @@ func (r SplitResolver) Resolve(ctx context.Context, stationID uint64) (SplitTemp
 	return out, nil
 }
 
-// Settle 为一笔已算出的 fee 写分账。
-// (fee_calculation_id， generation) 上的唯一键让重放的计费派发
-// 返回既有结算，而不是把各方付两次。
+// Settle 将已计算费用写入分账台账。
+// (fee_calculation_id, generation) 唯一键保证重复计费派发复用已有结算，不重复分账。
 func (s Store) Settle(ctx context.Context, calculationID uint64, template SplitTemplate, fee pricing.ActualFee, month time.Time) (uint64, bool, error) {
 	mode := finance.SplitAll
 	if template.Mode == "mode_b" {
@@ -108,8 +103,7 @@ func (s Store) Settle(ctx context.Context, calculationID uint64, template SplitT
 	} else {
 		pool = fee.ServiceCents
 	}
-	// 分账池里的每一分钱都必须恰好落到一个 party 上；
-	// 否则台账和 fee 记录就对不上了。
+	// 分账金额之和必须等于分账池，且分账池不得为负或超过总费用。
 	if allocated != pool || pool < 0 || fee.TotalCents < pool {
 		return 0, false, fmt.Errorf("allocation does not preserve the split pool: %d != %d", allocated, pool)
 	}
@@ -180,8 +174,7 @@ func (s Store) Settle(ctx context.Context, calculationID uint64, template SplitT
 	return settlementID, created, nil
 }
 
-// SettlementsDue 列出还没有结算的已算出 fee。
-// 计费与结算共用同一个 central_db，所以这里不跨库。
+// SettlementsDue 查询 central_db 内已计费但尚未结算的费用记录。
 func (s Store) SettlementsDue(ctx context.Context, limit int) ([]PendingSettlement, error) {
 	if limit <= 0 {
 		limit = 50

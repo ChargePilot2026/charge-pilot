@@ -186,7 +186,7 @@
 | 端点 | 写入表 | 状态 |
 | --- | --- | --- |
 | `POST /auth/login` | `user`(UPSERT) | ✅ |
-| `POST /phone/bind` | `user`(UPDATE phone_enc) | ✅ |
+| `POST /phone/bind` | `user`(UPDATE phone) | ✅ |
 | `POST /scan/resolve` | 不写表(只读,**不锁端口**) | ✅ |
 | `POST /scan/port` | 不写表(只读,**不锁端口**) | ✅ |
 | `POST /scan/start` | `charge_order` + `payment_order`(**pending_payment**,**不启动设备**) | ✅ |
@@ -265,7 +265,7 @@
 
 | Schema | 业务表 | 配置类 | 日志类 | 备注 |
 | --- | --- | --- | --- | --- |
-| **user_db** | 软删除 + 抹除 PII(§ user.md) | — | 审计/幂等表 不软删 | 抹除 PII(`phone_enc` / `unionid` / `nickname` / `avatar_url` 置 NULL),`openid` 保留 30 天 |
+| **user_db** | 软删除 + 抹除 PII(§ user.md) | — | 审计/幂等表 不软删 | 抹除 PII(`phone` / `unionid` / `nickname` / `avatar_url` 置 NULL),`openid` 保留 30 天 |
 | **admin_db** | 软删除(§ admin.md) | **不软删**,启用 / 停用 | 按月分区 + 物理归档(超 3 年) | 配置类:角色 / 权限 / 白标 |
 | **billing_db** | **不软删**(§ billing.md) | — | 按月分区 + 物理归档 | 计费 / 分账快照为合规证据,必须保留 |
 | **gateway_db** | 设备表软删,其它不分 | — | 遥测 / 帧日志 / 会话表 按月分区 | 遥测原始 1 月 + 聚合 3 年(技术规格 § 4.6) |

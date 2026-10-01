@@ -15,9 +15,7 @@ func feedbackEnv(t *testing.T) bool {
 	return true
 }
 
-// TestSubmitFeedbackRules —— 工单队列正是靠这个接口喂数据的。
-// 它必须能给已完成的订单打分、
-// 拒绝第二次提交，并且绝不泄露别的客户的订单。
+// TestSubmitFeedbackRules 验证已完成订单反馈、重复提交拒绝和用户归属检查。
 func TestSubmitFeedbackRules(t *testing.T) {
 	if !feedbackEnv(t) {
 		return
@@ -29,10 +27,7 @@ func TestSubmitFeedbackRules(t *testing.T) {
 	userID := uint64(900001)
 	otherID := uint64(900002)
 	orderID := uint64(910000 + len(uuid.NewString())%1000)
-	// 这里的 id 是固定的而订单号不是，
-	// 所以上次留下的东西没法按名字对上，
-	// 主键会立刻冲突。没有这段处理，
-	// 这个测试每个数据库只能过一遍，然后报一个看起来像产品缺陷的重复键失败。
+	// 清理固定 ID 的反馈夹具，避免重复运行发生主键冲突。
 	t.Cleanup(func() {
 		userDB.Exec("DELETE FROM feedback WHERE order_id IN (?,?)", orderID, orderID+1)
 		userDB.Exec("DELETE FROM charge_order WHERE id IN (?,?)", orderID, orderID+1)
