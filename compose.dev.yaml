@@ -114,7 +114,7 @@ services:
     command: ["go", "run", "./cmd/worker"]
     environment:
       <<: *go-env
-      DATABASE_URL: mysql://chargepilot:chargepilot_dev@mysql:3306/worker_db
+      DATABASE_URL_WORKER: mysql://chargepilot:chargepilot_dev@mysql:3306/worker_db
       DATABASE_URL_GATEWAY: mysql://chargepilot:chargepilot_dev@mysql:3306/gateway_db
       DATABASE_URL_CENTRAL: mysql://chargepilot:chargepilot_dev@mysql:3306/central_db
       REGULATORY_MODE: simulation

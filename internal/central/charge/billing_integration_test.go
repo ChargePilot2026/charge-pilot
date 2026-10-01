@@ -71,8 +71,6 @@ func TestActualBillingPersistsAndRefundsOnce(t *testing.T) {
 				{userDB, "DELETE FROM event_outbox WHERE JSON_UNQUOTE(JSON_EXTRACT(envelope_json, '$.charge_order_id')) IN (SELECT CAST(id AS CHAR) FROM charge_order WHERE order_no = ?)", []any{name}},
 				{userDB, "DELETE FROM charge_event_log WHERE charge_order_id IN (SELECT id FROM charge_order WHERE order_no = ?)", []any{name}},
 				{userDB, "DELETE FROM charge_meter_review WHERE charge_order_id IN (SELECT id FROM charge_order WHERE order_no = ?)", []any{name}},
-				{userDB, "DELETE FROM charge_debt_receipt WHERE payment_order_id IN (SELECT id FROM payment_order WHERE order_no = ?)", []any{name}},
-				{userDB, "DELETE FROM charge_debt WHERE charge_order_id IN (SELECT id FROM charge_order WHERE order_no = ?)", []any{name}},
 				{userDB, "DELETE FROM refund_success_receipt WHERE refund_record_id IN (SELECT id FROM refund_record WHERE biz_id IN (SELECT id FROM charge_order WHERE order_no = ?))", []any{name}},
 				{userDB, "DELETE FROM wallet_refund_part WHERE refund_record_id IN (SELECT id FROM refund_record WHERE biz_id IN (SELECT id FROM charge_order WHERE order_no = ?))", []any{name}},
 				{userDB, "DELETE FROM refund_review WHERE refund_record_id IN (SELECT id FROM refund_record WHERE biz_id IN (SELECT id FROM charge_order WHERE order_no = ?))", []any{name}},

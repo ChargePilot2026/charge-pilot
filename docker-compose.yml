@@ -104,7 +104,7 @@ services:
       args: { SERVICE: worker }
     restart: unless-stopped
     environment:
-      DATABASE_URL: mysql://chargepilot:${DB_PASSWORD}@chargepilot-mysql:3306/worker_db
+      DATABASE_URL_WORKER: mysql://chargepilot:${DB_PASSWORD}@chargepilot-mysql:3306/worker_db
       DATABASE_URL_GATEWAY: mysql://chargepilot:${DB_PASSWORD}@chargepilot-mysql:3306/gateway_db
       DATABASE_URL_CENTRAL: mysql://chargepilot:${DB_PASSWORD}@chargepilot-mysql:3306/central_db
       REDIS_STREAM_URL: redis://:${REDIS_STREAM_PASSWORD}@chargepilot-redis-stream:6379/0

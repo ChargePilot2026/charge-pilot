@@ -40,7 +40,7 @@ type Central struct {
 type Worker struct {
 	CentralDatabaseURL string `env:"DATABASE_URL_CENTRAL,required"`
 	HTTPAddr           string `env:"WORKER_HTTP_ADDR" envDefault:":8085"`
-	DatabaseURL        string `env:"DATABASE_URL,required"`
+	DatabaseURL        string `env:"DATABASE_URL_WORKER,required"`
 	GatewayDatabaseURL string `env:"DATABASE_URL_GATEWAY,required"`
 	RedisStreamURL     string `env:"REDIS_STREAM_URL,required"`
 	ServiceToken       string `env:"SERVICE_TOKEN,required"`

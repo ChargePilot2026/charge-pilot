@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 	"time"
 
 	"github.com/ChargePilot2026/charge-pilot/internal/central/pricing"
@@ -60,7 +58,9 @@ func (s EndSynchronizer) freezeEndResult(ctx context.Context, command workerChar
 		if err != nil {
 			return candidate, err
 		}
-		if err := s.GatewayDB.WithContext(ctx).Table("charge_end_delivery").Clauses(clause.OnConflict{DoUpdates: clause.Assignments(map[string]any{"device_event_id": gorm.Expr("device_event_id")})}).Create(map[string]any{"device_event_id": id, "charge_order_id": candidate.ChargeOrderID, "payload_json": string(payload)}).Error; err != nil {
+		// 并发重放下同一事件只首写一次；主键冲突按错误上抛，
+		// 由 SyncBatch 记录后下次重试走上方已冻结分支，不做静默空更新。
+		if err := s.GatewayDB.WithContext(ctx).Table("charge_end_delivery").Create(map[string]any{"device_event_id": id, "charge_order_id": candidate.ChargeOrderID, "payload_json": string(payload)}).Error; err != nil {
 			return candidate, err
 		}
 		if err := s.GatewayDB.WithContext(ctx).Table("charge_end_delivery").Where("device_event_id=?", id).Take(&row).Error; err != nil {

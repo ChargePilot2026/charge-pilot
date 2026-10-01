@@ -264,7 +264,7 @@ node scripts/dev/prepare.mjs
 该脚本核验本地项目、停止后端、先备份到 `.tmp/`，再重建三库并清空本项目两套 Redis，会清除业务、会话及事件。需要保留数据时不得执行。
 
 <details>
-<summary>全部业务表索引（105 张）</summary>
+<summary>全部业务表索引（101 张）</summary>
 
 | 数据库 | 表 | 职责 |
 | --- | --- | --- |
@@ -275,8 +275,6 @@ node scripts/dev/prepare.mjs
 | central_db | `charge_bill_read` | 账单已读标记 |
 | central_db | `charge_billing_cutoff` | 订单首次计费截止点 |
 | central_db | `charge_billing_job` | 待结算订单任务及重试状态 |
-| central_db | `charge_debt` | 充电欠费 |
-| central_db | `charge_debt_receipt` | 欠费补缴入账回执 |
 | central_db | `charge_end_receipt` | 设备结束事件的幂等回执 |
 | central_db | `charge_event_log` | 订单状态事件及时间线 |
 | central_db | `charge_fee_receipt` | 计费消费事件幂等回执 |
@@ -285,7 +283,6 @@ node scripts/dev/prepare.mjs
 | central_db | `charge_order` | 充电订单(内部生命周期及独立业务、支付状态) |
 | central_db | `charge_order_pricing` | 订单冻结的完整方案与计算快照 |
 | central_db | `charge_payment_intent` | 支付前冻结方案及端口预占 |
-| central_db | `charge_port_lock` | 支付与在线卡共享的端口事务锁 |
 | central_db | `charge_prepay` | 预付支付确认结果 |
 | central_db | `charge_start_receipt` | 设备启动确认和幂等摘要 |
 | central_db | `coupon` | 优惠券模板 |
@@ -310,7 +307,6 @@ node scripts/dev/prepare.mjs
 | central_db | `refund_success_receipt` | 退款成功的幂等确认 |
 | central_db | `risk_freeze_log` | 风控冻结记录(本期仅频次触发) |
 | central_db | `snowflake_state` | Snowflake 编号分配状态，业务事务内行锁串行分配 |
-| central_db | `charge_debt_payment_request` | 欠费支付请求幂等回执 |
 | central_db | `user` | 终端用户 |
 | central_db | `user_login_identity` | 用户登录身份关联 |
 | central_db | `wallet_account` | 用户一对一钱包账户 |
@@ -438,10 +434,10 @@ CI 当前检查 Go 格式差异、vet、`go mod tidy -diff`、单元测试、四
 
 | 变量 | 使用方及规则 |
 | --- | --- |
-| `DATABASE_URL` | gateway / worker 各自的 MySQL DSN |
+| `DATABASE_URL` | gateway 的 MySQL DSN |
 | `DATABASE_URL_CENTRAL` | central / worker，central schema |
 | `DATABASE_URL_GATEWAY` | worker，gateway schema |
-| `DATABASE_URL_WORKER` | migrate，worker schema；migrate 同时读取另两库 URL |
+| `DATABASE_URL_WORKER` | worker / migrate，worker schema；migrate 同时读取另两库 URL |
 | `CENTRAL_HTTP_ADDR`、`WORKER_HTTP_ADDR` | central / worker，默认 `:8080`、`:8085` |
 | `GATEWAY_HTTP_ADDR`、`DC589_ADDR` | gateway，默认 `:8083`、`:9100` |
 | `REDIS_CACHE_URL`、`REDIS_STREAM_URL` | central 连接 Cache，Stream URL 仍为其必填配置；worker 连接 Stream 并发布 Outbox |

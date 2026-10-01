@@ -1,4 +1,4 @@
-package finance
+package billing
 
 import (
 	"errors"

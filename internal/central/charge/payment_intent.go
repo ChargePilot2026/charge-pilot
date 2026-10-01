@@ -157,9 +157,6 @@ func (s PaymentIntentStore) Reserve(ctx context.Context, input IntentInput) (Pay
 	var openid string
 	var paymentID uint64
 	err = s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := lockCheckoutPort(tx, input.Port.Port.PortID); err != nil {
-			return err
-		}
 		if err := checkoutPortAvailable(tx, input.Port.Port.PortID); err != nil {
 			return err
 		}

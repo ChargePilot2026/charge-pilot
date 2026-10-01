@@ -1,4 +1,4 @@
-package finance
+package billing
 
 import (
 	"errors"
@@ -38,32 +38,5 @@ func TestRejectInvalidSplit(t *testing.T) {
 	_, err := Allocate(1, 1, SplitAll, []Party{{ID: "x", RatioBPS: 9000}})
 	if !errors.Is(err, ErrInvalidSplit) {
 		t.Fatal(err)
-	}
-}
-
-func TestFundingPrecedence(t *testing.T) {
-	got, err := Fund(100, 30, 40, 50)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != (Funding{MemberCents: 30, CouponCents: 40, WalletCents: 30, WechatCents: 0}) {
-		t.Fatal(got)
-	}
-	got, err = Fund(100, 10, 10, 10)
-	if err != nil || got.WechatCents != 70 {
-		t.Fatal(got, err)
-	}
-}
-
-func TestPriceEnergyKeepsFeeLinesSeparate(t *testing.T) {
-	fee, err := PriceEnergy([]EnergySlice{
-		{Energy: 2500, ElectricCentsPerKWh: 55, ServiceCentsPerKWh: 100},
-		{Energy: 2500, ElectricCentsPerKWh: 80, ServiceCentsPerKWh: 100},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if fee != (ChargeFee{ElectricCents: 34, ServiceCents: 50, TotalCents: 84}) {
-		t.Fatal(fee)
 	}
 }

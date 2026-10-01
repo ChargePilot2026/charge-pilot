@@ -59,9 +59,6 @@ func TestCardServerExtensionDebitsOnceAndRefundsUnusedMinutes(t *testing.T) {
 				t.Errorf("cleanup: %v", err)
 			}
 		}
-		if err := orm.Exec("DELETE FROM charge_port_lock WHERE port_code=?", portCode).Error; err != nil {
-			t.Error(err)
-		}
 	})
 	create("INSERT INTO wallet_account(user_id,balance_cents,status) VALUES(?,1000,'active')", user)
 	number := uuid.New()

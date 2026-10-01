@@ -119,39 +119,6 @@ CREATE TABLE `charge_billing_job` (
   KEY `idx_due` (`status`,`next_attempt_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='待结算订单任务及重试状态';
 
--- charge_debt：充电欠费
-CREATE TABLE `charge_debt` (
-  `id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT '记录主键 ID',
-  `debt_no` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '欠费业务编号',
-  `charge_order_id` bigint unsigned NOT NULL COMMENT '充电订单 ID',
-  `payment_order_id` bigint unsigned NOT NULL COMMENT '支付订单 ID',
-  `user_id` bigint unsigned NOT NULL COMMENT '充电用户 ID',
-  `debt_cents` bigint NOT NULL COMMENT '应补缴欠费，单位分',
-  `paid_cents` bigint NOT NULL DEFAULT '0' COMMENT '已支付金额，单位分',
-  `status` enum('unpaid','partial','settled','waived') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'unpaid' COMMENT '当前业务状态；取值 unpaid / partial / settled / waived',
-  `last_reminder_at` datetime(3) DEFAULT NULL COMMENT '最近欠费提醒时间',
-  `created_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '记录创建时间',
-  `updated_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) COMMENT '记录更新时间',
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_debt_order` (`charge_order_id`),
-  UNIQUE KEY `uk_debt_no` (`debt_no`),
-  KEY `idx_user_status` (`user_id`,`status`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='充电欠费';
-
--- charge_debt_receipt：欠费补缴入账回执
-CREATE TABLE `charge_debt_receipt` (
-  `id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT '记录主键 ID',
-  `debt_id` bigint unsigned NOT NULL COMMENT '充电欠费 ID',
-  `payment_order_id` bigint unsigned NOT NULL COMMENT '支付订单 ID',
-  `paid_cents` bigint NOT NULL COMMENT '已支付金额，单位分',
-  `channel_ref` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '支付渠道入账流水引用',
-  `received_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '报告接收时间',
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_payment` (`payment_order_id`),
-  UNIQUE KEY `uk_channel` (`channel_ref`),
-  KEY `idx_debt` (`debt_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='欠费补缴入账回执';
-
 -- charge_end_receipt：设备结束事件的幂等回执
 CREATE TABLE `charge_end_receipt` (
   `charge_order_id` bigint unsigned NOT NULL COMMENT '充电订单 ID',
@@ -321,12 +288,6 @@ CREATE TABLE `charge_payment_intent` (
   UNIQUE KEY `uk_charge_order` (`charge_order_id`),
   KEY `idx_expiry` (`status`,`expires_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='支付前冻结方案及端口预占';
-
--- charge_port_lock：支付与在线卡共享的端口事务锁
-CREATE TABLE `charge_port_lock` (
-  `port_code` varchar(64) NOT NULL COMMENT '充电端口二维码唯一编码',
-  PRIMARY KEY (`port_code`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='支付与在线卡共享的端口事务锁';
 
 -- charge_prepay：预付支付确认结果
 CREATE TABLE `charge_prepay` (
@@ -601,11 +562,11 @@ CREATE TABLE `payment_callback_idempotent` (
   UNIQUE KEY `uk_txn` (`wechat_transaction_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='微信支付回调幂等(30 天保留)';
 
--- payment_order：支付订单(支持 charge / wallet_recharge / charge_debt)
+-- payment_order：支付订单(支持 charge / wallet_recharge)
 CREATE TABLE `payment_order` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT '记录主键 ID',
   `order_no` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'P+独立Snowflake支付单号；历史编号保留',
-  `biz_type` enum('charge','wallet_recharge','charge_debt') COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '关联业务类型；取值 charge / wallet_recharge / charge_debt',
+  `biz_type` enum('charge','wallet_recharge') COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '关联业务类型；取值 charge / wallet_recharge',
   `biz_id` bigint unsigned NOT NULL COMMENT '关联 charge_order.id 或 wallet_txn.id',
   `user_id` bigint unsigned NOT NULL COMMENT '充电用户 ID',
   `pay_method` enum('wechat','balance','mixed','coupon') COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '订单支付方式；取值 wechat / balance / mixed / coupon',
@@ -745,16 +706,6 @@ CREATE TABLE `snowflake_state` (
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Snowflake 编号分配状态，业务事务内行锁串行分配';
 INSERT INTO `snowflake_state` (`id`,`last_millisecond`,`sequence`) VALUES (1,0,0);
-
--- charge_debt_payment_request：欠费支付请求幂等回执
-CREATE TABLE `charge_debt_payment_request` (
-  `request_id` char(36) NOT NULL COMMENT '客户端 UUID 请求号；重复请求复用原支付订单',
-  `debt_id` bigint unsigned NOT NULL COMMENT '欠费记录 ID，防止同请求号支付不同欠费',
-  `payment_order_id` bigint unsigned NOT NULL COMMENT '对应支付订单 ID，关联原 Snowflake 支付单号',
-  `created_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '请求创建时间',
-  PRIMARY KEY (`request_id`),
-  KEY `idx_debt` (`debt_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='欠费支付请求幂等回执';
 
 -- user：终端用户
 CREATE TABLE `user` (
@@ -1726,7 +1677,6 @@ DROP TABLE IF EXISTS `admin_user_role`;
 DROP TABLE IF EXISTS `admin_field_mask`;
 DROP TABLE IF EXISTS `admin_data_scope`;
 DROP TABLE IF EXISTS `snowflake_state`;
-DROP TABLE IF EXISTS `charge_debt_payment_request`;
 DROP TABLE IF EXISTS `wallet_txn`;
 DROP TABLE IF EXISTS `wallet_risk_review`;
 DROP TABLE IF EXISTS `wallet_risk_release`;
@@ -1760,7 +1710,6 @@ DROP TABLE IF EXISTS `coupon_activity_rule`;
 DROP TABLE IF EXISTS `coupon`;
 DROP TABLE IF EXISTS `charge_start_receipt`;
 DROP TABLE IF EXISTS `charge_prepay`;
-DROP TABLE IF EXISTS `charge_port_lock`;
 DROP TABLE IF EXISTS `charge_payment_intent`;
 DROP TABLE IF EXISTS `charge_order_pricing`;
 DROP TABLE IF EXISTS `charge_order`;
@@ -1769,8 +1718,6 @@ DROP TABLE IF EXISTS `charge_manual_settlement`;
 DROP TABLE IF EXISTS `charge_fee_receipt`;
 DROP TABLE IF EXISTS `charge_event_log`;
 DROP TABLE IF EXISTS `charge_end_receipt`;
-DROP TABLE IF EXISTS `charge_debt_receipt`;
-DROP TABLE IF EXISTS `charge_debt`;
 DROP TABLE IF EXISTS `charge_billing_job`;
 DROP TABLE IF EXISTS `charge_billing_cutoff`;
 DROP TABLE IF EXISTS `charge_bill_read`;

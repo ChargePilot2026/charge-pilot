@@ -141,9 +141,6 @@ func (s CardStore) Swipe(ctx context.Context, cardNo, eventID string, port ScanR
 			return err
 		}
 		var session CardCharge
-		if err := lockCheckoutPort(tx, port.Port.PortID); err != nil {
-			return err
-		}
 		active := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("active_port=?", port.Port.PortID).Find(&session)
 		if active.Error != nil {
 			return active.Error
@@ -252,6 +249,11 @@ func (s CardStore) Swipe(ctx context.Context, cardNo, eventID string, port ScanR
 			praw, _ := json.Marshal(p)
 			portCode := port.Port.PortID
 			if err := tx.Create(&CardCharge{ChargeOrderID: order.ID, CardID: card.ID, PortCode: portCode, ActivePort: &portCode, PaidCents: p.PriceCents, PurchasedMinutes: p.Minutes, MaxMinutes: spec.Scheme.Normalized().Card.MaxMinutes, PackageJSON: praw, CardNo: card.CardNo, WalletAfterCents: w.BalanceCents - w.FrozenCents - p.PriceCents}).Error; err != nil {
+				// 并发刷卡抢同一端口时 active_port 唯一键拒绝后写事务，
+				// 按业务冲突处理，设备重试即可。
+				if isMySQLDuplicate(err) {
+					return ErrCardOperation
+				}
 				return err
 			}
 		}

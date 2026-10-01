@@ -80,7 +80,11 @@ func isPrivateAddress(ip net.IP) bool {
 		if v4[0] == 192 && v4[1] == 0 && v4[2] == 0 {
 			return true
 		}
-		// 当前策略允许 198.18.0.0/15 基准测试网段，以兼容开发环境的 DNS 映射。
+		// 基准测试网段（198.18.0.0/15，RFC 2544）。原仅为兼容开发环境 DNS 映射的放行已按 D3 决策关闭；
+		// 若开发环境仍需要该映射，应以配置项方式仅对 dev profile 放行。
+		if v4[0] == 198 && v4[1] >= 18 && v4[1] <= 19 {
+			return true
+		}
 		return false
 	}
 	// IPv6 唯一本地地址（fc00：：/7）。

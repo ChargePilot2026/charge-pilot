@@ -28,7 +28,7 @@ func (a API) authorized() gin.HandlerFunc {
 		provided := sha256.Sum256([]byte(c.GetHeader("X-Service-Token")))
 		expected := sha256.Sum256([]byte(a.ServiceToken))
 		if a.ServiceToken == "" || subtle.ConstantTimeCompare(provided[:], expected[:]) != 1 {
-			httpapi.Write(c, http.StatusUnauthorized, 1001, "service token invalid", nil)
+			httpapi.Write(c, http.StatusUnauthorized, httpapi.CodeUnauthorized, "service token invalid", nil)
 			c.Abort()
 			return
 		}
@@ -43,17 +43,17 @@ func (a API) task(c *gin.Context) (Task, bool) {
 		return Task{}, false
 	}
 	if a.Scheduler.Handlers[code] == nil {
-		httpapi.Write(c, http.StatusNotFound, 1004, "定时任务不存在", nil)
+		httpapi.Write(c, http.StatusNotFound, httpapi.CodeNotFound, "定时任务不存在", nil)
 		return Task{}, false
 	}
 	var task Task
 	err := a.Scheduler.DB.WithContext(c.Request.Context()).Table("scheduled_task").Where("task_code = ?", code).Take(&task).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		httpapi.Write(c, http.StatusNotFound, 1004, "定时任务不存在", nil)
+		httpapi.Write(c, http.StatusNotFound, httpapi.CodeNotFound, "定时任务不存在", nil)
 		return Task{}, false
 	}
 	if err != nil {
-		httpapi.Write(c, http.StatusServiceUnavailable, 5003, "定时任务暂时无法读取", nil)
+		httpapi.Write(c, http.StatusServiceUnavailable, httpapi.CodeServiceUnavailable, "定时任务暂时无法读取", nil)
 		return Task{}, false
 	}
 	return task, true
@@ -73,7 +73,7 @@ func (a API) lastRun(c *gin.Context) {
 	err := a.Scheduler.DB.WithContext(c.Request.Context()).Table("task_execution_log").
 		Where("task_code = ?", task.Code).Order("started_at DESC").Take(&row).Error
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-		httpapi.Write(c, http.StatusServiceUnavailable, 5003, "执行记录暂时无法读取", nil)
+		httpapi.Write(c, http.StatusServiceUnavailable, httpapi.CodeServiceUnavailable, "执行记录暂时无法读取", nil)
 		return
 	}
 	var duration any
@@ -105,16 +105,16 @@ func (a API) trigger(c *gin.Context) {
 		return
 	}
 	if !task.Enabled && !input.Force {
-		httpapi.Write(c, http.StatusConflict, 1005, "任务已暂停", nil)
+		httpapi.Write(c, http.StatusConflict, httpapi.CodeTaskConflict, "任务已暂停", nil)
 		return
 	}
 	completed, err := a.Scheduler.execute(c.Request.Context(), task, input.Force, "admin_api", strings.TrimSpace(input.TriggerReason))
 	if !completed && err == nil {
-		httpapi.Write(c, http.StatusConflict, 1005, "任务正在执行", nil)
+		httpapi.Write(c, http.StatusConflict, httpapi.CodeTaskConflict, "任务正在执行", nil)
 		return
 	}
 	if err != nil {
-		httpapi.Write(c, http.StatusServiceUnavailable, 5003, "任务执行失败: "+err.Error(), nil)
+		httpapi.Write(c, http.StatusServiceUnavailable, httpapi.CodeServiceUnavailable, "任务执行失败: "+err.Error(), nil)
 		return
 	}
 	httpapi.OK(c, gin.H{"task_code": task.Code, "status": "success"})

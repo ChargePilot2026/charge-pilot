@@ -1,3 +1,9 @@
+// Package alerts 将 gateway_db.device_event 中的设备故障上报转换为 central_db.alert_event 告警。
+//
+// 顺序契约：每条事件先在 central_db 事务内写入告警，再在 gateway_db 事务内推进
+// device_event.processed_at。告警以 event_id（事件键）去重，同一事件重复执行为空操作；
+// gateway 推进失败时事件保留未处理状态留待重试，central 失败则不推进 processed_at。
+// 两个方向均不丢事件、不重复建告警，重试幂等由去重约束保证，无需额外补偿。
 package alerts
 
 import (
@@ -15,7 +21,7 @@ import (
 )
 
 // DeviceSynchronizer 将设备故障上报转换为告警，不依赖遥测阈值。
-// 仅在 central_db 提交成功后推进 processed_at，支持失败重试与历史补录。
+// 跨库写入顺序与失败重试契约见包注释。
 type DeviceSynchronizer struct {
 	GatewayDB *gorm.DB
 	AdminDB   *gorm.DB
@@ -53,23 +59,27 @@ func (s DeviceSynchronizer) Run(ctx context.Context) (int, error) {
 	raised := 0
 	var firstError error
 	for _, report := range reports {
-		changed := false
-		err := s.GatewayDB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var event protocol.Event
+		if err := json.Unmarshal(report.EventJSON, &event); err != nil {
+			if firstError == nil {
+				firstError = fmt.Errorf("decode device fault %d: %w", report.ID, err)
+			}
+			continue
+		}
+		changed, err := s.recordFault(ctx, report.EventKey, event)
+		if err != nil {
+			if firstError == nil {
+				firstError = err
+			}
+			continue
+		}
+		err = s.GatewayDB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 			var current deviceReport
 			if err := tx.Table("device_event").Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", report.ID).Take(&current).Error; err != nil {
 				return err
 			}
 			if current.ProcessedAt != nil {
 				return nil
-			}
-			var event protocol.Event
-			if err := json.Unmarshal(current.EventJSON, &event); err != nil {
-				return fmt.Errorf("decode device fault %d: %w", report.ID, err)
-			}
-			var err error
-			changed, err = s.recordFault(ctx, current.EventKey, event)
-			if err != nil {
-				return err
 			}
 			return tx.Table("device_event").Where("id = ?", report.ID).Update("processed_at", gorm.Expr("UTC_TIMESTAMP(3)")).Error
 		})
