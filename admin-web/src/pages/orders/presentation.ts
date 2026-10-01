@@ -7,8 +7,8 @@ export const businessStatuses: Record<string, { label: string; color: string }> 
 export const paymentStatuses: Record<string, { label: string; color: string }> = {
   pending: { label: '待支付', color: 'gold' },
   paid: { label: '已支付', color: 'blue' },
-  refunded: { label: '已退款', color: 'purple' },
-  partial_refunded: { label: '已部分退款', color: 'orange' },
+  refunded: { label: '全额退款', color: 'purple' },
+  partial_refunded: { label: '部分退款', color: 'orange' },
 };
 
 type StatusRow = {

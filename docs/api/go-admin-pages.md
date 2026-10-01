@@ -64,13 +64,13 @@
 | 字段 / 筛选 | 取值与口径 |
 | --- | --- |
 | `business_status` | `pending_start` 待启动、`charging` 充电中、`completed` 已完成；由 `charge_order.business_status` 读取，不受退款进度影响 |
-| `payment_status` | `pending` 待支付、`paid` 已支付、`refunded` 已退款、`partial_refunded` 已部分退款；由充电订单的独立持久字段读取，仅实际支付确认或退款成功后同步 |
+| `payment_status` | `pending` 待支付、`paid` 已支付、`refunded` 全额退款、`partial_refunded` 部分退款；由充电订单的独立持久字段读取，仅实际支付确认或退款成功后同步 |
 | `start_source` | `payment` 扫码支付、`balance` 余额支付、`card` 在线卡；先按在线卡会话判定 `card`，再按支付方式判定 `balance` 或 `payment`，无有效来源凭据时为 `null` |
 | `payment_order_status` | 关联支付订单的原始流转状态，可为 `null`；与规范的四态 `payment_status` 分开 |
 | `refunded_cents` | 已成功退款的累计金额，单位分；有效关联支付单未退时为 0，没有可见的未删除支付记录时为 `null` |
 | `status` / `failure_reason` | 原内部生命周期与异常原因；取消、失败和退款流转在业务状态上归入已完成，界面通过原流程提示及详情辨明原因 |
 
-充电订单仅包含扫码支付、余额支付与在线卡三种来源的充电记录，不包含钱包充值。列表与详情的两种状态各自展示；退款申请或渠道处理中尚未成功时仍显示已支付，不提前标为已退款。充电中的时长来自 `live.seconds`，过期采样以 `live.stale` 标记；已结束时使用 `duration_seconds` 实际设备读数。实时读数不可用且未记录实际时长时不编造数值。
+充电订单仅包含扫码支付、余额支付与在线卡三种来源的充电记录，不包含钱包充值。列表与详情的两种状态各自展示；退款申请或渠道处理中尚未成功时仍显示已支付，不提前显示全额退款或部分退款。充电中的时长来自 `live.seconds`，过期采样以 `live.stale` 标记；已结束时使用 `duration_seconds` 实际设备读数。实时读数不可用且未记录实际时长时不编造数值。
 
 充电用户档案 `GET /charge-users/{id}` 的 `recent_orders` 同样返回 `business_status` 与 `payment_status`，直接读取上述持久字段；原 `status` 保留详细技术流转。该摘要按订单 ID 倒序，最多 20 笔，不改变 `charge_user.read` 权限要求。
 

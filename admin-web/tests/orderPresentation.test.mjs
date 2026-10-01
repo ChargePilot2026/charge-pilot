@@ -11,7 +11,7 @@ const order = (values = {}) => ({
 test('business and payment labels stay independent of old lifecycle and refund progress', () => {
   const row = order({ business_status: 'charging', payment_status: 'partial_refunded', status: 'refunding', refund_status: 'processing' });
   assert.equal(businessStatusInfo(row).label, '充电中');
-  assert.equal(paymentStatusInfo(row).label, '已部分退款');
+  assert.equal(paymentStatusInfo(row).label, '部分退款');
   assert.match(paymentStatusInfo(row).hint, /退款处理中/);
   assert.equal(paymentStatusInfo(order({ status: 'refunding', refund_status: 'processing' })).label, '已支付');
 });

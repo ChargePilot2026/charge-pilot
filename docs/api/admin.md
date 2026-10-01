@@ -1469,7 +1469,7 @@ user 服务在单库事务中锁定模板，校验用户有效、模板处于发
 
 “充电订单”继续使用 `GET /api/v1/admin/orders`、`/{id}`、`/{id}/timeline`，只列充电记录；新增“支付订单”使用 `GET /api/v1/admin/payment-orders`，列出 `charge` 充电付款与 `wallet_recharge` 钱包充值。均要求 `order.read`，当前后台查询仍为全量读取，未宣称站点或厂商订单范围过滤。
 
-充电订单新增规范的 `business_status`（`pending_start/charging/completed`）、`payment_status`（`pending/paid/refunded/partial_refunded`）及 `start_source`（`payment/balance/card`，分别为扫码支付、余额支付、在线卡，来源不明时可空）字段和筛选。原 `status` 保留内部流程，原始支付单状态另以 `payment_order_status` 返回；退款处理中不会提前进入已退款。`refunded_cents` 为累计成功退款金额，实际充电时长使用设备采样或结束读数，过期实时采样有标记。
+充电订单新增规范的 `business_status`（`pending_start/charging/completed`）、`payment_status`（`pending/paid/refunded/partial_refunded`，分别显示待支付、已支付、全额退款、部分退款）及 `start_source`（`payment/balance/card`，分别为扫码支付、余额支付、在线卡，来源不明时可空）字段和筛选。原 `status` 保留内部流程，原始支付单状态另以 `payment_order_status` 返回；退款处理中不会提前显示全额退款或部分退款。`refunded_cents` 为累计成功退款金额，实际充电时长使用设备采样或结束读数，过期实时采样有标记。
 
 支付订单支持 `page/page_size/order_no/biz_type/payment_status/pay_method` 查询，保留原支付 `status` 并返回独立的四态 `payment_status`。充电关联须满足同一用户且充电单有效未删除；钱包充值的充电关联字段固定为空。具体 DTO、空值与金额口径见 [充电订单与支付订单](go-admin-pages.md#充电订单与支付订单2026-10-01)。
 

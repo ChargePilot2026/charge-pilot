@@ -5657,7 +5657,7 @@
           "refunded",
           "partial_refunded"
         ],
-        "description": "待支付、已支付、已退款、已部分退款。仅已确认付款和累计成功退款改变该状态；退款 pending/processing 不提前标为退款完成。"
+        "description": "待支付、已支付、全额退款、部分退款。仅已确认付款和累计成功退款改变该状态；退款 pending/processing 不提前标为退款完成。"
       },
       "OrderStartSource": {
         "type": "string",
