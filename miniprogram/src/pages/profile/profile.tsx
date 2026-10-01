@@ -1,6 +1,7 @@
 import { Fragment } from "react";
 import { Button, Image, Text, View } from "@tarojs/components";
 import { useController } from "../../runtime";
+import { HOME_TABS, TabBar } from "../../runtime/TabBar";
 import { inlineStyle, StationMap } from "../../runtime/components";
 import controller from "./profile.controller";
 import { DevelopmentAccount } from '../../runtime/development';
@@ -43,5 +44,6 @@ return (<><View className="container"><DevelopmentAccount />{!!(needsLogin) && (
 <Text className="text-secondary">{"›"}</Text></View>
 <View style={inlineStyle({"display": "flex", "justifyContent": "space-between", "padding": "16rpx 0"})} onClick={event("goAnnouncements", {})}><Text>{"📢 公告"}</Text>
 <Text className="text-secondary">{"›"}</Text></View></View>
-{!!(!needsLogin) && (<View className="card" onClick={event("onLogout", {})} style={inlineStyle({"textAlign": "center", "color": "#999"})}>{"退出登录"}</View>)}</View></>);
+{!!(!needsLogin) && (<View className="card" onClick={event("onLogout", {})} style={inlineStyle({"textAlign": "center", "color": "#999"})}>{"退出登录"}</View>)}</View>
+<TabBar active="profile" tabs={HOME_TABS} /></>);
 }

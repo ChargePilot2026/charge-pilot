@@ -1,0 +1,47 @@
+/* 底部导航样式：属于 runtime/TabBar 组件，随组件一起注入。
+   不能放在页面样式里，否则只有引入该样式的页面能得到导航布局。 */
+
+.tab-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: flex-end;
+  height: 110rpx;
+  padding-bottom: env(safe-area-inset-bottom);
+  border-top: 2rpx solid #efefef;
+  background: #fff;
+  z-index: 30;
+}
+
+.tab-item {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 14rpx;
+}
+
+.tab-icon-wrap { display: flex; align-items: center; justify-content: center; height: 46rpx; }
+.tab-icon { font-size: 38rpx; color: #1f2329; }
+.tab-label { margin-top: 6rpx; font-size: 22rpx; color: #1f2329; }
+.tab-item-active .tab-icon { color: #22c55e; }
+.tab-item-active .tab-label { color: #22c55e; }
+
+/* 居中悬浮扫码按钮：上移出导航条并用绿色圆形承载。 */
+.tab-item-scan { position: relative; }
+.tab-item-scan .tab-icon-wrap {
+  width: 96rpx;
+  height: 96rpx;
+  margin-top: -48rpx;
+  border-radius: 50%;
+  background: #22c55e;
+  box-shadow: 0 6rpx 18rpx rgba(34, 197, 94, .35);
+}
+.tab-item-scan .tab-icon { font-size: 46rpx; color: #fff; }
+.tab-item-scan .tab-label { margin-top: 4rpx; }
+
+/* 导航条为 fixed 定位，不占文档流。占位块放在页面内容末尾，
+   让所有挂载 TabBar 的页面统一获得等高的底部留白。 */
+.tab-bar-spacer { height: calc(110rpx + env(safe-area-inset-bottom)); }

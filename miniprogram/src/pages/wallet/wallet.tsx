@@ -1,6 +1,7 @@
 import { Fragment } from "react";
 import { Button, Text, View } from "@tarojs/components";
 import { useController } from "../../runtime";
+import { HOME_TABS, TabBar } from "../../runtime/TabBar";
 import { inlineStyle, StationMap } from "../../runtime/components";
 import controller from "./wallet.controller";
 
@@ -21,5 +22,6 @@ return (<><View className="container">{!!(needsLogin) && (<View className="card"
 <Button onClick={event("goRecharge", {})}>{"钱包充值"}</Button>
 <Button onClick={event("goTxns", {})}>{"查看资金流水"}</Button></View>)}
 {!!(wallet) && (<Button onClick={event("goCards", {})}>{"我的在线卡"}</Button>)}
-{!!(wallet) && (<Button onClick={event("goRefund", {})}>{"申请退款 / 查看退款进度"}</Button>)}</View></>);
+{!!(wallet) && (<Button onClick={event("goRefund", {})}>{"申请退款 / 查看退款进度"}</Button>)}</View>
+<TabBar active="home" tabs={HOME_TABS} /></>);
 }

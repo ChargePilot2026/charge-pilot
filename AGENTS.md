@@ -59,6 +59,15 @@
 - 现有数据默认保留。结构不兼容时先备份并设计数据迁移；仅对明确可丢弃的开发数据使用 `scripts/db/reset-dev.ps1 -ResetDevelopmentData`。不得仅删除 Goose 版本表或无条件清空库、卷和 Redis。
 - MySQL DDL 不具备事务回滚；初始化中断应针对空 schema 处理，不将失败的结构更新标为成功。
 
+## 开发环境
+
+- 开发环境由 `scripts/dev/start.ps1` 启动的 `compose.dev.yaml` 容器统一提供，包含后端、后台、用户端、MySQL 和 Redis。启动、数据准备、模拟器与联调顺序见 [本地运行](README.md#本地运行) 与 [模拟器](README.md#模拟器)，本节只记录使用规则。
+- 不得自行启动本地服务器、dev server 或为 `dist` 另建静态服务。容器已在运行时直接复用其地址；容器未运行时先向用户确认再执行 `start.ps1`，不擅自拉起、不擅自重建。
+- 验证前端渲染访问容器内的后台与用户端 H5 地址，并同时确认页面控制台无报错。确需一次性临时服务时避开容器占用端口，用完立即停止并说明用途。
+- 本地地址固定：后台 `5173/admin/`、用户 H5 `5174/`、MySQL `3306`、Redis Cache `6379` 与 Stream `6380`、DC589 `9100`；central、gateway、worker 就绪状态查各自 HTTP 端口的 `/health/ready`。
+- Go 服务没有热重载。修改后按 README 重建对应服务，不重启整个栈，也不改动用户已在运行的环境。
+- 设备联调的两个模拟器须在独立终端分别执行 `scripts/dev/simulator.ps1 -Number 1` 与 `-Number 2`，属前台交互进程，不得作为后台服务重复拉起。模拟器与模拟支付结果不得当作实机或真实资金验收。
+
 ## 验证与交付
 
 - Go 业务变更运行 `make check`；涉及模块依赖时运行 `go mod tidy -diff`，涉及进程装配或构建时构建对应 `cmd`。

@@ -1,6 +1,7 @@
 import { Fragment } from "react";
 import { Button, View } from "@tarojs/components";
 import { useController } from "../../runtime";
+import { HOME_TABS, TabBar } from "../../runtime/TabBar";
 import { inlineStyle, StationMap } from "../../runtime/components";
 import controller from "./my.controller";
 import "./my.css";
@@ -26,5 +27,6 @@ return (<><View className="container">{!!(needsLogin) && (<Button type="primary"
 {!!(error) && (<View className="card error"><View>{error}</View>
 <Button onClick={event("load", {})} disabled={loading}>{"重试"}</Button></View>)}
 {!!(!loading && !items?.length && !needsLogin && !error) && (<View className="card">{"暂无发票申请记录"}</View>)}
-{!!(items?.length > 0 && items?.length === page * pageSize && !loading) && (<Button onClick={event("onReachBottom", {})}>{"加载更多"}</Button>)}</View></>);
+{!!(items?.length > 0 && items?.length === page * pageSize && !loading) && (<Button onClick={event("onReachBottom", {})}>{"加载更多"}</Button>)}</View>
+<TabBar active="home" tabs={HOME_TABS} /></>);
 }

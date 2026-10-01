@@ -28,20 +28,6 @@ export default defineAppConfig({
     "navigationBarTextStyle": "white",
     "enablePullDownRefresh": true
   },
-  "tabBar": {
-    "color": "#999",
-    "selectedColor": "#1677ff",
-    "list": [
-      {
-        "pagePath": "pages/index/index",
-        "text": "首页"
-      },
-      {
-        "pagePath": "pages/profile/profile",
-        "text": "我的"
-      }
-    ]
-  },
   "permission": {
     "scope.userLocation": {
       "desc": "用于显示附近充电站点"

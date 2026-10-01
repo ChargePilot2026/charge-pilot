@@ -1,1 +1,70 @@
-/* 主页样式 */
+/* 首页样式：功能入口、附近电站列表。底部导航样式见 runtime/TabBar.css。
+   尺寸以 rpx 表述，与 designWidth 750 的基准一致。 */
+
+.home {
+  min-height: 100vh;
+  padding: 16rpx;
+  background: #f5f6f7;
+}
+
+/* ---- 顶部 2×2 功能入口 ---- */
+.home-entries {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16rpx;
+}
+
+.entry-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  box-sizing: border-box;
+  width: calc((100% - 16rpx) / 2);
+  height: 150rpx;
+  padding: 0 28rpx;
+  border-radius: 16rpx;
+  background: #fff;
+}
+
+.entry-body { display: flex; flex-direction: column; }
+.entry-title { font-size: 30rpx; font-weight: 600; color: #1f2329; line-height: 44rpx; }
+.entry-sub { font-size: 22rpx; color: #9aa0a6; line-height: 32rpx; }
+.entry-icon { font-size: 44rpx; color: #22c55e; }
+
+/* ---- 区块标题 ---- */
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 32rpx 8rpx 20rpx;
+}
+
+.section-title { display: flex; align-items: center; font-size: 32rpx; font-weight: 600; color: #1f2329; }
+.section-bar { width: 6rpx; height: 30rpx; margin-right: 14rpx; border-radius: 3rpx; background: #22c55e; }
+.section-action { display: flex; align-items: center; font-size: 24rpx; color: #5f6368; }
+.section-action-icon { margin-right: 8rpx; font-size: 26rpx; color: #5f6368; }
+
+/* ---- 电站列表 ---- */
+.station-card {
+  margin-bottom: 16rpx;
+  padding: 28rpx 28rpx 24rpx;
+  border-radius: 16rpx;
+  background: #fff;
+}
+
+.station-head { display: flex; align-items: baseline; justify-content: space-between; }
+.station-name { font-size: 32rpx; font-weight: 600; color: #1f2329; }
+.station-distance { font-size: 26rpx; color: #1f2329; }
+.station-address { display: block; margin-top: 10rpx; font-size: 24rpx; color: #9aa0a6; }
+
+.station-hint {
+  margin-bottom: 16rpx;
+  padding: 24rpx 28rpx;
+  border-radius: 16rpx;
+  background: #fff;
+  font-size: 26rpx;
+  color: #5f6368;
+}
+
+.station-hint-error { color: #ef4444; }
+.station-hint-link { margin-left: 16rpx; color: #22c55e; }

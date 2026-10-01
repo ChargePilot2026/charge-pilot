@@ -39,7 +39,7 @@ internal/worker/     任务、事件投递、补偿与调度
 internal/platform/   配置、数据库、鉴权与 HTTP 基础设施
 migrations/          三个 schema 的初始化 SQL
 admin-web/           React 18 / TypeScript / Ant Design 5 / Vite 5
-miniprogram/         Taro 4.3 / React 18 / TypeScript / Vite 4
+miniprogram/         Taro 4.3 / React 18 / TypeScript / Taro UI 3.4 / Vite 4
 protocols/           DC589 完整协议规范
 docker/              服务镜像、Caddy 和 MySQL 初始化配置
 scripts/dev/         开发启动、联调数据准备与模拟器
@@ -194,6 +194,10 @@ DC589 原生刷卡报文没有事件序号。gateway 为每次新报文生成 UU
 用户与管理员使用不同 kind 的 JWT，用户访问令牌有效期 15 分钟，后台访问令牌有效期 8 小时。后台请求前在本地检查到期时间，剩余 30 秒以内时先刷新，并保留 401 后单次刷新重试。身份资料仅在进入会话时同步，登录和续期直接使用响应中的身份及权限。刷新令牌在 Redis 中轮换，后台会话从登录起最长 7 天，续期不延长此期限。用户操作校验 JWT、Redis 会话及有效用户；后台另查 auth_version 和实时角色权限。后台口令使用 bcrypt，可启用 TOTP；后台登录、MFA、刷新按 IP 限速，Redis 不可用时拒绝相关请求。菜单权限只影响展示。服务间接口使用 `X-Service-Token`。
 
 用户匿名入口为 `/scan/resolve`、`/scan/port`、`/scan/offers`、`/station/nearby`、`/station/:id`、`/announcement/list`，均位于 `/api/v1/user`。订单、钱包、卡、手机号和其他用户操作校验当前会话与资源归属。
+
+`/station/nearby` 的经纬度可选：同时提供时按球面距离升序返回半径内的站点，`distance_km` 为计算值，响应 `located` 为 `true`；缺省时按创建时间倒序返回最近创建的站点，默认 10 条，`distance_km` 为 `null`、`located` 为 `false`，客户端须显示为距离未知，不得按 0 公里处理。只提供一个坐标、格式错误或越界仍按 400 处理。
+
+`/station/:id` 除站点资料外返回 `announcements` 与 `devices`。公告包含全部生效的全局公告，以及 `target_ids` 列入本站的站点维度公告；城市维度公告需要用户位置才能判定归属，该接口不做猜测。设备清单来自 `device_meta`，在线状态依据最后心跳时间是否落在 1 小时内判定：从未上报时 `last_heartbeat_at` 为 `null` 且 `online` 为 `false`；gateway 不可达时 `runtime_available` 为 `false`，表示运行态未知，不得当作离线或已测量。
 
 手机号保存在 `central_db.user.phone` 明文列，未绑定为 `NULL`，唯一索引限制号码归属。正式绑定使用微信授权 code，开发模式允许测试号码。绑定响应返回脱敏号码；后台 `charge_user.read` 可读取完整号码并按号码或片段检索，当前没有独立敏感字段权限。后台站点、设备等资源有数据范围约束；订单和支付查询尚无站点或厂商范围过滤。
 

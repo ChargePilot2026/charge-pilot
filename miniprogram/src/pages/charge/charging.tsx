@@ -1,6 +1,7 @@
 import { Fragment } from "react";
 import { Button, Text, View } from "@tarojs/components";
 import { useController } from "../../runtime";
+import { HOME_TABS, TabBar } from "../../runtime/TabBar";
 import { inlineStyle, StationMap } from "../../runtime/components";
 import controller from "./charging.controller";
 
@@ -64,5 +65,6 @@ return (<><View className="container">{!!(needsLogin) && (<Button onClick={event
 {!!(snapshot?.rule_description) && (<View className="card">{snapshot?.rule_description}</View>)}
 <Button onClick={event("detail", {})}>{"查看订单详情"}</Button>
 {!!(snapshot?.status === 'charging') && (<Button onClick={event("stopCharge", {})} loading={stopping} disabled={stopping || loading}>{"停止充电"}</Button>)}
-{!!(stopNotice) && (<View className="card">{stopNotice}</View>)}</Fragment>)}</View></>);
+{!!(stopNotice) && (<View className="card">{stopNotice}</View>)}</Fragment>)}</View>
+<TabBar active="home" tabs={HOME_TABS} /></>);
 }

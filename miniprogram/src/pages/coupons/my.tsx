@@ -1,6 +1,7 @@
 import { Fragment } from "react";
 import { Button, Picker, View } from "@tarojs/components";
 import { useController } from "../../runtime";
+import { HOME_TABS, TabBar } from "../../runtime/TabBar";
 import { inlineStyle, StationMap } from "../../runtime/components";
 import controller from "./my.controller";
 import "./my.css";
@@ -29,5 +30,6 @@ return (<><View className="container">{!!(needsLogin) && (<View className="card"
 {statusNames?.[statusIndex]}
 {"的优惠券"}</View>)}
 {!!(items?.length < total && !loading) && (<Button onClick={event("onReachBottom", {})}>{"加载更多"}</Button>)}
-{!!(!needsLogin) && (<Button onClick={event("goScan", {})}>{"去扫码充电"}</Button>)}</View></>);
+{!!(!needsLogin) && (<Button onClick={event("goScan", {})}>{"去扫码充电"}</Button>)}</View>
+<TabBar active="home" tabs={HOME_TABS} /></>);
 }

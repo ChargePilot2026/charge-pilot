@@ -1,6 +1,7 @@
 import { Fragment } from "react";
 import { Button, View } from "@tarojs/components";
 import { useController } from "../../runtime";
+import { HOME_TABS, TabBar } from "../../runtime/TabBar";
 import { inlineStyle, StationMap } from "../../runtime/components";
 import controller from "./cards.controller";
 
@@ -17,5 +18,6 @@ return (<><View className="container">{!!(needsLogin) && (<Button onClick={event
 {" · "}
 {item?.label}</View>
 {!!(item?.status === 'active') && (<Button data-card={item?.card_no} data-status="lost" onClick={event("change", {"card":item?.card_no,"status":"lost"})} disabled={busy}>{"挂失"}</Button>)}
-<Button data-card={item?.card_no} data-status="unbound" onClick={event("change", {"card":item?.card_no,"status":"unbound"})} disabled={busy}>{"解绑"}</Button></View>))}</View></>);
+<Button data-card={item?.card_no} data-status="unbound" onClick={event("change", {"card":item?.card_no,"status":"unbound"})} disabled={busy}>{"解绑"}</Button></View>))}</View>
+<TabBar active="home" tabs={HOME_TABS} /></>);
 }
