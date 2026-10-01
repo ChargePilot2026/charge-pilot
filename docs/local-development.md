@@ -58,3 +58,27 @@ scripts/test-integration.sh -race
 脚本创建独立 MySQL 8.4 和 Redis 8 容器、随机本机端口、从空库迁移五个 schema，
 设置全部 `TEST_*_DATABASE_URL` 与 Redis 测试变量，顺序运行各包集成测试并清理测试容器。
 不复用或清空正在运行的开发库。单独 `go test ./...` 未配置这些变量时会跳过集成测试。
+# 网关日志与时区
+
+开发 Go 容器设置 `TZ=Asia/Shanghai`，标准日志使用北京时间。Docker 自己附加的时间戳可能仍以 UTC 显示，请以应用日志中的时间和启动日志的时区为准。
+
+后台订单列表与详情中，充电中的电量来自该订单开始后、对应设备端口的心跳累计计量；费用使用订单冻结方案计算当前估算，不写入最终结算字段。列表每 5 秒刷新；超过 30 秒没有读数则标注旧值，费用不按断网后的时间继续增加。无法可靠定价时明确等待计量，不以套餐支付金额替代实际费用。
+
+新充电订单号为北京时间启动请求时间 `YYYYMMDDHHmmss` + 设备编号 + 端口号（至少两位，不足补 0）。编号在支付成功/刷卡授权后、向设备发起启动前生成并保持不变；设备回执时间仍单独记录在 `started_at`。历史订单号保留，同端口同秒冲突会拒绝创建，不追加随机后缀。
+
+网关输出启动监听地址、时区、设备上线/离线、指令发送与回执、充电结束及故障日志。上下行报文包含指令中文名称和 `data` JSON 解析结果，使用 W、kWh、秒、分钟等明确单位；启动显示端口、设备订单号、模式和购买量，停止显示结果含义，结束显示计量和停止原因。心跳调试日志还包含电压、温度、每个端口状态和充电遥测。`device_order` 是协议中的 BCD 设备订单号，并非业务 `CH...` 订单号。
+
+日志包含设备编号、命令号和关联 session，不输出卡号、余额、SIM 标识、面板密码或原始报文。解析失败明确标记 `invalid_payload`，未知指令标记 `unsupported_command`；不会把错误数据作为有效计量输出。
+
+```powershell
+docker compose -f compose.dev.yaml logs -f --tail 100 gateway
+```
+
+心跳收发日志默认关闭。调试时在当前 PowerShell 设置开关并重建 gateway 容器，模拟器会自动重连：
+
+```powershell
+$env:GATEWAY_DEBUG_HEARTBEAT = 'true'
+docker compose -f compose.dev.yaml up -d --no-deps --force-recreate gateway
+```
+
+恢复为 `false` 后再次执行同一重建命令即可关闭。该操作重启网关，会短暂中断设备连接。

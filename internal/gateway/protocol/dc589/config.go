@@ -7,10 +7,12 @@ import (
 )
 
 const (
-	// DefaultHeartbeatSeconds 是 3 秒，而厂商对链路存活的规定是
+	// 空闲设备每分钟心跳，任一端口充电时固定每 15 秒心跳。
+	// 厂商对链路存活的规定是
 	// 漏掉三次心跳，所以平台的读超时取所申请周期的三倍，而不是
 	// 构建期拍脑袋写死的常数。
-	DefaultHeartbeatSeconds = 3
+	DefaultHeartbeatSeconds  = 60
+	ChargingHeartbeatSeconds = 15
 	// MissedHeartbeatsBeforeReset 是连续多少次心跳无人应答之后，
 	// 主板判定链路已死并重发登录。
 	MissedHeartbeatsBeforeReset = 3

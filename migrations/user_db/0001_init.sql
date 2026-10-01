@@ -252,7 +252,7 @@ CREATE TABLE `charge_meter_review` (
 -- charge_order：充电订单(纯生命周期)
 CREATE TABLE `charge_order` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `order_no` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '业务唯一号 ORD-xxx',
+  `order_no` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '北京时间启动请求年月日时分秒+设备编号+至少两位端口号',
   `user_id` bigint unsigned NOT NULL,
   `device_id` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL,
   `port_no` tinyint unsigned NOT NULL,

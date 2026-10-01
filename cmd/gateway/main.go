@@ -51,6 +51,8 @@ func run(ctx context.Context) error {
 	// 指标端点不做鉴权，抓取器因此不必持有运营会话；它只暴露路由名、状态码和耗时。
 	// registry 是在 NewRouter 之前传进去的，这样记录用的中间件会在任何路由注册之前装好。
 	metrics := httpapi.NewMetrics("gateway")
+	zone, offset := time.Now().Zone()
+	log.Printf("gateway starting http=%s dc589=%s max_connections=%d idle_heartbeat_seconds=%d charging_heartbeat_seconds=%d debug_heartbeat=%t timezone=%s offset_seconds=%d", cfg.HTTPAddr, cfg.DC589Addr, cfg.MaxConnections, dc589.DefaultHeartbeatSeconds, dc589.ChargingHeartbeatSeconds, cfg.DebugHeartbeat, zone, offset)
 	router := httpapi.NewRouter(metrics)
 	metrics.Register(router)
 	provision.API{DB: orm, ServiceToken: cfg.ServiceToken}.Register(router)
@@ -89,7 +91,7 @@ func run(ctx context.Context) error {
 		return err
 	})
 	group.Go(func() error {
-		err := protocol.Serve(groupCtx, []protocol.Endpoint{{Address: cfg.DC589Addr, Adapter: dc589.TCPAdapter{Registry: deviceConnections}}}, sink, cfg.MaxConnections)
+		err := protocol.Serve(groupCtx, []protocol.Endpoint{{Address: cfg.DC589Addr, Adapter: dc589.TCPAdapter{Registry: deviceConnections, DebugHeartbeat: cfg.DebugHeartbeat}}}, sink, cfg.MaxConnections)
 		if errors.Is(err, context.Canceled) {
 			return nil
 		}

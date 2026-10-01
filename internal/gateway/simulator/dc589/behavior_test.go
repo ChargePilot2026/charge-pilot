@@ -45,6 +45,65 @@ func capturedBoard(t *testing.T, ports int) (*board, *captureConn) {
 	b.online = true
 	return b, c
 }
+
+func TestAdjustPowerWhileChargingUpdatesMeterAndTelemetry(t *testing.T) {
+	b, conn := capturedBoard(t, 2)
+	if err := b.start(context.Background(), wire.StartCommand{Port: 1, Mode: wire.ByTime, Quantity: 60, ConsumerType: 2}); err != nil {
+		t.Fatal(err)
+	}
+	conn.frames(t)
+	c := b.charging[1]
+	for _, power := range []uint32{1500, 3500, 1000} {
+		before := c.wattDeciSeconds
+		if err := b.applyInput(Input{Type: "power", Port: 1, Power: power}); err != nil {
+			t.Fatal(err)
+		}
+		b.advance()
+		if b.charging[1] != c || c.wattDeciSeconds-before != uint64(power) {
+			t.Fatal("power adjustment interrupted charging or used stale power")
+		}
+		if err := b.sendAllPorts(false, wire.Heartbeat); err != nil {
+			t.Fatal(err)
+		}
+		frames := conn.frames(t)
+		hb, err := wire.ParseHeartbeat(frames[len(frames)-1])
+		if err != nil || len(hb.ChargingPorts) != 1 || hb.ChargingPorts[0].PowerDeciWatts != power {
+			t.Fatalf("telemetry: %+v %v", hb, err)
+		}
+	}
+	if b.physical(2).Power != b.config.PowerDeciWatts {
+		t.Fatal("another port changed")
+	}
+	m := terminalModel{port: 1, state: b.snapshot()}
+	if m.powerFields()[0].value != "100.0" {
+		t.Fatal("power form did not retain current value")
+	}
+}
+
+func TestHeartbeatPolicyKeepsChargingIntervalUntilAllPortsEnd(t *testing.T) {
+	b, conn := capturedBoard(t, 2)
+	b.heartbeat = time.NewTicker(time.Hour)
+	defer func() { b.heartbeat.Stop() }()
+	b.charging[1] = &charge{port: 1, mode: wire.ByTime, remaining: time.Hour, startedAt: time.Now()}
+	b.charging[2] = &charge{port: 2, mode: wire.ByTime, remaining: time.Hour, startedAt: time.Now()}
+	b.chargingHeartbeat()
+	if b.snapshot().HeartbeatSeconds != 15 {
+		t.Fatal("charging heartbeat is not 15s")
+	}
+	delete(b.charging, 1)
+	b.chargingHeartbeat()
+	if b.snapshot().HeartbeatSeconds != 15 {
+		t.Fatal("another charging port must retain 15s")
+	}
+	delete(b.charging, 2)
+	b.chargingHeartbeat()
+	if b.snapshot().HeartbeatSeconds != 60 {
+		t.Fatal("all idle ports must use 60s")
+	}
+	if len(conn.frames(t)) != 3 {
+		t.Fatal("state transitions must report immediately")
+	}
+}
 func TestTwentyPortsQueriesAndAsyncCorrelation(t *testing.T) {
 	b, c := capturedBoard(t, 20)
 	for p := byte(1); p <= 20; p++ {

@@ -5,8 +5,11 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log"
 	"net"
 	"os"
 	"sync"
@@ -48,8 +51,9 @@ func (a TCPAdapter) finish(ctx context.Context, sink protocol.Sink, audit *proto
 // TCPAdapter 是一个厂商监听器。其他 adapter 使用各自的端口并实现
 // protocol.Adapter，不必改动本包。
 type TCPAdapter struct {
-	Clock    func() time.Time
-	Registry *protocol.Registry
+	Clock          func() time.Time
+	Registry       *protocol.Registry
+	DebugHeartbeat bool
 }
 
 func (TCPAdapter) Name() string { return "dc589" }
@@ -84,7 +88,9 @@ func (a TCPAdapter) ServeConn(ctx context.Context, conn net.Conn, sink protocol.
 		return err
 	}
 	deviceID := registration.BoardID
+	(&connection{deviceID: deviceID}).logFrame("RX", first, nil)
 	if err := sink.Register(ctx, protocol.Registration{Protocol: a.Name(), DeviceID: deviceID, HardwareVersion: registration.HardwareVersion, SoftwareVersion: fmt.Sprintf("%s:%d", registration.SoftwareID, registration.SoftwareVersion), ReceivedAt: clock()}); err != nil {
+		log.Printf("device registration rejected protocol=dc589 device=%s remote=%s error=%v", deviceID, remoteAddrOf(conn), err)
 		return err
 	}
 	var serverSession [6]byte
@@ -102,17 +108,18 @@ func (a TCPAdapter) ServeConn(ctx context.Context, conn net.Conn, sink protocol.
 	defer func() {
 		if errors.Is(serveErr, os.ErrDeadlineExceeded) {
 			reason = protocol.CloseReadTimeout
-		} else if serveErr != nil {
-			reason = protocol.CloseProtocol
 		} else if replaced.Load() {
 			reason = protocol.CloseReplaced
+		} else if serveErr != nil && !errors.Is(serveErr, io.EOF) {
+			reason = protocol.CloseProtocol
 		}
 		if ctx.Err() != nil {
 			reason = protocol.CloseContextEnded
 		}
 		a.finish(context.WithoutCancel(ctx), sink, audit, deviceID, reason)
+		log.Printf("device offline protocol=dc589 device=%s session=%x remote=%s reason=%s error=%v", deviceID, serverSession, remoteAddrOf(conn), reason, serveErr)
 	}()
-	session := &connection{conn: conn, audit: audit}
+	session := &connection{conn: conn, audit: audit, deviceID: deviceID, debugHeartbeat: a.DebugHeartbeat}
 	if err := session.writeFrame(BuildRegisterReply(serverSession, clock())); err != nil {
 		return err
 	}
@@ -123,24 +130,38 @@ func (a TCPAdapter) ServeConn(ctx context.Context, conn net.Conn, sink protocol.
 	// 遥测」和「什么都没在充电」变成同一个观测，而前者几乎从来不是
 	// 真相。它同时也把读死限定死：厂商的规定是漏掉三次心跳，而不是
 	// 这个构建随便挑的某个常数。
-	interval, err := BuildHeartbeatInterval(serverSession, DefaultHeartbeatSeconds, true)
+	heartbeatSeconds := uint16(DefaultHeartbeatSeconds)
+	if reader, ok := sink.(interface {
+		HasChargingPorts(context.Context, string) (bool, error)
+	}); ok {
+		charging, err := reader.HasChargingPorts(ctx, deviceID)
+		if err != nil {
+			return err
+		}
+		if charging {
+			heartbeatSeconds = ChargingHeartbeatSeconds
+		}
+	}
+	interval, err := BuildHeartbeatInterval(serverSession, heartbeatSeconds, true)
 	if err != nil {
 		return err
 	}
 	if err := session.writeFrame(interval); err != nil {
 		return err
 	}
+	session.heartbeatSeconds.Store(uint32(heartbeatSeconds))
+	session.serverSession = serverSession
 	// 读死跟刚申请到的周期走，按厂商漏掉三次心跳的规则算。写死成常数
 	// 总有一边是错的：过长会让已经闭嘴的主板继续占着端口好几分钟；
 	// 过短则会在一台老实执行比我们申请的更长周期的主板还在正常充电
 	// 时把它踢掉。
-	readTimeout := time.Duration(DefaultHeartbeatSeconds*3) * time.Second
 	if a.Registry != nil {
 		detach := a.Registry.Attach(deviceID, session, func(protocol.Session) { replaced.Store(true) })
 		defer detach()
 	}
+	log.Printf("device online protocol=dc589 device=%s session=%x remote=%s hardware=%s software=%s:%d heartbeat_seconds=%d", deviceID, serverSession, remoteAddrOf(conn), registration.HardwareVersion, registration.SoftwareID, registration.SoftwareVersion, heartbeatSeconds)
 	for {
-		if err := conn.SetReadDeadline(clock().Add(readTimeout)); err != nil {
+		if err := conn.SetReadDeadline(clock().Add(time.Duration(session.heartbeatSeconds.Load()*MissedHeartbeatsBeforeReset) * time.Second)); err != nil {
 			return err
 		}
 		frame, err := ReadFrame(reader)
@@ -148,6 +169,7 @@ func (a TCPAdapter) ServeConn(ctx context.Context, conn net.Conn, sink protocol.
 			return err
 		}
 		audit.Inbound(len(frame.Data), clock())
+		session.logFrame("RX", frame, nil)
 		event := protocol.Event{Protocol: a.Name(), DeviceID: deviceID, ReceivedAt: clock(), RawPayload: frame.Data, SessionID: frame.Session}
 		switch frame.Command {
 		case OnlineCardSwipe:
@@ -204,12 +226,28 @@ func (a TCPAdapter) ServeConn(ctx context.Context, conn net.Conn, sink protocol.
 			if err := session.writeFrame(BuildHeartbeatReply(frame.Session)); err != nil {
 				return err
 			}
+			if heartbeat.HasPortStatus {
+				charging := len(heartbeat.ChargingPorts) > 0
+				for _, state := range heartbeat.PortStates {
+					if state == 1 {
+						charging = true
+					}
+				}
+				seconds := uint32(DefaultHeartbeatSeconds)
+				if charging {
+					seconds = ChargingHeartbeatSeconds
+				}
+				if err := session.setHeartbeat(seconds); err != nil {
+					return err
+				}
+			}
 		case StartReply, StopReply:
 			result, err := ParseCommandResult(frame)
 			if err != nil {
 				return err
 			}
 			event.Port, event.ResultCode = result.Port, result.Code
+			log.Printf("device command result protocol=dc589 device=%s command=0x%02X session=%x port=%d result=0x%02X", deviceID, frame.Command, frame.Session, result.Port, result.Code)
 			if frame.Command == StartReply {
 				event.Type = protocol.StartResult
 			} else {
@@ -232,6 +270,7 @@ func (a TCPAdapter) ServeConn(ctx context.Context, conn net.Conn, sink protocol.
 			event.PowerDeciWatts = end.PowerDeciWatts
 			event.StopReason = end.StopReason
 			event.ConsumerType = end.ConsumerType
+			log.Printf("device charge ended protocol=dc589 device=%s port=%d order=%s seconds=%d energy_mwh=%d stop_reason=0x%02X", deviceID, end.Port, end.OrderNumber, end.ChargedSeconds, end.ChargedMWh, end.StopReason)
 			if err := sink.Record(ctx, event); err != nil {
 				return err
 			}
@@ -243,6 +282,7 @@ func (a TCPAdapter) ServeConn(ctx context.Context, conn net.Conn, sink protocol.
 				return ErrPayload
 			}
 			event.Type, event.Port, event.FaultCode = protocol.Fault, frame.Data[0], frame.Data[1]
+			log.Printf("device fault protocol=dc589 device=%s port=%d code=0x%02X", deviceID, event.Port, event.FaultCode)
 			if err := sink.Record(ctx, event); err != nil {
 				return err
 			}
@@ -339,19 +379,63 @@ func (a TCPAdapter) ServeConn(ctx context.Context, conn net.Conn, sink protocol.
 			// 一个它并不需要的命令而失联——而且第一个这样的命令，恰恰
 			// 就是让人没法诊断的那一个。
 			audit.Unknown(frame.Command)
+			log.Printf("device unknown command protocol=dc589 device=%s command=0x%02X session=%x", deviceID, frame.Command, frame.Session)
 		}
 	}
 }
 
 type connection struct {
-	conn  net.Conn
-	mu    sync.Mutex
-	audit *protocol.SessionAudit
+	conn             net.Conn
+	mu               sync.Mutex
+	audit            *protocol.SessionAudit
+	deviceID         string
+	debugHeartbeat   bool
+	logger           *log.Logger
+	heartbeatSeconds atomic.Uint32
+	serverSession    [6]byte
+	heartbeatMu      sync.Mutex
+}
+
+func (c *connection) setHeartbeat(seconds uint32) error {
+	c.heartbeatMu.Lock()
+	defer c.heartbeatMu.Unlock()
+	if c.heartbeatSeconds.Load() == seconds {
+		return nil
+	}
+	f, err := BuildHeartbeatInterval(c.serverSession, uint16(seconds), true)
+	if err != nil {
+		return err
+	}
+	if err := c.writeFrame(f); err != nil {
+		return err
+	}
+	c.heartbeatSeconds.Store(seconds)
+	return c.conn.SetReadDeadline(time.Now().Add(time.Duration(seconds*MissedHeartbeatsBeforeReset) * time.Second))
+}
+
+// Never log raw payloads: card numbers, balances and configuration secrets may be present.
+func (c *connection) logFrame(direction string, frame Frame, err error) {
+	if (frame.Command == Heartbeat || frame.Command == HeartbeatReply) && !c.debugHeartbeat && err == nil {
+		return
+	}
+	logger := c.logger
+	if logger == nil {
+		logger = log.Default()
+	}
+	data, parseErr := parsedLogData(frame)
+	if parseErr != nil {
+		data = map[string]any{"decode_status": "invalid_payload", "decode_error": parseErr.Error()}
+	}
+	parsed, _ := json.Marshal(data)
+	logger.Printf("device frame protocol=dc589 device=%s direction=%s command=0x%02X name=%s session=%x bytes=%d data=%s error=%v", c.deviceID, direction, frame.Command, codeName(frame.Command, commandNames), frame.Session, len(frame.Data), parsed, err)
 }
 
 func (c *connection) Close() error { return c.conn.Close() }
 
-func (c *connection) Send(ctx context.Context, command protocol.Command) error {
+func (c *connection) Send(ctx context.Context, command protocol.Command) (sendErr error) {
+	defer func() {
+		log.Printf("device command sent protocol=dc589 device=%s kind=%v port=%d session=%x error=%v", c.deviceID, command.Kind, command.Port, command.SessionID, sendErr)
+	}()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -379,10 +463,17 @@ func (c *connection) Send(ctx context.Context, command protocol.Command) error {
 	if err != nil {
 		return err
 	}
-	return c.writeFrame(frame)
+	if err := c.writeFrame(frame); err != nil {
+		return err
+	}
+	if command.Kind == protocol.CommandStart {
+		return c.setHeartbeat(ChargingHeartbeatSeconds)
+	}
+	return nil
 }
 
-func (c *connection) writeFrame(frame Frame) error {
+func (c *connection) writeFrame(frame Frame) (writeErr error) {
+	defer func() { c.logFrame("TX", frame, writeErr) }()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	raw, err := Encode(frame)

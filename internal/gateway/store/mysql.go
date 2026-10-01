@@ -20,6 +20,14 @@ var ErrDeviceNotProvisioned = errors.New("device is not provisioned for this pro
 
 type MySQLSink struct{ DB *gorm.DB }
 
+// Resume the charging cadence immediately after gateway/device reconnection;
+// do not wait for an idle heartbeat to rediscover an already running port.
+func (s MySQLSink) HasChargingPorts(ctx context.Context, deviceID string) (bool, error) {
+	var count int64
+	err := s.DB.WithContext(ctx).Model(&devicePortRow{}).Where("device_id=? AND status='charging' AND deleted_at IS NULL", deviceID).Count(&count).Error
+	return count > 0, err
+}
+
 type cardDeliveryRow struct {
 	EventKey string `gorm:"column:event_key;primaryKey"`
 }

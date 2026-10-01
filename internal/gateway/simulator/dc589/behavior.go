@@ -39,21 +39,22 @@ type PhysicalPort struct {
 	Card      uint32 `json:"present_card"`
 }
 type Snapshot struct {
-	Online      bool                   `json:"online"`
-	Smoke       bool                   `json:"smoke"`
-	Completed   map[string]bool        `json:"completed_orders"`
-	SavedAt     time.Time              `json:"saved_at"`
-	Cards       map[uint32]CardStatus  `json:"cards"`
-	Module      UpgradeModule          `json:"upgrade_module"`
-	Identity    wire.DeviceIdentity    `json:"identity"`
-	Config      wire.ConfigTable       `json:"config"`
-	RawConfig   []byte                 `json:"raw_config"`
-	RemovePower uint16                 `json:"remove_power_deciwatts"`
-	Temperature int16                  `json:"temperature_c"`
-	Voltage     uint16                 `json:"voltage_v"`
-	Ports       map[byte]*PhysicalPort `json:"ports"`
-	Charging    []ChargeState          `json:"charging"`
-	Pending     []wire.Frame           `json:"pending_reports"`
+	Online           bool                   `json:"online"`
+	Smoke            bool                   `json:"smoke"`
+	Completed        map[string]bool        `json:"completed_orders"`
+	SavedAt          time.Time              `json:"saved_at"`
+	Cards            map[uint32]CardStatus  `json:"cards"`
+	Module           UpgradeModule          `json:"upgrade_module"`
+	Identity         wire.DeviceIdentity    `json:"identity"`
+	Config           wire.ConfigTable       `json:"config"`
+	RawConfig        []byte                 `json:"raw_config"`
+	RemovePower      uint16                 `json:"remove_power_deciwatts"`
+	Temperature      int16                  `json:"temperature_c"`
+	Voltage          uint16                 `json:"voltage_v"`
+	Ports            map[byte]*PhysicalPort `json:"ports"`
+	Charging         []ChargeState          `json:"charging"`
+	HeartbeatSeconds uint16                 `json:"heartbeat_seconds"`
+	Pending          []wire.Frame           `json:"pending_reports"`
 }
 type CardStatus struct {
 	Valid        bool   `json:"valid"`
@@ -396,7 +397,9 @@ func (b *board) applyInput(in Input) error {
 		if in.Power > 65535 {
 			return fmt.Errorf("power out of wire range")
 		}
+		before := p.Power
 		p.Power = in.Power
+		b.config.Log.Printf("power adjusted port=%d before_w=%.1f after_w=%.1f charging=%t", in.Port, float64(before)/10, float64(in.Power)/10, b.charging[in.Port] != nil)
 		return nil
 	case "plug":
 		p.Connected = true
@@ -466,6 +469,7 @@ func (b *board) applyInput(in Input) error {
 			return fmt.Errorf("local quantity must be nonzero")
 		}
 		b.charging[in.Port] = c
+		b.chargingHeartbeat()
 		return b.queueReport(b.portReport(in.Port, 0xB4))
 	default:
 		return fmt.Errorf("unknown physical event %q", in.Type)
@@ -500,7 +504,7 @@ func (b *board) acknowledge(command, port byte) {
 	_ = b.persist()
 }
 func (b *board) snapshot() Snapshot {
-	s := Snapshot{Identity: b.config.Identity, Config: b.configTable, RawConfig: b.rawConfig, RemovePower: b.removePower, Temperature: b.temperature, Voltage: b.voltage, Ports: map[byte]*PhysicalPort{}, Pending: append([]wire.Frame(nil), b.pending...)}
+	s := Snapshot{Identity: b.config.Identity, Config: b.configTable, RawConfig: b.rawConfig, RemovePower: b.removePower, Temperature: b.temperature, Voltage: b.voltage, Ports: map[byte]*PhysicalPort{}, Pending: append([]wire.Frame(nil), b.pending...), HeartbeatSeconds: uint16(b.heartbeatInterval / time.Second)}
 	s.Online, s.Smoke = b.online, b.smoke
 	s.Completed = map[string]bool{}
 	for k, v := range b.completed {

@@ -11,6 +11,7 @@ x-go: &go
     - go-modules:/go/pkg/mod
     - go-build:/root/.cache/go-build
   environment: &go-env
+    TZ: Asia/Shanghai
     GOTOOLCHAIN: auto
     # 在中国大陆访问不到 proxy.golang.org，能用的是 goproxy.cn 这个镜像。
     # 等团队统一到可达的代理后删掉这段。
@@ -94,6 +95,7 @@ services:
     environment:
       <<: *go-env
       DATABASE_URL: mysql://chargepilot:chargepilot_dev@mysql:3306/gateway_db
+      GATEWAY_DEBUG_HEARTBEAT: true
     ports: ["127.0.0.1:8083:8083", "127.0.0.1:9100:9100"]
 
   central:

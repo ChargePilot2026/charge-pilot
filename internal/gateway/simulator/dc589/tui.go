@@ -67,7 +67,7 @@ var terminalActions = []action{
 	{"在线刷卡（移开后才能重刷）", "card", []field{{"卡号（十进制）", "100001"}}},
 	{"移开卡片", "remove-card", nil},
 	{"查询卡余额", "balance", []field{{"卡号（十进制）", "100001"}}},
-	{"设置负载功率", "power", []field{{"功率（W）", "150"}}},
+	{"调整负载功率（充电中可用）", "power", []field{{"功率（W）", "150"}}},
 	{"插入充电器", "plug", nil}, {"拔出充电器", "unplug", nil},
 	{"本地投币 / 离线卡 / 免费启动", "local-start", []field{{"消费方式：0投币 / 1离线卡 / 4免费", "0"}, {"数量：时间模式为分钟，电量模式为0.01度", "60"}, {"离线卡号（无卡填0）", "0"}}},
 	{"端口故障 / 恢复", "fault", []field{{"故障：0恢复 / 3故障 / 4过载", "3"}}},
@@ -197,6 +197,9 @@ func (m terminalModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "enter":
 				m.current = terminalActions[m.selection]
 				m.fields = append([]field(nil), m.current.fields...)
+				if m.current.kind == "power" {
+					m.fields = m.powerFields()
+				}
 				if m.current.kind == "config" {
 					m.fields = m.configFields()
 				}
@@ -213,6 +216,11 @@ func (m terminalModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.scroll = 0
 		case "m", "enter":
 			m.menu = true
+		case "p":
+			m.current = terminalActions[3]
+			m.fields = m.powerFields()
+			m.focus = 0
+			m.editing = true
 		case "up", "k":
 			if m.port > 1 {
 				m.port--
@@ -228,6 +236,13 @@ func (m terminalModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+func (m terminalModel) powerFields() []field {
+	value := "150"
+	if port := m.state.Ports[m.port]; port != nil {
+		value = strconv.FormatFloat(float64(port.Power)/10, 'f', 1, 64)
+	}
+	return []field{{"功率（W，充电中可调整）", value}}
 }
 func (m terminalModel) event() (Input, error) {
 	in := Input{Type: m.current.kind, Port: m.port}
@@ -438,7 +453,7 @@ func (m terminalModel) View() string {
 		start := min(m.scroll, max(0, len(lines)-1))
 		body = strings.Join(lines[start:min(len(lines), start+max(1, m.height-9))], "\n")
 	}
-	footer := "\n" + red.Render(m.notice) + "\nTab 切页 · ↑↓ 选端口 · M/Enter 操作 · PgUp/PgDn 滚动 · Q/Ctrl+C 退出（保留状态）"
+	footer := "\n" + red.Render(m.notice) + "\nTab 切页 · ↑↓ 选端口 · P 调功率 · M/Enter 操作 · PgUp/PgDn 滚动 · Q/Ctrl+C 退出（保留状态）"
 	out := header + body + footer
 	lines := strings.Split(out, "\n")
 	for i := range lines {

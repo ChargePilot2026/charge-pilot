@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -158,7 +157,10 @@ func (s PaymentCallbackStore) Apply(ctx context.Context, payment VerifiedPayment
 			}
 		}
 
-		chargeNo := "CH" + strings.ReplaceAll(uuid.NewString(), "-", "")
+		chargeNo, err := newChargeOrderNumber(tx, intent.DeviceID, intent.PortNo)
+		if err != nil {
+			return err
+		}
 		chargeOrder := ChargeOrderRecord{OrderNo: chargeNo, UserID: intent.UserID, DeviceID: intent.DeviceID, PortNo: intent.PortNo,
 			PortCode: sql.NullString{String: intent.PortCode, Valid: true}, PaymentOrderID: sql.NullInt64{Int64: int64(order.ID), Valid: true},
 			Status: "paid", ChargeMode: intent.ChargeMode, ChargeQuantity: intent.ChargeQuantity,

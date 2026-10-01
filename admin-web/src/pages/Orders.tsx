@@ -1,4 +1,4 @@
-import { Alert, Button, DatePicker, Descriptions, Drawer, Form, Input, InputNumber, Select, Space, Spin, Table, Tag, Timeline, Typography } from 'antd';
+import { Alert, Button, DatePicker, Descriptions, Drawer, Form, Input, InputNumber, Select, Space, Spin, Table, Tag, Timeline, Tooltip, Typography } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
 import { useEffect, useState } from 'react';
 import dayjs, { Dayjs } from 'dayjs';
@@ -8,6 +8,8 @@ import { LoadError } from '../components/LoadError';
 import ManualRefund from './ManualRefund';
 
 interface Order {
+	 live?: { at: string; stale: boolean; kwh: number; seconds: number; fee?: { electric_cents: number; service_cents: number; total_cents: number }; fee_unavailable?: string };
+	 live_unavailable?: string;
   order_id: number;
   order_no: string;
   user_id: number;
@@ -59,6 +61,13 @@ const refunds: Record<string, string> = { none: '无退款', processing: '退款
 const time = (value: string | null) => value ? dayjs(value).format('YYYY-MM-DD HH:mm:ss') : '—';
 const money = (value: number | null) => value == null ? '待结算' : `¥${(value / 100).toFixed(2)}`;
 const statusTag = (value: string) => <Tag color={statuses[value]?.color}>{statuses[value]?.label || value}</Tag>;
+const liveHint = (row: Order) => row.live ? `${row.live.stale ? '读数已过期，保留最后采样值；' : ''}采样时间：${time(row.live.at)}。费用按订单冻结费率估算，结束后结算。` : row.live_unavailable || '等待设备计量';
+const orderMeter = (row: Order) => row.status === 'charging'
+  ? <Tooltip title={liveHint(row)}><span>{row.live ? `${row.live.kwh.toFixed(3)}${row.live.stale ? '（旧）' : ''}` : '待上报'}</span></Tooltip>
+  : row.meter_kwh ?? '—';
+const orderFee = (row: Order, kind: 'electric' | 'service' | 'total') => row.status === 'charging'
+  ? <Tooltip title={`${liveHint(row)} ${row.live?.fee_unavailable || ''}`}><span>{row.live?.fee ? `≈${money(row.live.fee[`${kind}_cents`])}${row.live.stale ? '（旧）' : ''}` : '待计量'}</span></Tooltip>
+  : money(row[`${kind}_fee_cents`]);
 function errorMessage(error: unknown): string {
   if (axios.isAxiosError<ApiEnvelope>(error)) {
     return error.response?.data?.message || '网络连接失败，请稍后重试';
@@ -83,8 +92,19 @@ export default function OrdersPage() {
   const [timeline, setTimeline] = useState<OrderTimeline | null>(null);
 
   useEffect(() => {
+    if (!page?.items.some(row => row.status === 'charging')) return;
+    const timer = window.setInterval(() => setReload(value => value + 1), 5000);
+    return () => window.clearInterval(timer);
+  }, [page?.items]);
+  useEffect(() => {
+    if (detail?.status !== 'charging') return;
+    const timer = window.setInterval(() => setDetailReload(value => value + 1), 5000);
+    return () => window.clearInterval(timer);
+  }, [detail?.status, selected]);
+
+  useEffect(() => {
     const controller = new AbortController();
-    setLoading(true); setError(null); setPage(null);
+    if (!page) setLoading(true); setError(null);
     const { period, ...values } = filters;
     http.get<ApiEnvelope<OrderPage>>('/api/v1/admin/orders', {
       signal: controller.signal,
@@ -103,7 +123,8 @@ export default function OrdersPage() {
   useEffect(() => {
     if (selected == null) return;
     const controller = new AbortController();
-    setDetail(null); setTimeline(null); setDetailError(null); setDetailLoading(true);
+    if (detail?.order_id !== selected) { setDetail(null); setTimeline(null); setDetailLoading(true); }
+    setDetailError(null);
     Promise.all([
       http.get<ApiEnvelope<OrderDetail>>(`/api/v1/admin/orders/${selected}`, { signal: controller.signal }),
       http.get<ApiEnvelope<OrderTimeline>>(`/api/v1/admin/orders/${selected}/timeline`, { signal: controller.signal }),
@@ -132,6 +153,7 @@ export default function OrdersPage() {
       </Space></Form.Item>
     </Form>
     <Typography.Paragraph type="secondary">默认查询近 7 天，时间按本地时区显示。尚未启动的订单按创建时间筛选。</Typography.Paragraph>
+    {page?.items.some(row => row.status === 'charging') && <Typography.Paragraph type="secondary">充电中显示最新设备电量；≈ 为按订单冻结费率计算的当前估算费用，每 5 秒刷新。（旧）表示读数已过期，费用停留在最后采样时刻。</Typography.Paragraph>}
     {error && <LoadError title="订单加载失败" detail={error} onRetry={() => setReload(value => value + 1)} />}
     <Table<Order> rowKey="order_id" loading={loading} dataSource={page?.items || []} scroll={{ x: 1500 }}
       locale={{ emptyText: error ? '暂时无法获取订单' : '当前条件下没有订单' }}
@@ -142,10 +164,10 @@ export default function OrdersPage() {
         { title: '订单号', dataIndex: 'order_no', width: 230, fixed: 'left', render: (value, row) => <Button type="link" style={{ padding: 0 }} onClick={() => setSelected(row.order_id)}>{value}</Button> },
         { title: '站点 / 设备', key: 'device', width: 180, render: (_, row) => <><div>{row.station_name || '未关联站点'}</div><Typography.Text type="secondary">{row.device_id} · 端口 {row.port_no}</Typography.Text></> },
         { title: '状态', dataIndex: 'status', width: 110, render: statusTag },
-        { title: '电量 (kWh)', dataIndex: 'meter_kwh', width: 110, render: value => value ?? '—' },
-        { title: '电费', dataIndex: 'electric_fee_cents', width: 100, render: money },
-        { title: '服务费', dataIndex: 'service_fee_cents', width: 100, render: money },
-        { title: '总费用', dataIndex: 'total_fee_cents', width: 110, render: money },
+        { title: '电量 (kWh)', width: 130, render: (_, row) => orderMeter(row) },
+        { title: '电费', width: 120, render: (_, row) => orderFee(row, 'electric') },
+        { title: '服务费', width: 120, render: (_, row) => orderFee(row, 'service') },
+        { title: '总费用', width: 120, render: (_, row) => orderFee(row, 'total') },
         { title: '退款', dataIndex: 'refund_status', width: 120, render: value => refunds[value] || value },
         { title: '开始时间', dataIndex: 'started_at', width: 180, render: time },
         { title: '结束时间', dataIndex: 'ended_at', width: 180, render: time },
@@ -163,13 +185,13 @@ export default function OrdersPage() {
           { key: 'created', label: '创建时间', children: time(detail.created_at), span: 2 },
           { key: 'started', label: '开始时间', children: time(detail.started_at), span: 2 },
           { key: 'ended', label: '结束时间', children: time(detail.ended_at), span: 2 },
-          { key: 'duration', label: '时长', children: detail.duration_seconds == null ? '—' : `${detail.duration_seconds} 秒` },
-          { key: 'meter', label: '电量', children: detail.meter_kwh == null ? '—' : `${detail.meter_kwh} kWh` },
+          { key: 'duration', label: '时长', children: detail.live ? `${detail.live.seconds} 秒` : detail.duration_seconds == null ? '—' : `${detail.duration_seconds} 秒` },
+          { key: 'meter', label: '电量 (kWh)', children: orderMeter(detail) },
         ]} />
         <Descriptions title="费用与支付" bordered column={2} items={[
-          { key: 'electric', label: '电费', children: money(detail.electric_fee_cents) },
-          { key: 'service', label: '服务费', children: money(detail.service_fee_cents) },
-          { key: 'total', label: '总费用', children: money(detail.total_fee_cents) },
+          { key: 'electric', label: '电费', children: orderFee(detail, 'electric') },
+          { key: 'service', label: '服务费', children: orderFee(detail, 'service') },
+          { key: 'total', label: '总费用', children: orderFee(detail, 'total') },
           { key: 'paid', label: '实付', children: detail.paid_cents == null ? '—' : money(detail.paid_cents) },
           { key: 'payment', label: '支付单号', children: detail.payment_order_no || '—', span: 2 },
           { key: 'refund', label: '退款状态', children: refunds[detail.refund_status] || detail.refund_status },

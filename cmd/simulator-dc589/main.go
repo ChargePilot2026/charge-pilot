@@ -51,7 +51,7 @@ func run() error {
 		strength      = flag.Int("signal", 4, "reported signal strength")
 		ports         = flag.Int("ports", 2, "number of charging ports on the board")
 		scenario      = flag.String("scenario", string(dc589sim.ScenarioByEnergy), "behaviour: by-energy, by-time, stop-on-command, reject-start, fault, silent, reconnect")
-		heartbeat     = flag.Duration("heartbeat", 15*time.Second, "heartbeat interval")
+		heartbeat     = flag.Duration("heartbeat", 60*time.Second, "initial idle heartbeat interval; charging uses 15s")
 		power         = flag.Uint("power", 1500, "draw while charging, in tenths of a watt")
 		reconnect     = flag.Duration("reconnect-after", 3*time.Second, "pause before reconnecting in the reconnect scenario")
 		faultAfter    = flag.Duration("fault-after", 5*time.Second, "delay before reporting a fault in the fault scenario")

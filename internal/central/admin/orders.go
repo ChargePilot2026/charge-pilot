@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"github.com/ChargePilot2026/charge-pilot/internal/central/charge"
 	"strconv"
 	"time"
 
@@ -15,31 +16,33 @@ import (
 // 数据主体是 user_db 的充电订单，并联出支付单与支付意图：后台真正要回答的是
 // "这笔订单现在什么状态、钱收没收、退没退"，所以退款状态是拼出来的而不是订单自身的状态。
 type OrderView struct {
-	OrderID           uint64        `json:"order_id"`                          // 充电订单主键
-	OrderNo           string        `json:"order_no"`                          // 业务订单号，对外展示和排障都用它
-	UserID            uint64        `json:"user_id"`                           // 下单用户 ID
-	DeviceID          string        `json:"device_id"`                         // 设备 ID
-	PortNo            uint8         `json:"port_no"`                           // 充电枪序号
-	StationID         *uint64       `json:"station_id"`                        // 所属站点 ID；指针，关联不上时为 null
-	StationName       *string       `json:"station_name" gorm:"-"`             // 站点名称；gorm:"-" 表示不参与扫描，由 orderStations 二次回填
-	Status            string        `json:"status"`                            // 订单状态：pending_payment/paid/charging/completed/cancelled/failed/refunding/refunded
-	CreatedAt         time.Time     `json:"created_at"`                        // 订单创建时间
-	StartedAt         *time.Time    `json:"started_at"`                        // 实际开始充电时间；指针，未开始为 null
-	EndedAt           *time.Time    `json:"ended_at"`                          // 结束充电时间；指针，未结束为 null
-	DurationSeconds   *uint64       `json:"duration_seconds"`                  // 计费时长（秒）；指针，计费完成后才有
-	MeterKWh          *string       `json:"meter_kwh" gorm:"column:meter_kwh"` // 电表读数（kWh）；用字符串承载 DECIMAL，避免浮点丢精度
-	ElectricFeeCents  *int64        `json:"electric_fee_cents"`                // 电费（分）；指针，尚未计费为 null
-	ServiceFeeCents   *int64        `json:"service_fee_cents"`                 // 服务费（分）；指针，尚未计费为 null
-	TotalFeeCents     *int64        `json:"total_fee_cents"`                   // 应收合计（分）；指针，尚未计费为 null
-	RefundStatus      string        `json:"refund_status"`                     // 退款进度：none/processing/partial_refunded/refunded，由 SQL 依据支付单与退款单算出
-	PaymentOrderID    *uint64       `json:"payment_order_id"`                  // 关联支付单主键；指针，未发起支付为 null
-	PaymentOrderNo    *string       `json:"payment_order_no"`                  // 支付单号；指针，未发起支付为 null
-	PaymentStatus     *string       `json:"payment_status"`                    // 支付单状态；指针，未发起支付为 null
-	PaidCents         *int64        `json:"paid_cents"`                        // 实收金额（分）；指针，未支付为 null
-	RefundedCents     *int64        `json:"refunded_cents"`                    // 已退金额（分）；指针，未退过为 null
-	FailureReason     *string       `json:"failure_reason"`                    // 失败原因；指针，非失败单为 null
-	RefundApplicantID *string       `json:"refund_applicant_id" gorm:"-"`      // 发起退款的操作人 ID；gorm:"-" 表示不来自库表，只有具备 order.refund.create 权限时才回填，前端据此显示退款入口
-	Billing           *OrderBilling `json:"billing" gorm:"-"`                  // 分账信息；gorm:"-" 表示不在本查询中加载，仅详情接口填充
+	Live              *charge.LiveMeterView `json:"live,omitempty" gorm:"-"`
+	LiveUnavailable   string                `json:"live_unavailable,omitempty" gorm:"-"`
+	OrderID           uint64                `json:"order_id"`                          // 充电订单主键
+	OrderNo           string                `json:"order_no"`                          // 业务订单号，对外展示和排障都用它
+	UserID            uint64                `json:"user_id"`                           // 下单用户 ID
+	DeviceID          string                `json:"device_id"`                         // 设备 ID
+	PortNo            uint8                 `json:"port_no"`                           // 充电枪序号
+	StationID         *uint64               `json:"station_id"`                        // 所属站点 ID；指针，关联不上时为 null
+	StationName       *string               `json:"station_name" gorm:"-"`             // 站点名称；gorm:"-" 表示不参与扫描，由 orderStations 二次回填
+	Status            string                `json:"status"`                            // 订单状态：pending_payment/paid/charging/completed/cancelled/failed/refunding/refunded
+	CreatedAt         time.Time             `json:"created_at"`                        // 订单创建时间
+	StartedAt         *time.Time            `json:"started_at"`                        // 实际开始充电时间；指针，未开始为 null
+	EndedAt           *time.Time            `json:"ended_at"`                          // 结束充电时间；指针，未结束为 null
+	DurationSeconds   *uint64               `json:"duration_seconds"`                  // 计费时长（秒）；指针，计费完成后才有
+	MeterKWh          *string               `json:"meter_kwh" gorm:"column:meter_kwh"` // 电表读数（kWh）；用字符串承载 DECIMAL，避免浮点丢精度
+	ElectricFeeCents  *int64                `json:"electric_fee_cents"`                // 电费（分）；指针，尚未计费为 null
+	ServiceFeeCents   *int64                `json:"service_fee_cents"`                 // 服务费（分）；指针，尚未计费为 null
+	TotalFeeCents     *int64                `json:"total_fee_cents"`                   // 应收合计（分）；指针，尚未计费为 null
+	RefundStatus      string                `json:"refund_status"`                     // 退款进度：none/processing/partial_refunded/refunded，由 SQL 依据支付单与退款单算出
+	PaymentOrderID    *uint64               `json:"payment_order_id"`                  // 关联支付单主键；指针，未发起支付为 null
+	PaymentOrderNo    *string               `json:"payment_order_no"`                  // 支付单号；指针，未发起支付为 null
+	PaymentStatus     *string               `json:"payment_status"`                    // 支付单状态；指针，未发起支付为 null
+	PaidCents         *int64                `json:"paid_cents"`                        // 实收金额（分）；指针，未支付为 null
+	RefundedCents     *int64                `json:"refunded_cents"`                    // 已退金额（分）；指针，未退过为 null
+	FailureReason     *string               `json:"failure_reason"`                    // 失败原因；指针，非失败单为 null
+	RefundApplicantID *string               `json:"refund_applicant_id" gorm:"-"`      // 发起退款的操作人 ID；gorm:"-" 表示不来自库表，只有具备 order.refund.create 权限时才回填，前端据此显示退款入口
+	Billing           *OrderBilling         `json:"billing" gorm:"-"`                  // 分账信息；gorm:"-" 表示不在本查询中加载，仅详情接口填充
 }
 
 // OrderBilling 是订单详情附带的结算视图。订单本身不含金额去向，金额怎么分在
@@ -193,6 +196,7 @@ func (a ResourceAPI) orders(c *gin.Context) {
 		resourceFailure(c, err)
 		return
 	}
+	a.orderLive(c.Request.Context(), out.Items)
 	httpapi.OK(c, out)
 }
 
@@ -216,6 +220,8 @@ func (a ResourceAPI) order(c *gin.Context) {
 		resourceFailure(c, err)
 		return
 	}
+	row = rows[0]
+	a.orderLive(ctx, rows)
 	row = rows[0]
 	// 匿名结构只为承载这一张事件表的五个可读列，避免为一个查询单独定义类型。
 	billing := OrderBilling{Settlements: []SettlementView{}}

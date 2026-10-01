@@ -77,7 +77,7 @@ type Config struct {
 
 func (c Config) withDefaults() Config {
 	if c.Heartbeat <= 0 {
-		c.Heartbeat = 15 * time.Second
+		c.Heartbeat = 60 * time.Second
 	}
 	if c.PowerDeciWatts == 0 {
 		c.PowerDeciWatts = 1500
@@ -291,9 +291,10 @@ type board struct {
 	// 建，portTelemetry 记录是否带上端口数据。
 	// 自 5.8.6 起这两项都由服务器决定，
 	// 所以板子把它们记下来，而不是假定自己的默认值还算数。
-	heartbeat     *time.Ticker
-	portTelemetry bool
-	configTable   dc589.ConfigTable
+	heartbeat         *time.Ticker
+	heartbeatInterval time.Duration
+	portTelemetry     bool
+	configTable       dc589.ConfigTable
 }
 
 // factoryTable 是板子出厂自带的参数表。
@@ -423,6 +424,13 @@ func (b *board) loop(ctx context.Context) error {
 	}()
 
 	b.heartbeat = time.NewTicker(b.config.Heartbeat)
+	b.heartbeatInterval = b.config.Heartbeat
+	var reconnect <-chan time.Time
+	if b.config.Scenario == ScenarioReconnect {
+		timer := time.NewTimer(b.config.ReconnectAfter)
+		defer timer.Stop()
+		reconnect = timer.C
+	}
 	// 用闭包，
 	// 因为平台每次下发新周期都会替换这个字段：
 	// 现在求值会在返回时停掉原来那个 ticker，而真正在用的那个还在跑。
@@ -436,6 +444,8 @@ func (b *board) loop(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-reconnect:
+			return fmt.Errorf("simulated reconnect")
 		case err := <-readErr:
 			return err
 		case in := <-b.config.Inputs:
@@ -562,7 +572,13 @@ func (b *board) handle(ctx context.Context, frame dc589.Frame) error {
 		}
 		b.setHeartbeat(ok.Seconds)
 		b.portTelemetry = ok.PortStatus
-		return b.writer.send(dc589.BuildHeartbeatSetReply(ok))
+		if err := b.writer.send(dc589.BuildHeartbeatSetReply(ok)); err != nil {
+			return err
+		}
+		// Registration/reconfiguration immediately reports actual port state so
+		// the gateway can choose 15s for a resumed charge or 60s for idle.
+		b.sendHeartbeat()
+		return nil
 	case dc589.SetConfig:
 		return b.applyConfig(frame)
 	case dc589.ReadConfig:
@@ -604,6 +620,7 @@ func (b *board) setHeartbeat(seconds uint16) {
 		b.heartbeat.Stop()
 	}
 	b.heartbeat = time.NewTicker(time.Duration(seconds) * time.Second)
+	b.heartbeatInterval = time.Duration(seconds) * time.Second
 }
 
 // applyConfig 像真板子那样接收参数表：
@@ -680,6 +697,7 @@ func (b *board) start(ctx context.Context, command dc589.StartCommand) error {
 	b.mu.Lock()
 	b.charging[port] = running
 	b.mu.Unlock()
+	b.chargingHeartbeat()
 	if err := b.persist(); err != nil {
 		return err
 	}
@@ -710,6 +728,7 @@ func (b *board) stop(port byte, reason byte) error {
 		delete(b.charging, port)
 	}
 	b.mu.Unlock()
+	b.chargingHeartbeat()
 	if err := b.writer.send(ack); err != nil {
 		return err
 	}
@@ -837,6 +856,21 @@ func (b *board) advance() {
 			b.config.Log.Printf("charge end failed: %v", err)
 		}
 	}
+	if len(finished) > 0 {
+		b.chargingHeartbeat()
+	}
+}
+
+func (b *board) chargingHeartbeat() {
+	if b.heartbeat == nil {
+		return
+	}
+	seconds := uint16(dc589.DefaultHeartbeatSeconds)
+	if len(b.charging) > 0 {
+		seconds = dc589.ChargingHeartbeatSeconds
+	}
+	b.setHeartbeat(seconds)
+	b.sendHeartbeat()
 }
 
 // sendHeartbeat 上报板子信息；
@@ -864,7 +898,7 @@ func (b *board) sendHeartbeat() {
 }
 
 func (b *board) readFrame() (dc589.Frame, error) {
-	_ = b.conn.SetReadDeadline(time.Now().Add(120 * time.Second))
+	_ = b.conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
 	if b.reader == nil {
 		b.reader = bufio.NewReader(b.conn)
 	}

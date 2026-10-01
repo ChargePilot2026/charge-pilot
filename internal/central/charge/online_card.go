@@ -225,7 +225,11 @@ func (s CardStore) Swipe(ctx context.Context, cardNo, eventID string, port ScanR
 			if err := tx.Create(&payment).Error; err != nil {
 				return err
 			}
-			order := ChargeOrderRecord{OrderNo: "CH" + strings.ReplaceAll(uuid.NewString(), "-", ""), UserID: card.UserID, DeviceID: port.DeviceID, PortNo: port.Port.PortNo, PortCode: sql.NullString{String: port.Port.PortID, Valid: true}, PaymentOrderID: sql.NullInt64{Int64: int64(payment.ID), Valid: true}, Status: "paid", ChargeMode: 4, ChargeQuantity: spec.Scheme.Normalized().Card.MaxMinutes, CreatedMonth: utcDate()}
+			chargeNo, err := newChargeOrderNumber(tx, port.DeviceID, port.Port.PortNo)
+			if err != nil {
+				return err
+			}
+			order := ChargeOrderRecord{OrderNo: chargeNo, UserID: card.UserID, DeviceID: port.DeviceID, PortNo: port.Port.PortNo, PortCode: sql.NullString{String: port.Port.PortID, Valid: true}, PaymentOrderID: sql.NullInt64{Int64: int64(payment.ID), Valid: true}, Status: "paid", ChargeMode: 4, ChargeQuantity: spec.Scheme.Normalized().Card.MaxMinutes, CreatedMonth: utcDate()}
 			if err := tx.Create(&order).Error; err != nil {
 				return err
 			}

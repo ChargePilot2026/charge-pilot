@@ -34,6 +34,7 @@ func Serve(ctx context.Context, endpoints []Endpoint, sink Sink, maxConnections 
 			return fmt.Errorf("listen %s: %w", endpoint.Address, err)
 		}
 		listeners = append(listeners, listener)
+		log.Printf("device listener ready protocol=%s address=%s", endpoint.Adapter.Name(), listener.Addr())
 	}
 	defer closeAll(listeners)
 	limit := make(chan struct{}, maxConnections)
@@ -81,6 +82,7 @@ func Serve(ctx context.Context, endpoints []Endpoint, sink Sink, maxConnections 
 						}
 					}()
 				default:
+					log.Printf("device connection rejected protocol=%s remote=%s reason=connection_limit", adapter.Name(), conn.RemoteAddr())
 					_ = conn.Close()
 				}
 			}

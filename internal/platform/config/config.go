@@ -13,6 +13,7 @@ type Gateway struct {
 	ServiceToken       string `env:"SERVICE_TOKEN,required"`
 	CentralInternalURL string `env:"CENTRAL_INTERNAL_URL" envDefault:"http://central:8080"`
 	MaxConnections     int    `env:"DEVICE_MAX_CONNECTIONS" envDefault:"10000"`
+	DebugHeartbeat     bool   `env:"GATEWAY_DEBUG_HEARTBEAT" envDefault:"false"`
 }
 
 type Central struct {
