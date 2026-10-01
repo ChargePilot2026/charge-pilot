@@ -258,7 +258,9 @@ CREATE TABLE `charge_order` (
   `port_no` tinyint unsigned NOT NULL COMMENT '设备充电端口号，从 1 开始',
   `port_code` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '充电端口二维码唯一编码',
   `payment_order_id` bigint unsigned DEFAULT NULL COMMENT '支付订单 ID',
-  `status` enum('pending_payment','paid','charging','completed','cancelled','failed','refunding','refunded') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'pending_payment' COMMENT '当前业务状态；取值 pending_payment / paid / charging / completed / cancelled / failed / refunding / refunded',
+  `status` enum('pending_payment','paid','charging','completed','cancelled','failed','refunding','refunded') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'pending_payment' COMMENT '内部充电生命周期；用于启动授权、结束和退款流转，取值 pending_payment / paid / charging / completed / cancelled / failed / refunding / refunded',
+  `business_status` enum('pending_start','charging','completed') COLLATE utf8mb4_unicode_ci GENERATED ALWAYS AS (CASE WHEN `status` IN ('pending_payment','paid') THEN 'pending_start' WHEN `status` = 'charging' THEN 'charging' ELSE 'completed' END) STORED COMMENT '持久化业务状态：pending_start 待启动、charging 充电中、completed 已完成；由内部生命周期生成，不随支付退款状态变化',
+  `payment_status` enum('pending','paid','refunded','partial_refunded') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'pending' COMMENT '独立支付状态：pending 待支付、paid 已支付、refunded 已退款、partial_refunded 已部分退款；仅随实际到账或退款成功同步',
   `started_at` datetime(3) DEFAULT NULL COMMENT '业务启动时间',
   `ended_at` datetime(3) DEFAULT NULL COMMENT '业务结束时间',
   `charged_kwh` decimal(12,4) DEFAULT NULL COMMENT '累计充电电量，单位 kWh',
@@ -281,8 +283,10 @@ CREATE TABLE `charge_order` (
   UNIQUE KEY `uk_order_no` (`order_no`,`created_month`),
   KEY `idx_user_created` (`user_id`,`created_at`),
   KEY `idx_status` (`status`),
+  KEY `idx_business_status` (`business_status`),
+  KEY `idx_payment_status` (`payment_status`),
   KEY `idx_payment` (`payment_order_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='充电订单(纯生命周期)'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='充电订单(内部生命周期及独立业务、支付状态)'
 /*!50100 PARTITION BY RANGE (to_days(`created_month`))
 (PARTITION p_init VALUES LESS THAN (740255) ENGINE = InnoDB,
  PARTITION p_2026m10 VALUES LESS THAN (740286) ENGINE = InnoDB,

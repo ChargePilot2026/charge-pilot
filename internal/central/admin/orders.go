@@ -13,37 +13,40 @@ import (
 
 // OrderView 是后台订单列表与详情共用的行模型。
 //
-// 数据主体是 user_db 的充电订单，并联出支付单与支付意图：后台真正要回答的是
-// "这笔订单现在什么状态、钱收没收、退没退"，所以退款状态是拼出来的而不是订单自身的状态。
+// 数据主体是 user_db 的充电订单，独立读取持久化业务、支付状态，
+// 并联出支付单的实际金额、退款进度和支付意图的站点资料。
 type OrderView struct {
-	Live              *charge.LiveMeterView `json:"live,omitempty" gorm:"-"`
-	LiveUnavailable   string                `json:"live_unavailable,omitempty" gorm:"-"`
-	OrderID           uint64                `json:"order_id"`                          // 充电订单主键
-	OrderNo           string                `json:"order_no"`                          // 业务订单号，对外展示和排障都用它
-	UserID            uint64                `json:"user_id"`                           // 下单用户 ID
-	DeviceID          string                `json:"device_id"`                         // 设备 ID
-	PortNo            uint8                 `json:"port_no"`                           // 充电枪序号
-	StationID         *uint64               `json:"station_id"`                        // 所属站点 ID；指针，关联不上时为 null
-	StationName       *string               `json:"station_name" gorm:"-"`             // 站点名称；gorm:"-" 表示不参与扫描，由 orderStations 二次回填
-	Status            string                `json:"status"`                            // 订单状态：pending_payment/paid/charging/completed/cancelled/failed/refunding/refunded
-	CreatedAt         time.Time             `json:"created_at"`                        // 订单创建时间
-	StartedAt         *time.Time            `json:"started_at"`                        // 实际开始充电时间；指针，未开始为 null
-	EndedAt           *time.Time            `json:"ended_at"`                          // 结束充电时间；指针，未结束为 null
-	DurationSeconds   *uint64               `json:"duration_seconds"`                  // 计费时长（秒）；指针，计费完成后才有
-	MeterKWh          *string               `json:"meter_kwh" gorm:"column:meter_kwh"` // 电表读数（kWh）；用字符串承载 DECIMAL，避免浮点丢精度
-	ElectricFeeCents  *int64                `json:"electric_fee_cents"`                // 电费（分）；指针，尚未计费为 null
-	ServiceFeeCents   *int64                `json:"service_fee_cents"`                 // 服务费（分）；指针，尚未计费为 null
-	TotalFeeCents     *int64                `json:"total_fee_cents"`                   // 应收合计（分）；指针，尚未计费为 null
-	RefundStatus      string                `json:"refund_status"`                     // 退款进度：none/processing/partial_refunded/refunded，由 SQL 依据支付单与退款单算出
-	PaymentOrderID    *uint64               `json:"payment_order_id"`                  // 关联支付单主键；指针，未发起支付为 null
-	PaymentOrderNo    *string               `json:"payment_order_no"`                  // 支付单号；指针，未发起支付为 null
-	PaymentStatus     *string               `json:"payment_status"`                    // 支付单状态；指针，未发起支付为 null
-	PaidCents         *int64                `json:"paid_cents"`                        // 实收金额（分）；指针，未支付为 null
-	RefundedCents     *int64                `json:"refunded_cents"`                    // 已退金额（分）；指针，未退过为 null
-	FailureReason     *string               `json:"failure_reason"`                    // 失败原因；指针，非失败单为 null
-	RefundApplicantID *string               `json:"refund_applicant_id" gorm:"-"`      // 发起退款的操作人 ID；gorm:"-" 表示不来自库表，只有具备 order.refund.create 权限时才回填，前端据此显示退款入口
-	Billing           *OrderBilling         `json:"billing" gorm:"-"`                  // 分账信息；gorm:"-" 表示不在本查询中加载，仅详情接口填充
-	SelectedPackage   *OrderPackage         `json:"selected_package" gorm:"-"`         // 下单时冻结的套餐及规则，仅详情接口填充
+	Live               *charge.LiveMeterView `json:"live,omitempty" gorm:"-"`
+	LiveUnavailable    string                `json:"live_unavailable,omitempty" gorm:"-"`
+	OrderID            uint64                `json:"order_id"`                          // 充电订单主键
+	OrderNo            string                `json:"order_no"`                          // 业务订单号，对外展示和排障都用它
+	UserID             uint64                `json:"user_id"`                           // 下单用户 ID
+	DeviceID           string                `json:"device_id"`                         // 设备 ID
+	PortNo             uint8                 `json:"port_no"`                           // 充电枪序号
+	StationID          *uint64               `json:"station_id"`                        // 所属站点 ID；指针，关联不上时为 null
+	StationName        *string               `json:"station_name" gorm:"-"`             // 站点名称；gorm:"-" 表示不参与扫描，由 orderStations 二次回填
+	Status             string                `json:"status"`                            // 订单状态：pending_payment/paid/charging/completed/cancelled/failed/refunding/refunded
+	BusinessStatus     string                `json:"business_status"`                   // 持久化业务状态：pending_start/charging/completed。
+	PaymentStatus      string                `json:"payment_status"`                    // 持久化支付状态：pending/paid/refunded/partial_refunded。
+	StartSource        *string               `json:"start_source"`                      // payment 扫码支付、balance 余额支付、card 在线卡；缺失来源时为空。
+	CreatedAt          time.Time             `json:"created_at"`                        // 订单创建时间
+	StartedAt          *time.Time            `json:"started_at"`                        // 实际开始充电时间；指针，未开始为 null
+	EndedAt            *time.Time            `json:"ended_at"`                          // 结束充电时间；指针，未结束为 null
+	DurationSeconds    *uint64               `json:"duration_seconds"`                  // 计费时长（秒）；指针，计费完成后才有
+	MeterKWh           *string               `json:"meter_kwh" gorm:"column:meter_kwh"` // 电表读数（kWh）；用字符串承载 DECIMAL，避免浮点丢精度
+	ElectricFeeCents   *int64                `json:"electric_fee_cents"`                // 电费（分）；指针，尚未计费为 null
+	ServiceFeeCents    *int64                `json:"service_fee_cents"`                 // 服务费（分）；指针，尚未计费为 null
+	TotalFeeCents      *int64                `json:"total_fee_cents"`                   // 应收合计（分）；指针，尚未计费为 null
+	RefundStatus       string                `json:"refund_status"`                     // 退款进度：none/processing/partial_refunded/refunded，由 SQL 依据支付单与退款单算出
+	PaymentOrderID     *uint64               `json:"payment_order_id"`                  // 关联支付单主键；指针，未发起支付为 null
+	PaymentOrderNo     *string               `json:"payment_order_no"`                  // 支付单号；指针，未发起支付为 null
+	PaymentOrderStatus *string               `json:"payment_order_status"`              // 支付单内部流程状态；未关联有效支付单时为 null。
+	PaidCents          *int64                `json:"paid_cents"`                        // 实收金额（分）；指针，未支付为 null
+	RefundedCents      *int64                `json:"refunded_cents"`                    // 已成功退款金额（分）；有效支付单未退款为 0，缺失支付单为 null。
+	FailureReason      *string               `json:"failure_reason"`                    // 失败原因；指针，非失败单为 null
+	RefundApplicantID  *string               `json:"refund_applicant_id" gorm:"-"`      // 发起退款的操作人 ID；gorm:"-" 表示不来自库表，只有具备 order.refund.create 权限时才回填，前端据此显示退款入口
+	Billing            *OrderBilling         `json:"billing" gorm:"-"`                  // 分账信息；gorm:"-" 表示不在本查询中加载，仅详情接口填充
+	SelectedPackage    *OrderPackage         `json:"selected_package" gorm:"-"`         // 下单时冻结的套餐及规则，仅详情接口填充
 }
 
 // OrderBilling 是订单详情附带的结算视图。订单本身不含金额去向，金额怎么分在
@@ -76,18 +79,21 @@ type PartyView struct {
 
 // OrderQuery 是订单列表的查询条件。除 PageQuery 外的字段都是可选筛选项，零值表示不过滤。
 type OrderQuery struct {
-	PageQuery                    // 复用通用分页与状态白名单校验
-	OrderNo, DeviceID string     // 按订单号 / 设备号精确匹配
-	StationID         uint64     // 按站点过滤，0 表示不限
-	From, To          *time.Time // 充电时间区间（闭区间）；指针，某一端为 nil 表示该端不限
+	PageQuery                                             // 复用通用分页与状态白名单校验
+	OrderNo, DeviceID                          string     // 按订单号 / 设备号精确匹配
+	BusinessStatus, PaymentStatus, StartSource string     // 业务、支付状态与启动来源独立筛选。
+	StationID                                  uint64     // 按站点过滤，0 表示不限
+	From, To                                   *time.Time // 充电时间区间（闭区间）；指针，某一端为 nil 表示该端不限
 }
 
 // orderColumns 是订单列表与详情共用的查询列，两处口径必须一致。
 // refund_status 不存在于任何一张表里，是按支付单状态和退款单状态在 SQL 里现算的。
-const orderColumns = `c.id AS order_id,c.order_no,c.user_id,c.device_id,c.port_no,i.station_id,c.status,c.created_at,c.started_at,c.ended_at,
+const orderStartSourceSQL = `(CASE WHEN EXISTS (SELECT 1 FROM card_charge cc WHERE cc.charge_order_id=c.id) THEN 'card' WHEN p.pay_method='balance' THEN 'balance' WHEN p.pay_method='wechat' THEN 'payment' ELSE NULL END)`
+
+const orderColumns = `c.id AS order_id,c.order_no,c.user_id,c.device_id,c.port_no,i.station_id,c.status,c.business_status,c.payment_status,` + orderStartSourceSQL + ` AS start_source,c.created_at,c.started_at,c.ended_at,
  c.charged_seconds AS duration_seconds,c.charged_kwh AS meter_kwh,c.electric_cents AS electric_fee_cents,c.service_cents AS service_fee_cents,c.total_cents AS total_fee_cents,
- c.payment_order_id,p.order_no AS payment_order_no,p.status AS payment_status,p.paid_cents,p.refunded_cents,c.failure_reason,
- CASE WHEN p.status='refunded' THEN 'refunded' WHEN p.refunded_cents>0 THEN 'partial_refunded' WHEN c.status='refunding' OR EXISTS (SELECT 1 FROM refund_record r WHERE r.payment_order_id=p.id AND r.status IN ('pending','processing') AND r.deleted_at IS NULL) THEN 'processing' ELSE 'none' END AS refund_status`
+ c.payment_order_id,p.order_no AS payment_order_no,p.status AS payment_order_status,p.paid_cents,p.refunded_cents,c.failure_reason,
+ CASE WHEN EXISTS (SELECT 1 FROM refund_record r WHERE r.payment_order_id=p.id AND r.status IN ('pending','processing') AND r.deleted_at IS NULL) THEN 'processing' WHEN c.payment_status='refunded' THEN 'refunded' WHEN c.status='refunding' THEN 'processing' WHEN p.refunded_cents>0 THEN 'partial_refunded' ELSE 'none' END AS refund_status`
 
 // orderQuery 返回订单查询的公共部分：联支付单取钱的状态，联支付意图取所属站点，
 // 并统一排除软删除。Select 和 Where 由调用方自己补。
@@ -108,6 +114,15 @@ func (s ResourceStore) Orders(ctx context.Context, q OrderQuery) (Page[OrderView
 	}
 	if q.Status != "" {
 		query = query.Where("c.status = ?", q.Status)
+	}
+	if q.BusinessStatus != "" {
+		query = query.Where("c.business_status = ?", q.BusinessStatus)
+	}
+	if q.PaymentStatus != "" {
+		query = query.Where("c.payment_status = ?", q.PaymentStatus)
+	}
+	if q.StartSource != "" {
+		query = query.Where(orderStartSourceSQL+" = ?", q.StartSource)
 	}
 	if q.StationID != 0 {
 		query = query.Where("i.station_id = ?", q.StationID)
@@ -165,7 +180,12 @@ func (a ResourceAPI) orders(c *gin.Context) {
 	if !ok {
 		return
 	}
-	q := OrderQuery{PageQuery: page, OrderNo: c.Query("order_no"), DeviceID: c.Query("device_id")}
+	q := OrderQuery{PageQuery: page, OrderNo: c.Query("order_no"), DeviceID: c.Query("device_id"),
+		BusinessStatus: c.Query("business_status"), PaymentStatus: c.Query("payment_status"), StartSource: c.Query("start_source")}
+	if !oneOf(q.BusinessStatus, "pending_start charging completed") || !oneOf(q.PaymentStatus, "pending paid refunded partial_refunded") || !oneOf(q.StartSource, "payment balance card") {
+		httpapi.BadRequest(c, "业务状态、支付状态或启动来源无效")
+		return
+	}
 	if len(q.OrderNo) > 64 || len(q.DeviceID) > 64 {
 		httpapi.BadRequest(c, "订单号或设备号过长")
 		return

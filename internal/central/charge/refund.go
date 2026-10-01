@@ -212,6 +212,9 @@ func (e RefundExecutor) apply(ctx context.Context, r RefundRecord, request payme
 		if err := tx.Model(&PaymentOrderRecord{}).Where("id = ?", p.ID).Updates(map[string]any{"refunded_cents": total, "status": status}).Error; err != nil {
 			return err
 		}
+		if err := SyncOrderPaymentStatus(tx, p.ID); err != nil {
+			return err
+		}
 		if err := tx.Model(&RefundRecord{}).Where("id = ?", r.ID).Updates(map[string]any{"status": "success", "wechat_refund_id": result.RefundID, "completed_at": result.SuccessAt.UTC(), "failure_reason": nil}).Error; err != nil {
 			return err
 		}

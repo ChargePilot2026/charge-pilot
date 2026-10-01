@@ -125,6 +125,10 @@ func TestCardServerExtensionDebitsOnceAndRefundsUnusedMinutes(t *testing.T) {
 	if session.PurchasedMinutes != 240 || session.PaidCents != 400 || balance != 600 {
 		t.Fatalf("%+v balance=%d", session, balance)
 	}
+	var storedOrder ChargeOrderRecord
+	if err := orm.Where("id=?", order.ID).Take(&storedOrder).Error; err != nil || storedOrder.BusinessStatus != "charging" || storedOrder.PaymentStatus != "paid" {
+		t.Fatalf("card extension statuses: %+v err=%v", storedOrder, err)
+	}
 	// The new current scheme is absent; committed event replay still succeeds.
 	if err := orm.Model(&OnlineCard{}).Where("id=?", card.ID).Update("status", "lost").Error; err != nil {
 		t.Fatal(err)
@@ -161,5 +165,8 @@ func TestCardServerExtensionDebitsOnceAndRefundsUnusedMinutes(t *testing.T) {
 	orm.Table("wallet_txn").Where("user_id=? AND direction='in'", user).Count(&refunds)
 	if debits != 2 || refunds != 1 {
 		t.Fatalf("debits=%d refunds=%d", debits, refunds)
+	}
+	if err := orm.Where("id=?", order.ID).Take(&storedOrder).Error; err != nil || storedOrder.BusinessStatus != "completed" || storedOrder.PaymentStatus != "partial_refunded" {
+		t.Fatalf("settled card partial refund statuses: %+v err=%v", storedOrder, err)
 	}
 }

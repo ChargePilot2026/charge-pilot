@@ -79,6 +79,10 @@ func TestVerifiedPaymentCreatesOneChargeOrderAfterCallback(t *testing.T) {
 	if orders != 1 || receipts != 1 || events != 1 {
 		t.Fatalf("orders=%d pricing=%d outbox=%d", orders, receipts, events)
 	}
+	var businessStatus, paymentStatus string
+	if err := db.QueryRowContext(ctx, "SELECT business_status,payment_status FROM charge_order WHERE id=?", first.ChargeOrderID).Scan(&businessStatus, &paymentStatus); err != nil || businessStatus != "pending_start" || paymentStatus != "paid" {
+		t.Fatalf("verified callback statuses business=%s payment=%s err=%v", businessStatus, paymentStatus, err)
+	}
 }
 
 func TestLateVerifiedPaymentQueuesRefundWithoutChargeOrder(t *testing.T) {

@@ -26,8 +26,9 @@
 | 设备 | GET `/devices`、`/devices/{id}`；PUT `/devices/{id}`、`/devices/{id}/status` | keyword/status/station_id 筛选；新建复用设备开通流程；设备列表与站点工作区的设备列表支持编辑管理资料及启停；从设备行进入所属站点的计费与套餐配置；显示管理状态，不代表在线遥测 |
 | 厂商 | GET/POST `/vendors`；GET/PUT `/vendors/{id}`；GET `/vendor-options` | 设备运维中的厂商管理：分页、编码/名称搜索、状态筛选、新建、编辑和启停；设备新建从可选厂商接口读取已启用厂商；不提供删除 |
 | 导入 | GET/POST `/device-imports`；POST `/device-imports/{import_id}/retry` | CSV 预览后提交 JSON，每批 1–100；gateway 幂等建档，再落 admin 元数据；失败保留批次供显式重试 |
-| 订单 | GET `/orders`、`/orders/{id}`、`/orders/{id}/timeline` | 分页及订单号、设备、站点、状态、时间筛选；从已有订单、计费和事件记录读取，不生成虚构计费 |
-| 充电用户 | GET `/charge-users`、`/charge-users/{id}` | 后台第一个以"人"而非以"单"为入口的视图：列表给昵称、完整手机号、状态、订单数、累计消费、钱包余额与最后登录，档案再给最近 20 笔订单及券/报障计数。只读，不含建号与解冻。手机号按完整号码精确搜索，输入后四位查不出来（库中只有密文与不可逆哈希） |
+| 充电订单 | GET `/orders`、`/orders/{id}`、`/orders/{id}/timeline` | 仅充电业务；分页及订单号、设备、站点、业务状态、支付状态、启动来源、时间筛选；显示实际充电时长与累计成功退款金额；详情保留原流程及异常信息 |
+| 支付订单 | GET `/payment-orders` | 只读支付流水，包含充电付款与钱包充值；支持订单号精确查询及业务类型、支付状态、支付方式筛选；不把充值列为充电订单 |
+| 充电用户 | GET `/charge-users`、`/charge-users/{id}` | 后台第一个以"人"而非以"单"为入口的视图：列表给昵称、完整手机号、状态、订单数、累计消费、钱包余额与最后登录，档案再给最近 20 笔订单（业务状态与支付状态分别展示，保留原内部 status）及券/报障计数。只读，不含建号与解冻。手机号按完整号码精确搜索，输入后四位查不出来（库中只有密文与不可逆哈希） |
 | 管理员 | GET/POST `/users`；GET `/roles`；PUT/DELETE `/admin-users/{id}` | 新建账号，密码 12–72 字节 bcrypt；只可分配不超出操作者权限的有效角色；支持资料、角色和状态管理，角色未改变的资料保存不撤销会话 |
 | 告警 | GET `/alerts`；POST `/alerts/{id}/ack` | 设备主动上报告警列表与确认；烟雾、温度和设备故障由 worker 同步，正常心跳可自动恢复 |
 | 优惠券 | GET/POST `/coupons`；PUT `/coupons/{id}`；GET `/coupons/{id}/stats`；POST `/coupons/{id}/grants` | 模板编辑、计数、按用户发放；限总量/个人额度与有效期，UUID 幂等；时长券使用 free_minutes；支付核销未接入 |
@@ -53,6 +54,29 @@
 新建、修改、复制和再次应用的实时功率模板必须为 `tier_price_basis=per_kwh`。旧版 `per_hour_at_ceiling` 或省略该字段的模板标为“旧版 · 待转换”，候选接口返回不能再次应用的原因。编辑时展示原填写值和按原实际计算结果得到的等效元/度电价，用户点击转换后核对并保存；沿用旧算法的整数分截断，不改变功率上限、服务费和其它策略。无法识别的旧口径或等效电价超过金额上限时阻止转换，要求新建模板重新定价。已应用的站点规则和订单冻结快照仍兼容原算法，转换模板不会更新它们；不会批量迁移或自动重算历史账单。
 
 计费配置统一从“站点 → 工作区”进入：默认计费、套餐及设备独立配置位于“计费与套餐”，启动/退款策略及本站计费下发记录位于“站点策略与下发记录”。独立“站点计费”菜单与 `/station-pricing` 前端路由已移除，不再提供跨站点配置页面或全站点下发记录入口。进入站点需 `station.read`，工作区中的计费及策略页签另需 `pricing.read`，写操作仍按实时操作权限及数据范围校验。
+
+## 充电订单与支付订单（2026-10-01）
+
+“充电运营”下的菜单分为“充电订单”和“支付订单”，两页及现有充电订单详情、时间线统一要求 `order.read`。充电订单保留 `/orders` 前端地址及已有接口，支付订单新增 `/payment-orders`。当前后台订单读取按 `order.read` 查询全量记录，尚未实现站点或厂商数据范围过滤；钱包充值不虚构站点归属。
+
+`GET /orders` 只读取未删除的充电订单，兼容原来的 `order_no`、`device_id`、`station_id`、`started_from`、`started_to` 与内部 `status` 筛选，并新增 `business_status`、`payment_status`、`start_source`。订单号与设备号为完整编号精确匹配；时间范围沿用 `COALESCE(started_at,created_at)`，尚未启动的订单按创建时间筛选。分页默认 `page=1,page_size=20`，前端默认 10 条，可选 10/20/50/100。
+
+| 字段 / 筛选 | 取值与口径 |
+| --- | --- |
+| `business_status` | `pending_start` 待启动、`charging` 充电中、`completed` 已完成；由 `charge_order.business_status` 读取，不受退款进度影响 |
+| `payment_status` | `pending` 待支付、`paid` 已支付、`refunded` 已退款、`partial_refunded` 已部分退款；由充电订单的独立持久字段读取，仅实际支付确认或退款成功后同步 |
+| `start_source` | `payment` 扫码支付、`balance` 余额支付、`card` 在线卡；先按在线卡会话判定 `card`，再按支付方式判定 `balance` 或 `payment`，无有效来源凭据时为 `null` |
+| `payment_order_status` | 关联支付订单的原始流转状态，可为 `null`；与规范的四态 `payment_status` 分开 |
+| `refunded_cents` | 已成功退款的累计金额，单位分；有效关联支付单未退时为 0，没有可见的未删除支付记录时为 `null` |
+| `status` / `failure_reason` | 原内部生命周期与异常原因；取消、失败和退款流转在业务状态上归入已完成，界面通过原流程提示及详情辨明原因 |
+
+充电订单仅包含扫码支付、余额支付与在线卡三种来源的充电记录，不包含钱包充值。列表与详情的两种状态各自展示；退款申请或渠道处理中尚未成功时仍显示已支付，不提前标为已退款。充电中的时长来自 `live.seconds`，过期采样以 `live.stale` 标记；已结束时使用 `duration_seconds` 实际设备读数。实时读数不可用且未记录实际时长时不编造数值。
+
+充电用户档案 `GET /charge-users/{id}` 的 `recent_orders` 同样返回 `business_status` 与 `payment_status`，直接读取上述持久字段；原 `status` 保留详细技术流转。该摘要按订单 ID 倒序，最多 20 笔，不改变 `charge_user.read` 权限要求。
+
+`GET /payment-orders` 从 `user_db.payment_order` 读取未删除的支付流水，参数为 `page`、`page_size`（接口默认 20，1–100）、`order_no`（完整支付订单号，最多 64 字符）、`biz_type`（`charge` / `wallet_recharge`）、`payment_status`（上述四态）和 `pay_method`（`wechat` / `balance`）。返回 `items,total,page,page_size`，条目含 `payment_order_id,order_no,user_id,biz_type,pay_method,status,payment_status,total_cents,paid_cents,refunded_cents,paid_at,created_at,charge_order_id,charge_order_no`。
+
+支付列表的 `status` 保留原支付流转状态；规范 `payment_status` 按已到账与累计成功退款金额优先计算，支付终态用于已确认付款的兜底判断。`charge` 包含上述三种充电来源产生的扣款，`wallet_recharge` 仅为充值。`paid_at` 可为 `null`。仅 `biz_type=charge` 且关联同一用户的有效、未删除充电订单时返回 `charge_order_id` 与 `charge_order_no`；无有效关联时两者为 `null`，`wallet_recharge` 始终不关联充电订单。此页只提供查询，不新增支付、充值或退款操作。
 
 ## 设备资料编辑（2026-10-01）
 

@@ -163,7 +163,7 @@ func (s PaymentCallbackStore) Apply(ctx context.Context, payment VerifiedPayment
 		}
 		chargeOrder := ChargeOrderRecord{OrderNo: chargeNo, UserID: intent.UserID, DeviceID: intent.DeviceID, PortNo: intent.PortNo,
 			PortCode: sql.NullString{String: intent.PortCode, Valid: true}, PaymentOrderID: sql.NullInt64{Int64: int64(order.ID), Valid: true},
-			Status: "paid", ChargeMode: intent.ChargeMode, ChargeQuantity: intent.ChargeQuantity,
+			Status: "paid", PaymentStatus: "paid", ChargeMode: intent.ChargeMode, ChargeQuantity: intent.ChargeQuantity,
 			DiscountCents: intent.DiscountCents, CreatedMonth: utcDate()}
 		if err := tx.Create(&chargeOrder).Error; err != nil {
 			return err

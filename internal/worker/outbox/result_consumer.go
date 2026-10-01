@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/ChargePilot2026/charge-pilot/internal/central/charge"
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -244,6 +245,14 @@ func (c ResultConsumer) post(ctx context.Context, result RefundResult) error {
 			return fmt.Errorf("refund %s amount mismatch: requested %d, channel reported %d",
 				result.RefundNo, refund.RefundCents, result.RefundCents)
 		}
+		// Serialize cumulative payment amounts while retaining the existing refund lock.
+		var payment charge.PaymentOrderRecord
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id=? AND deleted_at IS NULL", refund.PaymentOrderID).Take(&payment).Error; err != nil {
+			return err
+		}
+		if payment.UserID != refund.UserID || payment.RefundedCents < 0 || payment.PaidCents <= 0 || refund.RefundCents > payment.PaidCents-payment.RefundedCents {
+			return fmt.Errorf("refund %s exceeds the remaining paid amount", result.RefundNo)
+		}
 		if err := tx.Table("refund_record").Where("id = ?", refund.ID).
 			Updates(map[string]any{"status": "success", "completed_at": gorm.Expr("UTC_TIMESTAMP(3)")}).Error; err != nil {
 			return fmt.Errorf("mark refund %s success: %w", result.RefundNo, err)
@@ -265,19 +274,13 @@ func (c ResultConsumer) post(ctx context.Context, result RefundResult) error {
 		}
 		// payment_order 按 created_month 分区，且主键包含这一列，
 		// 所以月份必须写进查询条件。
-		var payment struct {
-			ID           uint64 `gorm:"column:id"`
-			CreatedMonth string `gorm:"column:created_month"`
-		}
-		if err := tx.Table("payment_order").Select("id, created_month").
-			Where("id = ?", refund.PaymentOrderID).Take(&payment).Error; err != nil {
-			return err
-		}
+		totalRefunded := payment.RefundedCents + refund.RefundCents
+		status := charge.SettledPaymentStatus(payment.PaidCents, totalRefunded, payment.Status)
 		if err := tx.Table("payment_order").Where("id = ? AND created_month = ?", payment.ID, payment.CreatedMonth).
-			Updates(map[string]any{"refunded_cents": gorm.Expr("refunded_cents + ?", refund.RefundCents)}).Error; err != nil {
+			Updates(map[string]any{"refunded_cents": totalRefunded, "status": status}).Error; err != nil {
 			return fmt.Errorf("accumulate refunded_cents: %w", err)
 		}
-		return nil
+		return charge.SyncOrderPaymentStatus(tx, payment.ID)
 	})
 }
 

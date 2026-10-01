@@ -70,6 +70,7 @@ func (a ResourceAPI) Register(r *gin.Engine) {
 	r.PUT("/api/v1/admin/devices/:id", a.Auth.Require("device.operate"), a.updateDevice)
 	r.PUT("/api/v1/admin/devices/:id/status", a.Auth.Require("device.operate"), a.setDeviceStatus)
 	r.GET("/api/v1/admin/orders", a.Auth.Require("order.read"), a.orders)
+	r.GET("/api/v1/admin/payment-orders", a.Auth.Require("order.read"), a.paymentOrders)
 	r.GET("/api/v1/admin/orders/:id", a.Auth.Require("order.read"), a.order)
 	r.GET("/api/v1/admin/orders/:id/timeline", a.Auth.Require("order.read"), a.timeline)
 }

@@ -61,14 +61,16 @@ type ChargeUserDetail struct {
 
 // ChargeUserOrderBrief 是档案里附带的订单摘要，字段取客服场景真正要看的那些。
 type ChargeUserOrderBrief struct {
-	OrderID    uint64  `json:"order_id" gorm:"column:id"`             // 订单主键
-	OrderNo    string  `json:"order_no" gorm:"column:order_no"`       // 订单号，用户报障时会向客服念这个
-	DeviceID   string  `json:"device_id" gorm:"column:device_id"`     // 设备编号
-	StationID  *uint64 `json:"station_id" gorm:"column:station_id"`   // 站点 ID；指针，未关联为 null
-	Status     string  `json:"status" gorm:"column:status"`           // 订单状态
-	TotalCents *int64  `json:"total_cents" gorm:"column:total_cents"` // 应收合计（分）；指针，未计费为 null
-	CreatedAt  string  `json:"created_at" gorm:"column:created_at"`   // 下单时间
-	StartedAt  *string `json:"started_at" gorm:"column:started_at"`   // 开始充电时间；指针，未开始为 null
+	OrderID        uint64  `json:"order_id" gorm:"column:id"`                     // 订单主键
+	OrderNo        string  `json:"order_no" gorm:"column:order_no"`               // 订单号，用户报障时会向客服念这个
+	DeviceID       string  `json:"device_id" gorm:"column:device_id"`             // 设备编号
+	StationID      *uint64 `json:"station_id" gorm:"column:station_id"`           // 站点 ID；指针，未关联为 null
+	Status         string  `json:"status" gorm:"column:status"`                   // 原内部生命周期，供异常提示与兼容使用。
+	BusinessStatus string  `json:"business_status" gorm:"column:business_status"` // 独立业务状态：待启动、充电中、已完成。
+	PaymentStatus  string  `json:"payment_status" gorm:"column:payment_status"`   // 独立支付状态，读取实际到账/退款后持久化的值。
+	TotalCents     *int64  `json:"total_cents" gorm:"column:total_cents"`         // 应收合计（分）；指针，未计费为 null
+	CreatedAt      string  `json:"created_at" gorm:"column:created_at"`           // 下单时间
+	StartedAt      *string `json:"started_at" gorm:"column:started_at"`           // 开始充电时间；指针，未开始为 null
 }
 
 // chargeUserDetailOrderLimit 限制档案里附带的最近订单条数。客服要的是"最近发生了什么"，
@@ -287,7 +289,7 @@ func (s ResourceStore) ChargeUserDetail(ctx context.Context, id uint64, orderLim
 	// charge_order_id 建了唯一键，一单至多一条意图，LEFT JOIN 不会放大行数。
 	// 没走过支付流程的早期订单没有对应意图，station_id 留 null。
 	if err := s.UserDB.WithContext(ctx).Raw(`
-		SELECT c.id, c.order_no, c.device_id, i.station_id, c.status, c.total_cents,
+		SELECT c.id, c.order_no, c.device_id, i.station_id, c.status, c.business_status, c.payment_status, c.total_cents,
 		       c.created_at, c.started_at
 		FROM charge_order c
 		LEFT JOIN charge_payment_intent i ON i.charge_order_id = c.id

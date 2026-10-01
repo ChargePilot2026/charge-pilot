@@ -155,6 +155,8 @@
 
 ## 表 2:`user_db.charge_order`
 
+> **当前 Go 状态字段（2026-10-01）**：下方生命周期与字段表包含历史设计，实际定义以 `migrations/user_db/0001_init.sql` 为准。当前保留内部 `status`（`pending_payment/paid/charging/completed/cancelled/failed/refunding/refunded`），新增 `business_status ENUM('pending_start','charging','completed')` STORED GENERATED 列：内部 `pending_payment/paid` 映射待启动，`charging` 映射充电中，其余映射已完成；由数据库生成，应用不直接写入。独立持久列 `payment_status ENUM('pending','paid','refunded','partial_refunded') NOT NULL DEFAULT 'pending'` 与支付确认或退款成功在同一事务中同步，退款申请和渠道处理中不提前改变支付状态。两列有各自索引；支付流水和金额仍归 `payment_order`，生成列不替代启动授权或详细生命周期。后台页面契约见 [充电订单与支付订单](../api/go-admin-pages.md#充电订单与支付订单2026-10-01)。
+
 **业务说明**:**充电会话生命周期表**。一笔 `charge_order` = 用户一次完整的充电过程(扫码 → 选端口 → 微信支付回调 → 启动 → 充电中 → 结束 / 取消 / 失败)。**不含任何支付字段** —— 支付通过 `payment_order` 关联。
 **核心变更(P0-1)**:`status` ENUM 新增 `pending_payment`(扫码选端口后,等待微信支付回调);`started_at` / `payment_order_id` 允许 NULL;`customer_id` 字段已移除(单客户单部署,客户级隔离由部署边界保证)。
 
@@ -253,6 +255,8 @@ PARTITION BY RANGE (TO_DAYS(created_month)) (
 ---
 
 ## 表 3:`user_db.payment_order`
+
+> **当前 Go 后台查询（2026-10-01）**：实际 `biz_type` 为 `charge` / `wallet_recharge`。`GET /api/v1/admin/payment-orders` 读取本表未删除流水，原 `status` 保留；接口的四态 `payment_status` 按已到账与累计成功退款金额优先派生。仅充电付款关联同一用户的有效、未删除充电订单，钱包充值不返回充电关联。下方 `recharge`、组合支付等描述是历史方案，当前接口能力见 [充电订单与支付订单](../api/go-admin-pages.md#充电订单与支付订单2026-10-01)。
 
 **业务说明**:**支付订单表**(纯支付,**不含充电生命周期字段**)。通过 `biz_type` + `biz_id` 关联多种业务:
 

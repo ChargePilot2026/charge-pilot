@@ -1,4 +1,4 @@
-import { Alert, Avatar, Button, Descriptions, Drawer, Form, Input, Select, Space, Spin, Table, Tag, Typography } from 'antd';
+import { Alert, Avatar, Button, Descriptions, Drawer, Form, Input, Select, Space, Spin, Table, Tag, Tooltip, Typography } from 'antd';
 import { SearchOutlined } from '@ant-design/icons';
 import { useEffect, useRef, useState } from 'react';
 import dayjs from 'dayjs';
@@ -6,6 +6,7 @@ import axios from 'axios';
 import { ApiEnvelope, apiGet } from '../api/client';
 import { LoadError } from '../components/LoadError';
 import { DEFAULT_PAGE_SIZE, TABLE_PAGINATION } from '../utils/tablePagination';
+import { businessStatusInfo, paymentStatusInfo } from './orders/presentation';
 
 interface ChargeUser {
   id: number;
@@ -30,7 +31,8 @@ interface ChargeUser {
 interface ChargeUserPage { items: ChargeUser[]; total: number; page: number; page_size: number }
 interface ChargeUserOrder {
   order_id: number; order_no: string; device_id: string; station_id: number | null;
-  status: string; total_cents: number | null; created_at: string; started_at: string | null;
+  status: string; business_status: string; payment_status: string;
+  total_cents: number | null; created_at: string; started_at: string | null;
 }
 interface ChargeUserDetail extends ChargeUser {
   wallet_status: string;
@@ -45,9 +47,10 @@ const statuses: Record<string, { label: string; color: string }> = {
 };
 const walletStatuses: Record<string, string> = { active: '正常', frozen: '已冻结' };
 const genders: Record<string, string> = { unknown: '未知', male: '男', female: '女' };
-const orderStatuses: Record<string, string> = {
-  pending_payment: '待支付', paid: '已支付', charging: '充电中', completed: '已完成',
-  cancelled: '已取消', failed: '失败', refunding: '退款中', refunded: '已退款',
+const orderTag = (row: ChargeUserOrder, kind: 'business' | 'payment') => {
+  const info = kind === 'business' ? businessStatusInfo(row) : paymentStatusInfo(row);
+  const tag = <Tag color={info.color}>{info.label}</Tag>;
+  return info.hint ? <Tooltip title={info.hint}>{tag}</Tooltip> : tag;
 };
 const time = (value: string | null) => value ? dayjs(value).format('YYYY-MM-DD HH:mm') : '—';
 const money = (value: number) => `¥${(value / 100).toFixed(2)}`;
@@ -173,7 +176,8 @@ export default function ChargeUsersPage() {
           locale={{ emptyText: '暂无订单' }} columns={[
             { title: '订单号', dataIndex: 'order_no' },
             { title: '设备', dataIndex: 'device_id' },
-            { title: '状态', dataIndex: 'status', render: value => orderStatuses[value] || value },
+            { title: '业务状态', key: 'business_status', render: (_, row) => orderTag(row, 'business') },
+            { title: '支付状态', key: 'payment_status', render: (_, row) => orderTag(row, 'payment') },
             { title: '金额', dataIndex: 'total_cents', align: 'right', render: value => value == null ? '待结算' : money(value) },
             { title: '下单时间', dataIndex: 'created_at', render: time },
           ]} />

@@ -20,6 +20,8 @@ type ChargeOrderRecord struct {
 	PortCode       sql.NullString `gorm:"column:port_code"`
 	PaymentOrderID sql.NullInt64  `gorm:"column:payment_order_id"`
 	Status         string         `gorm:"column:status"`
+	BusinessStatus string         `gorm:"column:business_status;->"`             // STORED generated；写入只由内部生命周期产生。
+	PaymentStatus  string         `gorm:"column:payment_status;default:pending"` // 实际支付和退款结果的持久状态。
 	StartedAt      sql.NullTime   `gorm:"column:started_at"`
 	EndedAt        sql.NullTime   `gorm:"column:ended_at"`
 	ChargedKWh     sql.NullString `gorm:"column:charged_kwh"`

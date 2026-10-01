@@ -2018,7 +2018,7 @@
     },
     "/api/v1/admin/orders": {
       "get": {
-        "summary": "GET /api/v1/admin/orders",
+        "summary": "充电订单列表",
         "security": [
           {
             "bearerAuth": []
@@ -2027,7 +2027,14 @@
         "x-permission": "order.read",
         "responses": {
           "200": {
-            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChargeOrderPageResponse"
+                }
+              }
+            }
           },
           "400": {
             "description": "参数无效"
@@ -2047,12 +2054,136 @@
           "503": {
             "description": "依赖服务不可用"
           }
-        }
+        },
+        "description": "仅充电订单，不含钱包充值。按 order.read 读取全量未删除记录；当前尚未实现站点/厂商订单数据范围过滤。业务状态与支付状态各自读取充电订单持久字段，原 status 保留详细生命周期。",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000000,
+              "default": 1
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            },
+            "description": "后台默认 10 条，可选 10/20/50/100；接口默认 20。"
+          },
+          {
+            "name": "order_no",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "description": "完整充电订单号精确匹配。"
+          },
+          {
+            "name": "device_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "description": "完整设备编号精确匹配。"
+          },
+          {
+            "name": "station_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            }
+          },
+          {
+            "name": "business_status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/OrderBusinessStatus"
+            }
+          },
+          {
+            "name": "payment_status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/OrderPaymentStatus"
+            }
+          },
+          {
+            "name": "start_source",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "payment",
+                "balance",
+                "card"
+              ]
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "pending_payment",
+                "paid",
+                "charging",
+                "completed",
+                "cancelled",
+                "failed",
+                "refunding",
+                "refunded"
+              ]
+            },
+            "description": "兼容原内部生命周期筛选；业务状态与支付状态使用各自的筛选字段。"
+          },
+          {
+            "name": "started_from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "description": "实际开始时间起点；尚未开始时按创建时间。"
+          },
+          {
+            "name": "started_to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "description": "实际开始时间终点；尚未开始时按创建时间，不早于 started_from。"
+          }
+        ]
       }
     },
     "/api/v1/admin/orders/{id}": {
       "get": {
-        "summary": "GET /api/v1/admin/orders/{id}",
+        "summary": "充电订单详情",
         "security": [
           {
             "bearerAuth": []
@@ -2061,7 +2192,14 @@
         "x-permission": "order.read",
         "responses": {
           "200": {
-            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChargeOrderResponse"
+                }
+              }
+            }
           },
           "400": {
             "description": "参数无效"
@@ -2088,10 +2226,14 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string"
-            }
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            },
+            "description": "充电订单主键 order_id。"
           }
-        ]
+        ],
+        "description": "充电订单详情包含独立业务/支付状态、启动来源、实际时长、累计成功退款、原流程与异常原因。要求 order.read，不改变已有启动授权或资金流程。"
       }
     },
     "/api/v1/admin/orders/{id}/timeline": {
@@ -2136,6 +2278,137 @@
             }
           }
         ]
+      }
+    },
+    "/api/v1/admin/payment-orders": {
+      "get": {
+        "summary": "支付订单列表",
+        "description": "只读未删除支付流水，包含 charge 充电扣款（扫码支付、余额支付、在线卡）和 wallet_recharge 钱包充值。统一 order.read；当前全量查询，不虚构充值站点。充电关联限定 charge、同用户和有效未删除充电单。",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "order.read",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000000,
+              "default": 1
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            },
+            "description": "后台默认 10 条，可选 10/20/50/100；接口默认 20。"
+          },
+          {
+            "name": "order_no",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "description": "完整支付订单号精确匹配。"
+          },
+          {
+            "name": "biz_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "charge",
+                "wallet_recharge"
+              ]
+            }
+          },
+          {
+            "name": "payment_status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/OrderPaymentStatus"
+            }
+          },
+          {
+            "name": "pay_method",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "wechat",
+                "balance"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "分页支付订单流水，统一响应。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentOrderPageResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "筛选或分页参数无效；code 1005。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录或会话失效。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "缺少实时 order.read 权限。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "支付流水暂时无法读取；code 5003。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/v1/admin/device-imports": {
@@ -4441,6 +4714,93 @@
           }
         ]
       }
+    },
+    "/api/v1/admin/charge-users/{id}": {
+      "get": {
+        "summary": "充电用户档案",
+        "description": "读取充电用户档案；recent_orders 最多 20 笔，业务状态与支付状态分开，保留原内部 status。",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "charge_user.read",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            },
+            "description": "充电用户主键。"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "充电用户档案，统一响应。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChargeUserDetailResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "用户 ID 无效。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录或会话失效。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "缺少实时 charge_user.read 权限。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "充电用户不存在或已删除。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "用户档案暂时无法读取。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -5271,6 +5631,641 @@
           },
           "data": {
             "$ref": "#/components/schemas/DevicePage"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "trace_id": {
+            "type": "string"
+          }
+        }
+      },
+      "OrderBusinessStatus": {
+        "type": "string",
+        "enum": [
+          "pending_start",
+          "charging",
+          "completed"
+        ],
+        "description": "待启动、充电中、已完成；读取 charge_order 的 STORED GENERATED 业务状态。内部 pending_payment/paid -> pending_start，charging -> charging，其余生命周期 -> completed；支付退款不会直接改变业务状态。"
+      },
+      "OrderPaymentStatus": {
+        "type": "string",
+        "enum": [
+          "pending",
+          "paid",
+          "refunded",
+          "partial_refunded"
+        ],
+        "description": "待支付、已支付、已退款、已部分退款。仅已确认付款和累计成功退款改变该状态；退款 pending/processing 不提前标为退款完成。"
+      },
+      "OrderStartSource": {
+        "type": "string",
+        "nullable": true,
+        "enum": [
+          "payment",
+          "balance",
+          "card"
+        ],
+        "description": "扫码支付、余额支付、在线卡。优先检测在线卡会话，再按余额或微信支付方式确定；无来源凭据返回 null。"
+      },
+      "OrderLiveMeter": {
+        "type": "object",
+        "required": [
+          "at",
+          "stale",
+          "kwh",
+          "seconds"
+        ],
+        "properties": {
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "stale": {
+            "type": "boolean",
+            "description": "设备采样已过期，时长与费用停留在最后采样时刻。"
+          },
+          "kwh": {
+            "type": "number",
+            "description": "最后设备采样的累计电量，单位 kWh。"
+          },
+          "seconds": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0,
+            "description": "最后设备采样的实际已充电时长，单位秒。"
+          },
+          "fee": {
+            "type": "object",
+            "required": [
+              "electric_cents",
+              "service_cents",
+              "total_cents"
+            ],
+            "properties": {
+              "electric_cents": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "service_cents": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "total_cents": {
+                "type": "integer",
+                "format": "int64"
+              }
+            }
+          },
+          "fee_unavailable": {
+            "type": "string"
+          }
+        }
+      },
+      "ChargeOrderView": {
+        "type": "object",
+        "required": [
+          "order_id",
+          "order_no",
+          "user_id",
+          "device_id",
+          "port_no",
+          "status",
+          "business_status",
+          "payment_status",
+          "start_source",
+          "payment_order_status",
+          "refunded_cents",
+          "duration_seconds",
+          "created_at"
+        ],
+        "properties": {
+          "order_id": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1
+          },
+          "order_no": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "user_id": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1
+          },
+          "device_id": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "port_no": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "station_id": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1,
+            "nullable": true
+          },
+          "station_name": {
+            "type": "string",
+            "nullable": true
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending_payment",
+              "paid",
+              "charging",
+              "completed",
+              "cancelled",
+              "failed",
+              "refunding",
+              "refunded"
+            ],
+            "description": "原内部充电生命周期，用于启动授权、结束与退款流程；取消、失败及退款流转的业务状态归为 completed，详情与异常原因辨明实际结果。"
+          },
+          "business_status": {
+            "$ref": "#/components/schemas/OrderBusinessStatus"
+          },
+          "payment_status": {
+            "$ref": "#/components/schemas/OrderPaymentStatus",
+            "description": "读取充电订单的独立持久 payment_status，实际支付确认或退款成功时同事务同步。"
+          },
+          "start_source": {
+            "$ref": "#/components/schemas/OrderStartSource"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "ended_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "duration_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true,
+            "minimum": 0,
+            "description": "设备已结束充电实际时长；充电中显示 live.seconds，过期采样使用 live.stale 标记。无读数时不伪造时长。"
+          },
+          "meter_kwh": {
+            "type": "string",
+            "nullable": true,
+            "description": "DECIMAL 电量字符串，单位 kWh。"
+          },
+          "electric_fee_cents": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true
+          },
+          "service_fee_cents": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true
+          },
+          "total_fee_cents": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true
+          },
+          "refund_status": {
+            "type": "string",
+            "enum": [
+              "none",
+              "processing",
+              "partial_refunded",
+              "refunded"
+            ],
+            "description": "退款进度，独立于规范的 payment_status。"
+          },
+          "payment_order_id": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1,
+            "nullable": true
+          },
+          "payment_order_no": {
+            "type": "string",
+            "nullable": true
+          },
+          "payment_order_status": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "initiated",
+              "paid",
+              "closed",
+              "refunded",
+              "partial_refunded",
+              "failed"
+            ],
+            "description": "关联支付单原始流转状态，缺少有效未删除支付记录时为 null。"
+          },
+          "paid_cents": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true
+          },
+          "refunded_cents": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true,
+            "description": "累计成功退款金额，单位分；有有效关联支付单且未退时为 0，无可见未删除支付单为 null。"
+          },
+          "failure_reason": {
+            "type": "string",
+            "nullable": true
+          },
+          "refund_applicant_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "billing": {
+            "type": "object",
+            "nullable": true,
+            "description": "详情中的计费与分账视图。"
+          },
+          "selected_package": {
+            "type": "object",
+            "nullable": true,
+            "description": "详情中的下单时冻结套餐。"
+          },
+          "live": {
+            "$ref": "#/components/schemas/OrderLiveMeter"
+          },
+          "live_unavailable": {
+            "type": "string"
+          }
+        }
+      },
+      "ChargeOrderPage": {
+        "type": "object",
+        "required": [
+          "items",
+          "total",
+          "page",
+          "page_size"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChargeOrderView"
+            }
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000000
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        }
+      },
+      "ChargeOrderResponse": {
+        "type": "object",
+        "required": [
+          "code",
+          "message",
+          "data",
+          "request_id",
+          "trace_id"
+        ],
+        "properties": {
+          "code": {
+            "type": "integer",
+            "enum": [
+              0
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/ChargeOrderView"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "trace_id": {
+            "type": "string"
+          }
+        }
+      },
+      "ChargeOrderPageResponse": {
+        "type": "object",
+        "required": [
+          "code",
+          "message",
+          "data",
+          "request_id",
+          "trace_id"
+        ],
+        "properties": {
+          "code": {
+            "type": "integer",
+            "enum": [
+              0
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/ChargeOrderPage"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "trace_id": {
+            "type": "string"
+          }
+        }
+      },
+      "PaymentOrderView": {
+        "type": "object",
+        "required": [
+          "payment_order_id",
+          "order_no",
+          "user_id",
+          "biz_type",
+          "pay_method",
+          "status",
+          "payment_status",
+          "total_cents",
+          "paid_cents",
+          "refunded_cents",
+          "paid_at",
+          "created_at",
+          "charge_order_id",
+          "charge_order_no"
+        ],
+        "properties": {
+          "payment_order_id": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1
+          },
+          "order_no": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "user_id": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1
+          },
+          "biz_type": {
+            "type": "string",
+            "enum": [
+              "charge",
+              "wallet_recharge"
+            ]
+          },
+          "pay_method": {
+            "type": "string",
+            "description": "当前扫码支付为 wechat，余额与在线卡扣款为 balance；筛选参数仅接受 wechat/balance。"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "initiated",
+              "paid",
+              "closed",
+              "refunded",
+              "partial_refunded",
+              "failed"
+            ],
+            "description": "原始支付单流转状态。"
+          },
+          "payment_status": {
+            "$ref": "#/components/schemas/OrderPaymentStatus",
+            "description": "按已付和累计成功退款金额优先派生：已付>0且已退>=已付为全退，已退>0为部分退；已付>0或原 paid/partial_refunded/refunded 为已支付，其余待支付。"
+          },
+          "total_cents": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "paid_cents": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "refunded_cents": {
+            "type": "integer",
+            "format": "int64",
+            "description": "累计成功退款金额，单位分；处理中退款不增加此金额。"
+          },
+          "paid_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "charge_order_id": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1,
+            "nullable": true,
+            "description": "仅 charge 且同用户、有效未删除的关联充电订单返回；wallet_recharge 固定 null。"
+          },
+          "charge_order_no": {
+            "type": "string",
+            "nullable": true,
+            "description": "满足充电关联条件时的充电订单号，其余 null。"
+          }
+        }
+      },
+      "PaymentOrderPage": {
+        "type": "object",
+        "required": [
+          "items",
+          "total",
+          "page",
+          "page_size"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PaymentOrderView"
+            }
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000000
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        }
+      },
+      "PaymentOrderPageResponse": {
+        "type": "object",
+        "required": [
+          "code",
+          "message",
+          "data",
+          "request_id",
+          "trace_id"
+        ],
+        "properties": {
+          "code": {
+            "type": "integer",
+            "enum": [
+              0
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/PaymentOrderPage"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "trace_id": {
+            "type": "string"
+          }
+        }
+      },
+      "ChargeUserOrderBrief": {
+        "type": "object",
+        "required": [
+          "order_id",
+          "order_no",
+          "device_id",
+          "station_id",
+          "status",
+          "business_status",
+          "payment_status",
+          "total_cents",
+          "created_at",
+          "started_at"
+        ],
+        "properties": {
+          "order_id": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1
+          },
+          "order_no": {
+            "type": "string"
+          },
+          "device_id": {
+            "type": "string"
+          },
+          "station_id": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1,
+            "nullable": true
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending_payment",
+              "paid",
+              "charging",
+              "completed",
+              "cancelled",
+              "failed",
+              "refunding",
+              "refunded"
+            ],
+            "description": "原内部技术流转；展示使用独立业务与支付状态。"
+          },
+          "business_status": {
+            "$ref": "#/components/schemas/OrderBusinessStatus"
+          },
+          "payment_status": {
+            "$ref": "#/components/schemas/OrderPaymentStatus"
+          },
+          "total_cents": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true
+          },
+          "created_at": {
+            "type": "string",
+            "description": "下单时间字符串。"
+          },
+          "started_at": {
+            "type": "string",
+            "nullable": true,
+            "description": "开始充电时间字符串；尚未开始时为 null。"
+          }
+        },
+        "description": "充电用户档案中的最近订单摘要，业务与支付状态来自 charge_order 持久字段；原 status 保留技术流转。"
+      },
+      "ChargeUserDetail": {
+        "type": "object",
+        "required": [
+          "recent_orders"
+        ],
+        "properties": {
+          "recent_orders": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "$ref": "#/components/schemas/ChargeUserOrderBrief"
+            },
+            "description": "该用户未删除的最近充电订单，按订单 ID 倒序，无订单时返回 []。"
+          }
+        },
+        "additionalProperties": true,
+        "description": "在充电用户列表行基础上增加钱包、优惠券及报修计数；此处明确最近订单摘要契约，其余字段见 docs/api/go-admin-pages.md。"
+      },
+      "ChargeUserDetailResponse": {
+        "type": "object",
+        "required": [
+          "code",
+          "message",
+          "data",
+          "request_id",
+          "trace_id"
+        ],
+        "properties": {
+          "code": {
+            "type": "integer",
+            "enum": [
+              0
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/ChargeUserDetail"
           },
           "request_id": {
             "type": "string"

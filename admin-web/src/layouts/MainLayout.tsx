@@ -17,7 +17,8 @@ type NavSection = { key: string; icon: ReactNode; label: string; children: NavLi
 const dashboard: NavLink = { key: '/', icon: <DashboardOutlined />, label: '仪表盘', permission: 'dashboard.read' };
 const sections: NavSection[] = [
   { key: 'charge', icon: <ThunderboltOutlined />, label: '充电运营', children: [
-    { key: '/orders', label: '订单', permission: 'order.read' },
+    { key: '/orders', label: '充电订单', permission: 'order.read' },
+    { key: '/payment-orders', label: '支付订单', permission: 'order.read' },
     { key: '/stations', label: '站点', permission: 'station.read' },
     { key: '/devices', label: '设备', permission: 'device.read' },
     { key: '/templates', label: '模板', permission: 'pricing.read' },

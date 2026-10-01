@@ -47,8 +47,8 @@ func TestRejectedStartQueuesRefundAtomicallyAndIdempotently(t *testing.T) {
 	}
 	orderNo := "ORD-" + unique
 	order, err := db.ExecContext(ctx, `INSERT INTO charge_order
-		(order_no,user_id,device_id,port_no,payment_order_id,status,created_month,charge_mode,charge_quantity)
-		VALUES (?,?,?,1,?,'paid',?,4,600)`, orderNo, userID, "BOARD-TEST", paymentID, month)
+		(order_no,user_id,device_id,port_no,payment_order_id,status,payment_status,created_month,charge_mode,charge_quantity)
+		VALUES (?,?,?,1,?,'paid','paid',?,4,600)`, orderNo, userID, "BOARD-TEST", paymentID, month)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,6 +143,10 @@ func TestRejectedStartQueuesRefundAtomicallyAndIdempotently(t *testing.T) {
 	if err := orm.Where("id = ?", paymentID).Take(&paid).Error; err != nil || paid.RefundedCents != 0 {
 		t.Fatal("unknown outcome credited", paid, err)
 	}
+	var pendingRefundOrder ChargeOrderRecord
+	if err := orm.Where("id=?", orderID).Take(&pendingRefundOrder).Error; err != nil || pendingRefundOrder.BusinessStatus != "completed" || pendingRefundOrder.PaymentStatus != "paid" {
+		t.Fatalf("refund request/unknown outcome changed payment state: %+v err=%v", pendingRefundOrder, err)
+	}
 	if err := orm.Model(&RefundRecord{}).Where("id = ?", refund.ID).Update("next_attempt_at", time.Now().Add(-time.Minute)).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +162,7 @@ func TestRejectedStartQueuesRefundAtomicallyAndIdempotently(t *testing.T) {
 		t.Fatal("refund accounting", paid, err)
 	}
 	var refunded ChargeOrderRecord
-	if err := orm.Where("id = ?", orderID).Take(&refunded).Error; err != nil || refunded.Status != "refunded" {
+	if err := orm.Where("id = ?", orderID).Take(&refunded).Error; err != nil || refunded.Status != "refunded" || refunded.BusinessStatus != "completed" || refunded.PaymentStatus != "refunded" {
 		t.Fatal("order refund", refunded, err)
 	}
 	var receiptCount int64

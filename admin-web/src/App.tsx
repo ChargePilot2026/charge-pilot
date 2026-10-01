@@ -3,6 +3,7 @@ import LoginPage from './pages/Login';
 import MainLayout from './layouts/MainLayout';
 import DashboardPage from './pages/Dashboard';
 import OrdersPage from './pages/Orders';
+import PaymentOrdersPage from './pages/PaymentOrders';
 import ChargeUsersPage from './pages/ChargeUsers';
 import DevicesPage from './pages/Devices';
 import VendorsPage from './pages/Vendors';
@@ -34,6 +35,7 @@ export default function App() {
       <Route path="/" element={<RequireAuth><MainLayout /></RequireAuth>}>
         <Route index element={<DashboardPage />} />
         <Route path="orders" element={<OrdersPage />} />
+        <Route path="payment-orders" element={<PaymentOrdersPage />} />
         <Route path="charge-users" element={<ChargeUsersPage />} />
         <Route path="online-cards" element={<OnlineCards />} />
         <Route path="devices" element={<DevicesPage />} />

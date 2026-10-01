@@ -189,6 +189,9 @@ func (s CardStore) Swipe(ctx context.Context, cardNo, eventID string, port ScanR
 			if updated.RowsAffected != 1 {
 				return ErrCardOperation
 			}
+			if err := SyncOrderPaymentStatus(tx, uint64(order.PaymentOrderID.Int64)); err != nil {
+				return err
+			}
 			if err := tx.Model(&CardCharge{}).Where("charge_order_id=?", session.ChargeOrderID).Updates(map[string]any{"paid_cents": gorm.Expr("paid_cents+?", p.PriceCents), "purchased_minutes": gorm.Expr("purchased_minutes+?", p.Minutes)}).Error; err != nil {
 				return err
 			}
@@ -229,7 +232,7 @@ func (s CardStore) Swipe(ctx context.Context, cardNo, eventID string, port ScanR
 			if err != nil {
 				return err
 			}
-			order := ChargeOrderRecord{OrderNo: chargeNo, UserID: card.UserID, DeviceID: port.DeviceID, PortNo: port.Port.PortNo, PortCode: sql.NullString{String: port.Port.PortID, Valid: true}, PaymentOrderID: sql.NullInt64{Int64: int64(payment.ID), Valid: true}, Status: "paid", ChargeMode: 4, ChargeQuantity: spec.Scheme.Normalized().Card.MaxMinutes, CreatedMonth: utcDate()}
+			order := ChargeOrderRecord{OrderNo: chargeNo, UserID: card.UserID, DeviceID: port.DeviceID, PortNo: port.Port.PortNo, PortCode: sql.NullString{String: port.Port.PortID, Valid: true}, PaymentOrderID: sql.NullInt64{Int64: int64(payment.ID), Valid: true}, Status: "paid", PaymentStatus: "paid", ChargeMode: 4, ChargeQuantity: spec.Scheme.Normalized().Card.MaxMinutes, CreatedMonth: utcDate()}
 			if err := tx.Create(&order).Error; err != nil {
 				return err
 			}
@@ -286,6 +289,9 @@ func walletRefund(tx *gorm.DB, order ChargeOrderRecord, w *walletRow, cents int6
 		status = "refunded"
 	}
 	if err := tx.Model(&PaymentOrderRecord{}).Where("id=?", payment.ID).Updates(map[string]any{"refunded_cents": gorm.Expr("refunded_cents+?", cents), "status": status}).Error; err != nil {
+		return err
+	}
+	if err := SyncOrderPaymentStatus(tx, payment.ID); err != nil {
 		return err
 	}
 	return tx.Create(&RefundRecord{RefundNo: refundNo, PaymentOrderID: payment.ID, UserID: order.UserID, BizType: "charge", BizID: order.ID, RefundCents: cents, Status: "success", ExecutionPolicy: "automatic", Reason: sql.NullString{String: reason, Valid: true}, CreatedMonth: utcDate()}).Error

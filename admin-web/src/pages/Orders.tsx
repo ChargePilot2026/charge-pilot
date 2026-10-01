@@ -1,6 +1,7 @@
 import { Alert, Button, DatePicker, Descriptions, Drawer, Form, Input, Select, Space, Spin, Table, Tabs, Tag, Timeline, Tooltip, Typography } from 'antd';
 import { DownOutlined, UpOutlined } from '@ant-design/icons';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import dayjs, { Dayjs } from 'dayjs';
 import axios from 'axios';
 import { ApiEnvelope, http } from '../api/client';
@@ -8,11 +9,12 @@ import { LoadError } from '../components/LoadError';
 import ManualRefund from './ManualRefund';
 import OrderPackageDetails, { type SelectedPackage } from './orders/OrderPackageDetails';
 import OrderStationSelect from './orders/OrderStationSelect';
+import { businessStatuses, businessStatusInfo, paymentStatuses, paymentStatusInfo, chargingDuration, refundedAmount } from './orders/presentation';
 import { DEFAULT_PAGE_SIZE, TABLE_PAGINATION } from '../utils/tablePagination';
 
 interface Order {
-	 live?: { at: string; stale: boolean; kwh: number; seconds: number; fee?: { electric_cents: number; service_cents: number; total_cents: number }; fee_unavailable?: string };
-	 live_unavailable?: string;
+  live?: { at: string; stale: boolean; kwh: number; seconds: number; fee?: { electric_cents: number; service_cents: number; total_cents: number }; fee_unavailable?: string };
+  live_unavailable?: string;
   order_id: number;
   order_no: string;
   user_id: number;
@@ -21,6 +23,10 @@ interface Order {
   station_id: number | null;
   station_name: string | null;
   status: string;
+  business_status: string;
+  payment_status: string;
+  payment_order_status?: string | null;
+  start_source: 'payment' | 'balance' | 'card' | null;
   created_at: string;
   started_at: string | null;
   ended_at: string | null;
@@ -30,6 +36,8 @@ interface Order {
   service_fee_cents: number | null;
   total_fee_cents: number | null;
   refund_status: string;
+  refunded_cents: number | null;
+  failure_reason?: string | null;
 }
 interface OrderPage { items: Order[]; total: number; page: number; page_size: number }
 interface OrderTimeline { order_id: number; timeline: { event_id: string; at: string; event: string; actor: string; detail: string }[] }
@@ -39,9 +47,7 @@ interface OrderDetail extends Order {
   billing: { calculation_no: string | null; settlements: Settlement[] } | null;
   payment_order_id: number | null;
   payment_order_no: string | null;
-  payment_status: string | null;
   paid_cents: number | null;
-  refunded_cents: number | null;
   failure_reason: string | null;
 }
 interface Settlement {
@@ -52,19 +58,24 @@ interface Filters {
   order_no?: string;
   device_id?: string;
   station_id?: number;
-  status?: string;
+  business_status?: string;
+  payment_status?: string;
+  start_source?: string;
   period?: [Dayjs, Dayjs];
 }
-const statuses: Record<string, { label: string; color: string }> = {
-  pending_payment: { label: '待支付', color: 'gold' }, paid: { label: '已支付', color: 'blue' },
-  charging: { label: '充电中', color: 'green' }, completed: { label: '已完成', color: 'cyan' },
-  cancelled: { label: '已取消', color: 'default' }, failed: { label: '失败', color: 'red' },
-  refunding: { label: '退款中', color: 'orange' }, refunded: { label: '已退款', color: 'purple' },
-};
 const refunds: Record<string, string> = { none: '无退款', processing: '退款中', refunded: '已全额退款', partial_refunded: '部分退款' };
 const time = (value: string | null) => value ? dayjs(value).format('YYYY-MM-DD HH:mm:ss') : '—';
 const money = (value: number | null) => value == null ? '待结算' : `¥${(value / 100).toFixed(2)}`;
-const statusTag = (value: string) => <Tag color={statuses[value]?.color}>{statuses[value]?.label || value}</Tag>;
+const statusTag = (row: Order, kind: 'business' | 'payment') => {
+  const info = kind === 'business' ? businessStatusInfo(row) : paymentStatusInfo(row);
+  const tag = <Tag color={info.color}>{info.label}</Tag>;
+  return info.hint ? <Tooltip title={info.hint}>{tag}</Tooltip> : tag;
+};
+const orderDuration = (row: Order) => {
+  const duration = chargingDuration(row);
+  const hint = `${duration.hint || ''}${duration.sampledAt ? `采样时间：${time(duration.sampledAt)}。` : ''}`;
+  return hint ? <Tooltip title={hint}><span>{duration.text}</span></Tooltip> : duration.text;
+};
 const liveHint = (row: Order) => row.live ? `${row.live.stale ? '读数已过期，保留最后采样值；' : ''}采样时间：${time(row.live.at)}。费用按订单冻结费率估算，结束后结算。` : row.live_unavailable || '等待设备计量';
 const orderMeter = (row: Order) => row.status === 'charging'
   ? <Tooltip title={liveHint(row)}><span>{row.live ? `${row.live.kwh.toFixed(3)}${row.live.stale ? '（旧）' : ''}` : '待上报'}</span></Tooltip>
@@ -78,15 +89,19 @@ function errorMessage(error: unknown): string {
   }
   return error instanceof Error ? error.message : '加载失败，请稍后重试';
 }
-function initialFilters(): Filters { return { station_id: 0 }; }
+const startSources: Record<string, string> = { payment: '扫码支付', balance: '余额支付', card: '在线卡' };
+function initialFilters(orderNo?: string): Filters { return { station_id: 0, order_no: orderNo }; }
 
 export default function OrdersPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const linkedOrderNo = searchParams.get('order_no')?.trim() || undefined;
+  const previousLinkedOrderNo = useRef(linkedOrderNo);
   const [form] = Form.useForm<Filters>();
   const [filtersExpanded, setFiltersExpanded] = useState(false);
   const deviceFilter = Form.useWatch('device_id', form);
   const periodFilter = Form.useWatch('period', form);
   const advancedFilterCount = Number(Boolean(deviceFilter?.trim())) + Number(Boolean(periodFilter?.length));
-  const [filters, setFilters] = useState<Filters>(initialFilters);
+  const [filters, setFilters] = useState<Filters>(() => initialFilters(linkedOrderNo));
   const [pagination, setPagination] = useState({ page: 1, page_size: DEFAULT_PAGE_SIZE });
   const [reload, setReload] = useState(0);
   const [page, setPage] = useState<OrderPage | null>(null);
@@ -98,6 +113,14 @@ export default function OrdersPage() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailReload, setDetailReload] = useState(0);
   const [timeline, setTimeline] = useState<OrderTimeline | null>(null);
+
+  useEffect(() => {
+    if (previousLinkedOrderNo.current === linkedOrderNo) return;
+    previousLinkedOrderNo.current = linkedOrderNo;
+    const values = initialFilters(linkedOrderNo);
+    form.resetFields(); form.setFieldsValue(values);
+    setFilters(values); setPagination(value => ({ ...value, page: 1 })); setSelected(null);
+  }, [linkedOrderNo, form]);
 
   useEffect(() => {
     if (!page?.items.some(row => row.status === 'charging')) return;
@@ -144,16 +167,20 @@ export default function OrdersPage() {
   }, [selected, detailReload]);
 
   return <div className="page-container">
-    <Form form={form} initialValues={initialFilters()} layout="inline" style={{ display: 'block', marginBottom: 20 }}
+    <Form form={form} initialValues={initialFilters(linkedOrderNo)} layout="inline" style={{ display: 'block', marginBottom: 20 }}
       onFinish={values => { setFilters(values); setPagination(value => ({ ...value, page: 1 })); }}>
       <div style={{ display: 'flex', flexWrap: 'wrap', rowGap: 12 }}>
         <Form.Item name="order_no" label="订单号"><Input allowClear maxLength={64} placeholder="完整订单号" /></Form.Item>
         <Form.Item name="station_id" label="站点"><OrderStationSelect /></Form.Item>
-        <Form.Item name="status" label="状态"><Select allowClear placeholder="全部状态" style={{ width: 130 }}
-          options={Object.entries(statuses).map(([value, status]) => ({ value, label: status.label }))} /></Form.Item>
+        <Form.Item name="business_status" label="业务状态"><Select allowClear placeholder="全部业务状态" style={{ width: 150 }}
+          options={Object.entries(businessStatuses).map(([value, status]) => ({ value, label: status.label }))} /></Form.Item>
+        <Form.Item name="payment_status" label="支付状态"><Select allowClear placeholder="全部支付状态" style={{ width: 150 }}
+          options={Object.entries(paymentStatuses).map(([value, status]) => ({ value, label: status.label }))} /></Form.Item>
+        <Form.Item name="start_source" label="启动来源"><Select allowClear placeholder="全部来源" style={{ width: 150 }}
+          options={Object.entries(startSources).map(([value, label]) => ({ value, label }))} /></Form.Item>
         <Form.Item><Space>
           <Button type="primary" htmlType="submit">查询</Button>
-          <Button onClick={() => { const values = initialFilters(); form.resetFields(); form.setFieldsValue(values); setFilters(values); setFiltersExpanded(false); setPagination(value => ({ ...value, page: 1 })); }}>重置</Button>
+          <Button onClick={() => { const values = initialFilters(); form.resetFields(); form.setFieldsValue(values); setFilters(values); setFiltersExpanded(false); setPagination(value => ({ ...value, page: 1 })); if (linkedOrderNo) { const params = new URLSearchParams(searchParams); params.delete('order_no'); setSearchParams(params, { replace: true }); } }}>重置</Button>
           <Button type="link" icon={filtersExpanded ? <UpOutlined /> : <DownOutlined />} aria-expanded={filtersExpanded}
             aria-controls="order-advanced-filters" onClick={() => setFiltersExpanded(value => !value)}>
             {filtersExpanded ? '收起条件' : '更多条件'}{advancedFilterCount > 0 && `（${advancedFilterCount}）`}
@@ -177,12 +204,15 @@ export default function OrdersPage() {
         { title: '站点', dataIndex: 'station_name', width: 180, render: value => value || '未关联站点' },
         { title: '设备', dataIndex: 'device_id', onCell: () => ({ style: { whiteSpace: 'nowrap' } }) },
         { title: '端口', dataIndex: 'port_no', width: 80 },
-        { title: '状态', dataIndex: 'status', width: 110, render: statusTag },
+        { title: '启动来源', dataIndex: 'start_source', width: 130, render: value => startSources[value] || '—' },
+        { title: '业务状态', width: 110, render: (_, row) => statusTag(row, 'business') },
+        { title: '支付状态', width: 130, render: (_, row) => statusTag(row, 'payment') },
+        { title: '充电时间', width: 160, render: (_, row) => orderDuration(row) },
         { title: '电量 (kWh)', width: 130, render: (_, row) => orderMeter(row) },
         { title: '电费', width: 120, render: (_, row) => orderFee(row, 'electric') },
         { title: '服务费', width: 120, render: (_, row) => orderFee(row, 'service') },
         { title: '总费用', width: 120, render: (_, row) => orderFee(row, 'total') },
-        { title: '退款', dataIndex: 'refund_status', width: 120, render: value => refunds[value] || value },
+        { title: '退款金额', dataIndex: 'refunded_cents', width: 120, render: refundedAmount },
         { title: '开始时间', dataIndex: 'started_at', width: 180, render: time },
         { title: '结束时间', dataIndex: 'ended_at', width: 180, render: time },
       ]} />
@@ -190,18 +220,20 @@ export default function OrdersPage() {
       {detailLoading && <Spin />}
       {detailError && <LoadError title="详情加载失败" detail={detailError} onRetry={() => setDetailReload(value => value + 1)} />}
       {detail && <Space direction="vertical" size="large" style={{ width: '100%' }}>
-        <Space wrap><Typography.Text strong copyable>{detail.order_no}</Typography.Text>{statusTag(detail.status)}</Space>
+        <Space wrap><Typography.Text strong copyable>{detail.order_no}</Typography.Text>{statusTag(detail, 'business')}{statusTag(detail, 'payment')}</Space>
         {detail.failure_reason && <Alert type="warning" message="异常原因" description={detail.failure_reason} showIcon />}
         <Tabs key={detail.order_id} style={{ width: '100%' }} items={[
           { key: 'basic', label: '基本信息', children: <Descriptions bordered column={{ xs: 1, sm: 2, md: 2, lg: 2, xl: 2, xxl: 2 }} items={[
-          { key: 'status', label: '状态', children: statusTag(detail.status) },
+          { key: 'business-status', label: '业务状态', children: statusTag(detail, 'business') },
+          { key: 'payment-status', label: '支付状态', children: statusTag(detail, 'payment') },
+          { key: 'start-source', label: '启动来源', children: startSources[detail.start_source || ''] || '—' },
           { key: 'user', label: '用户 ID', children: detail.user_id },
           { key: 'station', label: '站点', children: detail.station_name || '未关联站点' },
           { key: 'device', label: '设备 / 端口', children: `${detail.device_id} / ${detail.port_no}` },
           { key: 'created', label: '创建时间', children: time(detail.created_at), span: 2 },
           { key: 'started', label: '开始时间', children: time(detail.started_at), span: 2 },
           { key: 'ended', label: '结束时间', children: time(detail.ended_at), span: 2 },
-          { key: 'duration', label: '时长', children: detail.live ? `${detail.live.seconds} 秒` : detail.duration_seconds == null ? '—' : `${detail.duration_seconds} 秒` },
+          { key: 'duration', label: '充电时间', children: orderDuration(detail) },
           { key: 'meter', label: '电量 (kWh)', children: orderMeter(detail) },
         ]} />
           },
@@ -214,10 +246,10 @@ export default function OrdersPage() {
           { key: 'total', label: '总费用', children: orderFee(detail, 'total') },
           { key: 'paid', label: '实付', children: detail.paid_cents == null ? '—' : money(detail.paid_cents) },
           { key: 'payment', label: '支付单号', children: detail.payment_order_no || '—', span: 2 },
-          { key: 'payment-status', label: '支付状态', children: detail.payment_status ? ({ pending: '待支付', paying: '支付中', paid: '已支付', closed: '已关闭', refunded: '已退款', failed: '失败' }[detail.payment_status] || detail.payment_status) : '—' },
+          { key: 'payment-status', label: '支付状态', children: statusTag(detail, 'payment') },
           { key: 'receipt', label: '计费单号', children: detail.billing?.calculation_no || '尚未生成' },
-          { key: 'refund', label: '退款状态', children: refunds[detail.refund_status] || detail.refund_status },
-          { key: 'refunded', label: '已退金额', children: detail.refunded_cents == null ? '—' : money(detail.refunded_cents) },
+          { key: 'refund', label: '退款进度', children: refunds[detail.refund_status] || detail.refund_status },
+          { key: 'refunded', label: '退款金额', children: refundedAmount(detail.refunded_cents) },
         ]} />
         {detail.refund_applicant_id && <ManualRefund key={detail.order_id} orderId={detail.order_id} orderNo={detail.order_no} actorId={detail.refund_applicant_id} onCreated={() => { setReload(value => value + 1); setDetailReload(value => value + 1); }} />}
           </Space> },

@@ -912,7 +912,7 @@ admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故�
 | 字段 | 说明 |
 | --- | --- |
 | `wallet_status` | 钱包状态 `active` / `frozen` |
-| `recent_orders` | 最近 20 笔订单摘要，按订单 ID 倒序 |
+| `recent_orders` | 最近 20 笔订单摘要，按订单 ID 倒序；包含独立 `business_status`（`pending_start/charging/completed`）与 `payment_status`（`pending/paid/refunded/partial_refunded`），保留原 `status` 技术流转 |
 | `coupon_granted` / `coupon_unused` | 累计发放 / 当前未使用的优惠券张数 |
 | `fault_reports` | 该用户提交的报障单数 |
 
@@ -1464,6 +1464,14 @@ user 服务在单库事务中锁定模板，校验用户有效、模板处于发
 详情同样实时校验 `device.read`。设备订单入口要求 `device.read` 和 `order.read`，沿用订单分页/日期筛选，路径设备编号覆盖查询参数中的设备编号；已删除/不存在设备返回 404，上游故障按真实错误返回。
 
 `PUT /api/v1/admin/devices/{id}` 已于 2026-10-01 接入设备列表和站点工作区的设备编辑；`{id}` 为设备业务编号 `device_id`。复用 `device.operate` 权限，显式提交 `model,serial_no,install_at,warranty_until,tags,expected_updated_at` 六字段，返回完整设备 DTO。型号和序列号可空、最多 128 字符；时间可空且须为含时区的 RFC3339，保修截止不早于安装；标签最多 20 项，每项去除首尾空白后为 1–32 字符且不重复。`expected_updated_at` 使用最新详情返回的版本，按 UTC 毫秒比较，冲突返回 409/code `2009`。只修改五项管理资料，不修改设备身份、归属、协议、计费与状态；实时数据范围检查及 `device.update` 审计与写入同事务。完整约束见 [设备资料编辑](go-admin-pages.md#设备资料编辑2026-10-01)。
+
+### 充电订单与支付订单当前实现（2026-10-01）
+
+“充电订单”继续使用 `GET /api/v1/admin/orders`、`/{id}`、`/{id}/timeline`，只列充电记录；新增“支付订单”使用 `GET /api/v1/admin/payment-orders`，列出 `charge` 充电付款与 `wallet_recharge` 钱包充值。均要求 `order.read`，当前后台查询仍为全量读取，未宣称站点或厂商订单范围过滤。
+
+充电订单新增规范的 `business_status`（`pending_start/charging/completed`）、`payment_status`（`pending/paid/refunded/partial_refunded`）及 `start_source`（`payment/balance/card`，分别为扫码支付、余额支付、在线卡，来源不明时可空）字段和筛选。原 `status` 保留内部流程，原始支付单状态另以 `payment_order_status` 返回；退款处理中不会提前进入已退款。`refunded_cents` 为累计成功退款金额，实际充电时长使用设备采样或结束读数，过期实时采样有标记。
+
+支付订单支持 `page/page_size/order_no/biz_type/payment_status/pay_method` 查询，保留原支付 `status` 并返回独立的四态 `payment_status`。充电关联须满足同一用户且充电单有效未删除；钱包充值的充电关联字段固定为空。具体 DTO、空值与金额口径见 [充电订单与支付订单](go-admin-pages.md#充电订单与支付订单2026-10-01)。
 
 ### 钱包退款风控审核队列
 
