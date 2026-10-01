@@ -2,10 +2,14 @@ package admin
 
 import (
 	"context"
-	"github.com/ChargePilot2026/charge-pilot/internal/central/pricing"
+	"encoding/json"
+	"fmt"
 	"net/url"
+	"strings"
 	"time"
+	"unicode/utf8"
 
+	"github.com/ChargePilot2026/charge-pilot/internal/central/pricing"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/httpapi"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/serviceclient"
 	"github.com/gin-gonic/gin"
@@ -25,8 +29,13 @@ type Device struct {
 	LastHeartbeatAt  *time.Time `json:"last_heartbeat_at" gorm:"-"`
 	RuntimeAvailable bool       `json:"runtime_available" gorm:"-"`
 	Model            *string    `json:"model"`      // 设备型号，可空；关键词搜索会匹配它。
+	SerialNo         *string    `json:"serial_no"`  // 设备出厂序列号，可空。
 	Status           string     `json:"status"`     // 设备状态：enabled 启用、disabled 停用、retired 退役、fault 故障。
 	InstallAt        *time.Time `json:"install_at"` // 安装时间，可空表示尚未记录。
+	WarrantyUntil    *time.Time `json:"warranty_until"`
+	Tags             []string   `json:"tags" gorm:"-"` // 对外标签数组；数据库 NULL 统一读为空数组。
+	TagsJSON         *string    `json:"-" gorm:"column:tags_json"`
+	UpdatedAt        time.Time  `json:"updated_at"` // 资料编辑的并发校验值，使用 UTC 毫秒精度。
 	// 这块板能上报什么，以及它当前按什么口径计费。
 	// 这些信息就挂在设备行上，运营不必再打开定价页面
 	// 去弄清某个计费规则为什么在这儿用不了。
@@ -44,7 +53,27 @@ func (s ResourceStore) deviceQuery(ctx context.Context) *gorm.DB {
 
 // deviceColumns 是设备列表与详情共用的列清单。刻意不含站点编码——迁移 admin_db/0044
 // 之后 station 表已经没有 code 列了。
-const deviceColumns = "d.id,d.device_id,d.station_id,d.vendor_id,d.model,d.status,d.install_at,d.charge_mode,d.protocol_adapter,s.name AS station_name"
+const deviceColumns = "d.id,d.device_id,d.station_id,d.vendor_id,d.model,d.serial_no,d.status,d.install_at,d.warranty_until,d.tags_json,d.updated_at,d.charge_mode,d.protocol_adapter,s.name AS station_name"
+
+// normalizeMetadata 隐藏内部 JSON 存储形式，并让所有日期保持数据库的 UTC 毫秒精度。
+func (d *Device) normalizeMetadata() error {
+	d.Tags = []string{}
+	if d.TagsJSON != nil {
+		if err := json.Unmarshal([]byte(*d.TagsJSON), &d.Tags); err != nil {
+			return err
+		}
+		if d.Tags == nil {
+			d.Tags = []string{}
+		}
+	}
+	d.UpdatedAt = d.UpdatedAt.UTC().Truncate(time.Millisecond)
+	for _, value := range []*time.Time{d.InstallAt, d.WarrantyUntil} {
+		if value != nil {
+			*value = value.UTC().Truncate(time.Millisecond)
+		}
+	}
+	return nil
+}
 
 // Devices 分页查询设备，支持按状态过滤和按设备编号/型号/站点名模糊搜索（通配符已转义）。
 // 先 Count 再按内部主键倒序取当页。注意关键词不再匹配站点编码。
@@ -69,7 +98,13 @@ func (s ResourceStore) Devices(ctx context.Context, q PageQuery, scopes ...DataS
 		return out, err
 	}
 	err := query.Select(deviceColumns).Order("d.id DESC").Offset((q.Page - 1) * q.PageSize).Limit(q.PageSize).Scan(&out.Items).Error
+	if err != nil {
+		return out, err
+	}
 	for i := range out.Items {
+		if err := out.Items[i].normalizeMetadata(); err != nil {
+			return out, err
+		}
 		cap, _ := pricing.ProtocolCapabilities(out.Items[i].ProtocolAdapter)
 		out.Items[i].ReportsEnergy = cap.ReportsEnergy
 		out.Items[i].ReportsSegmentedPower = cap.ReportsSegmentedPower
@@ -121,6 +156,10 @@ func (a ResourceAPI) device(c *gin.Context) {
 	}
 	query := scope.ApplyVendors(scope.ApplyStations(a.Store.deviceQuery(c.Request.Context()), "d.station_id"), "d.vendor_id")
 	if err := query.Select(deviceColumns).Where("d.device_id = ?", id).Take(&row).Error; err != nil {
+		resourceFailure(c, err)
+		return
+	}
+	if err := row.normalizeMetadata(); err != nil {
 		resourceFailure(c, err)
 		return
 	}
@@ -198,9 +237,13 @@ func (a ResourceAPI) setDeviceStatus(c *gin.Context) {
 		if row.Status != "enabled" && row.Status != "disabled" {
 			return errConflict
 		}
+		if err := row.normalizeMetadata(); err != nil {
+			return err
+		}
 		before := row
 		row.Status = in.Status
-		if err := tx.Table("device_meta").Where("id=?", row.ID).Update("status", in.Status).Error; err != nil {
+		row.UpdatedAt = nextDeviceUpdateTime(row.UpdatedAt)
+		if err := tx.Table("device_meta").Where("id=?", row.ID).Updates(map[string]any{"status": in.Status, "updated_at": row.UpdatedAt}).Error; err != nil {
 			return err
 		}
 		return resourceAudit(tx, c.MustGet("admin_profile").(Profile), "device.status", "device", row.ID, before, row, c.ClientIP(), httpapi.RequestID(c))
@@ -210,4 +253,160 @@ func (a ResourceAPI) setDeviceStatus(c *gin.Context) {
 		return
 	}
 	httpapi.OK(c, row)
+}
+
+// DeviceInput 要求完整提交资料字段；RawMessage 区分缺失字段和显式 null，避免意外清空。
+type DeviceInput struct {
+	Model             json.RawMessage `json:"model"`
+	SerialNo          json.RawMessage `json:"serial_no"`
+	InstallAt         json.RawMessage `json:"install_at"`
+	WarrantyUntil     json.RawMessage `json:"warranty_until"`
+	Tags              json.RawMessage `json:"tags"`
+	ExpectedUpdatedAt json.RawMessage `json:"expected_updated_at"`
+}
+
+func (in DeviceInput) metadata() (Device, time.Time, error) {
+	var row Device
+	var expected time.Time
+	for _, value := range []json.RawMessage{in.Model, in.SerialNo, in.InstallAt, in.WarrantyUntil, in.Tags, in.ExpectedUpdatedAt} {
+		if len(value) == 0 {
+			return row, expected, fmt.Errorf("请完整提交设备资料和原更新时间")
+		}
+	}
+	text := func(raw json.RawMessage) (*string, error) {
+		var value *string
+		if err := json.Unmarshal(raw, &value); err != nil {
+			return nil, fmt.Errorf("型号和序列号必须是文本或 null")
+		}
+		if value == nil {
+			return nil, nil
+		}
+		trimmed := strings.TrimSpace(*value)
+		if utf8.RuneCountInString(trimmed) > 128 {
+			return nil, fmt.Errorf("型号和序列号不能超过 128 个字符")
+		}
+		if trimmed == "" {
+			return nil, nil
+		}
+		return &trimmed, nil
+	}
+	date := func(raw json.RawMessage) (*time.Time, error) {
+		var value *string
+		if err := json.Unmarshal(raw, &value); err != nil {
+			return nil, fmt.Errorf("日期必须是带时区的 ISO 8601 时间或 null")
+		}
+		if value == nil {
+			return nil, nil
+		}
+		parsed, err := time.Parse(time.RFC3339Nano, *value)
+		if err != nil {
+			return nil, fmt.Errorf("日期必须是带时区的 ISO 8601 时间或 null")
+		}
+		parsed = parsed.UTC().Truncate(time.Millisecond)
+		if parsed.Year() < 1000 || parsed.Year() > 9999 {
+			return nil, fmt.Errorf("日期年份必须在 1000 至 9999 之间")
+		}
+		return &parsed, nil
+	}
+	var err error
+	if row.Model, err = text(in.Model); err != nil {
+		return row, expected, err
+	}
+	if row.SerialNo, err = text(in.SerialNo); err != nil {
+		return row, expected, err
+	}
+	if row.InstallAt, err = date(in.InstallAt); err != nil {
+		return row, expected, err
+	}
+	if row.WarrantyUntil, err = date(in.WarrantyUntil); err != nil {
+		return row, expected, err
+	}
+	if row.InstallAt != nil && row.WarrantyUntil != nil && row.WarrantyUntil.Before(*row.InstallAt) {
+		return row, expected, fmt.Errorf("保修截止时间不能早于安装时间")
+	}
+	if err := json.Unmarshal(in.Tags, &row.Tags); err != nil || row.Tags == nil || len(row.Tags) > 20 {
+		return row, expected, fmt.Errorf("标签必须是数组，最多 20 项")
+	}
+	seen := map[string]bool{}
+	for i, tag := range row.Tags {
+		tag = strings.TrimSpace(tag)
+		if tag == "" || utf8.RuneCountInString(tag) > 32 || seen[tag] {
+			return row, expected, fmt.Errorf("标签不能为空、重复或超过 32 个字符")
+		}
+		seen[tag] = true
+		row.Tags[i] = tag
+	}
+	expectedAt, err := date(in.ExpectedUpdatedAt)
+	if err != nil || expectedAt == nil {
+		return row, expected, fmt.Errorf("请提供设备原更新时间 expected_updated_at")
+	}
+	return row, *expectedAt, nil
+}
+
+// nextDeviceUpdateTime 保证同一毫秒连续写入也改变校验值，避免旧表单覆盖刚保存的资料。
+func nextDeviceUpdateTime(previous time.Time) time.Time {
+	next := time.Now().UTC().Truncate(time.Millisecond)
+	if !next.After(previous) {
+		next = previous.Add(time.Millisecond)
+	}
+	return next
+}
+
+// updateDevice 只编辑运营资料，设备身份、归属、通信、计费和状态由各自接口负责。
+func (a ResourceAPI) updateDevice(c *gin.Context) {
+	id := c.Param("id")
+	if id == "" || len(id) > 64 {
+		httpapi.BadRequest(c, "设备编号无效")
+		return
+	}
+	var input DeviceInput
+	if !decodeResource(c, &input) {
+		return
+	}
+	metadata, expected, err := input.metadata()
+	if err != nil {
+		httpapi.BadRequest(c, err.Error())
+		return
+	}
+	scope, ok := a.stationScope(c)
+	if !ok {
+		return
+	}
+	var row Device
+	err = a.Store.AdminDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+		query := scope.ApplyVendors(scope.ApplyStations((ResourceStore{AdminDB: tx}).deviceQuery(c.Request.Context()), "d.station_id"), "d.vendor_id")
+		if err := query.Clauses(clause.Locking{Strength: "UPDATE"}).Select(deviceColumns).Where("d.device_id=?", id).Take(&row).Error; err != nil {
+			return err
+		}
+		if err := row.normalizeMetadata(); err != nil {
+			return err
+		}
+		if !row.UpdatedAt.Equal(expected) {
+			return fmt.Errorf("%w：设备资料已被修改，请刷新后重试", errConflict)
+		}
+		before := row
+		row.Model, row.SerialNo = metadata.Model, metadata.SerialNo
+		row.InstallAt, row.WarrantyUntil, row.Tags = metadata.InstallAt, metadata.WarrantyUntil, metadata.Tags
+		row.UpdatedAt = nextDeviceUpdateTime(row.UpdatedAt)
+		tags, err := json.Marshal(row.Tags)
+		if err != nil {
+			return err
+		}
+		if err := tx.Table("device_meta").Where("id=?", row.ID).Updates(map[string]any{
+			"model": row.Model, "serial_no": row.SerialNo, "install_at": row.InstallAt,
+			"warranty_until": row.WarrantyUntil, "tags_json": string(tags), "updated_at": row.UpdatedAt,
+		}).Error; err != nil {
+			return err
+		}
+		return resourceAudit(tx, c.MustGet("admin_profile").(Profile), "device.update", "device", row.ID, before, row, c.ClientIP(), httpapi.RequestID(c))
+	})
+	if err != nil {
+		resourceFailure(c, err)
+		return
+	}
+	cap, _ := pricing.ProtocolCapabilities(row.ProtocolAdapter)
+	row.ReportsEnergy, row.ReportsSegmentedPower = cap.ReportsEnergy, cap.ReportsSegmentedPower
+	rows := []Device{row}
+	a.enrichDevices(c.Request.Context(), rows)
+	httpapi.OK(c, rows[0])
 }

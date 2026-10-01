@@ -669,7 +669,7 @@ CREATE TABLE `whitelabel_config` (
 -- 初始化数据：内置权限、角色及系统默认配置。业务与演示数据另行创建。
 
 -- permission 默认记录
-INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (1,'device.operate','启用禁用设备','device','切换设备运营状态，不停止已有订单','2026-09-30 19:22:11.260');
+INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (1,'device.operate','编辑资料及启停设备','device','编辑设备型号、序列号、安装时间、保修截止时间和标签，或切换运营状态；不停止已有订单','2026-09-30 19:22:11.260');
 INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (2,'station.read','查看站点','station',NULL,'2026-09-30 19:22:11.651');
 INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (3,'station.create','新增站点','station',NULL,'2026-09-30 19:22:11.651');
 INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (4,'station.update','编辑站点','station',NULL,'2026-09-30 19:22:11.651');

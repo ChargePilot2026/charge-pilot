@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "ChargePilot Go admin API",
-    "version": "2026-09-30",
+    "version": "2026-10-01",
     "description": "已接线的 Go 后台认证、仪表盘和现有 PC 页面接口。字段与工作流见 docs/api/go-admin-pages.md；不代表目标设计中的全部后台能力。"
   },
   "paths": {
@@ -1269,7 +1269,14 @@
         "x-permission": "device.read",
         "responses": {
           "200": {
-            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DevicePageResponse"
+                }
+              }
+            }
           },
           "400": {
             "description": "参数无效"
@@ -1303,7 +1310,7 @@
             }
           }
         ],
-        "description": "按 keyword/status/station_id 分页读取设备；同时应用当前账号站点与厂商范围。"
+        "description": "按 keyword/status/station_id 分页读取设备；同时应用当前账号站点与厂商范围。 列表包含 serial_no、warranty_until、tags 数组与 updated_at；无标签返回 []。"
       }
     },
     "/api/v1/admin/devices/{id}": {
@@ -1317,7 +1324,14 @@
         "x-permission": "device.read",
         "responses": {
           "200": {
-            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
+            "description": "成功，统一 code/message/data/request_id/trace_id 响应",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceResponse"
+                }
+              }
+            }
           },
           "400": {
             "description": "参数无效"
@@ -1344,10 +1358,119 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "description": "设备业务编号 device_id，不是 admin 数据库主键。"
+          }
+        ],
+        "description": "按设备业务编号读取完整资料，实时检查站点与厂商数据范围；tags 始终为数组，updated_at 用于资料编辑并发检查。"
+      },
+      "put": {
+        "summary": "编辑设备管理资料",
+        "description": "仅更新型号、管理序列号、安装时间、保修截止与标签；不变更设备身份、站点、厂商、协议、计费能力或运营状态。实时检查站点及厂商范围；写入与 device.update 审计同事务。expected_updated_at 使用 GET 返回的版本，按 UTC 毫秒比较，冲突返回 409/code 2009。",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-permission": "device.operate",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "设备业务编号 device_id，不是 admin 数据库主键。",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
             }
           }
-        ]
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "资料保存成功，返回完整设备 DTO 及新的 updated_at。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "字段缺失、未知或非法；code 1005。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录或会话失效。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "缺少实时 device.operate 权限。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "设备不存在、已删除或不在当前站点/厂商数据范围内；code 1004。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "设备资料已被修改，请刷新后重试；code 2009。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "资料暂时无法读取或保存；code 5003。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/v1/admin/vendors": {
@@ -1547,8 +1670,8 @@
               }
             }
           },
-          "503": {
-            "description": "厂商依赖服务不可用；内部认证故障也返回此状态",
+          "409": {
+            "description": "厂商编码重复，或试图修改不可变编码、已有设备厂商的协议配置",
             "content": {
               "application/json": {
                 "schema": {
@@ -1557,8 +1680,8 @@
               }
             }
           },
-          "409": {
-            "description": "厂商编码重复，或试图修改不可变编码、已有设备厂商的协议配置",
+          "503": {
+            "description": "厂商依赖服务不可用；内部认证故障也返回此状态",
             "content": {
               "application/json": {
                 "schema": {
@@ -1745,8 +1868,8 @@
               }
             }
           },
-          "503": {
-            "description": "厂商依赖服务不可用；内部认证故障也返回此状态",
+          "409": {
+            "description": "厂商编码重复，或试图修改不可变编码、已有设备厂商的协议配置",
             "content": {
               "application/json": {
                 "schema": {
@@ -1755,8 +1878,8 @@
               }
             }
           },
-          "409": {
-            "description": "厂商编码重复，或试图修改不可变编码、已有设备厂商的协议配置",
+          "503": {
+            "description": "厂商依赖服务不可用；内部认证故障也返回此状态",
             "content": {
               "application/json": {
                 "schema": {
@@ -4870,6 +4993,284 @@
           },
           "data": {
             "$ref": "#/components/schemas/VendorPage"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "trace_id": {
+            "type": "string"
+          }
+        }
+      },
+      "DeviceUpdateRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "model",
+          "serial_no",
+          "install_at",
+          "warranty_until",
+          "tags",
+          "expected_updated_at"
+        ],
+        "properties": {
+          "model": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 128,
+            "description": "去除首尾空白，空白字符串归为 null。"
+          },
+          "serial_no": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 128,
+            "description": "管理资料中的硬件序列号；去除首尾空白，空白字符串归为 null。"
+          },
+          "install_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "含时区的 RFC3339 日期时间或 null；转换为 UTC 毫秒，年份为 1000–9999。"
+          },
+          "warranty_until": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "含时区的 RFC3339 日期时间或 null；转换为 UTC 毫秒，年份为 1000–9999。 安装时间和保修截止都有值时，保修截止不得早于安装时间。"
+          },
+          "tags": {
+            "type": "array",
+            "maxItems": 20,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 32
+            },
+            "description": "每项去除首尾空白后校验，空项及重复项拒绝；用 [] 清空，不接受 null。"
+          },
+          "expected_updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "必填且非 null；从 GET 详情复制 updated_at，含时区的 RFC3339 时间，按 UTC 毫秒比较。"
+          }
+        }
+      },
+      "Device": {
+        "type": "object",
+        "required": [
+          "id",
+          "device_id",
+          "station_id",
+          "station_name",
+          "vendor_id",
+          "vendor_name",
+          "last_heartbeat_at",
+          "runtime_available",
+          "model",
+          "serial_no",
+          "status",
+          "install_at",
+          "warranty_until",
+          "tags",
+          "updated_at",
+          "protocol_adapter",
+          "charge_mode",
+          "reports_energy",
+          "reports_segmented_power"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1,
+            "description": "admin 内部主键，仅用于列表排序；接口寻址使用 device_id。"
+          },
+          "device_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "station_id": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true,
+            "minimum": 1
+          },
+          "station_name": {
+            "type": "string",
+            "nullable": true
+          },
+          "vendor_id": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true,
+            "minimum": 1
+          },
+          "vendor_name": {
+            "type": "string",
+            "nullable": true
+          },
+          "last_heartbeat_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "runtime_available": {
+            "type": "boolean"
+          },
+          "model": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 128,
+            "description": "去除首尾空白，空白字符串归为 null。"
+          },
+          "serial_no": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 128,
+            "description": "去除首尾空白，空白字符串归为 null。"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "enabled",
+              "disabled",
+              "retired",
+              "fault"
+            ]
+          },
+          "install_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "含时区的 RFC3339 日期时间或 null；转换为 UTC 毫秒，年份为 1000–9999。"
+          },
+          "warranty_until": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "含时区的 RFC3339 日期时间或 null；转换为 UTC 毫秒，年份为 1000–9999。"
+          },
+          "tags": {
+            "type": "array",
+            "maxItems": 20,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 32
+            },
+            "description": "每项去除首尾空白后校验，空项及重复项拒绝；用 [] 清空，不接受 null。"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "UTC 毫秒资料版本；保存时作为 expected_updated_at 传回。"
+          },
+          "protocol_adapter": {
+            "type": "string"
+          },
+          "charge_mode": {
+            "type": "string"
+          },
+          "reports_energy": {
+            "type": "boolean"
+          },
+          "reports_segmented_power": {
+            "type": "boolean"
+          }
+        }
+      },
+      "DevicePage": {
+        "type": "object",
+        "required": [
+          "items",
+          "total",
+          "page",
+          "page_size"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Device"
+            }
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000000
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "DeviceResponse": {
+        "type": "object",
+        "required": [
+          "code",
+          "message",
+          "data",
+          "request_id",
+          "trace_id"
+        ],
+        "properties": {
+          "code": {
+            "type": "integer",
+            "enum": [
+              0
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/Device"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "trace_id": {
+            "type": "string"
+          }
+        }
+      },
+      "DevicePageResponse": {
+        "type": "object",
+        "required": [
+          "code",
+          "message",
+          "data",
+          "request_id",
+          "trace_id"
+        ],
+        "properties": {
+          "code": {
+            "type": "integer",
+            "enum": [
+              0
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/DevicePage"
           },
           "request_id": {
             "type": "string"

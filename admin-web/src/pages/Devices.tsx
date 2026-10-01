@@ -5,6 +5,7 @@ import { useNavigate } from 'react-router-dom';
 import { apiGet, apiPut, adminSession } from '../api/client';
 import DeviceImport from './DeviceImport';
 import DeviceCreate from './DeviceCreate';
+import DeviceEdit from './DeviceEdit';
 import { LoadError } from '../components/LoadError';
 import { DEFAULT_PAGE_SIZE, TABLE_PAGINATION } from '../utils/tablePagination';
 
@@ -32,6 +33,7 @@ export default function DevicesPage({ station, embedded = false, onConfigure }: 
   const [query,setQuery]=useState({page:1,page_size:DEFAULT_PAGE_SIZE,keyword:'',status:''});
   const generation=useRef(0);
   const [operating,setOperating]=useState<string>();
+  const [editing,setEditing]=useState<string>();
   const operatingRef=useRef(false);
   const changeStatus=async(device:Device)=>{
     if(operatingRef.current)return;
@@ -93,6 +95,7 @@ export default function DevicesPage({ station, embedded = false, onConfigure }: 
         {title:'安装时间',dataIndex:'install_at',render:(v?:string)=>v ? new Date(v).toLocaleString() : '-'},
         {title:'最后在线时间',key:'heartbeat',render:(_:unknown,d:Device)=>d.runtime_available===false?'暂不可读取':d.last_heartbeat_at?new Date(d.last_heartbeat_at).toLocaleString():'尚无心跳'},
         ...(permissions.includes('device.operate') || permissions.includes('pricing.read') && (onConfigure || permissions.includes('station.read')) ? [{title:'操作',key:'configuration',render:(_:unknown,d:Device)=><Space>
+          {permissions.includes('device.operate')&&<Button type="link" onClick={() => setEditing(d.device_id)}>编辑</Button>}
           {permissions.includes('pricing.read')&&(onConfigure||permissions.includes('station.read'))&&<Button type="link" disabled={!d.station_id}
           onClick={() => onConfigure ? onConfigure(d.device_id) : openStation(d, true)}>计费与套餐</Button>}
           {permissions.includes('device.operate')&&['enabled','disabled'].includes(d.status)&&<Popconfirm title={d.status==='enabled'?'禁用此设备？':'启用此设备？'} description={d.status==='enabled'?'禁用后不接受新充电和刷卡加时，已有订单可继续充电并正常结束。':'启用后，在线且空闲的端口可以发起充电。'} onConfirm={()=>changeStatus(d)}>
@@ -100,5 +103,6 @@ export default function DevicesPage({ station, embedded = false, onConfigure }: 
           </Popconfirm>}
         </Space>}] : []),
       ]}/>
+    {editing && <DeviceEdit key={editing} deviceID={editing} onClose={() => setEditing(undefined)} onComplete={() => void load()} />}
   </div>;
 }

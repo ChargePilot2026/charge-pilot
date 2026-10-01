@@ -86,18 +86,20 @@ export default function DashboardPage() {
     </Space>
     {error && <LoadError title="仪表盘读取失败" detail={error} onRetry={() => void load()} />}
     {loading && !metrics ? <Card><Spin /></Card> : <>
-      <Row gutter={[16, 16]}>
-        <Col xs={24} sm={8}><Card><Statistic title="充电中订单" value={metrics ? metrics.charging_orders : '—'} prefix={<ThunderboltOutlined />} suffix="单" /></Card></Col>
-        <Col xs={24} sm={8}><Card><Statistic title="本日订单" value={metrics ? metrics.today_orders : '—'} prefix={<ShoppingCartOutlined />} suffix="单" /></Card></Col>
-        <Col xs={24} sm={8}><Card><Statistic title="充电金额" value={metrics ? (metrics.today_settled_cents / 100).toFixed(2) : '—'} prefix={<DollarOutlined />} suffix="元" /></Card></Col>
-        <Col xs={24} sm={8}><Card><Statistic title="总用户数" value={metrics ? metrics.total_users : '—'} prefix={<TeamOutlined />} suffix="人" /></Card></Col>
-        <Col xs={24} sm={8}><Card><Statistic title="新用户数" value={metrics ? metrics.new_users : '—'} prefix={<UserAddOutlined />} suffix="人" /></Card></Col>
-        <Col xs={24} sm={8}><Card><Statistic title="本日充电用户数" value={metrics ? metrics.today_charging_users : '—'} prefix={<UserOutlined />} suffix="人" /></Card></Col>
-        <Col xs={24} sm={8}><Card><Statistic title="站点数" value={metrics ? metrics.station_count : '—'} prefix={<EnvironmentOutlined />} suffix="个" /></Card></Col>
-        <Col xs={24} sm={8}><Card><Statistic title="设备数" value={metrics ? metrics.device_count : '—'} prefix={<ToolOutlined />} suffix="台" /></Card></Col>
-        <Col xs={24} sm={8}><Card><Statistic title="待处理告警数" value={metrics ? metrics.active_alerts : '—'} prefix={<AlertOutlined />} suffix="条" valueStyle={{ color: metrics?.active_alerts ? '#cf1322' : undefined }} /></Card></Col>
-      </Row>
-      <Row gutter={[16, 16]} style={{ marginTop: 8 }}>
+      <Card className="dashboard-statistics">
+        <Row gutter={[24, 24]}>
+          <Col xs={24} sm={8}><Statistic title="充电中订单" value={metrics ? metrics.charging_orders : '—'} prefix={<ThunderboltOutlined />} suffix="单" /></Col>
+          <Col xs={24} sm={8}><Statistic title="本日订单" value={metrics ? metrics.today_orders : '—'} prefix={<ShoppingCartOutlined />} suffix="单" /></Col>
+          <Col xs={24} sm={8}><Statistic title="充电金额" value={metrics ? (metrics.today_settled_cents / 100).toFixed(2) : '—'} prefix={<DollarOutlined />} suffix="元" /></Col>
+          <Col xs={24} sm={8}><Statistic title="总用户数" value={metrics ? metrics.total_users : '—'} prefix={<TeamOutlined />} suffix="人" /></Col>
+          <Col xs={24} sm={8}><Statistic title="新用户数" value={metrics ? metrics.new_users : '—'} prefix={<UserAddOutlined />} suffix="人" /></Col>
+          <Col xs={24} sm={8}><Statistic title="本日充电用户数" value={metrics ? metrics.today_charging_users : '—'} prefix={<UserOutlined />} suffix="人" /></Col>
+          <Col xs={24} sm={8}><Statistic title="站点数" value={metrics ? metrics.station_count : '—'} prefix={<EnvironmentOutlined />} suffix="个" /></Col>
+          <Col xs={24} sm={8}><Statistic title="设备数" value={metrics ? metrics.device_count : '—'} prefix={<ToolOutlined />} suffix="台" /></Col>
+          <Col xs={24} sm={8}><Statistic title="待处理告警数" value={metrics ? metrics.active_alerts : '—'} prefix={<AlertOutlined />} suffix="条" valueStyle={{ color: metrics?.active_alerts ? '#cf1322' : undefined }} /></Col>
+        </Row>
+      </Card>
+      <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
         <Col xs={24}>
           <Card title="近 7 天完成订单与结算金额">
             {trend.length > 0 ? <div className="dashboard-trend-grid">
