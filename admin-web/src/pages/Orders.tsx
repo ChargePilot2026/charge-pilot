@@ -101,9 +101,12 @@ export default function OrdersPage() {
   const previousLinkedOrderNo = useRef(linkedOrderNo);
   const [form] = Form.useForm<Filters>();
   const [filtersExpanded, setFiltersExpanded] = useState(false);
-  const deviceFilter = Form.useWatch('device_id', form);
-  const periodFilter = Form.useWatch('period', form);
-  const advancedFilterCount = Number(Boolean(deviceFilter?.trim())) + Number(Boolean(periodFilter?.length));
+  const stationFilter = Form.useWatch('station_id', form);
+  const businessStatusFilter = Form.useWatch('business_status', form);
+  const paymentStatusFilter = Form.useWatch('payment_status', form);
+  const startSourceFilter = Form.useWatch('start_source', form);
+  const advancedFilterCount = Number(Boolean(stationFilter)) + Number(Boolean(businessStatusFilter))
+    + Number(Boolean(paymentStatusFilter)) + Number(Boolean(startSourceFilter));
   const [filters, setFilters] = useState<Filters>(() => initialFilters(linkedOrderNo));
   const [pagination, setPagination] = useState({ page: 1, page_size: DEFAULT_PAGE_SIZE });
   const [reload, setReload] = useState(0);
@@ -174,13 +177,8 @@ export default function OrdersPage() {
       onFinish={values => { setFilters(values); setPagination(value => ({ ...value, page: 1 })); }}>
       <div style={{ display: 'flex', flexWrap: 'wrap', rowGap: 12 }}>
         <Form.Item name="order_no" label="订单号"><Input allowClear maxLength={64} placeholder="完整订单号" /></Form.Item>
-        <Form.Item name="station_id" label="站点"><OrderStationSelect /></Form.Item>
-        <Form.Item name="business_status" label="业务状态"><Select allowClear placeholder="全部业务状态" style={{ width: 150 }}
-          options={Object.entries(businessStatuses).map(([value, status]) => ({ value, label: status.label }))} /></Form.Item>
-        <Form.Item name="payment_status" label="支付状态"><Select allowClear placeholder="全部支付状态" style={{ width: 150 }}
-          options={Object.entries(paymentStatuses).map(([value, status]) => ({ value, label: status.label }))} /></Form.Item>
-        <Form.Item name="start_source" label="启动来源"><Select allowClear placeholder="全部来源" style={{ width: 150 }}
-          options={Object.entries(startSources).map(([value, label]) => ({ value, label }))} /></Form.Item>
+        <Form.Item name="device_id" label="设备编号"><Input allowClear maxLength={64} placeholder="设备编号" /></Form.Item>
+        <Form.Item name="period" label="时间范围"><DatePicker.RangePicker showTime format="YYYY-MM-DD HH:mm" /></Form.Item>
         <Form.Item><Space>
           <Button type="primary" htmlType="submit">查询</Button>
           <Button onClick={() => { const values = initialFilters(); form.resetFields(); form.setFieldsValue(values); setFilters(values); setFiltersExpanded(false); setPagination(value => ({ ...value, page: 1 })); if (linkedOrderNo) { const params = new URLSearchParams(searchParams); params.delete('order_no'); setSearchParams(params, { replace: true }); } }}>重置</Button>
@@ -191,8 +189,13 @@ export default function OrdersPage() {
         </Space></Form.Item>
       </div>
       <div id="order-advanced-filters" style={{ display: filtersExpanded ? 'flex' : 'none', flexWrap: 'wrap', rowGap: 12, marginTop: 12 }}>
-        <Form.Item name="device_id" label="设备"><Input allowClear maxLength={64} placeholder="设备编号" /></Form.Item>
-        <Form.Item name="period" label="时间范围"><DatePicker.RangePicker showTime format="YYYY-MM-DD HH:mm" /></Form.Item>
+        <Form.Item name="station_id" label="站点"><OrderStationSelect /></Form.Item>
+        <Form.Item name="business_status" label="业务状态"><Select allowClear placeholder="全部业务状态" style={{ width: 150 }}
+          options={Object.entries(businessStatuses).map(([value, status]) => ({ value, label: status.label }))} /></Form.Item>
+        <Form.Item name="payment_status" label="支付状态"><Select allowClear placeholder="全部支付状态" style={{ width: 150 }}
+          options={Object.entries(paymentStatuses).map(([value, status]) => ({ value, label: status.label }))} /></Form.Item>
+        <Form.Item name="start_source" label="启动来源"><Select allowClear placeholder="全部来源" style={{ width: 150 }}
+          options={Object.entries(startSources).map(([value, label]) => ({ value, label }))} /></Form.Item>
       </div>
     </Form>
     {error && <LoadError title="订单加载失败" detail={error} onRetry={() => setReload(value => value + 1)} />}
