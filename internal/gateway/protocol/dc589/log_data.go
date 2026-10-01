@@ -66,7 +66,7 @@ func parsedLogData(f Frame) (map[string]any, error) {
 		if len(d) != 10 {
 			return nil, ErrPayload
 		}
-		return map[string]any{"action_code": d[0], "action": codeName(d[0], map[byte]string{1: "重启", 2: "主板升级", 3: "模块升级"}), "use_upgrade_id": d[1] != 0}, nil
+		return map[string]any{"action_code": d[0], "action": codeName(d[0], map[byte]string{1: "重启"})}, nil
 	case RemoteResult:
 		if len(d) != 2 {
 			return nil, ErrPayload

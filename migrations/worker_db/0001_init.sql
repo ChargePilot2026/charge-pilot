@@ -67,10 +67,10 @@ CREATE TABLE `dlq_replay_cursor` (
   KEY `idx_updated` (`updated_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='DLQ 重放滑动游标(D21)';
 
--- retry_queue：重试队列(Webhook / 支付 / OTA)
+-- retry_queue：重试队列(Webhook / 支付)
 CREATE TABLE `retry_queue` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT '记录主键 ID',
-  `queue_name` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'webhook_retry / pay_retry / ota_retry',
+  `queue_name` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'webhook_retry / pay_retry',
   `payload_json` json NOT NULL COMMENT '任务执行或投递载荷 JSON',
   `run_at` datetime(3) NOT NULL COMMENT '重试任务计划执行时间',
   `attempt_count` int unsigned NOT NULL DEFAULT '0' COMMENT '已尝试执行次数',
@@ -81,7 +81,7 @@ CREATE TABLE `retry_queue` (
   `updated_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) COMMENT '记录更新时间',
   PRIMARY KEY (`id`),
   KEY `idx_queue_run` (`queue_name`,`run_at`,`status`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='重试队列(Webhook / 支付 / OTA)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='重试队列(Webhook / 支付)';
 
 -- scheduled_task：定时任务定义
 CREATE TABLE `scheduled_task` (
@@ -128,7 +128,6 @@ CREATE TABLE `task_execution_log` (
 -- 初始化数据：内置权限、角色及系统默认配置。业务与演示数据另行创建。
 
 -- scheduled_task 默认记录
-INSERT INTO `scheduled_task` (`id`,`task_code`,`name`,`cron_expr`,`enabled`,`last_run_at`,`next_run_at`,`config_json`,`created_at`,`updated_at`,`consecutive_fail_count`,`lease_token`,`lease_until`) VALUES (1,'alert_evaluate','设备告警阈值扫描','*/10 * * * * *',1,NULL,'2026-09-30 19:22:13.142',NULL,'2026-09-30 19:22:13.142','2026-09-30 19:22:13.142',0,NULL,NULL);
 INSERT INTO `scheduled_task` (`id`,`task_code`,`name`,`cron_expr`,`enabled`,`last_run_at`,`next_run_at`,`config_json`,`created_at`,`updated_at`,`consecutive_fail_count`,`lease_token`,`lease_until`) VALUES (2,'webhook_dispatch','Webhook 待投递事件扫描','*/10 * * * * *',1,NULL,'2026-09-30 19:22:13.142',NULL,'2026-09-30 19:22:13.142','2026-09-30 19:22:13.142',0,NULL,NULL);
 
 -- +goose Down

@@ -17,14 +17,14 @@
 | 主键 | `BIGINT UNSIGNED AUTO_INCREMENT`,字段名 `id` | 无 |
 | 业务唯一键 | UUID v4 或业务字符串(如 `role_code`),单独字段 | 无 |
 | 时间戳 | `created_at` / `updated_at`,类型 `DATETIME(3)` | 无 |
-| **软删除** | **本期启用**:业务表加 `deleted_at DATETIME(3) NULL` + `deleted_by BIGINT UNSIGNED NULL`;删除 = `UPDATE ... SET deleted_at = NOW()`;**所有查询默认 `WHERE deleted_at IS NULL`**;`idx_*_deleted_at` 索引 | **配置 / 日志类表不软删**:角色 / 权限 / 白标 / 公告 / 审计日志 / 推送日志 / OTA 包元数据 |
+| **软删除** | **本期启用**:业务表加 `deleted_at DATETIME(3) NULL` + `deleted_by BIGINT UNSIGNED NULL`;删除 = `UPDATE ... SET deleted_at = NOW()`;**所有查询默认 `WHERE deleted_at IS NULL`**;`idx_*_deleted_at` 索引 | **配置 / 日志类表不软删**:角色 / 权限 / 白标 / 公告 / 审计日志 / 推送日志 |
 | 金额 | `BIGINT`(单位:**分**) | 无 |
 | 加密字段 | `VARBINARY` + MySQL `AES_ENCRYPT`(§ 9.3) | 仅敏感字段(管理员邮箱 / 备用手机号) |
 | 状态字段 | `ENUM(...)` + 配套 comment | 仅业务状态字段 |
 | 索引命名 | `pk_` / `uk_` / `idx_` / `fk_` 前缀 | 无 |
 | 外键 | **不声明**(跨服务事务用最终一致性,§ 4.3 + § 5.4) | 无 |
 
-## 表清单(25 张)
+## 表清单(20 张)
 
 | 表名 | 业务说明 | 分表策略 | 估算行数(单客户 5 年) |
 | --- | --- | --- | --- |
@@ -40,13 +40,8 @@
 | `split_party` | 分账参与方(模板实例) | 不分 | ~200 |
 | `whitelabel_config` | 白标配置 | 不分 | 1(单例) |
 | `announcement` | 公告 | 不分 | ~500 |
-| `customer_service_config` | 客服坐席配置 | 不分 | ~20 |
 | `webhook_subscription` | Webhook 订阅 | 不分 | ~20 |
 | `webhook_delivery_log` | Webhook 推送日志 | 按月分区 | ~500 万 |
-| `ota_package` | OTA 固件包元数据 | 不分 | ~100 |
-| `ota_schedule` | OTA 推送调度 | 不分 | ~1000 |
-| `alert_rule` | 告警规则(§ 3.1.4 客户自配) | 不分 | ~100 |
-| `alert_subscription` | 告警订阅(Webhook / 邮件) | 不分 | ~20 |
 | `risk_config` | 风控配置(频次 / 金额阈值) | 不分 | 1(单例) |
 | `settled_record` | 账单结清记录 | 不分 | ~5000 |
 | `finance_reconcile_log` | 财务对账日志(对账差异处理) | 不分 | ~1000/年 |
@@ -54,7 +49,7 @@
 | **`alert_event`** | **告警事件持久化**(规则触发记录,便于查询历史) | 按月分区 | ~50 万 |
 | `audit_log` | 所有 admin 写操作审计 | 按月分区 | ~500 万 |
 
-> **本文件包含全部 25 张表**:首批 7 张核心 + 第二批 17 张运营型(`station` / `device_meta` / `pricing_rule` / `pricing_template` / `coupon` / `split_template` / `split_party` / `webhook_subscription` / `webhook_delivery_log` / `ota_package` / `ota_schedule` / `alert_rule` / `alert_subscription` / `risk_config` / `settled_record` / `finance_reconcile_log` / `invoice_review`) + 第三批 1 张(`alert_event`,按月分区持久化告警事件)。
+> **本文件列出设计模型中的 20 张表**。完整现行字段与表以迁移为准。客服坐席、告警配置、OTA 已移除新库表定义，现有部署的历史表及数据保留；下方沿用原表节编号以保留历史引用。
 
 ### 关键架构决策(本批次)
 
@@ -67,8 +62,8 @@
 
 **软删除范围**:
 
-- **业务表**(站点 / 设备 / 计费规则 / 公告 / OTA 调度 / 告警规则 / 风险配置 / 账单 / 对账日志 / 发票审核)启用软删除
-- **配置类**(角色 / 权限 / 白标 / 告警订阅 / 风控配置阈值)不软删,采用"启用 / 停用"机制
+- **业务表**(站点 / 设备 / 计费规则 / 公告 / 风险配置 / 账单 / 对账日志 / 发票审核)启用软删除
+- **配置类**(角色 / 权限 / 白标 / 风控配置阈值)不软删,采用"启用 / 停用"机制
 - **日志类**(审计 / Webhook 推送)按月分区 + 物理归档(超 3 年),不软删
 
 ---
@@ -204,11 +199,11 @@
 
 ## 表 3:`admin_db.permission`
 
-**业务说明**:**权限点**(RBAC 第二层)。系统中所有需要权限控制的操作都对应一个权限点(如 `order.refund.review` / `device.ota.push`)。**预置**,不开放自定义。
+**业务说明**:**权限点**(RBAC 第二层)。系统中所有需要权限控制的操作都对应一个权限点(如 `order.refund.review` / `fault.dispatch`)。**预置**,不开放自定义。
 
 **关键业务规则**:
 
-- **权限点代码命名**:`{资源}.{动作}.{限定}` 三段式(如 `order.refund.review`、`device.ota.push`、`finance.invoice.review`)
+- **权限点代码命名**:`{资源}.{动作}.{限定}` 三段式(如 `order.refund.review`、`fault.dispatch`、`finance.invoice.review`)
 - 权限点与角色多对多(通过 `role.permission_codes` JSON 关联)
 - **不软删除**:权限点是预置配置,启用 / 停用即可
 
@@ -217,7 +212,7 @@
 | 字段 | 类型 | 约束 | 默认 | 说明 |
 | --- | --- | --- | --- | --- |
 | `id` | `BIGINT UNSIGNED` | PK, AUTO_INCREMENT | — | 主键 |
-| `permission_code` | `VARCHAR(128)` | UNIQUE, NOT NULL | — | 权限点代码(枚举,如 `order.read` / `order.refund.review` / `device.ota.push` / `finance.invoice.review`) |
+| `permission_code` | `VARCHAR(128)` | UNIQUE, NOT NULL | — | 权限点代码(枚举,如 `order.read` / `order.refund.review` / `fault.dispatch` / `finance.invoice.review`) |
 | `permission_name` | `VARCHAR(64)` | NOT NULL | — | 权限点中文名(如"查看订单"、"审核退款") |
 | `resource` | `VARCHAR(32)` | NOT NULL | — | 资源类型(`order` / `device` / `finance` / `alert` / `customer` / `role` 等) |
 | `action` | `VARCHAR(32)` | NOT NULL | — | 操作类型(`read` / `create` / `update` / `delete` / `review` / `push` 等) |
@@ -247,6 +242,8 @@
 - **初始化**:系统部署时初始化脚本 INSERT 所有预置权限点(~200 个)
 - **JWT 鉴权**:admin 中间件从 JWT 读 `permission_codes` → 校验当前请求的权限点是否在列表中 → 通过则继续,失败返回 403
 - **权限点查询**:客户端(PC 后台)按 `resource` 分组查所有权限点,用于"角色管理"界面展示
+
+当前种子包含 `feedback.read`、`feedback.reply`、`fault.read` 和 `fault.dispatch`，反馈报修归入设备权限分组。后台会实时核验管理员和权限是否有效，写操作在 `audit_log` 留痕。客服角色仍可按授权处理反馈和钱包风控审核。`dashboard.read` 控制仪表盘访问，告警数来自 `alert_event`，订单数和金额由 user 模块从订单所有者表汇总。
 
 ---
 
@@ -370,74 +367,6 @@
 
 ---
 
-## 表 6:`admin_db.customer_service_config`
-
-**业务说明**:**客服坐席配置**(微信原生客服会话)。客户运营配置客服团队的微信账号,小程序"在线客服"入口会路由到配置的微信客服。
-
-**关键业务规则**:
-
-- 微信原生客服:**不做自有 IM 系统**,直接接入微信原生客服会话(需求文档已定)
-- 坐席配置:每个客服绑定一个微信 openid / 微信号
-- 软删除启用:员工离职 → 软删
-- **首次响应 SLA**:客户自配(可空)
-
-> 当前迁移定义与下方完整设计模型尚不相同：实际 `admin_db/0001_init.sql` 仅有 `agent_wechat`、`agent_name`、`path`、`priority`、`enabled`、`working_hours_json` 和时间戳；`admin_db/0014_customer_service_url.sql` 将 `path` 扩为 512 字符，用作 HTTPS 客服入口。当前没有 `role_id`、会话计数、SLA、评分或软删除列。PC 删除操作将坐席设为 `enabled=0`，不会删除记录；user 服务返回优先级最高的启用坐席。坐席授权、负载分配、SLA 和会话状态仍未实现。
-
-`admin_db/0016_customer_casework_permissions.sql` 注册 `feedback.read`、`feedback.reply`、`fault.read` 和 `fault.dispatch` 权限，并为迁移时已存在的客服/运营/巡检角色分配对应权限。后台处理反馈和报修时，会检查管理员与权限当前仍有效，并在 `audit_log` 留操作记录。
-
-`admin_db/0018_dashboard_permission.sql` 注册 `dashboard.read`，并分配给迁移时已存在的 `customer_admin`、`customer_ops` 和 `dev_admin` 角色。仪表盘告警数取本表 `alert_event`；充电订单数和金额由 user 服务从订单所有者表汇总。
-
-### 字段定义
-
-| 字段 | 类型 | 约束 | 默认 | 说明 |
-| --- | --- | --- | --- | --- |
-| `id` | `BIGINT UNSIGNED` | PK, AUTO_INCREMENT | — | 主键 |
-| `display_name` | `VARCHAR(64)` | NOT NULL | — | 客服姓名(用户可见,如"客服小张") |
-| `wechat_openid` | `VARCHAR(64)` | NULL | NULL | 客服微信 openid(可选,用于绑定微信原生客服账号) |
-| `wechat_id` | `VARCHAR(64)` | NULL | NULL | 客服微信号(用户可见,如 cs_xiaozhang) |
-| `phone` | `VARCHAR(32)` | NULL | NULL | 客服电话(可选,兜底联系方式) |
-| `email` | `VARCHAR(128)` | NULL | NULL | 客服邮箱(可选,接收告警) |
-| `role_id` | `BIGINT UNSIGNED` | NOT NULL | — | 关联 `role.id`(必须是 `customer_service` 角色) |
-| `status` | `ENUM('online','offline','busy','disabled')` | NOT NULL | `'offline'` | 状态:在线 / 离线 / 忙碌 / 停用 |
-| `max_concurrent_chats` | `TINYINT UNSIGNED` | NOT NULL | `5` | 最大并发会话数 |
-| `current_chat_count` | `TINYINT UNSIGNED` | NOT NULL | `0` | 当前会话数(超过 `max_concurrent_chats` → 路由到下一坐席) |
-| `first_response_sla_seconds` | `INT UNSIGNED` | NULL | NULL | 首次响应 SLA(秒),客户自配(可空,如 60 = 1 分钟内必须响应) |
-| `rating_avg` | `DECIMAL(3,2)` | NULL | NULL | 平均评分(1.00-5.00,来自用户评价) |
-| `rating_count` | `INT UNSIGNED` | NOT NULL | `0` | 评分总数 |
-| `created_at` | `DATETIME(3)` | NOT NULL | — | 创建时间 |
-| `updated_at` | `DATETIME(3)` | NOT NULL | — | 更新时间 |
-| `deleted_at` | `DATETIME(3)` | NULL | NULL | 软删除时间 |
-| `deleted_by` | `BIGINT UNSIGNED` | NULL | NULL | 删除操作者 ID |
-
-### 索引
-
-| 索引名 | 字段 | 类型 | 用途 |
-| --- | --- | --- | --- |
-| `pk_customer_service_config` | `id` | 主键 | — |
-| `idx_customer_service_config_status_deleted` | `status`, `deleted_at` | 普通 | 小程序客服入口查"在线且未删除"的坐席(轮询分配) |
-| `idx_customer_service_config_role_status` | `role_id`, `status` | 普通 | 客户管理员查坐席列表 |
-
-### 约束
-
-- `role_id` 必须是 `customer_service` 角色(应用层校验)
-- `current_chat_count <= max_concurrent_chats`(应用层校验)
-- `status IN ('online','offline','busy')` 时,`deleted_at` 必须为 NULL(软删后状态置 `disabled`)
-
-### 关系
-
-- 多对一 → `role.id`
-
-### 业务规则
-
-- **创建**:客户管理员在 PC 后台"客服管理"新建坐席 → 填姓名 / 微信号 / 关联 `admin_user_role` → INSERT
-- **路由**:小程序"在线客服"入口 → user 服务查 `status='online'` + `current_chat_count < max_concurrent_chats` 的坐席 → 按 `current_chat_count` 升序分配 → 通过微信原生客服消息 API 转发
-- **会话结束**:微信原生客服会话结束 → UPDATE `current_chat_count -= 1`
-- **评价**:用户评价客服 → UPDATE `rating_avg` / `rating_count`(滚动平均)
-- **离职 / 停用**:UPDATE `status='disabled', deleted_at=NOW(), deleted_by=$操作人.id`
-- **SLA 监控**:`first_response_sla_seconds` 配置后,worker 任务监控首次响应时长,超时告警(本期监控可观察,告警推到告警订阅)
-
----
-
 ## 表 7:`admin_db.audit_log`
 
 **业务说明**:**所有 admin 写操作审计**(§ 9.5 已要求)。任何 admin 用户的 `POST/PUT/PATCH/DELETE` 请求都必须记录到本表。**不软删除**(审计日志不可修改,只追加 + 物理归档超 3 年记录)。
@@ -458,7 +387,7 @@
 | `actor_username` | `VARCHAR(64)` | NOT NULL | — | 操作者用户名(冗余,便于审计查询不 JOIN) |
 | `actor_ip` | `VARCHAR(45)` | NULL | NULL | 操作者 IP(IPv4 / IPv6) |
 | `actor_user_agent` | `VARCHAR(512)` | NULL | NULL | 操作者浏览器 UA |
-| `action` | `VARCHAR(64)` | NOT NULL | — | 操作动作(`order.refund.approve` / `device.ota.push` / `role.update` 等) |
+| `action` | `VARCHAR(64)` | NOT NULL | — | 操作动作(`order.refund.approve` / `fault.dispatch` / `role.update` 等) |
 | `resource_type` | `VARCHAR(32)` | NOT NULL | — | 资源类型(`order` / `device` / `role` / `customer` 等) |
 | `resource_id` | `VARCHAR(64)` | NULL | NULL | 资源 ID(如 order.id / device.id) |
 | `before_state` | `JSON` | NULL | NULL | 操作前资源状态快照(便于审计"改了啥") |
@@ -502,7 +431,7 @@
 
 **本批次结束(7 张核心表)**
 
-> 剩余 16 张表(`station` / `device_meta` / `pricing_rule` / `pricing_template` / `split_template` / `split_party` / `webhook_subscription` / `webhook_delivery_log` / `ota_package` / `ota_schedule` / `alert_rule` / `alert_subscription` / `risk_config` / `settled_record` / `finance_reconcile_log` / `invoice_review`)将在第二批设计,沿用本文件的"通用约定"和表设计格式。
+> 其余运营表沿用本文件的通用约定和表设计格式。
 
 ---
 
@@ -621,7 +550,6 @@
 - **客户运营查看**:PC 后台"设备管理" → 按站点 / 厂商 / 状态筛选 → 列表展示
 - **停用**:客户运营主动 `UPDATE status='disabled'`(设备仍在 gateway_db,但停止接受订单)
 - **退役**:设备物理拆除 → `UPDATE status='retired'`(保留历史数据,不再同步)
-- **OTA 推送**:推送时按 `device_meta` 的型号 + 固件版本匹配 `ota_package`
 
 ---
 
@@ -917,7 +845,7 @@
 
 **关键业务规则**:
 
-- **事件类型**:可订阅多种事件(订单创建 / 订单结束 / 退款 / 设备告警 / OTA 完成等)
+- **事件类型**:可订阅多种事件(订单创建 / 订单结束 / 退款 / 设备告警等)
 - **HMAC 签名**:每次推送都带 `X-Signature` header,接收方校验
 - 软删除启用:订阅停用软删,保留审计
 - **密钥管理**:`secret` 生成时仅返回一次,丢失需重新生成
@@ -1021,240 +949,6 @@
 - **写入**:worker 每次推送(成功 / 失败 / 重试)都 INSERT 一条
 - **查询**:客户运维在 PC 后台"Webhook 日志"查历史 → 按订阅 / 事件 / 状态筛选
 - **物理归档**:worker 每日扫表 → `created_at < NOW() - 90 DAY` → `DELETE`(DROP PARTITION)
-
----
-
-## 表 17:`admin_db.ota_package`
-
-**业务说明**:**OTA 固件包元数据**。客户运维在 PC 后台"OTA 管理"上传固件,系统按设备型号推送。**固件文件存对象存储**(本地 MinIO 或云 OSS),本表只存元数据。
-
-**关键业务规则**:
-
-- **固件文件不入库**:存对象存储,本表存 `firmware_url` + `sha256` + `signature`
-- **签名验证**:`signature` 用厂商私钥签名(SHA-256 + RSA),设备端验签(§ 6.6)
-- **不软删除**:包元数据是审计需要,启用 / 停用即可
-
-### 字段定义
-
-| 字段 | 类型 | 约束 | 默认 | 说明 |
-| --- | --- | --- | --- | --- |
-| `id` | `BIGINT UNSIGNED` | PK, AUTO_INCREMENT | — | 主键 |
-| `package_name` | `VARCHAR(128)` | NOT NULL | — | 包名称(如"v1.2.3-stability") |
-| `version` | `VARCHAR(32)` | NOT NULL | — | 版本号 |
-| `vendor_id` | `VARCHAR(8)` | NOT NULL | — | 适用厂商 |
-| `model` | `VARCHAR(64)` | NOT NULL | — | 适用设备型号 |
-| `firmware_url` | `VARCHAR(512)` | NOT NULL | — | 固件文件 OSS URL |
-| `file_size_bytes` | `BIGINT UNSIGNED` | NOT NULL | — | 文件大小(字节) |
-| `sha256` | `CHAR(64)` | NOT NULL | — | SHA-256 哈希 |
-| `signature` | `VARCHAR(512)` | NOT NULL | — | 厂商私钥签名(Base64) |
-| `changelog` | `TEXT` | NULL | NULL | 更新日志 |
-| `release_notes` | `TEXT` | NULL | NULL | 发布说明(用户可见,可选) |
-| `status` | `ENUM('draft','published','retired')` | NOT NULL | `'draft'` | 状态:草稿 / 已发布 / 退役 |
-| `uploaded_by` | `BIGINT UNSIGNED` | NOT NULL | — | 上传人 |
-| `uploaded_at` | `DATETIME(3)` | NOT NULL | — | 上传时间 |
-| `published_at` | `DATETIME(3)` | NULL | NULL | 发布时间 |
-| `created_at` | `DATETIME(3)` | NOT NULL | — | 创建时间 |
-| `updated_at` | `DATETIME(3)` | NOT NULL | — | 更新时间 |
-
-### 索引
-
-| 索引名 | 字段 | 类型 | 用途 |
-| --- | --- | --- | --- |
-| `pk_ota_package` | `id` | 主键 | — |
-| `uk_ota_package_vendor_model_version` | `vendor_id`, `model`, `version` | 唯一 | 防重复上传同版本 |
-| `idx_ota_package_status_published` | `status`, `published_at` | 普通 | 查"已发布"的固件 |
-
-### 约束
-
-- `(vendor_id, model, version)` 三元组唯一(应用层校验)
-- `status='published'` 时,`published_at` NOT NULL
-- `file_size_bytes <= 50 MB`(应用层校验,避免超大包)
-
-### 关系
-
-- 一对多 → `ota_schedule.package_id`(基于本包创建的多次推送)
-
-### 业务规则
-
-- **上传**:客户运维在 PC 后台"OTA 管理"上传固件 → 系统算 SHA-256 + 签名 → 上传 OSS → INSERT `ota_package(status='draft')`
-- **发布**:`UPDATE status='published', published_at=NOW()`(推送前发布)
-- **推送**(全量):客户运维选定目标设备范围 → 创建 `ota_schedule` → worker 推送
-- **退役**:`UPDATE status='retired'`(不再推送,保留审计)
-- **设备验签**:设备下载固件 → 校验 `signature` → 失败则立即回滚(§ 6.6)
-
----
-
-## 表 18:`admin_db.ota_schedule`
-
-**业务说明**:**OTA 推送调度**。每次推送固件到一批设备 = 一条 `ota_schedule`。记录推送目标 / 调度时间 / 进度 / 结果。
-
-**关键业务规则**:
-
-- **全量推送**:需求文档已定,不支持灰度(同一型号全部设备)
-- **进度跟踪**:`success_count` / `failed_count` / `pending_count` 实时更新
-- 软删除启用:调度取消软删
-
-### 字段定义
-
-| 字段 | 类型 | 约束 | 默认 | 说明 |
-| --- | --- | --- | --- | --- |
-| `id` | `BIGINT UNSIGNED` | PK, AUTO_INCREMENT | — | 主键 |
-| `package_id` | `BIGINT UNSIGNED` | NOT NULL | — | 关联 `ota_package.id` |
-| `schedule_name` | `VARCHAR(128)` | NOT NULL | — | 调度名称 |
-| `target_filter` | `JSON` | NOT NULL | — | 目标设备筛选条件(如 `{vendor_id:'xx',model:'yy',status:'enabled'}`) |
-| `target_count` | `INT UNSIGNED` | NOT NULL | `0` | 目标设备总数 |
-| `success_count` | `INT UNSIGNED` | NOT NULL | `0` | 升级成功数 |
-| `failed_count` | `INT UNSIGNED` | NOT NULL | `0` | 升级失败数 |
-| `pending_count` | `INT UNSIGNED` | NOT NULL | `0` | 待升级数 |
-| `scheduled_at` | `DATETIME(3)` | NOT NULL | — | 计划推送时间 |
-| `started_at` | `DATETIME(3)` | NULL | NULL | 实际开始时间 |
-| `completed_at` | `DATETIME(3)` | NULL | NULL | 完成时间 |
-| `status` | `ENUM('pending','running','completed','failed','cancelled')` | NOT NULL | `'pending'` | 调度状态 |
-| `failure_reason` | `VARCHAR(256)` | NULL | NULL | 失败原因 |
-| `created_by` | `BIGINT UNSIGNED` | NOT NULL | — | 创建人 |
-| `created_at` | `DATETIME(3)` | NOT NULL | — | 创建时间 |
-| `updated_at` | `DATETIME(3)` | NOT NULL | — | 更新时间 |
-| `deleted_at` | `DATETIME(3)` | NULL | NULL | 软删除时间 |
-| `deleted_by` | `BIGINT UNSIGNED` | NULL | NULL | 删除操作者 ID |
-
-### 索引
-
-| 索引名 | 字段 | 类型 | 用途 |
-| --- | --- | --- | --- |
-| `pk_ota_schedule` | `id` | 主键 | — |
-| `idx_ota_schedule_package_status` | `package_id`, `status` | 普通 | 反查某包的所有调度 |
-| `idx_ota_schedule_status_scheduled` | `status`, `scheduled_at` | 普通 | 查待执行的调度 |
-| `idx_ota_schedule_deleted_at` | `deleted_at` | 普通 | 物理归档扫描 |
-
-### 约束
-
-- `target_count = success_count + failed_count + pending_count`(应用层 + 触发器保证)
-- `status='completed'` 时,`pending_count = 0` 且 `completed_at` NOT NULL
-- `status='cancelled'` 时,调度停止,设备不再推送
-
-### 关系
-
-- 多对一 → `ota_package.id`
-
-### 业务规则
-
-- **创建**:客户运维选固件包 → 填目标筛选 → INSERT `ota_schedule(target_count=按筛选实时计算, status='pending')`
-- **执行**:到 `scheduled_at` → worker UPDATE `status='running', started_at=NOW()` → 通过 `ota_schedule_stream` 推送 → 设备回执 `ota_apply_result` → 更新各计数
-- **失败检测**(§ 6.6):gateway 30 min 内未收到设备心跳 → 视为失败 → UPDATE `failed_count += 1`
-- **完成**:所有设备回执后 → `status='completed', completed_at=NOW()`
-- **取消**:`UPDATE status='cancelled', deleted_at=NOW()`(软删)
-
----
-
-## 表 19:`admin_db.alert_rule`
-
-**业务说明**:**告警规则**(§ 3.1.4 客户自配原则)。客户运维在 PC 后台"告警规则"自定义监测条件(过流 / 过温 / SOC 异常 / 通信中断等),触发后推送告警事件。
-
-**关键业务规则**:
-
-- **不预设默认值**(§ 3.1.4 决策):客户全部自配,避免误报
-- 字段:device 筛选 / 监测字段 / 阈值 / 持续时长 / 严重程度 / 启用
-- 软删除启用
-
-### 字段定义
-
-| 字段 | 类型 | 约束 | 默认 | 说明 |
-| --- | --- | --- | --- | --- |
-| `id` | `BIGINT UNSIGNED` | PK, AUTO_INCREMENT | — | 主键 |
-| `rule_name` | `VARCHAR(128)` | NOT NULL | — | 规则名称(如"电流过载告警") |
-| `device_filter` | `JSON` | NOT NULL | — | 适用设备筛选(如 `{vendor_id:'xx',model:'yy',station_id:1}` 或 `*` 表示全部) |
-| `metric` | `ENUM('voltage_v','current_a','temperature_c','battery_soc','power_w','meter_kwh','relay_status','charge_state')` | NOT NULL | — | 监测字段 |
-| `op` | `ENUM('gt','lt','neq','between')` | NOT NULL | — | 比较运算符(> / < / != / 区间) |
-| `threshold` | `JSON` | NOT NULL | — | 阈值 JSON(`{value:32}` 或 `{min:30,max:35}` 或 `{eq:'fault'}`) |
-| `window_seconds` | `INT UNSIGNED` | NOT NULL | `0` | 持续时长(秒,0 = 立即触发;> 0 表示持续 N 秒才触发) |
-| **`charge_duration_max_seconds`** | `INT UNSIGNED` | NULL | NULL | **充电超时阈值**(秒,需求 § 8.4 GB 47371 合规 >10h = 36000;NULL = 不启用超时检测;触发后 is_auto_poweroff 自动断电) |
-| `severity` | `ENUM('low','mid','high')` | NOT NULL | — | **严重程度三级**(需求 § 7.4 / § 8.4):low 提示 / mid 推送 / high 自动断电 |
-| **`is_auto_poweroff`** | `BOOLEAN` | NOT NULL | `FALSE` | **是否自动断电**(需求 § 8.4:高级别告警自动断电;仅 `severity='high'` 时可设 TRUE) |
-| `enabled` | `BOOLEAN` | NOT NULL | `TRUE` | 是否启用 |
-| `trigger_count_24h` | `INT UNSIGNED` | NOT NULL | `0` | 24h 内触发次数(用于"频繁告警"识别) |
-| `last_triggered_at` | `DATETIME(3)` | NULL | NULL | 最近触发时间 |
-| `created_by` | `BIGINT UNSIGNED` | NOT NULL | — | 创建人 |
-| `created_at` | `DATETIME(3)` | NOT NULL | — | 创建时间 |
-| `updated_at` | `DATETIME(3)` | NOT NULL | — | 更新时间 |
-| `deleted_at` | `DATETIME(3)` | NULL | NULL | 软删除时间 |
-| `deleted_by` | `BIGINT UNSIGNED` | NULL | NULL | 删除操作者 ID |
-
-### 索引
-
-| 索引名 | 字段 | 类型 | 用途 |
-| --- | --- | --- | --- |
-| `pk_alert_rule` | `id` | 主键 | — |
-| `idx_alert_rule_enabled_deleted` | `enabled`, `deleted_at` | 普通 | gateway 查"启用且未删除"的规则(实时匹配) |
-| `idx_alert_rule_metric_severity` | `metric`, `severity` | 普通 | 客户运维按字段 / 程度查规则 |
-| `idx_alert_rule_deleted_at` | `deleted_at` | 普通 | 物理归档扫描 |
-
-### 约束
-
-- `op='between'` 时,`threshold` 必须 `{min, max}` 两个值
-- `op IN ('gt','lt','neq')` 时,`threshold` 必须 `{value}` 单值
-- `window_seconds >= 0`(0 = 立即触发)
-
-### 关系
-
-- 一对多 → `alert_subscription.rule_id`(本规则可配置多个订阅通道)
-- 一对多 → `alert_rule` 触发产生的告警事件(写入 Redis Stream)
-
-### 业务规则
-
-- **创建**:客户运维在 PC 后台"告警规则"新建 → 选设备 / 字段 / 阈值 / 严重程度 → INSERT
-- **实时匹配**:gateway 每次写入 telemetry 时,加载所有 `enabled=TRUE` 规则 → 内存匹配 → 命中则发布 `alert_stream` 事件
-- **window_seconds 防抖**:`window_seconds > 0` 时,gateway 需维护"过去 N 秒状态"判断持续性(可用 Redis SET NX + EXPIRE 实现)
-- **频繁告警**:`trigger_count_24h > 100` → 自动 `enabled=FALSE` + 告警客户运维(避免告警风暴)
-- **启用 / 停用**:`UPDATE enabled`(不软删,运维可快速重启用)
-
----
-
-## 表 20:`admin_db.alert_subscription`
-
-**业务说明**:**告警订阅**(规则与推送通道的关联)。每条规则可配置多个订阅通道(Webhook / 邮件)。
-
-**关键业务规则**:
-
-- **唯一通道 = Webhook**(§ 3.1.4 决策);邮件本期不内置,客户可通过 Webhook 自行集成(如邮件网关)
-- 软删除启用:订阅停用软删
-
-### 字段定义
-
-| 字段 | 类型 | 约束 | 默认 | 说明 |
-| --- | --- | --- | --- | --- |
-| `id` | `BIGINT UNSIGNED` | PK, AUTO_INCREMENT | — | 主键 |
-| `rule_id` | `BIGINT UNSIGNED` | NOT NULL | — | 关联 `alert_rule.id` |
-| `channel` | `ENUM('webhook','email')` | NOT NULL | — | 推送通道(本期仅 webhook 真用) |
-| `target` | `VARCHAR(512)` | NOT NULL | — | 推送目标(Webhook URL / 邮箱地址) |
-| `severity_filter` | `ENUM('all','critical_only','fatal_only')` | NOT NULL | `'all'` | 严重程度筛选 |
-| `enabled` | `BOOLEAN` | NOT NULL | `TRUE` | 是否启用 |
-| `created_at` | `DATETIME(3)` | NOT NULL | — | 创建时间 |
-| `updated_at` | `DATETIME(3)` | NOT NULL | — | 更新时间 |
-| `deleted_at` | `DATETIME(3)` | NULL | NULL | 软删除时间 |
-| `deleted_by` | `BIGINT UNSIGNED` | NULL | NULL | 删除操作者 ID |
-
-### 索引
-
-| 索引名 | 字段 | 类型 | 用途 |
-| --- | --- | --- | --- |
-| `pk_alert_subscription` | `id` | 主键 | — |
-| `idx_alert_subscription_rule_enabled_deleted` | `rule_id`, `enabled`, `deleted_at` | 普通 | 告警触发时查订阅列表 |
-| `idx_alert_subscription_deleted_at` | `deleted_at` | 普通 | 物理归档扫描 |
-
-### 约束
-
-- `channel='webhook'` 时,`target` 必须是 HTTPS URL
-- `channel='email'` 时,`target` 必须是邮箱格式
-
-### 关系
-
-- 多对一 → `alert_rule.id`
-
-### 业务规则
-
-- **创建**:客户运维在 PC 后台"告警订阅"为某条规则新建 → 选通道 + 填目标 → INSERT
-- **推送**:worker 消费 `alert_stream` → 按 `rule_id` 查所有 enabled 订阅 → 按 `severity_filter` 过滤 → 推送
-- **本期简化**:`channel='email'` 字段保留但本期不实现(客户走 webhook 自集成)
 
 ---
 
@@ -1485,9 +1179,9 @@
 
 ---
 
-**admin_db 全部 23 张表设计完成**
+**admin_db 历史设计章节结束**
 
-> 文件结构:`通用约定` → `表清单(23 张)` → `关键架构决策` → 表 1 ~ 表 23 → 文档结束。
+> 文件结构：通用约定、表清单、关键架构决策及各表定义。
 >
 > **下一文件**:`docs/db/gateway.md`(gateway_db,设备 / 遥测 / 告警 / 会话)。
 
@@ -1497,11 +1191,11 @@
 
 ## 表 25:`admin_db.alert_event`
 
-**业务说明**:**告警事件持久化表**(规则触发后的每条告警存一条)。原本只在 Redis Stream 流转,过期后无法查询;本表用于"最近 24h 哪些设备告警过 / 告警趋势"等查询。**按月分区 + 6 个月物理归档**。
+**业务说明**:**告警事件持久化表**(设备主动上报的每条告警存一条)。原本只在 Redis Stream 流转,过期后无法查询;本表用于"最近 24h 哪些设备告警过 / 告警趋势"等查询。**按月分区 + 6 个月物理归档**。
 
 **关键业务规则**:
 
-- **每条告警 = 一行**:gateway 实时匹配 `alert_rule` → 触发后发布 `alert_stream` 事件 + INSERT 本表(异步批量)
+- **每条告警 = 一行**:gateway 持久设备故障事件，worker 同步烟雾、高温、设备及端口故障到本表；同一故障未恢复前重复上报更新已有记录
 - **状态机**:`active` 触发中 → `acknowledged` 运维确认 → `resolved` 已恢复
 - **不软删除**:日志类,按月分区
 
@@ -1511,14 +1205,14 @@
 | --- | --- | --- | --- | --- |
 | `id` | `BIGINT UNSIGNED` | PK, AUTO_INCREMENT | — | 主键 |
 | `event_no` | `CHAR(32)` | UNIQUE, NOT NULL | — | 告警单号,格式 `AL + YYYYMMDDHHmmss + 10 位随机` |
-| `rule_id` | `BIGINT UNSIGNED` | NOT NULL | — | 关联 `alert_rule.id` |
+| `rule_id` | `BIGINT UNSIGNED` | NULL | NULL | 历史规则标识保留；当前设备上报告警为 NULL，不查询已移除的规则表 |
 | `device_id` | `VARCHAR(32)` | NOT NULL | — | 设备 ID |
 | `port_id` | `VARCHAR(32)` | NULL | NULL | 端口 ID |
-| `metric` | `VARCHAR(32)` | NOT NULL | — | 触发的监测字段(冗余自 alert_rule) |
+| `metric` | `VARCHAR(32)` | NOT NULL | — | 设备上报指标(smoke/high_temperature/device_fault/port_fault_N) |
 | `severity` | `ENUM('low','mid','high')` | NOT NULL | — | 严重程度(冗余) |
 | `is_auto_poweroff` | `BOOLEAN` | NOT NULL | `FALSE` | 是否触发自动断电 |
 | `trigger_value` | `VARCHAR(64)` | NULL | NULL | 触发时的实际值(如 `current_a=35.5`) |
-| `threshold_value` | `VARCHAR(64)` | NULL | NULL | 触发时的阈值(冗余自 alert_rule) |
+| `threshold_value` | `VARCHAR(64)` | NULL | NULL | 历史阈值快照；设备上报告警不依赖配置阈值 |
 | `triggered_at` | `DATETIME(3)` | NOT NULL | — | 触发时间 |
 | `acknowledged_by` | `BIGINT UNSIGNED` | NULL | NULL | 确认人(客户巡检 / 客服) |
 | `acknowledged_at` | `DATETIME(3)` | NULL | NULL | 确认时间 |
@@ -1546,17 +1240,16 @@
 
 ### 关系
 
-- 多对一 → `alert_rule.id`
 - 多对一 → `gateway_db.device.id`(跨服务,无外键)
 
 ### 业务规则
 
-- **触发**:gateway 实时匹配 `alert_rule` → 命中后 INSERT `alert_event(status='active')` + 发布 `alert_stream` 事件 → 订阅方推送 Webhook / 小程序
+- **触发**:worker 将设备故障事件写入 `alert_event(status='active')`，新故障恢复后再次触发会新增记录；告警列表与确认保留
 - **确认**:客户巡检 / 客服在 PC 后台"告警中心"看到 → 点击确认 → UPDATE `status='acknowledged', acknowledged_by, acknowledged_at`
-- **恢复**:gateway 检测到设备状态恢复(条件不再满足)→ UPDATE `status='resolved', resolved_at`(自动)
-- **误报**:运维标 `status='false_positive'` + 填原因(便于后续规则调优)
+- **恢复**:gateway 检测到设备状态恢复(条件不再满足)→ UPDATE `status='auto_resolved', resolved_at`(自动)
+- **误报**:运维标 `status='false_positive'` + 填原因(保留处理依据)
 - **物理归档**:worker 每日扫表 → `triggered_at < NOW() - 6 MONTH` → `DELETE`(DROP PARTITION)
 
 ---
 
-**admin_db 全部 24 张表设计完成**
+**admin_db 20 张表设计完成**

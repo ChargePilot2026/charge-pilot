@@ -2221,117 +2221,6 @@
         }
       }
     },
-    "/api/v1/admin/customer-service": {
-      "get": {
-        "summary": "读取 customer-service",
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ],
-        "x-permission": "customer_service.read",
-        "responses": {
-          "200": {
-            "description": "data.items 为实际数据库记录"
-          },
-          "401": {
-            "description": "会话失效"
-          },
-          "403": {
-            "description": "权限不足"
-          },
-          "503": {
-            "description": "数据库不可用"
-          }
-        }
-      }
-    },
-    "/api/v1/admin/customer-service/{id}": {
-      "put": {
-        "summary": "PUT /api/v1/admin/customer-service/{id}",
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ],
-        "x-permission": "customer_service.update",
-        "responses": {
-          "200": {
-            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
-          },
-          "400": {
-            "description": "参数无效"
-          },
-          "401": {
-            "description": "未登录或会话失效"
-          },
-          "403": {
-            "description": "当前实时权限不足"
-          },
-          "404": {
-            "description": "资源不存在"
-          },
-          "409": {
-            "description": "业务状态或幂等冲突"
-          },
-          "503": {
-            "description": "依赖服务不可用"
-          }
-        },
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ]
-      },
-      "delete": {
-        "summary": "DELETE /api/v1/admin/customer-service/{id}",
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ],
-        "x-permission": "customer_service.delete",
-        "responses": {
-          "200": {
-            "description": "成功，统一 code/message/data/request_id/trace_id 响应"
-          },
-          "400": {
-            "description": "参数无效"
-          },
-          "401": {
-            "description": "未登录或会话失效"
-          },
-          "403": {
-            "description": "当前实时权限不足"
-          },
-          "404": {
-            "description": "资源不存在"
-          },
-          "409": {
-            "description": "业务状态或幂等冲突"
-          },
-          "503": {
-            "description": "依赖服务不可用"
-          }
-        },
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ]
-      }
-    },
     "/api/v1/admin/webhooks": {
       "get": {
         "summary": "读取 webhooks",
@@ -2911,56 +2800,6 @@
           }
         ],
         "x-permission": "alert.read",
-        "responses": {
-          "200": {
-            "description": "data.items 为实际数据库记录"
-          },
-          "401": {
-            "description": "会话失效"
-          },
-          "403": {
-            "description": "权限不足"
-          },
-          "503": {
-            "description": "数据库不可用"
-          }
-        }
-      }
-    },
-    "/api/v1/admin/ota/packages": {
-      "get": {
-        "summary": "读取 ota/packages",
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ],
-        "x-permission": "ota.read",
-        "responses": {
-          "200": {
-            "description": "data.items 为实际数据库记录"
-          },
-          "401": {
-            "description": "会话失效"
-          },
-          "403": {
-            "description": "权限不足"
-          },
-          "503": {
-            "description": "数据库不可用"
-          }
-        }
-      }
-    },
-    "/api/v1/admin/ota/schedules": {
-      "get": {
-        "summary": "读取 ota/schedules",
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ],
-        "x-permission": "ota.read",
         "responses": {
           "200": {
             "description": "data.items 为实际数据库记录"
@@ -4678,6 +4517,42 @@
             "format": "int64",
             "minimum": 0
           },
+          "today_orders": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0,
+            "description": "本日北京时间创建的未删除订单数，包含未启动订单"
+          },
+          "total_users": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0,
+            "description": "未删除的充电用户总数"
+          },
+          "new_users": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0,
+            "description": "本日北京时间注册的未删除充电用户数"
+          },
+          "today_charging_users": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0,
+            "description": "本日北京时间实际开始充电的去重用户数，按 started_at 统计"
+          },
+          "station_count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0,
+            "description": "未删除的管理库站点数"
+          },
+          "device_count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0,
+            "description": "未删除的管理库设备数"
+          },
           "today_order_users": {
             "type": "integer",
             "format": "int64",
@@ -4711,6 +4586,12 @@
         },
         "required": [
           "charging_orders",
+          "today_orders",
+          "total_users",
+          "new_users",
+          "today_charging_users",
+          "station_count",
+          "device_count",
           "today_order_users",
           "today_completed_orders",
           "today_settled_cents",

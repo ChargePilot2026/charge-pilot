@@ -1,6 +1,24 @@
 package schedule
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"gorm.io/gorm"
+)
+
+func TestTriggerRejectsUnregisteredTaskBeforeDatabaseAccess(t *testing.T) {
+	for _, handlers := range []map[string]Handler{nil, {"alert_evaluate": nil}} {
+		for _, force := range []bool{false, true} {
+			scheduler := Scheduler{Handlers: handlers}
+			completed, err := scheduler.Trigger(context.Background(), "alert_evaluate", "retired task", force)
+			if completed || !errors.Is(err, gorm.ErrRecordNotFound) {
+				t.Fatalf("unregistered task completed=%t err=%v force=%t", completed, err, force)
+			}
+		}
+	}
+}
 
 func TestCronParserRejectsUnsafeTimezone(t *testing.T) {
 	for _, expression := range []string{"TZ=0", "CRON_TZ=Asia/Shanghai * * * * *"} {

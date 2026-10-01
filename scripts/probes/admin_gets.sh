@@ -70,8 +70,6 @@ probe GET    /api/v1/admin/billing/refunds
 probe GET    /api/v1/admin/billing/invoices
 probe GET    /api/v1/admin/billing/reconcile-logs
 probe GET    /api/v1/admin/alerts
-probe GET    /api/v1/admin/alert-rules
-probe GET    /api/v1/admin/alert-subscriptions
 probe GET    /api/v1/admin/risk-config
 probe GET    /api/v1/admin/coupons
 probe GET    /api/v1/admin/coupons/1/stats
@@ -80,17 +78,13 @@ probe GET    /api/v1/admin/settings/charge-rules
 probe GET    /api/v1/admin/settings/pricing-templates
 probe GET    /api/v1/admin/settings/split-templates
 probe GET    /api/v1/admin/settings/split-templates/1/parties
-probe GET    /api/v1/admin/settings/ota
 probe GET    /api/v1/admin/announcements
-probe GET    /api/v1/admin/customer-service
 probe GET    /api/v1/admin/feedback
 probe GET    /api/v1/admin/device-fault-reports
 probe GET    /api/v1/admin/device-fault-reports/1/history
 probe GET    /api/v1/admin/whitelabel
 probe GET    /api/v1/admin/webhooks
 probe GET    /api/v1/admin/webhooks/1/deliveries
-probe GET    /api/v1/admin/ota/packages
-probe GET    /api/v1/admin/ota/schedules
 probe GET    /api/v1/admin/export/tasks
 probe GET    /api/v1/admin/billing/wallet-risks
 

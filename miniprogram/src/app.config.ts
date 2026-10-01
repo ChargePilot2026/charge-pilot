@@ -18,7 +18,6 @@ export default defineAppConfig({
     "pages/profile/profile",
     "pages/profile/phone",
     "pages/announcement/list",
-    "pages/cs/chat",
     "pages/dev/fault",
     "pages/wallet/cards"
   ],

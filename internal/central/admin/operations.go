@@ -23,7 +23,7 @@ import (
 // 由 resourceFailure 统一转成 409，提示前端刷新后重试。
 var errConflict = errors.New("当前记录状态不允许此操作，请刷新后重试")
 
-// registerOperations 挂载运营类接口：后台账号、告警事件、公告、客服入口、
+// registerOperations 挂载运营类接口：后台账号、告警事件、公告、
 // Webhook 订阅、白标配置。列表接口大多由 get 闭包统一生成，只有写操作
 // 和语义特殊的白标配置需要单独的处理器。
 func (a ResourceAPI) registerOperations(r *gin.Engine) {
@@ -48,14 +48,10 @@ func (a ResourceAPI) registerOperations(r *gin.Engine) {
 	get("users", "admin_user.read", "admin_user_role", "id,username,display_name,role_id,status", true)
 	get("alerts", "alert.read", "alert_event", "id,device_id,severity,metric,status,created_at", false)
 	get("announcements", "announcement.read", "announcement", "id,title,content,scope,target_ids,status,start_at,end_at", true)
-	get("customer-service", "customer_service.read", "customer_service_config", "id,agent_wechat,agent_name,path,priority,enabled,working_hours_json", false)
 	get("webhooks", "webhook.read", "webhook_subscription", "id,name,url,enabled,event_types,LEFT(secret,8) AS secret_prefix", true)
 	r.POST("/api/v1/admin/users", a.Auth.Require("admin_user.create"), a.createUser)
 	r.POST("/api/v1/admin/alerts/:id/ack", a.Auth.Require("alert.ack"), a.ackAlert)
 	r.POST("/api/v1/admin/announcements", a.Auth.Require("announcement.create"), a.createAnnouncement)
-	r.POST("/api/v1/admin/customer-service", a.Auth.Require("customer_service.create"), a.saveSeat)
-	r.PUT("/api/v1/admin/customer-service/:id", a.Auth.Require("customer_service.update"), a.saveSeat)
-	r.DELETE("/api/v1/admin/customer-service/:id", a.Auth.Require("customer_service.delete"), a.disableSeat)
 	r.POST("/api/v1/admin/webhooks", a.Auth.Require("webhook.create"), a.createWebhook)
 	r.GET("/api/v1/admin/whitelabel", a.Auth.Require("whitelabel.read"), a.whitelabel)
 	r.PUT("/api/v1/admin/whitelabel", a.Auth.Require("whitelabel.update"), a.saveWhitelabel)
@@ -121,7 +117,7 @@ func validText(s string, max int) bool {
 }
 
 // httpsURL 只接受可对外访问的 HTTPS 链接：必须能解析、scheme 为 https、有主机名、
-// 不允许夹带 user：pass 凭据，整串长度不超过 512。客服入口、Webhook 地址、
+// 不允许夹带 user：pass 凭据，整串长度不超过 512。Webhook 地址、
 // 白标 logo 与协议链接都走这条校验。
 func httpsURL(s string) bool {
 	u, e := url.Parse(s)
@@ -185,6 +181,7 @@ func (a ResourceAPI) createUser(c *gin.Context) {
 		resourceFailure(c, err)
 		return
 	}
+	codes = withoutRetiredPermissions(codes)
 	if len(codes) == 0 {
 		httpapi.BadRequest(c, "角色不存在或没有任何权限")
 		return
@@ -287,67 +284,21 @@ func (a ResourceAPI) createAnnouncement(c *gin.Context) {
 	}
 }
 
-// saveSeat 保存客服入口，同一个处理器同时服务新增（POST）和更新（PUT :id）两种情况。
-// agent_name、path 用指针：传了才覆盖，不传保持库中原有值，避免一次局部提交把
-// 之前填的入口链接清掉。path 非空时必须是 HTTPS 链接。
-func (a ResourceAPI) saveSeat(c *gin.Context) {
-	// in 是客服入口的请求体；指针字段为 nil 表示本次不改动该列。
-	var in struct {
-		AgentWechat string  `json:"agent_wechat"` // 客服微信号，必填，最多 64 字符
-		AgentName   *string `json:"agent_name"`   // 客服姓名，可空，最长 64 字符
-		Path        *string `json:"path"`         // 客服会话入口路径/链接，可空，非空时必须是 HTTPS
-		Priority    uint32  `json:"priority"`     // 展示优先级，数值越小越靠前
-		Enabled     bool    `json:"enabled"`      // 是否启用
-	}
-	if !decodeResource(c, &in) {
-		return
-	}
-	if !validText(in.AgentWechat, 64) || (in.AgentName != nil && utf8.RuneCountInString(*in.AgentName) > 64) || (in.Path != nil && !httpsURL(*in.Path)) {
-		httpapi.BadRequest(c, "请填写客服微信号及有效 HTTPS 入口")
-		return
-	}
-	var id uint64
-	var ok bool
-	if c.Param("id") != "" {
-		id, ok = pathID(c)
-		if !ok {
-			return
-		}
-	}
-	id, ok = a.adminWrite(c, "customer_service_config", "save", id, map[string]any{"agent_wechat": in.AgentWechat, "agent_name": in.AgentName, "path": in.Path, "priority": in.Priority, "enabled": in.Enabled})
-	if ok {
-		httpapi.OK(c, gin.H{"id": id})
-	}
-}
-
-// disableSeat 停用客服入口。走 enabled 状态位而不是删行，这样已生成的应答和
-// 审计记录仍然能对得上这条客服入口，历史也不会凭空少一条。
-func (a ResourceAPI) disableSeat(c *gin.Context) {
-	id, ok := pathID(c)
-	if !ok {
-		return
-	}
-	_, ok = a.adminWrite(c, "customer_service_config", "disable", id, map[string]any{"enabled": false})
-	if ok {
-		httpapi.OK(c, gin.H{"id": id, "enabled": false})
-	}
-}
-
 // createWebhook 新建事件推送订阅。服务端生成 32 字节随机 secret，只在这次响应里
 // 明文返回一次，库里不保存；之后对方带这个 secret 校验推送来源。
-// 事件类型只能取 alert / charge_ended / refund_completed / ota_completed，
-// 1–4 个且不能重复。
+// 事件类型只能取 alert / charge_ended / refund_completed，
+// 1–3 个且不能重复。
 func (a ResourceAPI) createWebhook(c *gin.Context) {
 	// in 是新建订阅的请求体。
 	var in struct {
 		Name       string   `json:"name"`        // 订阅名称，必填，最多 64 字符
 		URL        string   `json:"url"`         // 接收地址，必须是可公网访问的 HTTPS 链接
-		EventTypes []string `json:"event_types"` // 订阅的事件类型，1–4 个，不重复
+		EventTypes []string `json:"event_types"` // 订阅的事件类型，1–3 个，不重复
 	}
 	if !decodeResource(c, &in) {
 		return
 	}
-	if !validText(in.Name, 64) || !httpsURL(in.URL) || len(in.EventTypes) == 0 || len(in.EventTypes) > 4 {
+	if !validText(in.Name, 64) || !httpsURL(in.URL) || len(in.EventTypes) == 0 || len(in.EventTypes) > 3 {
 		httpapi.BadRequest(c, "请填写名称、HTTPS URL 和订阅事件")
 		return
 	}
@@ -359,7 +310,7 @@ func (a ResourceAPI) createWebhook(c *gin.Context) {
 	}
 	seen := map[string]bool{}
 	for _, v := range in.EventTypes {
-		if v == "" || !oneOf(v, "alert charge_ended refund_completed ota_completed") || seen[v] {
+		if v == "" || !oneOf(v, "alert charge_ended refund_completed") || seen[v] {
 			httpapi.BadRequest(c, "订阅事件无效或重复")
 			return
 		}

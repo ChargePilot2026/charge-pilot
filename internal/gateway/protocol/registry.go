@@ -14,7 +14,6 @@ const (
 	CommandStart       CommandKind = "start"
 	CommandStop        CommandKind = "stop"
 	CommandReboot      CommandKind = "reboot"
-	CommandOTA         CommandKind = "ota"
 	CommandCardDenied  CommandKind = "card_denied"
 	CommandCardBalance CommandKind = "card_balance"
 )
@@ -32,9 +31,6 @@ type Command struct {
 	OrderBCD         [8]byte
 	Mode             uint8
 	Quantity         uint16
-	RemoteMode       uint8
-	UseUpgradeID     bool
-	UpgradeID        [8]byte
 }
 
 type Session interface {

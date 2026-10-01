@@ -10,7 +10,7 @@
 
 | 表 | 当前用途 | 分区 |
 | --- | --- | --- |
-| `scheduled_task` | 告警扫描与 Webhook 投递的 cron 计划和跨实例租约 | 否 |
+| `scheduled_task` | Webhook 投递的 cron 计划和跨实例租约 | 否 |
 | `task_execution_log` | 上述任务每次执行的结果与人工触发原因 | `created_month` 月分区 |
 | `comp_tx_log` | `refund_completed` Stream 结果审计 | `created_month` 月分区 |
 | `dlq_log` | 预留的数据库 DLQ 管理表；当前消费者写 Redis `{stream}.dlq` | `created_month` 月分区 |
@@ -32,7 +32,7 @@
 | `config_json` | `JSON` | 可空 |
 | `created_at` / `updated_at` | `DATETIME(3)` | 自动维护 |
 
-唯一索引：`uk_code(task_code)`。迁移 `0003_scheduled_execution.sql` 新增 `consecutive_fail_count`、`lease_token`、`lease_until` 和 `idx_due`，并预置 `alert_evaluate`、`webhook_dispatch`。handler 由代码中的 allowlist 绑定，不能从数据库任意指定。`enabled=0` 表示暂停；执行连续 5 次失败时自动暂停。
+唯一索引：`uk_code(task_code)`。迁移 `0003_scheduled_execution.sql` 新增 `consecutive_fail_count`、`lease_token`、`lease_until` 和 `idx_due`，并预置 `webhook_dispatch`。handler 由代码中的 allowlist 绑定，不能从数据库任意指定。`enabled=0` 表示暂停；执行连续 5 次失败时自动暂停。
 
 ## `task_execution_log`
 
@@ -97,7 +97,7 @@ worker 将成功结果记为 `committed`，失败结果记为 `failed`。重放�
 | 字段 | 类型 | 约束 / 默认值 |
 | --- | --- | --- |
 | `id` | `BIGINT UNSIGNED` | 主键、自增 |
-| `queue_name` | `VARCHAR(64)` | 非空，示例 `webhook_retry` / `pay_retry` / `ota_retry` |
+| `queue_name` | `VARCHAR(64)` | 非空，示例 `webhook_retry` / `pay_retry` |
 | `payload_json` | `JSON` | 非空 |
 | `run_at` | `DATETIME(3)` | 非空 |
 | `attempt_count` | `INT UNSIGNED` | 非空，默认 `0` |

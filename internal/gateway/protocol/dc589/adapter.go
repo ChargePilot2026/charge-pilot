@@ -454,9 +454,7 @@ func (c *connection) Send(ctx context.Context, command protocol.Command) (sendEr
 	case protocol.CommandStop:
 		frame, err = BuildStop(command.SessionID, command.Port)
 	case protocol.CommandReboot:
-		frame, err = BuildRemoteControl(command.SessionID, 1, false, [8]byte{})
-	case protocol.CommandOTA:
-		frame, err = BuildRemoteControl(command.SessionID, command.RemoteMode, command.UseUpgradeID, command.UpgradeID)
+		frame = BuildReboot(command.SessionID)
 	default:
 		return ErrPayload
 	}

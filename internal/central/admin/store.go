@@ -221,6 +221,7 @@ func (s Store) Profile(ctx context.Context, id uint64) (Profile, error) {
 	}
 	p := Profile{AuthVersion: row.AuthVersion, ID: row.ID, Username: row.Username, DisplayName: row.DisplayName.String, RoleID: row.RoleID, Role: row.Role, Permissions: []string{}}
 	err = s.DB.WithContext(ctx).Table("permission AS p").Joins("JOIN role_permission AS rp ON rp.permission_id=p.id").Where("rp.role_id = ?", p.RoleID).Order("p.code").Pluck("p.code", &p.Permissions).Error
+	p.Permissions = withoutRetiredPermissions(p.Permissions)
 	return p, err
 }
 

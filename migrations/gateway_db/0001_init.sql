@@ -212,32 +212,6 @@ CREATE TABLE `event_outbox` (
   KEY `idx_status_sched` (`status`,`scheduled_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='与业务事务一起写入的待投递事件';
 
--- ota_command：OTA 指令跟踪(ACK 状态)
-CREATE TABLE `ota_command` (
-  `id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT '记录主键 ID',
-  `command_id` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '指令唯一 ID(UUID)',
-  `device_id` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '设备全局唯一编号',
-  `package_id` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'OTA 固件包 ID',
-  `package_version` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '下发的固件包版本',
-  `status` enum('pending','sent','acked','failed','timeout') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'pending' COMMENT '当前业务状态；取值 pending / sent / acked / failed / timeout',
-  `sent_at` datetime(3) DEFAULT NULL COMMENT '设备指令发送时间',
-  `acked_at` datetime(3) DEFAULT NULL COMMENT '确认时间',
-  `failed_at` datetime(3) DEFAULT NULL COMMENT '执行失败时间',
-  `failure_reason` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '业务执行失败原因',
-  `retry_count` int unsigned NOT NULL DEFAULT '0' COMMENT '已执行重试次数',
-  `created_month` date NOT NULL COMMENT '月分区归属日期，取对应月份第一天',
-  `created_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '记录创建时间',
-  PRIMARY KEY (`id`,`created_month`),
-  UNIQUE KEY `uk_command` (`command_id`,`created_month`),
-  KEY `idx_device_status` (`device_id`,`status`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='OTA 指令跟踪(ACK 状态)'
-/*!50100 PARTITION BY RANGE (to_days(`created_month`))
-(PARTITION p_init VALUES LESS THAN (740255) ENGINE = InnoDB,
- PARTITION p_2026m10 VALUES LESS THAN (740286) ENGINE = InnoDB,
- PARTITION p_2026m11 VALUES LESS THAN (740316) ENGINE = InnoDB,
- PARTITION p_2026m12 VALUES LESS THAN (740347) ENGINE = InnoDB,
- PARTITION p_max VALUES LESS THAN MAXVALUE ENGINE = InnoDB) */;
-
 -- raw_frame_log：TCP/MQTT 原始帧日志(排障)
 CREATE TABLE `raw_frame_log` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT '记录主键 ID',
@@ -363,7 +337,6 @@ DROP TABLE IF EXISTS `telemetry_aggregate_hourly`;
 DROP TABLE IF EXISTS `telemetry_aggregate_15min`;
 DROP TABLE IF EXISTS `telemetry`;
 DROP TABLE IF EXISTS `raw_frame_log`;
-DROP TABLE IF EXISTS `ota_command`;
 DROP TABLE IF EXISTS `event_outbox`;
 DROP TABLE IF EXISTS `device_session`;
 DROP TABLE IF EXISTS `device_provision`;

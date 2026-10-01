@@ -2,6 +2,8 @@
 
 > **Go 重建中的目标接口**：`user` 是 `central` 内部模块，从同一 Gin 端口 `:8080` 提供。当前已实现的扫码只读与充电生命周期契约见 [Go 充电接口](go-charge-lifecycle.md)。已确认的新流程为扫码只读、发起支付时创建支付意图、验签确认成功的支付回调才创建充电订单；下文旧的扫码创建订单、独立报价和 `quote_id` 流程已废止。本文件其余旧服务路径、端口、字段或“已实现”表述尚待逐项校准；实际能力以 [Go 重建清单](../migration/go-rebuild.md) 为准。
 
+> 2026-10-01 已移除用户在线客服页面、入口和接口；订单反馈和设备报修保留，由后台“设备运维 → 反馈报修”处理。
+
 **服务**:`user`(`services/user`)
 **对外地址**:`https://<customer-domain>/api/v1/user/...`(经 Caddy 反代到 `user:8081`)
 **鉴权**:JWT(HS256,openid)放 `Authorization: Bearer <jwt>` header
@@ -55,7 +57,7 @@
 | 4xxx | 限流 | 4291 超过限流 |
 | 5xxx | 服务器错误 | 5001 内部错误 / 5003 服务暂时不可用 |
 
-## 端点清单(共 30 个)
+## 端点清单(共 32 个)
 
 ### 公开接口(无需鉴权)
 
@@ -115,12 +117,11 @@
 | POST | `/api/v1/user/invoice/apply` | 申请发票 |
 | GET | `/api/v1/user/invoice/my` | 我的发票申请 |
 
-### 公告与客服
+### 公告
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/api/v1/user/announcement/list` | 当前生效公告 |
-| POST | `/api/v1/user/customer-service/entry` | 分配客服坐席(前端用 wx.openCustomerServiceChat 唤起) |
 
 ---
 
@@ -1372,7 +1373,7 @@ Wechatpay-Nonce: ...
 
 ---
 
-## 公告与客服
+## 公告与设备报修
 
 ### `GET /api/v1/user/announcement/list`
 
@@ -1455,44 +1456,6 @@ Wechatpay-Nonce: ...
 ### `GET /api/v1/user/device/fault-reports`
 
 仅返回当前 JWT 用户创建且未删除的报修记录，按提交时间倒序分页。支持 `page`（从 1 开始）和 `page_size`（1–100）；响应为 `items/total/page/page_size`，条目包含报修编号、设备、类型、说明、当前状态、提交及修复时间。`GET /api/v1/user/device/fault-reports/{id}/history` 仅允许报修人读取，按时间顺序返回 `event_id`、提交/派单/改派/修复/关闭状态及面向用户的备注，不返回后台账号 ID 或内部迁移快照。其他用户或已删除报修统一返回 404。
-
----
-
-### `POST /api/v1/user/customer-service/entry`
-
-**鉴权**:[JWT]
-**业务目标**:分配客服坐席并返回坐席信息(需求 § 5.5 微信原生客服)
-
-**请求体**:
-```json
-{
-  "scene": "general"               // "general" / "refund" / "complaint" — 路由到不同客服坐席
-}
-```
-
-**响应(200)**:
-```json
-{
-  "code": 0,
-  "data": {
-    "agent_name": "客服小张",
-    "agent_wechat": "cs_xiaozhang",
-    "entry_url": "https://work.weixin.qq.com/...",
-    "corp_id": "ww...",
-    "available": true,
-    "scene": "general"
-  }
-}
-```
-
-**业务逻辑**:
-1. admin 从启用坐席中按优先级选择入口；未配置坐席时返回 404。
-2. `available=true` 需要同时配置 HTTPS 客服入口 URL 和 `WECHAT_CUSTOMER_SERVICE_CORP_ID`。小程序由用户点击后调用 `wx.openCustomerServiceChat`。
-3. 未配置企业客服入口时仍返回客服微信号供用户复制，不伪造会话已打开。
-
-**错误码**:
-- `1001` / `2015`(无在线客服)
-- `5001`: 内部错误
 
 ---
 

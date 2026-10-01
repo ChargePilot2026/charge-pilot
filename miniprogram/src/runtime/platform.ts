@@ -48,10 +48,4 @@ export const wx: any = new Proxy({
     const error = { errMsg: '当前浏览器请使用下方二维码内容输入框，可输入设备编号或端口码。' }
     options.fail?.(error); options.complete?.(error)
   },
-  openCustomerServiceChat(options: any) {
-    if (!isH5) return Taro.openCustomerServiceChat(options)
-    const url = options.extInfo?.url
-    if (typeof url === 'string' && /^https:\/\//.test(url)) { window.open(url, '_blank', 'noopener,noreferrer'); options.success?.({}); options.complete?.({}) }
-    else { options.fail?.({ errMsg: '客服入口未配置有效 HTTPS 地址' }); options.complete?.({}) }
-  },
 }, { get(target: any, key: string) { return key in target ? target[key] : (Taro as any)[key] } })

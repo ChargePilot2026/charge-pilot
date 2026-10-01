@@ -28,7 +28,7 @@ TEST_REDIS_URL='redis://127.0.0.1:6379/14' \
 go test -count=1 ./internal/central/identity
 ```
 
-Compose 显式配置 `LOGIN_MODE=development`、`PAYMENT_MODE=simulation`。H5 使用 `dev:<账号>` 登录，后端返回真实本地用户会话；模拟支付仍经过支付订单、确认回调、启动、结算及退款链路。开发登录只能与模拟支付配合开启。正式微信登录需要真实 AppID/Secret，正式支付与 OTA 实机仍需外部验收。
+Compose 显式配置 `LOGIN_MODE=development`、`PAYMENT_MODE=simulation`。H5 使用 `dev:<账号>` 登录，后端返回真实本地用户会话；模拟支付仍经过支付订单、确认回调、启动、结算及退款链路。开发登录只能与模拟支付配合开启。正式微信登录需要真实 AppID/Secret，正式支付与设备实机仍需外部验收。
 
 ## 后台登录（Go）
 

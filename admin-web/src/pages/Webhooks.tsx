@@ -154,7 +154,6 @@ export default function WebhooksPage() {
               { value: 'alert', label: '告警' },
               { value: 'charge_ended', label: '充电结束' },
               { value: 'refund_completed', label: '退款完成' },
-              { value: 'ota_completed', label: 'OTA 完成' },
             ]} />
           </Form.Item>
         </Form>

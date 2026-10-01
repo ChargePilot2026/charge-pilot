@@ -2,6 +2,8 @@
 
 > **Go 重建中的目标接口**：当前设备协议名为 `dc589`，使用二进制 TCP 帧和 `:9100`；其他协议可使用新端口。当前已实现的扫码只读与充电生命周期契约见 [Go 充电接口](go-charge-lifecycle.md)。本文件旧 JSON 帧描述或“已实现”表述尚待逐项校准；实际能力以 [Go 重建清单](../migration/go-rebuild.md) 为准。
 
+> 2026-10-01 已移除告警配置（规则与订阅）和 OTA 整个功能；设备主动上报的烟雾、温度与故障告警及告警记录、确认、恢复保留。反馈报修归入设备运维。现有部署的历史表与数据不在本轮清理范围。
+
 **服务**:`gateway`(`services/gateway`)
 **对外地址**(设备侧):
 - TCP 监听 `:9100`(当前为换行分隔 JSON `Frame`)
@@ -11,7 +13,7 @@
 **鉴权**(设备侧):9100 TCP 首帧校验启用的 `device_id` 与厂商；当前未启用 TLS
 **鉴权**(内部 HTTP):服务间共享密钥(`Authorization: Bearer <service_token>`)
 
-> **本文件覆盖范围**:gateway 服务的当前 TCP/JSON 设备入口和内部 HTTP 状态查询 / 控制指令 API。生产 MQTT、厂商私有二进制协议和 OTA 下行未接入。本服务不直接面向终端用户或 PC 后台操作员。
+> **本文件覆盖范围**:gateway 服务的当前 TCP/JSON 设备入口和内部 HTTP 状态查询 / 控制指令 API。生产 MQTT、厂商私有二进制协议未接入，固件升级功能已移除。本服务不直接面向终端用户或 PC 后台操作员。
 
 ---
 
@@ -130,7 +132,6 @@
 | 上行(状态变更) | `charge/{vendor_id}/{device_id}/state` | `charge/xx/xx_001_abc/state` | 1 |
 | 上行(故障) | `charge/{vendor_id}/{device_id}/fault` | `charge/xx/xx_001_abc/fault` | 1 |
 | 下行(控制指令) | `charge/{vendor_id}/{device_id}/cmd` | `charge/xx/xx_001_abc/cmd` | 1 |
-| 下行(固件推送) | `charge/{vendor_id}/{device_id}/firmware` | `charge/xx/xx_001_abc/firmware` | 1 |
 
 **客户端认证**:仅校验 `device_id`(MQTT `client_id` 字段);**不做 ACL**(单客户部署,所有设备同客户,§ 3.1.2)
 
@@ -139,7 +140,7 @@
 ```json
 {
   "cmd_id": "uuid",
-  "cmd_type": "start_charge",       // start_charge / stop_charge / reboot / firmware_update
+  "cmd_type": "start_charge",       // start_charge / stop_charge / reboot
   "issued_at": "2026-09-25T14:00:00Z",
   "expires_at": "2026-09-25T14:01:00Z",   // 过期指令设备应丢弃
   "params": {                        // 按 cmd_type 填
@@ -161,7 +162,7 @@
 }
 ```
 
-> 设备启动 ACK 通过 user 内部 HTTP 回执更新 user 自有订单；gateway 不发布 `comp_tx_stream`。OTA ACK 路径尚未接入，相关入口不会伪装成已发送命令。
+> 设备启动 ACK 通过 user 内部 HTTP 回执更新 user 自有订单；gateway 不发布 `comp_tx_stream`。固件升级与相关入口已移除。
 
 ---
 
@@ -195,10 +196,6 @@
 | --- | --- | --- |
 | POST | `/api/v1/internal/charge-orders/stop` | 受理停止充电请求；完成仍取决于设备 ACK |
 | POST | `/api/v1/internal/devices/{device_id}/reboot` | 当前返回 503；真实设备传输与 ACK 未接入，不创建虚假命令 |
-| POST | `/api/v1/internal/devices/{device_id}/firmware-push` | 当前返回 503；固件传输、ACK 与回滚未接入，不创建命令 |
-| POST | `/api/v1/internal/devices/{device_id}/firmware-rollback` | 未注册，尚未实现 |
-| GET | `/api/v1/internal/devices/{device_id}/firmware-status` | 未注册，尚未实现 |
-| POST | `/api/v1/internal/devices/{device_id}/ack-received` | 未注册，尚未实现 |
 | POST | `/api/v1/internal/devices/{device_id}/command` | 当前返回 503；通用设备指令与 ACK 未接入，不创建命令 |
 
 ---
@@ -341,7 +338,6 @@
       "temperature_c": "32.5",
       "meter_total_kwh": "1234.567"
     },
-    "linked_ota": null,                 // 或 "running" 调度详情
     "fault_active": false
   }
 }
@@ -557,14 +553,6 @@
 4. 发 `charge_ended_stream` 事件(§ 5.1)→ billing / user 消费
 5. 同步返回 ACK 结果
 
-### `POST /api/v1/internal/devices/{device_id}/firmware-push`
-
-**鉴权**:服务间共享密钥。当前固定返回 `503 ServiceUnavailable`：OTA 固件传输、设备 ACK 和失败回滚尚未接入，不创建 `ota_command`。
-
-`firmware-rollback`、`firmware-status` 和 `ack-received` 目前没有注册路由。worker 与 gateway 虽注册了 `ota_schedule_stream` 消费组，但处理器会返回不可用错误；消息重试后进入各自 Redis DLQ。
-
----
-
 ## 六、Stream 发布约定(gateway 作为生产者)
 
 gateway 服务**主动发布**到以下 Stream(沿用 § 5.1):
@@ -574,23 +562,16 @@ TCP 状态帧与告警帧会先写入 gateway 自有 `event_outbox`，再由发�
 | Stream | 触发场景 | Payload 关键字段 |
 | --- | --- | --- |
 | `device_event_stream` | 设备状态变更(上线 / 下线 / 充电开始 / 充电结束 / 故障) | `device_id`、`event_type`、`port_id`、`order_id`(若关联)、`timestamp` |
-| `alert_stream` | TCP 设备明确上报 `alert` 帧；gateway 当前不按 `alert_rule` 自动判断阈值 | `device_id`、`severity`、`metric`、`value` |
+| `alert_stream` | TCP 设备明确上报告警；不依赖平台规则配置 | `device_id`、`severity`、`metric`、`value` |
 | `comp_tx_stream` | gateway 当前不生产 | — |
 
 > **发布清单**:
 > - ✅ `device_event_stream`(设备状态变更)
-> - ✅ `alert_stream`(当前仅由 TCP 设备主动 `alert` 帧触发；自动阈值与通信超时检测未实现)
+> - ✅ `alert_stream`(当前仅由 TCP 设备主动 `alert` 帧触发；保留设备烟雾、高温及故障同步与恢复)
 > - ❌ `comp_tx_stream`(当前由 user 退款回调发布 `refund_completed`，worker 仅审计)
 > - ✅ `charge_ended_stream`(gateway 检测设备停止状态后发布,由 billing / user 两个消费者组消费,详见 `diagrams/charge-payment-sequence.md` § 1)
 > - ❌ `charge_started_stream`(由 user 服务在微信回调后发布)
 > - ❌ `refund_required_stream` / `invoice_required_stream`(由 user 服务发布)
-
----
-
-## 七、设备本地阈值检测(§ 3.1.4)
-
-- **不预设默认值**(避免误报 / 漏报)
-> 当前尚未实现：gateway 未读取 admin `alert_rule`，也没有通信超时、温度/电流越界扫描。现阶段只有设备主动发送 `alert` 帧时会发布 `alert_stream`。
 
 ---
 
@@ -612,7 +593,7 @@ TCP 状态帧与告警帧会先写入 gateway 自有 `event_outbox`，再由发�
 {"device_id":"DEVICE001","port_no":1,"msg_type":"heartbeat","payload":{},"ts":"2026-09-26T07:00:00Z"}
 ```
 
-付款启动事件经 user 内部订单接口核对身份和 paid 状态后，在 gateway_db.charge_command 持久化。同一订单只生成一个 START command_id 和一个补偿 STOP command_id；不再查询 gateway 库中不存在的 charge_order，也不复用 OTA 表。
+付款启动事件经 user 内部订单接口核对身份和 paid 状态后，在 gateway_db.charge_command 持久化。同一订单只生成一个 START command_id 和一个补偿 STOP command_id；不再查询 gateway 库中不存在的 charge_order。
 
 下发帧与设备确认分别为：
 ```json

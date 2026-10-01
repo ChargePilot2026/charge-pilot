@@ -10,8 +10,8 @@ import (
 )
 
 // Dashboard 是管理端首页看板的只读数据源，只持有连接、不保存任何状态。
-// UserDB 指向用户库，订单和金额类指标都从 charge_order 统计；
-// AdminDB 指向管理库，告警条数从 alert_event 统计。
+// UserDB 指向用户库，订单、金额与用户指标从 charge_order 和 user 统计；
+// AdminDB 指向管理库，站点、设备与告警数量分别从所属表统计。
 type Dashboard struct{ UserDB, AdminDB *gorm.DB }
 
 // TrendDay 是首页趋势图的一格，按东八区自然日聚合已结束的充电订单。
@@ -21,10 +21,16 @@ type TrendDay struct {
 	SettledCents    int64  `json:"settled_cents"`    // 当天已结束订单的合计金额,单位分
 }
 
-// Metrics 是首页看板一次读取的全部指标：充电中订单、今日下单用户、今日已结束订单与金额、
-// 未处理告警，以及最近 7 天趋势。任一子查询失败就整体返回错误，前端显示“数据暂不可用”而不是半份数据。
+// Metrics 是首页看板一次读取的订单、用户、站点、设备和告警指标，以及最近 7 天趋势。
+// 任一子查询失败就整体返回错误，前端显示“数据暂不可用”而不是半份数据。
 type Metrics struct {
 	ChargingOrders       int64      `json:"charging_orders"`        // 当前状态为 charging(充电中)的订单数
+	TodayOrders          int64      `json:"today_orders"`           // 今日(北京时间)创建的未删除订单数，包含未启动订单
+	TotalUsers           int64      `json:"total_users"`            // 未删除的充电用户总数
+	NewUsers             int64      `json:"new_users"`              // 今日(北京时间)注册的未删除充电用户数
+	TodayChargingUsers   int64      `json:"today_charging_users"`   // 今日(北京时间)实际开始过充电的去重用户数，按 started_at 统计
+	StationCount         int64      `json:"station_count"`          // 未删除的管理库站点数
+	DeviceCount          int64      `json:"device_count"`           // 未删除的管理库设备元数据数
 	TodayOrderUsers      int64      `json:"today_order_users"`      // 今日(东八区)创建过订单的去重用户数
 	TodayCompletedOrders int64      `json:"today_completed_orders"` // 今日已结束订单数,取自 DailyTrend 的最后一格
 	TodaySettledCents    int64      `json:"today_settled_cents"`    // 今日已结束订单的合计金额,单位分
@@ -38,16 +44,36 @@ type Metrics struct {
 func (d Dashboard) Read(ctx context.Context, now time.Time) (Metrics, error) {
 	local := now.In(time.FixedZone("Asia/Shanghai", 8*3600))
 	today := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, local.Location())
+	start, end := today.UTC(), today.AddDate(0, 0, 1).UTC()
 	m := Metrics{UpdatedAt: now.UTC(), DailyTrend: make([]TrendDay, 0, 7)}
 	orders := d.UserDB.WithContext(ctx).Table("charge_order").Where("deleted_at IS NULL")
 	if err := orders.Session(&gorm.Session{}).Where("status = 'charging'").Count(&m.ChargingOrders).Error; err != nil {
 		return m, err
 	}
-	if err := orders.Session(&gorm.Session{}).Where("created_at >= ? AND created_at < ?", today.UTC(), today.AddDate(0, 0, 1).UTC()).Distinct("user_id").Count(&m.TodayOrderUsers).Error; err != nil {
+	if err := orders.Session(&gorm.Session{}).Where("created_at >= ? AND created_at < ?", start, end).Count(&m.TodayOrders).Error; err != nil {
+		return m, err
+	}
+	if err := orders.Session(&gorm.Session{}).Where("created_at >= ? AND created_at < ?", start, end).Distinct("user_id").Count(&m.TodayOrderUsers).Error; err != nil {
+		return m, err
+	}
+	if err := orders.Session(&gorm.Session{}).Where("started_at >= ? AND started_at < ?", start, end).Distinct("user_id").Count(&m.TodayChargingUsers).Error; err != nil {
+		return m, err
+	}
+	users := d.UserDB.WithContext(ctx).Table("user").Where("deleted_at IS NULL")
+	if err := users.Session(&gorm.Session{}).Count(&m.TotalUsers).Error; err != nil {
+		return m, err
+	}
+	if err := users.Session(&gorm.Session{}).Where("created_at >= ? AND created_at < ?", start, end).Count(&m.NewUsers).Error; err != nil {
+		return m, err
+	}
+	if err := d.AdminDB.WithContext(ctx).Table("station").Where("deleted_at IS NULL").Count(&m.StationCount).Error; err != nil {
+		return m, err
+	}
+	if err := d.AdminDB.WithContext(ctx).Table("device_meta").Where("deleted_at IS NULL").Count(&m.DeviceCount).Error; err != nil {
 		return m, err
 	}
 	var rows []TrendDay
-	err := orders.Session(&gorm.Session{}).Select("DATE_FORMAT(DATE_ADD(ended_at, INTERVAL 8 HOUR), '%Y-%m-%d') AS day, COUNT(*) AS completed_orders, COALESCE(SUM(total_cents),0) AS settled_cents").Where("ended_at >= ? AND ended_at < ? AND total_cents IS NOT NULL", today.AddDate(0, 0, -6).UTC(), today.AddDate(0, 0, 1).UTC()).Group("day").Find(&rows).Error
+	err := orders.Session(&gorm.Session{}).Select("DATE_FORMAT(DATE_ADD(ended_at, INTERVAL 8 HOUR), '%Y-%m-%d') AS day, COUNT(*) AS completed_orders, COALESCE(SUM(total_cents),0) AS settled_cents").Where("ended_at >= ? AND ended_at < ? AND total_cents IS NOT NULL", today.AddDate(0, 0, -6).UTC(), end).Group("day").Find(&rows).Error
 	if err != nil {
 		return m, err
 	}

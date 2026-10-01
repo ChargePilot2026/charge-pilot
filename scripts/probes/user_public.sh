@@ -4,8 +4,8 @@
 #   2. 用与 user 服务相同的密钥签一个本地开发 JWT（user_id=1 /
 #      openid=test_openid），并往 Redis-cache 里 SET 一个桩会话，
 #      让会话中间件放行请求。
-#   3. 走完全部 17 条 user_routes（profile、charge_*、wallet_*、coupon_*、
-#      invoice_*、station_*、phone_*、announcement_*、customer-service、
+#   3. 探测用户路由（profile、charge_*、wallet_*、coupon_*、
+#      invoice_*、station_*、phone_*、announcement_*、
 #      device-fault-reports、scan_*），并打印 HTTP 状态码与响应信封里的 code。
 #
 # 用法：
@@ -157,7 +157,6 @@ probe_user POST   /api/v1/user/device/report-fault  '{"device_id":"x","fault_typ
 probe_user POST   /api/v1/user/phone/bind          '{"code":"x"}'
 probe_user POST   /api/v1/user/phone/unbind        '{}'
 probe_user GET    /api/v1/user/announcement/list
-probe_user POST   /api/v1/user/customer-service/entry '{"scene":"general"}'
 probe_user POST   /api/v1/user/scan/resolve        '{"code":"x"}'
 probe_user POST   /api/v1/user/scan/port           '{"port_id":"x"}'
 probe_user POST   /api/v1/user/scan/quote          '{"port_id":"x","estimated_kwh":"1.0","estimated_minutes":60}'

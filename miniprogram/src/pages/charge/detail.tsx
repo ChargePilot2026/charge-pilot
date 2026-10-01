@@ -86,5 +86,5 @@ return (<><View className="container">{!!(needsLogin) && (<Button onClick={event
 <Button type="primary" onClick={event("submitFeedback", {})} loading={feedbackBusy} disabled={feedbackBusy}>{"提交反馈"}</Button></View>)}
 {!!(order?.feedback_submitted) && (<View className="card success">{"已收到本订单反馈，谢谢。"}</View>)}
 {!!(order?.device_id) && (<View className="card"><Button onClick={event("reportFault", {})}>{"设备报修"}</Button>
-<Button onClick={event("customerService", {})}>{"联系在线客服"}</Button></View>)}</Fragment>)}</View></>);
+</View>)}</Fragment>)}</View></>);
 }

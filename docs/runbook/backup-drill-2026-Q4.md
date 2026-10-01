@@ -80,7 +80,6 @@ docker run -d --name mysql-drill-restore \
 | 3. Webhook 推送 | □ |
 | 4. 分账计算 | □ |
 | 5. PC 后台权限 | □ |
-| 6. OTA 流程(可选) | □ |
 
 ---
 

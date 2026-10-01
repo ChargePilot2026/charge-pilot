@@ -84,7 +84,24 @@ func (a ResourceAPI) permissionCodesFor(ctx context.Context, codes ...string) ([
 		Joins("JOIN role_permission rp ON rp.permission_id = p.id").
 		Joins("JOIN role r ON r.id = rp.role_id AND r.deleted_at IS NULL").
 		Where("r.code IN ?", codes).Distinct("p.code").Pluck("p.code", &result).Error
-	return result, err
+	return withoutRetiredPermissions(result), err
+}
+
+// withoutRetiredPermissions 让未重建开发库中的已移除功能权限不再参与展示或授权。
+// 角色及其余权限保持原样，不修改已有权限绑定数据。
+func withoutRetiredPermissions(codes []string) []string {
+	result := make([]string, 0, len(codes))
+	for _, code := range codes {
+		if !retiredPermission(code) {
+			result = append(result, code)
+		}
+	}
+	return result
+}
+
+func retiredPermission(code string) bool {
+	return strings.HasPrefix(code, "customer_service.") || strings.HasPrefix(code, "ota.") ||
+		strings.HasPrefix(code, "alert.rule.") || strings.HasPrefix(code, "alert.subscription.") || code == "settings.ota.update"
 }
 
 // listRoles 列出未删除的角色，按 id 升序。权限编码和账号数逐行另查后填进同一行，
@@ -104,10 +121,7 @@ func (a ResourceAPI) listRoles(c *gin.Context) {
 			resourceFailure(c, err)
 			return
 		}
-		if codes == nil {
-			codes = []string{}
-		}
-		rows[i].Permissions = codes
+		rows[i].Permissions = withoutRetiredPermissions(codes)
 		if err := a.Store.AdminDB.WithContext(c.Request.Context()).Table("admin_user_role").
 			Where("role_id = ? AND deleted_at IS NULL", rows[i].ID).Count(&rows[i].UserCount).Error; err != nil {
 			resourceFailure(c, err)
@@ -124,12 +138,18 @@ func (a ResourceAPI) listRoles(c *gin.Context) {
 func (a ResourceAPI) listPermissions(c *gin.Context) {
 	rows := []PermissionRow{}
 	if err := a.Store.AdminDB.WithContext(c.Request.Context()).Table("permission").
-		Select("id, code, name, module, COALESCE(description, '') AS description").
+		Select("id, code, name, CASE WHEN code LIKE 'feedback.%' THEN 'device' ELSE module END AS module, COALESCE(description, '') AS description").
 		Order("module, code").Find(&rows).Error; err != nil {
 		resourceFailure(c, err)
 		return
 	}
-	httpapi.OK(c, gin.H{"items": rows})
+	visible := make([]PermissionRow, 0, len(rows))
+	for _, row := range rows {
+		if !retiredPermission(row.Code) {
+			visible = append(visible, row)
+		}
+	}
+	httpapi.OK(c, gin.H{"items": visible})
 }
 
 // roleInput 是角色新增与更新共用的请求体，字段与 RoleRow 对应。

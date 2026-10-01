@@ -44,7 +44,6 @@ type Snapshot struct {
 	Completed        map[string]bool        `json:"completed_orders"`
 	SavedAt          time.Time              `json:"saved_at"`
 	Cards            map[uint32]CardStatus  `json:"cards"`
-	Module           UpgradeModule          `json:"upgrade_module"`
 	Identity         wire.DeviceIdentity    `json:"identity"`
 	Config           wire.ConfigTable       `json:"config"`
 	RawConfig        []byte                 `json:"raw_config"`
@@ -338,17 +337,11 @@ func (b *board) applyInput(in Input) error {
 	if in.Type == "heartbeat" {
 		return b.sendAllPorts(false, wire.Heartbeat)
 	}
-	if in.Type == "restart" || in.Type == "upgrade" {
+	if in.Type == "restart" {
 		if !b.online {
 			return fmt.Errorf("device is disconnected")
 		}
-		code := byte(1)
-		if in.Type == "upgrade" {
-			code = 2
-		}
-		d := make([]byte, 10)
-		d[0] = code
-		return b.remote(wire.Frame{Command: 0xA2, Data: d})
+		return b.remote(wire.BuildReboot([6]byte{}))
 	}
 	if in.Type == "balance" {
 		if in.Card == 0 {
@@ -515,7 +508,6 @@ func (b *board) snapshot() Snapshot {
 	for n, v := range b.cards {
 		s.Cards[n] = v
 	}
-	s.Module = b.module
 	for i := 1; i <= b.config.PortCount; i++ {
 		v := *b.physical(byte(i))
 		s.Ports[byte(i)] = &v
@@ -579,7 +571,6 @@ func (b *board) restore() error {
 	if b.cards == nil {
 		b.cards = map[uint32]CardStatus{}
 	}
-	b.module = s.Module
 	if b.ports == nil {
 		b.ports = map[byte]*PhysicalPort{}
 	}
@@ -594,27 +585,10 @@ func (b *board) restore() error {
 }
 
 func (b *board) remote(f wire.Frame) error {
-	if len(f.Data) != 10 || f.Data[0] < 1 || f.Data[0] > 3 || f.Data[1] > 1 {
+	if len(f.Data) != 10 || f.Data[0] != 1 || f.Data[1] != 0 {
 		return nil
 	}
-	if f.Data[0] != 1 && f.Data[1] == 1 {
-		for _, c := range f.Data[2:10] {
-			if c < 32 || c > 126 {
-				return nil
-			}
-		}
-		b.config.Identity.SoftwareID = string(f.Data[2:10])
-	}
-	// The PDF states successful reset/upgrade does not emit A3. Upgrade binary
-	// transport is not specified; simulate flashing and the F0-F5 module exchange
-	// locally, then reconnect and expose the new identity in A0/A4.
-	if f.Data[0] != 1 {
-		if err := b.module.Simulate(); err != nil {
-			return err
-		}
-		b.config.Log.Printf("module upgrade exchange F0/F1/F2/F3/F4/F5 completed locally")
-		b.config.Identity.SoftwareVersion++
-	}
+	// Successful reset does not emit A3; reconnect with the existing identity.
 	for port, c := range b.charging {
 		delete(b.charging, port)
 		if err := b.reportEnd(c, 3); err != nil {

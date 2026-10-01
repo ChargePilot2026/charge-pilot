@@ -100,8 +100,8 @@ export default function UsersPage() {
     const values = await editForm.validateFields();
     setSaving(true);
     try {
-      await apiPut(`/api/v1/admin/admin-users/${editing.id}`, values);
-      message.success('账号已更新，原有会话已失效');
+      const result = await apiPut<{ sessions_revoked: boolean }>(`/api/v1/admin/admin-users/${editing.id}`, values);
+      message.success(result.sessions_revoked ? '账号已更新，原有会话已失效' : '账号已更新');
       setEditing(null);
       await load();
     } catch (e: any) {

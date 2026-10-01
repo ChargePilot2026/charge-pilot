@@ -78,11 +78,11 @@ CREATE TABLE `admin_user_role` (
 CREATE TABLE `alert_event` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT '记录主键 ID',
   `device_id` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '设备全局唯一编号',
-  `rule_id` bigint unsigned DEFAULT NULL COMMENT '触发的阈值规则 ID；设备直接上报的故障为 NULL',
+  `rule_id` bigint unsigned DEFAULT NULL COMMENT '历史阈值规则 ID；当前设备上报告警为 NULL',
   `severity` enum('warning','critical','fatal') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'warning' COMMENT '告警严重程度；取值 warning / critical / fatal',
   `metric` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '告警指标；smoke 烟雾、high_temperature 高温、device_fault 设备故障、port_fault_N 端口故障，或遥测指标',
   `value` decimal(18,6) DEFAULT NULL COMMENT '告警观测值；设备故障时为协议故障码',
-  `threshold` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '阈值规则的触发阈值，设备直接上报故障为 NULL',
+  `threshold` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '历史阈值规则触发阈值；当前设备上报告警为 NULL',
   `status` enum('active','acknowledged','resolved','auto_resolved') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'active' COMMENT '当前业务状态；取值 active / acknowledged / resolved / auto_resolved',
   `acked_by` bigint unsigned DEFAULT NULL COMMENT '确认人 ID',
   `acked_at` datetime(3) DEFAULT NULL COMMENT '确认时间',
@@ -101,36 +101,6 @@ CREATE TABLE `alert_event` (
  PARTITION p_2026m11 VALUES LESS THAN (740316) ENGINE = InnoDB,
  PARTITION p_2026m12 VALUES LESS THAN (740347) ENGINE = InnoDB,
  PARTITION p_max VALUES LESS THAN MAXVALUE ENGINE = InnoDB) */;
-
--- alert_rule：告警规则
-CREATE TABLE `alert_rule` (
-  `id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT '记录主键 ID',
-  `name` varchar(128) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '业务名称',
-  `device_id_pattern` varchar(128) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '*' COMMENT '设备编号匹配模式，星号匹配任意字符',
-  `metric` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '指标名称',
-  `op` enum('>','<','!=','between','==') COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '告警数值比较运算符；取值 > / < / != / between / ==',
-  `threshold` json NOT NULL COMMENT '阈值 JSON；单值比较为数字，between 为有序的上下限数组',
-  `window_seconds` int unsigned NOT NULL DEFAULT '60' COMMENT '告警判定窗口长度，单位秒',
-  `severity` enum('warning','critical','fatal') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'warning' COMMENT '告警严重程度；取值 warning / critical / fatal',
-  `enabled` tinyint(1) NOT NULL DEFAULT '1' COMMENT '是否启用，0 否、1 是',
-  `created_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '记录创建时间',
-  `updated_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) COMMENT '记录更新时间',
-  `deleted_at` datetime(3) DEFAULT NULL COMMENT '软删除时间',
-  PRIMARY KEY (`id`),
-  KEY `idx_metric_enabled` (`metric`,`enabled`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='告警规则';
-
--- alert_subscription：告警订阅
-CREATE TABLE `alert_subscription` (
-  `id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT '记录主键 ID',
-  `rule_id` bigint unsigned DEFAULT NULL COMMENT '订阅的阈值规则 ID，为 NULL 时按严重程度订阅',
-  `severity` enum('warning','critical','fatal') COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '告警严重程度；取值 warning / critical / fatal',
-  `webhook_subscription_id` bigint unsigned DEFAULT NULL COMMENT 'Webhook 订阅 ID',
-  `admin_user_id` bigint unsigned DEFAULT NULL COMMENT '管理员 ID',
-  `enabled` tinyint(1) NOT NULL DEFAULT '1' COMMENT '是否启用，0 否、1 是',
-  `created_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '记录创建时间',
-  PRIMARY KEY (`id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='告警订阅';
 
 -- announcement：公告
 CREATE TABLE `announcement` (
@@ -216,20 +186,6 @@ CREATE TABLE `customer` (
   `updated_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) COMMENT '记录更新时间',
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='客户(部署单位)';
-
--- customer_service_config：客服坐席
-CREATE TABLE `customer_service_config` (
-  `id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT '记录主键 ID',
-  `agent_wechat` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '客服坐席微信号',
-  `agent_name` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '客服人员名称',
-  `path` varchar(512) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '微信客服入口 URL',
-  `priority` int unsigned NOT NULL DEFAULT '0' COMMENT '显示或执行优先级',
-  `enabled` tinyint(1) NOT NULL DEFAULT '1' COMMENT '是否启用，0 否、1 是',
-  `working_hours_json` json DEFAULT NULL COMMENT '客服工作时间配置 JSON',
-  `created_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '记录创建时间',
-  `updated_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) COMMENT '记录更新时间',
-  PRIMARY KEY (`id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='客服坐席';
 
 -- device_import：设备导入请求及执行重试状态
 CREATE TABLE `device_import` (
@@ -356,42 +312,6 @@ CREATE TABLE `invoice_review` (
   UNIQUE KEY `uk_invoice_review_request` (`invoice_request_id`),
   KEY `idx_status` (`review_status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='发票审核';
-
--- ota_package：OTA 固件包
-CREATE TABLE `ota_package` (
-  `id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT '记录主键 ID',
-  `code` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '业务唯一编码',
-  `vendor_id` bigint unsigned DEFAULT NULL COMMENT '设备厂商 ID',
-  `version` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '业务版本号',
-  `storage_url` varchar(512) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '固件包存储访问 URL',
-  `size_bytes` bigint unsigned NOT NULL COMMENT '固件文件大小，单位字节',
-  `checksum_sha256` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '固件文件的 SHA-256 校验摘要',
-  `sign` varchar(512) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '固件包签名内容',
-  `release_notes` text COLLATE utf8mb4_unicode_ci COMMENT '固件版本发布说明',
-  `status` enum('draft','published','archived') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'draft' COMMENT '当前业务状态；取值 draft / published / archived',
-  `created_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '记录创建时间',
-  `updated_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) COMMENT '记录更新时间',
-  `deleted_at` datetime(3) DEFAULT NULL COMMENT '软删除时间',
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_code_version` (`code`,`version`,`deleted_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='OTA 固件包';
-
--- ota_schedule：OTA 推送计划
-CREATE TABLE `ota_schedule` (
-  `id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT '记录主键 ID',
-  `package_id` bigint unsigned NOT NULL COMMENT 'OTA 固件包 ID',
-  `target_filter_json` json DEFAULT NULL COMMENT '固件推送设备筛选条件 JSON',
-  `rollout_strategy` enum('all','canary','batch','manual') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'all' COMMENT '固件推送策略；取值 all / canary / batch / manual',
-  `batch_size` int unsigned DEFAULT NULL COMMENT '每批推送的设备数量',
-  `status` enum('pending','running','completed','cancelled','failed') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'pending' COMMENT '当前业务状态；取值 pending / running / completed / cancelled / failed',
-  `scheduled_at` datetime(3) DEFAULT NULL COMMENT '计划执行时间',
-  `started_at` datetime(3) DEFAULT NULL COMMENT '业务启动时间',
-  `completed_at` datetime(3) DEFAULT NULL COMMENT '任务完成时间',
-  `created_by` bigint unsigned NOT NULL COMMENT '创建人 ID',
-  `created_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '记录创建时间',
-  PRIMARY KEY (`id`),
-  KEY `idx_status` (`status`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='OTA 推送计划';
 
 -- permission：权限码
 -- 权限由后端路由守卫执行；角色授权以初始化种子为准。
@@ -762,8 +682,8 @@ INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`
 INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (11,'finance.wallet_risk.review','钱包退款风控审核','finance',NULL,'2026-09-30 19:22:11.688');
 INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (12,'finance.wallet_risk.release','解除钱包退款风控冻结','finance',NULL,'2026-09-30 19:22:11.692');
 INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (13,'invoice.review','审核发票','finance',NULL,'2026-09-30 19:22:11.713');
-INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (14,'feedback.read','查看用户评价与投诉','customer_service','查看用户提交的评价、投诉和建议','2026-09-30 19:22:11.718');
-INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (15,'feedback.reply','回复与关闭用户反馈','customer_service','回复或关闭用户反馈','2026-09-30 19:22:11.718');
+INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (14,'feedback.read','查看用户评价与投诉','device','查看用户提交的评价、投诉和建议','2026-09-30 19:22:11.718');
+INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (15,'feedback.reply','回复与关闭用户反馈','device','回复或关闭用户反馈','2026-09-30 19:22:11.718');
 INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (16,'fault.read','查看设备报修','inspection','查看用户和巡检提交的设备报修','2026-09-30 19:22:11.718');
 INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (17,'fault.dispatch','派单与处理设备报修','inspection','指派巡检人员并更新报修处理状态','2026-09-30 19:22:11.718');
 INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (18,'whitelabel.read','查看白标配置','settings','查看租户品牌和联系信息','2026-09-30 19:22:11.724');
@@ -788,23 +708,11 @@ INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`
 INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (37,'finance.withdraw.create','发起提现申请','finance','创建提现申请','2026-09-30 19:22:11.768');
 INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (38,'finance.withdraw.review','审核提现申请','finance','审批或驳回提现申请','2026-09-30 19:22:11.768');
 INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (39,'alert.ack','确认告警','alert','确认/忽略告警事件','2026-09-30 19:22:11.768');
-INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (40,'alert.rule.create','创建告警规则','alert','创建告警规则','2026-09-30 19:22:11.768');
-INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (41,'alert.rule.update','编辑告警规则','alert','修改告警规则','2026-09-30 19:22:11.768');
-INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (42,'alert.rule.delete','删除告警规则','alert','软删除告警规则','2026-09-30 19:22:11.768');
-INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (43,'alert.subscription.create','创建告警订阅','alert','创建告警订阅','2026-09-30 19:22:11.768');
 INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (44,'alert.risk_config.update','修改风控配置','alert','修改风控阈值配置','2026-09-30 19:22:11.768');
 INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (45,'membership.create','创建会员卡模板','membership','创建会员卡模板','2026-09-30 19:22:11.768');
-INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (46,'settings.ota.update','修改 OTA 配置','settings','修改 OTA 全局配置','2026-09-30 19:22:11.768');
-INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (47,'ota.package.create','创建 OTA 固件包','ota','上传并创建 OTA 固件包','2026-09-30 19:22:11.768');
-INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (48,'ota.package.delete','删除 OTA 固件包','ota','软删除 OTA 固件包','2026-09-30 19:22:11.768');
-INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (49,'ota.schedule.create','创建 OTA 升级计划','ota','创建 OTA 升级计划','2026-09-30 19:22:11.768');
-INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (50,'ota.schedule.trigger','触发 OTA 升级计划','ota','立即触发 OTA 升级计划','2026-09-30 19:22:11.768');
 INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (51,'announcement.create','创建公告','announcement','创建公告','2026-09-30 19:22:11.768');
 INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (52,'announcement.update','编辑公告','announcement','修改公告','2026-09-30 19:22:11.768');
 INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (53,'announcement.delete','删除公告','announcement','软删除公告','2026-09-30 19:22:11.768');
-INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (54,'customer_service.create','创建客服配置','customer_service','创建客服入口配置','2026-09-30 19:22:11.768');
-INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (55,'customer_service.update','编辑客服配置','customer_service','修改客服入口配置','2026-09-30 19:22:11.768');
-INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (56,'customer_service.delete','删除客服配置','customer_service','软删除客服入口配置','2026-09-30 19:22:11.768');
 INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (57,'fault.resolve','处理设备故障','fault','标记设备故障已处理','2026-09-30 19:22:11.768');
 INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (58,'webhook.create','创建 Webhook 订阅','webhook','创建 Webhook 订阅','2026-09-30 19:22:11.768');
 INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (59,'webhook.update','编辑 Webhook 订阅','webhook','修改 Webhook 订阅','2026-09-30 19:22:11.768');
@@ -814,9 +722,7 @@ INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`
 INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (63,'admin_user.read','查看管理员','admin_user',NULL,'2026-09-30 19:22:11.892');
 INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (64,'alert.read','查看告警','alert',NULL,'2026-09-30 19:22:11.892');
 INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (65,'announcement.read','查看公告','announcement',NULL,'2026-09-30 19:22:11.892');
-INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (66,'customer_service.read','查看客服','customer_service',NULL,'2026-09-30 19:22:11.892');
 INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (67,'webhook.read','查看 Webhook','webhook',NULL,'2026-09-30 19:22:11.892');
-INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (68,'ota.read','查看 OTA','ota',NULL,'2026-09-30 19:22:11.892');
 INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (69,'pricing.read','查看计费规则','pricing',NULL,'2026-09-30 19:22:11.892');
 INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (70,'finance.read','查看财务记录','finance',NULL,'2026-09-30 19:22:11.892');
 INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (71,'device.import','导入设备','device',NULL,'2026-09-30 19:22:11.892');
@@ -877,23 +783,11 @@ INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (1,36);
 INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (1,37);
 INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (1,38);
 INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (1,39);
-INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (1,40);
-INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (1,41);
-INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (1,42);
-INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (1,43);
 INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (1,44);
 INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (1,45);
-INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (1,46);
-INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (1,47);
-INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (1,48);
-INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (1,49);
-INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (1,50);
 INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (1,51);
 INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (1,52);
 INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (1,53);
-INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (1,54);
-INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (1,55);
-INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (1,56);
 INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (1,57);
 INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (1,58);
 INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (1,59);
@@ -903,9 +797,7 @@ INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (1,62);
 INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (1,63);
 INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (1,64);
 INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (1,65);
-INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (1,66);
 INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (1,67);
-INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (1,68);
 INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (1,69);
 INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (1,70);
 INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (1,71);
@@ -934,29 +826,16 @@ INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (2,23);
 INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (2,24);
 INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (2,25);
 INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (2,39);
-INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (2,40);
-INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (2,41);
-INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (2,42);
-INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (2,43);
 INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (2,44);
-INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (2,47);
-INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (2,48);
-INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (2,49);
-INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (2,50);
 INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (2,51);
 INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (2,52);
 INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (2,53);
-INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (2,54);
-INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (2,55);
-INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (2,56);
 INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (2,58);
 INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (2,59);
 INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (2,60);
 INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (2,64);
 INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (2,65);
-INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (2,66);
 INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (2,67);
-INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (2,68);
 INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (2,71);
 INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (2,78);
 INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (2,80);
@@ -971,7 +850,6 @@ INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (3,20);
 INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (3,57);
 INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (3,62);
 INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (3,63);
-INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (3,66);
 INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (3,81);
 INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (4,7);
 INSERT INTO `role_permission` (`role_id`,`permission_id`) VALUES (4,8);
@@ -1012,8 +890,6 @@ DROP TABLE IF EXISTS `pricing_rule`;
 DROP TABLE IF EXISTS `pricing_publication`;
 DROP TABLE IF EXISTS `pricing_package_template`;
 DROP TABLE IF EXISTS `permission`;
-DROP TABLE IF EXISTS `ota_schedule`;
-DROP TABLE IF EXISTS `ota_package`;
 DROP TABLE IF EXISTS `invoice_review`;
 DROP TABLE IF EXISTS `finance_reconcile_log`;
 DROP TABLE IF EXISTS `export_task`;
@@ -1021,13 +897,10 @@ DROP TABLE IF EXISTS `event_outbox`;
 DROP TABLE IF EXISTS `device_meta`;
 DROP TABLE IF EXISTS `device_import_identity`;
 DROP TABLE IF EXISTS `device_import`;
-DROP TABLE IF EXISTS `customer_service_config`;
 DROP TABLE IF EXISTS `customer`;
 DROP TABLE IF EXISTS `charge_offer`;
 DROP TABLE IF EXISTS `audit_log`;
 DROP TABLE IF EXISTS `announcement`;
-DROP TABLE IF EXISTS `alert_subscription`;
-DROP TABLE IF EXISTS `alert_rule`;
 DROP TABLE IF EXISTS `alert_event`;
 DROP TABLE IF EXISTS `admin_user_role`;
 DROP TABLE IF EXISTS `admin_field_mask`;

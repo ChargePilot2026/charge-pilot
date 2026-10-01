@@ -80,19 +80,16 @@ func (a ResourceAPI) listAdminUsers(c *gin.Context) {
 	httpapi.OK(c, out)
 }
 
-// assignableRole 确认目标角色存在，
-// 并且操作者没有授予超出自己范围的权限，
-// 这样就无法通过新建或编辑账号来给自己提权。
-
 // assignableRole 校验目标角色可以授予：角色必须存在且至少带一项权限，
 // 并且每一项权限操作者自己都有——否则通过新建或编辑账号就能自我提权。
-func (a ResourceAPI) assignableRole(p Profile, roleID uint64) error {
+func assignableRole(ctx context.Context, db *gorm.DB, p Profile, roleID uint64) error {
 	var codes []string
-	if err := a.Store.AdminDB.WithContext(context.Background()).Table("role AS r").
+	if err := db.WithContext(ctx).Table("role AS r").
 		Joins("JOIN role_permission rp ON rp.role_id=r.id JOIN permission p ON p.id=rp.permission_id").
 		Where("r.id=? AND r.deleted_at IS NULL", roleID).Pluck("p.code", &codes).Error; err != nil {
 		return err
 	}
+	codes = withoutRetiredPermissions(codes)
 	if len(codes) == 0 {
 		return errConflict
 	}
@@ -143,43 +140,42 @@ func (a ResourceAPI) updateAdminUser(c *gin.Context) {
 		return
 	}
 	profile := c.MustGet("admin_profile").(Profile)
-	if in.RoleID != nil {
-		if err := a.assignableRole(profile, *in.RoleID); err != nil {
-			a.roleFailure(c, err)
-			return
-		}
-	}
 	values := map[string]any{}
 	for key, value := range map[string]*string{"display_name": in.DisplayName, "phone": in.Phone, "email": in.Email, "status": in.Status} {
 		if value != nil {
 			values[key] = *value
 		}
 	}
-	if in.RoleID != nil {
-		values["role_id"] = *in.RoleID
-		// 换角色必须让已存在的会话失效，
-		// 否则旧权限会一直有效，直到令牌自然过期。
-		values["auth_version"] = gorm.Expr("auth_version + 1")
-	}
-	if len(values) == 0 {
+	if len(values) == 0 && in.RoleID == nil {
 		httpapi.BadRequest(c, "没有可更新的字段")
 		return
 	}
-	var before map[string]any
+	var before AdminUserRow
+	roleChanged := false
 	err := a.Store.AdminDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Table("admin_user_role").Clauses(clause.Locking{Strength: "UPDATE"}).
 			Where("id = ? AND deleted_at IS NULL", id).Take(&before).Error; err != nil {
 			return err
 		}
+		// 表单会回传原角色；用有类型的快照比较，避免 uint64 与驱动 int64 被误判为不同。
+		roleChanged = in.RoleID != nil && (before.RoleID == nil || *in.RoleID != *before.RoleID)
 		if id == profile.ID {
 			// 不能让操作者把自己降级或停用，
 			// 那会把最后一个管理员锁在控制台外面。
 			if in.Status != nil && *in.Status == "disabled" {
 				return errConflict
 			}
-			if in.RoleID != nil && *in.RoleID != before["role_id"] {
+			if roleChanged {
 				return errConflict
 			}
+		}
+		if roleChanged {
+			if err := assignableRole(c.Request.Context(), tx, profile, *in.RoleID); err != nil {
+				return err
+			}
+			values["role_id"] = *in.RoleID
+			// 只有真正换角色时撤销会话，普通资料修改保留当前登录。
+			values["auth_version"] = gorm.Expr("auth_version + 1")
 		}
 		if err := tx.Table("admin_user_role").Where("id = ?", id).Updates(values).Error; err != nil {
 			return err
@@ -187,10 +183,10 @@ func (a ResourceAPI) updateAdminUser(c *gin.Context) {
 		return resourceAudit(tx, profile, "update", "admin_user", id, before, in, c.ClientIP(), c.GetHeader("X-Request-ID"))
 	})
 	if err != nil {
-		resourceFailure(c, err)
+		a.roleFailure(c, err)
 		return
 	}
-	httpapi.OK(c, gin.H{"id": id})
+	httpapi.OK(c, gin.H{"id": id, "sessions_revoked": roleChanged})
 }
 
 // roleFailure 角色相关失败的出口：越权授予返回 403，其余走通用处理。

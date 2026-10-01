@@ -76,7 +76,6 @@ var terminalActions = []action{
 	{"烟雾告警 / 恢复", "smoke", []field{{"0恢复 / 1烟雾", "1"}}},
 	{"断开网络并自动重连", "disconnect", nil},
 	{"设备重启（终止当前充电）", "restart", nil},
-	{"模拟升级与模块F0-F5交换", "upgrade", nil},
 	{"立即上报心跳", "heartbeat", nil}, {"请求服务器校时", "request-time", nil},
 	{"请求参数同步（C7，旧固件行为）", "request-config", nil},
 	{"编辑设备本地参数表", "config", nil},
@@ -440,8 +439,7 @@ func (m terminalModel) View() string {
 				Config      any
 				RemovePower uint16
 				Cards       any
-				Module      any
-			}{m.state.Identity, m.state.Config, m.state.RemovePower, m.state.Cards, m.state.Module}, "", "  ")
+			}{m.state.Identity, m.state.Config, m.state.RemovePower, m.state.Cards}, "", "  ")
 			body = string(raw)
 		case 2:
 			raw, _ := json.MarshalIndent(m.state.Pending, "", "  ")

@@ -1,16 +1,18 @@
 # worker 服务任务定义与 Stream 消费约定
 
+> 2026-10-01 已移除告警配置（规则与订阅）和 OTA 整个功能；设备主动上报的烟雾、温度与故障告警及告警记录、确认、恢复保留。反馈报修归入设备运维。现有部署的历史表与数据不在本轮清理范围。
+
 **服务**:`worker`(`cmd/worker`)
 **对外地址**:仅提供 `/health/live`、`/health/ready`、`/metrics` 及受服务令牌保护的内部运维接口。
 **当前实现**:
 - 核心充电启停结果、已付款启动与 Outbox 每秒轮询；计费派发、退款派发、退款结果消费每 10 秒轮询。
-- 告警阈值扫描与 Webhook 待投递扫描由 `scheduled_task` 驱动，间隔 10 秒，执行日志落 `task_execution_log`；可查询上次执行并经服务令牌人工触发。
+- Webhook 待投递扫描由 `scheduled_task` 驱动，间隔 10 秒，执行日志落 `task_execution_log`；可查询上次执行并经服务令牌人工触发。
 - Redis 死信统计与重放由 worker 内部运维接口提供。对账外部渠道、数据冷归档等任务缺真实处理器，仍待接入。
 
 > **本文件覆盖范围**:worker 服务只提供内部运维 HTTP API，并承担异步事件消费与定时任务职责。本文件约定:
 > 1. **Stream 消费契约**(消费哪些 Stream + 如何处理 + 发什么事件)
 > 2. **定时任务清单**(`scheduled_task` 表的所有 `task_code` + 触发时机 + 处理函数)
-> 3. **关键任务流程详述**(对账 / OTA 推送 / Webhook 重试 / 数据归档)
+> 3. **关键任务流程详述**(对账 / Webhook 重试 / 数据归档)
 > 4. **DLQ 处理约定**(失败消息兜底)
 
 ---
@@ -30,7 +32,7 @@
 ### 幂等保证(关键)
 
 - `comp_tx_stream` 当前处理器以 `event_id + created_month` 幂等；表唯一键为 `(tx_id, created_month)`。重复事件内容哈希或状态不同会报冲突并进入重试/DLQ。
-- 告警、Webhook、OTA 的现行处理链路分别在 `internal/worker/alerts`、`internal/worker/webhook` 和 central/gateway 的 OTA 执行器；本文件后续旧 Stream 方案仅供设计追溯，不能按未注册的旧 consumer group 推断当前运行行为。
+- 设备主动上报的告警由 `internal/worker/alerts.DeviceSynchronizer` 同步并根据后续正常心跳恢复；Webhook 链路保留，阈值规则与 OTA 执行器已移除。
 
 ### 错误处理与 DLQ
 
@@ -138,52 +140,17 @@
 
 ## 一、Stream 消费约定(worker 作为消费者)
 
-worker 实际注册下列三个消费组。只有 `comp_tx_stream` 对当前支持的退款结果事件执行落库；Webhook / OTA 会在依赖能力未配置时失败并进入 Redis DLQ。
+worker 保留 `webhook_retry_stream` 和 `comp_tx_stream` 消费组。设备告警由 admin 消费或 worker 直接同步；OTA 消费组已移除。
 
 | Stream | 来源 | 处理逻辑 | 失败时 DLQ 目标 |
 | --- | --- | --- | --- |
 | `alert_stream` | gateway | 由 admin 消费并落库；worker 不重复消费 | admin 当前仅尝试发起 Webhook 事件 |
-| `ota_schedule_stream` | 当前无可用生产者（目标为 admin） | worker 消费组已注册；处理器失败重试后进入 DLQ，设备分发未实现 | Redis `ota_schedule_stream.dlq` |
 | `webhook_retry_stream` | admin（当前仅告警消费者发出缺少目标 URL 的 `alert_recorded`） | worker 无法投递，重试后进入 DLQ | Redis `webhook_retry_stream.dlq` |
 | `comp_tx_stream` | user (`refund_completed`) | worker 校验并幂等写入 `worker_db.comp_tx_log`；仅做结果审计 | Redis `comp_tx_stream.dlq` |
 
 > **不消费** `device_event_stream` / `charge_ended_stream` / `refund_required_stream` / `invoice_required_stream`；结束计费由 billing 处理，退款与发票事件由 admin 处理。
 
-### 1.1 计划消费 `alert_stream`（当前仅由 admin 消费）
-
-以下是目标流程，不是当前 worker 行为。worker 没有 `alert_stream` 消费组，也没有订阅匹配、Webhook 投递或 delivery log 写入；当前仅 admin 落告警并发出未包含目标 URL 的重试事件，worker 对该事件重试后写 DLQ。
-
-**触发**:gateway 检测到设备越界 / 通信中断 / 温度异常 → 发 `alert_stream`
-**处理流程**:
-
-```
-worker 消费 alert_stream 事件
-  → 调 admin `POST /api/v1/admin/alerts`(内部,§ admin.md 未展开,此处新增:接收 alert 落库)
-  → 查 admin_db.alert_subscription WHERE event_type = payload.event_type AND enabled = TRUE
-  → 对每个订阅:调其 webhook URL(POST + HMAC 签名)
-    → 成功 → 写 webhook_delivery_log(status='success')
-    → 失败 → 入 retry_queue + 发 webhook_retry_stream(指数退避)
-```
-
-**幂等 key**:`alert_event.event_id`(由 gateway 生成)
-
-### 1.2 计划消费 `ota_schedule_stream`（worker 处理器当前只将失败消息重试并写入 DLQ）
-
-**目标触发**:admin 创建 OTA 调度 → 发 `ota_schedule_stream`(具体时刻由 `scheduled_window.start_at` 决定)。当前没有可用生产者，调度创建返回 503。
-**处理流程**:
-
-```
-worker 消费 ota_schedule_stream 事件
-  → 校验 scheduled_window.start_at ≤ NOW() ≤ scheduled_window.end_at
-    → 否则等待(重入延迟队列)
-  → 调 gateway `POST /api/v1/internal/devices/{device_id}/firmware-push`(路径见 gateway.md)
-    → 成功 → 等设备 ACK(轮询 firmware-status 或 device 主动 ack-received)
-    → 失败 → 触发自动回滚(若 auto_rollback_on_failure=true)
-```
-
-**幂等 key**:`ota_schedule.schedule_id` + `device_id`
-
-### 1.3 计划消费 `webhook_retry_stream`（worker 处理器当前只将失败消息重试并写入 DLQ）
+### 1.1 计划消费 `webhook_retry_stream`（worker 处理器当前只将失败消息重试并写入 DLQ）
 
 **目标触发**:Webhook 首次投递失败 → 入 `retry_queue` → 发 `webhook_retry_stream`。当前没有 Webhook 首次投递器或可用的重试事件目标。
 **处理流程**:
@@ -196,7 +163,7 @@ worker 消费 webhook_retry_stream 事件
   → 仍失败 → UPDATE retry_queue.status='failed' + 发 alert_stream(severity=critical)
 ```
 
-### 1.4 已接入的 `comp_tx_stream` 结果审计
+### 1.2 已接入的 `comp_tx_stream` 结果审计
 
 当前唯一已确认生产事件来自 user 微信退款回调：user 在同一事务内更新本服务的退款/支付记录，并向持久化 outbox 写入 `refund_completed`。Outbox 发布到本 Stream 后，worker 校验 UUID `event_id`、RFC3339 时间、退款单号及 `success`，计算完整 envelope 的 SHA-256，并按 `tx_id + created_month` 幂等写入 `worker_db.comp_tx_log`。成功结果记为 `committed`，失败结果记为 `failed`；重放时若 stream、哈希或状态不一致则报冲突。
 
@@ -206,22 +173,18 @@ worker 消费 webhook_retry_stream 事件
 
 ## 二、定时任务清单(`scheduled_task.task_code`)
 
-> 下表是历史需求清单，多数任务尚无真实处理器。当前 Go 实现先接入 `alert_evaluate` 与 `webhook_dispatch` 两项，均为 `*/10 * * * * *`（含秒字段）；数据库租约保证同任务不并发运行，执行日志记录成功/失败与影响行数，连续 5 次失败暂停。其余充电、计费、退款和 Outbox 核心轮询暂保留固定频率。
+> 下表是历史需求清单，多数任务尚无真实处理器。当前 Go 实现保留 `webhook_dispatch`，cron 为 `*/10 * * * * *`（含秒字段）；数据库租约保证同任务不并发运行，执行日志记录成功/失败与影响行数，连续 5 次失败暂停。其余充电、计费、退款和 Outbox 核心轮询暂保留固定频率。
 
 | task_code | 类型 | cron | handler | 说明 |
 | --- | --- | --- | --- | --- |
-| `alert_evaluate` | 已实现 | `*/10 * * * * *` | `alerts.Evaluator.Evaluate` | 从 gateway 遥测扫描告警 |
 | `webhook_dispatch` | 已实现 | `*/10 * * * * *` | `webhook.WebhookDeliverer.PublishBatch` | 投递待处理 Webhook 事件 |
 | `daily_refund_reconcile` | internal | `0 3 * * *`(每日 03:00) | `worker::reconcile::daily_refund` | 退款对账(微信账单 vs 内部 `refund_record`) |
 | `daily_order_reconcile` | internal | `0 3 * * *`(每日 03:00) | `worker::reconcile::daily_order` | 订单对账(微信支付 vs 内部 `payment_order`) |
 | `monthly_billing_settlement` | internal | `0 4 1 * *`(每月 1 日 04:00) | `worker::billing_cycle::monthly_settle` | 月结账单生成(分账参与方对账单) |
 | `weekly_export_run` | internal | `0 5 * * 1`(每周一 05:00) | `worker::billing_cycle::weekly_export` | 周报导出 |
-| `alert_threshold_scan` | internal | `*/5 * * * *`(每 5 min) | `worker::alert_scan::scan` | 阈值复核(扫描 gateway_db 写入的告警流,补漏) |
-| `ota_schedule_poll` | internal | `*/1 * * * *`(每 1 min) | `worker::ota_schedule::poll` | OTA 推送窗口扫描(查 `scheduled_window.start_at` 到点) |
 | `webhook_retry_poll` | internal | `*/1 * * * *`(每 1 min) | `worker::webhook_retry::poll` | Webhook 重试队列扫描(避免依赖 Stream) |
 | `announcement_expire` | internal | `0 2 * * *`(每日 02:00) | `worker::announcement_expire::clean` | 公告过期清理(`valid_until < NOW()` 软删) |
 | `data_retention` | internal | `0 6 1 * *`(每月 1 日 06:00) | `worker::data_retention::clean` | 数据归档(> 3 年物理归档至 OSS 冷存储) |
-| `alert_active_resolve` | internal | `0 */6 * * *`(每 6 小时) | `worker::alert_scan::auto_resolve` | 自动关闭超时未处理的告警(> 7 天) |
 | `dlq_replay_notice` | internal | `0 9 * * *`(每日 09:00) | `worker::dlq::daily_summary` | DLQ 日报(统计未处理数 + 发邮件给运维) |
 | `risk_config_warm_cache` | internal | `*/30 * * * *`(每 30 min) | `worker::cache::warm_risk_config` | 风控配置缓存预热 |
 | **`export_run`** | internal | **事件触发**(由 admin `POST /api/v1/admin/export/orders` 触发) | **`worker::export::run`** | **admin 导出任务执行器(本期承接 admin 端 `export_task` 表,跨服务方案) |
@@ -260,32 +223,6 @@ worker 消费 webhook_retry_stream 事件
 **幂等 key**:`reconcile_date`(每日一条,UNIQUE)
 
 **输出**:客户运营在 PC 后台"对账日志"页查看(`GET /api/v1/admin/billing/reconcile-logs`,沿用 admin.md § F)
-
-### 3.2 OTA 推送(`ota_schedule_poll` + `ota_schedule_stream` 消费)
-
-**触发场景**:
-- `ota_schedule_poll` 每 1 min 扫描 `admin_db.ota_schedule WHERE status='pending' AND scheduled_window.start_at <= NOW()`
-- 命中后**直接发 `ota_schedule_stream` 事件**(admin 创建调度时已绑定的 `scheduled_window.start_at` 到点;立即执行场景走 admin.md § J `POST /api/v1/admin/ota/schedules/{sched_id}/execute`,由 admin 端直接发 Stream)
-- worker 消费 `ota_schedule_stream` → 实际推送
-
-**处理流程**:
-
-```
-ota_schedule_poll 扫描命中:
-  → UPDATE ota_schedule.status='dispatching'
-  → 发 ota_schedule_stream 事件(payload: schedule_id, package_id, target_filter)
-
-worker 消费 ota_schedule_stream:
-  → 按 target_filter 查 gateway_db.device(经 gateway HTTP /devices 内部端点)
-  → 预演匹配设备数:SELECT COUNT(*) → 与 schedule 创建时的 preview_match_count 一致才执行
-  → 对每个设备:发 firmware-push 指令(调 gateway /firmware-push)
-  → 全部 ACK 后:
-    - success → UPDATE ota_schedule.status='completed'
-    - 部分失败 → UPDATE ota_schedule.status='partial_failure' + 自动回滚失败的设备
-  → 发 alert_stream 通知客户运营
-```
-
-**幂等 key**:`schedule_id` + `device_id`
 
 ### 3.3 Webhook 重试(`webhook_retry_poll` + `webhook_retry_stream`)
 

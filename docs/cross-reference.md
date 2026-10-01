@@ -2,11 +2,11 @@
 
 > **目的**:防止三个层次的文档(API / DB / Stream)漂移。任何新增 / 修改 / 删除必须**同步更新本文档对应行**,否则 CI 拒绝合并。
 > **维护工具**:`tools/check-api-consistency.ts`(检查端点路径、Stream 名、表名是否在文档中一致出现)
-> **最近一次同步**:2026-09-27(含报修处理历史 API 与 `device_fault_report_event` 表)
+> **最近一次同步**:2026-10-01(移除客服坐席、用户在线客服、告警配置与 OTA；反馈报修归设备运维)
 
 > **Redis 实例拆分(P0-3 固化)**:业务缓存与事件流分两个 Redis 容器,避免 allkeys-lru 误淘汰 Stream 事件:
 > - `chargepilot-redis-cache`:DB 0,`allkeys-lru`,业务缓存(`snapshot:{order_id}` 等)
-> - `chargepilot-redis-stream`:DB 0,**`noeviction`**(Stream 不能被 LRU 淘汰),事件流(`device_event_stream` 等 11 个)
+> - `chargepilot-redis-stream`:DB 0,**`noeviction`**(Stream 不能被 LRU 淘汰),事件流(`device_event_stream` 等 10 个)
 > 两个 Redis **独立 `REDIS_PASSWORD`**,网络层走同一 `internal` docker network。
 > 详见 `docs/技术规格.md` § 4.7 + `examples/docker-compose.yml`。
 
@@ -17,31 +17,30 @@
 > 详见 `docs/技术规格.md` § 4.8 + 各 `db/*.md` 表的"索引"段。
 
 > **8 张核心按月分区表已落地 P0-2**:`user_db.charge_order` / `user_db.payment_order` / `user_db.refund_record` / `user_db.wallet_txn` / `user_db.feedback` / `billing_db.fee_calculation` / `gateway_db.telemetry_aggregate_15min` / `gateway_db.telemetry_aggregate_hourly`。
-> 其余按月分区表(admin 审计 / alert_event / webhook_delivery_log;gateway device_session / raw_frame_log / ota_command;worker task_execution_log / dlq_log 等)按相同模式迁移,本期不展开(由代码动工时按本规则生成)。
+> 其余按月分区表(admin 审计 / alert_event / webhook_delivery_log;gateway device_session / raw_frame_log;worker task_execution_log / dlq_log 等)按相同模式迁移,本期不展开(由代码动工时按本规则生成)。
 
 ---
 
-## § 1 Stream 名总账(§ 技术规格 5.1,**11 个**)
+## § 1 Stream 名总账(§ 技术规格 5.1,**10 个**)
 
 | Stream 名 | 生产者 | 消费者 | 用途 | 在哪些 API 文档中出现 |
 | --- | --- | --- | --- | --- |
 | `device_event_stream` | gateway | admin | 设备状态变更；admin 更新 `device_meta.last_seen_at` | gateway.md(§ 六), admin.md(跨服务调用) |
-| `alert_stream` | gateway | admin | admin 写告警记录并尝试发 `webhook_retry_stream` | gateway.md(§ 六), admin.md(§ E 告警), worker.md(§ 一.1.3) |
+| `alert_stream` | gateway | admin | admin 写告警记录并尝试发 `webhook_retry_stream` | gateway.md(§ 六), admin.md(§ E 告警), worker.md(§ 一.1.1) |
 | **`charge_started_stream`** | **user** | **gateway** | **充电启动(微信支付回调成功后 → 下发设备启动指令)** | **user.md § 公开接口 payment/wechat/callback,技术规格 § 5.4** |
 | `charge_ended_stream` | gateway | billing / user | 充电结束(触发计费 / 分账 + 关闭 user 轮询) | gateway.md(§ 五), billing.md(§ 六), user.md(轮询关闭) |
 | `refund_required_stream` | user | admin | user 在退款记录事务内登记自动/审核后退款请求；admin 执行微信退款 | user.md(退款编排), admin.md(§ F) |
 | `invoice_required_stream` | user | admin | 用户申请发票后通知 admin 创建审核记录 | user.md(发票), admin.md(§ F) |
 | `webhook_retry_stream` | admin（当前仅发出缺少目标 URL 的告警通知事件） | worker | 当前不能投递；重试后进入 Redis DLQ | admin.md(§ I), worker.md(§ 一.1.3) |
-| `ota_schedule_stream` | 当前无可用生产者(目标为 admin) | worker / gateway | 消费组已注册但下发未配置；事件进入后失败重试并进入各自 Redis DLQ | admin.md(§ J), worker.md(§ 一.1.2), gateway.md(§ 五) |
-| `comp_tx_stream` | user (`refund_completed`) | worker (`worker-cg`) | worker 幂等审计 user 已完成的退款结果；不执行补偿，也不更新 billing | user.md(退款回调), worker.md(§ 一.1.4) |
+| `comp_tx_stream` | user (`refund_completed`) | worker (`worker-cg`) | worker 幂等审计 user 已完成的退款结果；不执行补偿，也不更新 billing | user.md(退款回调), worker.md(§ 一.1.2) |
 | `coupon_grant_required_stream` | 当前无可用生产者(目标为活动事件源) | user | 若收到事件，user 校验额度并以 event_id 幂等写 `coupon_grant`；运营人工发券使用 admin→user 内部 HTTP | admin.md(§ G), user.md(优惠券) |
 | `pricing_rule_changed_stream` | admin | billing / user | 规则变更通知；报价会读取最新规则 | admin.md(§ K), billing.md(计费快照), user.md(计费缓存) |
 
-> **约束**:11 个 Stream 是穷举的。新增 Stream 必须先在技术规格 § 5.1 登记,再在本表登记,再在 API 文档中使用。
+> **约束**:10 个 Stream 是穷举的。新增 Stream 必须先在技术规格 § 5.1 登记,再在本表登记,再在 API 文档中使用。
 
 ---
 
-## § 2 数据库表总账(5 schema,**62 张**)
+## § 2 数据库表总账(5 schema,**56 张**)
 
 ### 2.1 user_db(19 张)
 
@@ -67,7 +66,7 @@
 | `active_port_charge` | `user.md` § 充电启动结果 | 端口进行中订单跨月唯一性 |
 | `event_outbox` | `user.md` § 支付回调 | 可靠发布 `charge_started_stream` / 补偿事件 |
 
-### 2.2 admin_db(25 张)
+### 2.2 admin_db(20 张)
 
 | 表名 | 服务的端点引用 | 关键端点 |
 | --- | --- | --- |
@@ -83,13 +82,8 @@
 | `split_party` | `admin.md` § K | `POST /settings/split-templates/{id}/parties` |
 | `whitelabel_config` | `admin.md` § H | `PUT /whitelabel` |
 | `announcement` | `admin.md` § H | `POST /announcements` |
-| `customer_service_config` | `admin.md` § H | `POST /customer-service` |
 | `webhook_subscription` | `admin.md` § I | `POST /webhooks` |
 | `webhook_delivery_log` | `admin.md` § I | `GET /webhooks/{id}/deliveries` |
-| `ota_package` | `admin.md` § J | `POST /ota/packages` |
-| `ota_schedule` | `admin.md` § J | `POST /ota/schedules` |
-| `alert_rule` | `admin.md` § E | `POST /alert-rules` |
-| `alert_subscription` | `admin.md` § E | `POST /alert-subscriptions` |
 | `risk_config` | `admin.md` § E | `PUT /risk-config` |
 | `settled_record` | `admin.md` § F | `GET /billing/settlements` |
 | `finance_reconcile_log` | `admin.md` § F | `GET /billing/reconcile-logs` |
@@ -97,9 +91,9 @@
 | `alert_event` | `admin.md` § E | `GET /alerts` / `POST /alerts/{id}/ack` |
 | `audit_log` | `admin.md` § A + L | 全部写操作 |
 
-> **注**:admin_db 实际共 **25 张表**(表清单见 `docs/db/admin.md` § 表清单)。`export_task` 表不存在，worker 也未驱动 `scheduled_task`；导出创建、查询与下载入口当前均返回 503，不能视为已排队。
+> **注**:此处为数据库设计文档中的 **20 张表**(表清单见 `docs/db/admin.md` § 表清单)，完整现行结构以迁移为准。已移除客服坐席配置表的新库定义，已有部署的历史表及数据不在本轮清理范围。`export_task` 表不存在，worker 也未驱动 `scheduled_task`；导出创建、查询与下载入口当前均返回 503，不能视为已排队。
 
-### 2.3 gateway_db(8 张)
+### 2.3 gateway_db(7 张)
 
 | 表名 | 服务的端点引用 | 关键端点 |
 | --- | --- | --- |
@@ -110,7 +104,6 @@
 | `telemetry_aggregate_15min` | `gateway.md` § 三 | admin 查曲线 |
 | `telemetry_aggregate_hourly` | `gateway.md` § 三 | admin 查长会话曲线 |
 | `raw_frame_log` | `gateway.md` § 一 | 预留原始帧日志表；当前无写入路由 |
-| `ota_command` | `gateway.md` § 五 | 当前固件推送与通用设备指令均返回 503，不写入此表 |
 
 ### 2.4 billing_db(5 张)
 
@@ -157,7 +150,6 @@
 | user | admin | 当前告警查询(充电中页轮询) | `/api/v1/internal/alerts?device_id={id}&status=active` | `admin.md` § E |
 | user | admin | 站点详情查询(找桩) | `/api/v1/internal/stations/{station_id}` | `admin.md` § C |
 | user | admin | 获取当前有效公告 | `/api/v1/internal/announcements/active` | `admin.md` § 内部只读接口 |
-| user | admin | 选择已启用客服入口 | `/api/v1/internal/customer-service/entry?scene={scene}` | `admin.md` § 内部只读接口 |
 | user | gateway | 报修前确认设备存在 | `/api/v1/internal/devices/{id}` | `gateway.md` § 设备查询 |
 | user | 微信支付 API | JSAPI 预下单(scan/start 时) | `https://api.mch.weixin.qq.com/v3/pay/transactions/jsapi` | `user.md` § 扫码与充电 |
 | user | 微信支付 API | 钱包充值退款(同步调用,不走 Stream) | `https://api.mch.weixin.qq.com/v3/refund/...` | `user.md` § 用户与钱包 |
@@ -181,7 +173,6 @@
 | billing | admin | 计费规则 / 分账模板查询 | `/api/v1/internal/admin/pricing-rules/{id}` + `/split-templates/{id}` | `admin.md` § K |
 | billing | admin | 订单详情查询(写 fee_calculation 时回查) | `/api/v1/internal/orders/{order_id}` | `admin.md` § C / `user.md` |
 | admin | 微信支付 API | 退款执行(admin 消费 user 的 refund_required_stream → 调微信) | `https://api.mch.weixin.qq.com/v3/refund/...` | `admin.md` § F |
-| worker | gateway | 计划中的 OTA 固件推送（当前 handler 返回 503，重试后进入 DLQ） | `/api/v1/internal/devices/{id}/firmware-push` | `gateway.md` § 五 |
 | worker | admin | 当前无告警 HTTP 写入调用；admin 自己消费 `alert_stream` | — | `admin.md` § E |
 
 ---
@@ -206,7 +197,6 @@
 | `POST /wallet/refund` | `refund_record` + `wallet_txn` | ✅ |
 | `POST /invoice/apply` | `invoice_request` | ✅ |
 | `POST /device/report-fault` | `device_fault_report` | ✅(已加) |
-| `POST /customer-service/entry` | 不写表(仅路由) | ✅ |
 
 ### 4.2 admin 服务(高敏,逐项已校)
 
@@ -214,15 +204,11 @@
 > - `POST /auth/login` → `admin_user_role` ✅
 > - `POST /users` / `PUT /users/{id}` / `DELETE /users/{id}` → `admin_user_role` ✅
 > - `POST /stations` / `PUT /stations/{id}` → `station` ✅
-> - `POST /alert-rules` / `PUT /alert-rules/{id}` → `alert_rule` ✅
-> - `POST /alert-subscriptions` → `alert_subscription` ✅
 > - `PUT /risk-config` → `risk_config` ✅
 > - `POST /coupons` / `PUT /coupons/{id}` → `coupon`(admin 视角) ✅
 > - `POST /announcements` → `announcement` ✅
 > - `PUT /whitelabel` → `whitelabel_config` ✅
 > - `POST /webhooks` → `webhook_subscription` ✅
-> - `POST /ota/packages` → `ota_package` ✅
-> - `POST /ota/schedules` → `ota_schedule` ✅
 > - `POST /settings/charge-rules` → `pricing_rule` ✅
 > - `POST /settings/split-templates` + `/parties` → `split_template` + `split_party` ✅
 > - `POST /export/orders` / 查询 / 下载 → 当前返回 503；worker 尚未驱动 `scheduled_task`，不会创建任务、生成文件或签发下载 URL。
@@ -236,7 +222,6 @@
 | `POST /device/heartbeat` | `device`(UPDATE last_seen) | ✅ |
 | `POST /device/log` | `raw_frame_log` | ✅ |
 | `POST /start-charge` / `/stop-charge` | user-owned `charge_order` via internal result API + `charge_started_stream` / `charge_ended_stream` | gateway 不产出 `comp_tx_stream`；设备 ACK 结果经 user 内部 API 落账 |
-| `POST /firmware-push` | 无；当前返回 503，不创建命令 | 未实现 |
 
 ### 4.4 billing 服务
 
@@ -255,7 +240,6 @@
 | 触发源 | 写入表 |
 | --- | --- |
 | `alert_stream` 消费 | admin 直接写 `admin_db.alert_event`，再尝试发 `webhook_retry_stream` |
-| `ota_schedule_stream` 消费 | 当前无可用生产者；worker/gateway 处理器若收到事件会失败重试并进入各自 Redis DLQ |
 | `webhook_retry_stream` 消费 | worker 当前返回未配置错误；消息最终进入 Redis DLQ，不写数据库重试表 |
 | `comp_tx_stream` (`refund_completed`) | `worker_db.comp_tx_log`；仅审计结果，不回写 user/billing |
 | 定时任务执行 | `scheduled_task` / `task_execution_log` 当前没有调度驱动，不会自动执行 |
@@ -282,7 +266,7 @@
 | Schema | 业务表 | 配置类 | 日志类 | 备注 |
 | --- | --- | --- | --- | --- |
 | **user_db** | 软删除 + 抹除 PII(§ user.md) | — | 审计/幂等表 不软删 | 抹除 PII(`phone_enc` / `unionid` / `nickname` / `avatar_url` 置 NULL),`openid` 保留 30 天 |
-| **admin_db** | 软删除(§ admin.md) | **不软删**,启用 / 停用 | 按月分区 + 物理归档(超 3 年) | 配置类:角色 / 权限 / 白标 / 告警订阅 |
+| **admin_db** | 软删除(§ admin.md) | **不软删**,启用 / 停用 | 按月分区 + 物理归档(超 3 年) | 配置类:角色 / 权限 / 白标 |
 | **billing_db** | **不软删**(§ billing.md) | — | 按月分区 + 物理归档 | 计费 / 分账快照为合规证据,必须保留 |
 | **gateway_db** | 设备表软删,其它不分 | — | 遥测 / 帧日志 / 会话表 按月分区 | 遥测原始 1 月 + 聚合 3 年(技术规格 § 4.6) |
 | **worker_db** | 无软删除列 | — | `task_execution_log` / `comp_tx_log` / `dlq_log` 按月分区 | `scheduled_task` / `retry_queue` 不分区 |

@@ -73,6 +73,9 @@ func (s Scheduler) RunDue(ctx context.Context) error {
 }
 
 func (s Scheduler) Trigger(ctx context.Context, code, reason string, force bool) (bool, error) {
+	if s.Handlers[code] == nil {
+		return false, gorm.ErrRecordNotFound
+	}
 	if s.DB == nil {
 		return false, errors.New("scheduler database unavailable")
 	}

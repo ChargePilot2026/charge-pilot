@@ -1,6 +1,12 @@
-# Go 后台业务页面接口（2026-09-29）
+# Go 后台业务页面接口（2026-10-01）
 
-本清单描述当前 React 后台使用且已注册的 Go 接口，不等同于旧 admin.md 的 112 个目标端点全部交付。统一由 central :8080 提供，前缀 `/api/v1/admin`。认证见 [认证契约](go-admin-auth.md)，路由索引见 `/api/docs/admin.openapi.json`。
+本清单描述当前 React 后台使用且已注册的 Go 接口，不等同于 admin.md 的目标端点全部交付。统一由 central :8080 提供，前缀 `/api/v1/admin`。认证见 [认证契约](go-admin-auth.md)，路由索引见 `/api/docs/admin.openapi.json`。
+
+2026-10-01 已移除后台客服坐席配置及用户端在线客服页面、入口与接口。“反馈报修”位于“设备运维”；客服角色、反馈处理和钱包风控审核保留，按各自权限授权。
+
+2026-10-01 已移除告警配置（规则与订阅）和 OTA 整个功能；设备主动上报的烟雾、温度与故障告警及告警记录、确认、恢复保留。反馈报修归入设备运维。现有部署的历史表与数据不在本轮清理范围。
+
+顶部导航位于 `ChargePilot · 当前菜单标题` 之后，子菜单按业务分组展开；账号操作保留在右侧。“设备运维 → 反馈报修”提供反馈和设备报修两个页签。
 
 ## 通用规则
 
@@ -22,8 +28,8 @@
 | 导入 | GET/POST `/device-imports`；POST `/device-imports/{import_id}/retry` | CSV 预览后提交 JSON，每批 1–100；gateway 幂等建档，再落 admin 元数据；失败保留批次供显式重试 |
 | 订单 | GET `/orders`、`/orders/{id}`、`/orders/{id}/timeline` | 分页及订单号、设备、站点、状态、时间筛选；从已有订单、计费和事件记录读取，不生成虚构计费 |
 | 充电用户 | GET `/charge-users`、`/charge-users/{id}` | 后台第一个以"人"而非以"单"为入口的视图：列表给昵称、完整手机号、状态、订单数、累计消费、钱包余额与最后登录，档案再给最近 20 笔订单及券/报障计数。只读，不含建号与解冻。手机号按完整号码精确搜索，输入后四位查不出来（库中只有密文与不可逆哈希） |
-| 管理员 | GET/POST `/users`；GET `/roles` | 新建账号，密码 12–72 字节 bcrypt；只可分配不超出操作者权限的有效角色；未实现账号编辑/删除/MFA |
-| 告警 | GET `/alerts`；POST `/alerts/{id}/ack` | 列表与确认，尚无新规则、自动恢复和通知执行器 |
+| 管理员 | GET/POST `/users`；GET `/roles`；PUT/DELETE `/admin-users/{id}` | 新建账号，密码 12–72 字节 bcrypt；只可分配不超出操作者权限的有效角色；支持资料、角色和状态管理，角色未改变的资料保存不撤销会话 |
+| 告警 | GET `/alerts`；POST `/alerts/{id}/ack` | 设备主动上报告警列表与确认；烟雾、温度和设备故障由 worker 同步，正常心跳可自动恢复 |
 | 优惠券 | GET/POST `/coupons`；PUT `/coupons/{id}`；GET `/coupons/{id}/stats`；POST `/coupons/{id}/grants` | 模板编辑、计数、按用户发放；限总量/个人额度与有效期，UUID 幂等；时长券使用 free_minutes；支付核销未接入 |
 | 财务结算 | GET `/billing/settlements` | 读取既有 settled_record，不代表完成结算执行 |
 | 发票 | GET `/billing/invoices`；POST `/billing/invoices/{id}/approve`、`reject` | 两名不同有效财务账号，以同一 HTTPS invoice_url 复核；拒绝需 reason；不会生成发票 PDF 或连接税控 |
@@ -31,9 +37,7 @@
 | 退款队列 | GET `/billing/refunds`；POST `/billing/refunds/{refund_no}/approve`、`reject`、`retry` | 双财务签名后转自动执行；拒绝释放待退款额度；重试只唤醒原自动任务，不重置终态；按实时权限返回可用动作 |
 | 钱包风控 | GET `/billing/wallet-risks`；POST `/billing/wallet-risks/{request_id}/review`、`release` | review 使用 approved/comment，release 使用 comment；审核与独立解冻分开，解冻不解除其他冻结 |
 | Webhook | GET/POST `/webhooks` | name/url/event_types；仅建订阅配置，创建时显示一次 secret，列表仅前缀；投递、重试与 SSRF 执行边界待实现 |
-| OTA | GET `/ota/packages`、`/ota/schedules` | 当前页面只读包和计划；没有固件上传或设备推送执行 |
 | 公告 | GET/POST `/announcements` | 创建即 published，校验标题/内容/起止时间与 global/station/city 范围；非 global 必须 target_ids |
-| 客服坐席 | GET/POST `/customer-service`；PUT/DELETE `/customer-service/{id}` | 配置 agent_wechat/agent_name/HTTPS path/priority/工作时间；DELETE 实为禁用，保留数据；微信真实接待未联调 |
 | 反馈 | GET `/feedback`；POST `/feedback/{id}/reply` | action=reply 携带 reply_content；action=close 关闭；有状态检查与审计，尚无用户推送 |
 | 报修 | GET `/device-fault-reports`、`/{id}/history`；POST `/{id}/dispatch`、`/{id}/resolve` | 派单/改派需有效 fault.resolve 账号；仅当前指派人可修复/关闭，修复备注必填，历史持久化 |
 | 设置 | GET/PUT `/whitelabel`；GET `/settings/charge-rules` | 白标配置保存；规则页支持版本发布与停用；正式结束订单计费及模拟差额退款已接线，见 go-charge-lifecycle.md |
@@ -79,7 +83,7 @@
 
 退款 worker 使用同一 refund_no 查询渠道，必要时创建，再查询恢复；成功回执和已退累计同事务写入，重复成功不重复入账。人工退款必须完成两名财务签名，第一签被撤销权限时不得由第二签放行。钱包风险批准时按原充值单分配额度并预留余额，渠道成功才扣减余额和记录流水；渠道明确 CLOSED/ABNORMAL 时释放该笔预留，网络或未知结果继续保留。
 
-开发环境使用模拟支付。真实商户/硬件联调、结算冲减、发票生成/发送、Webhook 投递、OTA 执行、数据范围与字段脱敏、完整导出仍不在本次页面修复完成范围。旧 admin.invoice_review 未迁移到 user.invoice_admin_review，正式数据切换前须处理旧审核记录。
+开发环境使用模拟支付。真实商户/硬件联调、结算冲减、发票生成/发送、Webhook 投递、数据范围与字段脱敏、完整导出仍不在本次页面修复完成范围。旧 admin.invoice_review 未迁移到 user.invoice_admin_review，正式数据切换前须处理旧审核记录。
 
 ## 验证
 
@@ -121,12 +125,6 @@
 
 以下接口均由 central 在 `:8080` 提供，前缀 `/api/v1/admin`，认证与错误约定见上文。
 
-### 告警规则与订阅
-
-- `GET /alert-rules`、`POST /alert-rules`、`PUT /alert-rules/{id}`、`DELETE /alert-rules/{id}`：`alert.rule.read/create/update/delete`。指标限定 `voltage_v`、`current_a`、`temperature_c`、`battery_soc`、`power_w`、`meter_kwh`。`threshold` 为数字，或 `op=between` 时的 `[low, high]`；写入前会校验引擎能解析，避免存下永不触发的规则。`device_id_pattern` 支持 `*` 通配，`*` 或留空表示全部设备。
-- `POST /alert-rules/{id}/resolve`：`alert.ack`，关闭该规则下全部未处理告警。
-- `GET/POST /alert-subscriptions`、`DELETE /alert-subscriptions/{id}`：`alert.subscription.create`。规则与严重级别至少填一项，Webhook 与接收账号至少填一项，引用的规则、Webhook 与账号都必须有效。
-
 ### 分账、提现与对账
 
 - `GET /billing/settlements`：`finance.read`。返回实际写入的分账记录及各方金额，`mode_b` 下 `split_pool_excluded_electric_cents` 为不参与分账的电费。
@@ -141,16 +139,17 @@
 - `POST /webhooks/{id}/deliveries/{event_id}/retry`：`webhook.create`，把原事件重新入队并走同一签名与校验路径。
 - 创建订阅时即执行 SSRF 校验：仅接受公网 HTTPS 目标，回环、私网、链路本地、云元数据与集群内域名一律拒绝；投递前再次校验以覆盖 DNS 重绑定。
 
-### OTA
-
-- `GET/POST /ota/packages`、`DELETE /ota/packages/{id}`：`ota.read` / `ota.package.create` / `ota.package.delete`。需 code、version、HTTPS `storage_url`、`size_bytes` 与 64 位十六进制 `checksum_sha256`；进行中的计划存在时不允许归档。
-- `GET/POST /ota/schedules`、`POST /ota/schedules/{id}/trigger`、`POST /ota/schedules/{id}/cancel`：`ota.read` / `ota.schedule.create` / `ota.schedule.trigger`。固件包须为 published；`canary` 需 `batch_size`；重复触发同一计划不会重复下发。
-
 ### 管理员与双因素
 
-- `GET /admin-users`、`PUT /admin-users/{id}`、`DELETE /admin-users/{id}`、`POST /admin-users/{id}/unlock`、`POST /admin-users/{id}/reset-password`：`admin_user.read/update/delete/reset_password`。改角色、改密、重置与删除都会递增 `auth_version`，既有会话立即失效；系统始终保留至少一个有效客户管理员，且不能删除或降级当前登录账号。
+- `GET /admin-users`、`PUT /admin-users/{id}`、`DELETE /admin-users/{id}`、`POST /admin-users/{id}/unlock`、`POST /admin-users/{id}/reset-password`：`admin_user.read/update/delete/reset_password`。普通资料更新或提交相同 `role_id` 不撤销会话；实际改角色、改密、重置与删除会递增 `auth_version`，既有会话立即失效。账号更新响应的 `sessions_revoked` 表明是否已撤销旧会话，实际换角色时为 `true`。系统始终保留至少一个有效客户管理员；禁止停用、删除或实际修改当前登录账号的角色，相同角色的保存仍允许。
 - `POST /admin-users/{id}/mfa`：`admin_user.update`。`action=enrol` 生成密钥并返回 `otpauth_uri`（label 为目标账号）与当前验证码，此时密钥尚未生效；`action=confirm` 校验验证码后才启用；`action=disable` 关闭。禁止对本人账号操作。
 - `POST /auth/mfa`：口令校验通过但账号启用双因素时，`/auth/login` 只返回 `mfa_required` 与 5 分钟有效的 `mfa_challenge`，不下发令牌；`/auth/mfa` 凭正确验证码才签发会话，错误验证码计入失败锁定。
+
+### 首页统计与趋势（2026-10-01）
+
+`GET /dashboard` 需要 `dashboard.read`。首页显示 9 张统计卡片，按三行排列：充电中订单、本日订单、充电金额；总用户数、新用户数、本日充电用户数；站点数、设备数、待处理告警数。近 7 天的每日已结束订单数及结算金额使用柱状图展示；刷新按钮之后仅显示更新时间。
+
+字段和日期口径见 [仪表盘契约](go-admin-auth.md#仪表盘统计字段2026-10-01)。所有统计只读，查询失败返回错误，不将缺失指标显示为 0。显示为“充电金额”的 `today_settled_cents` 是本日已结束订单的实结金额，尚未扣减后续退款。
 
 ### 导出
 
@@ -196,11 +195,10 @@
 - `GET /user/wallet/recharges`、`POST /user/wallet/recharge`：充值记录与发起充值。金额限 1–50000 元；`request_id` 为 UUID 主键，重复提交返回同一 `payment_order_id` 并标记 `replayed`，同一请求号改金额则 409。渠道商户单号统一使用 `PAYW` 前缀，与微信及本地模拟器一致。
 - `GET /user/wallet/refunds`、`POST /user/wallet/refund`：钱包退款申请。提交即**冻结**等额余额（同一笔钱不能同时用于消费），实际出款须经风控审核；返回 `review_status`。审核意见来自 `wallet_risk_review`，无审核时为 `null`。
 
-### 优惠券、公告与客服
+### 优惠券与公告
 
 - `GET /user/coupon/my?only_usable=`：本人优惠券，含 `usable`（未使用且未过期）。`usable` 为 false 的券仍会返回，便于页面展示"已过期"态。
 - `GET /user/announcement/list`：已发布且在有效期内的公告，仅返回全局公告。站点/城市范围公告需要定位信息，留待小程序适配时补充。
-- `GET /user/customer-service/entry`：优先级最高的启用坐席；未配置时返回 `available:false` 与提示文案，而非 404。
 
 ### 站点
 

@@ -12,7 +12,7 @@
 | `cert-renew-failed.md` | Caddy 证书续期失败 | 客户运维 | § 9.1 |
 | `backup-restore.md` | MySQL 备份失败 / 数据丢失恢复 | 客户运维 / 我们远程 | § 14.4 |
 | `gateway-crash.md` | gateway 进程崩溃 / 设备全离线 | 客户运维 | § 3.1 |
-| `ota-mass-failure.md` | OTA 全量推送后大量设备回滚 | 客户运维 / 我们远程 | § 6.6 |
+| `ota-mass-failure.md` | 历史预案（2026-10-01 OTA 已移除） | 客户运维 / 我们远程 | § 6.6 |
 | `webhook-delivery-failure.md` | Webhook 没收到告警 / 投递记录大量失败 | 客户运维 | § 7 |
 
 ---

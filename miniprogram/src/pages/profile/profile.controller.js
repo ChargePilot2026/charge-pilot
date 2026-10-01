@@ -50,7 +50,4 @@ export default defineController({
   goAnnouncements() { wx.navigateTo({ url: '/pages/announcement/list' }); },
   goCoupons() { wx.navigateTo({ url: '/pages/coupons/my' }); },
   goInvoices() { wx.navigateTo({ url: '/pages/invoice/my' }); },
-  goCustomerService() {
-    wx.navigateTo({ url: '/pages/cs/chat' });
-  },
 });

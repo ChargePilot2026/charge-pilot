@@ -105,8 +105,8 @@ checklists/ ← 需求分析 § 13 + 技术规格 § 10 引用
 ## 立即可用的关键事实
 
 - **3 个运行服务**:`gateway`(设备) / `central`(小程序、PC 后台、计费) / `worker`(后台任务)；central 内保留 `user/admin/billing` 逻辑模块
-- **5 个 schema**:`gateway_db` 8 张 / `user_db` 18 张 / `admin_db` 25 张 / `billing_db` 5 张 / `worker_db` 5 张 = **61 张**
-- **11 个 Stream**:`device_event_stream` / `alert_stream` / `charge_started_stream` / `charge_ended_stream` / `refund_required_stream` / `invoice_required_stream` / `webhook_retry_stream` / `ota_schedule_stream` / `comp_tx_stream` / `coupon_grant_required_stream` / `pricing_rule_changed_stream`
-- **角色载体**:终端用户→仅小程序;运营 / 财务 / 巡检 / 管理员→同一 PC 后台;**客服坐席→微信原生客服会话**
+- **5 个 schema**:新库初始化迁移中 `gateway_db` 15 张 / `user_db` 56 张 / `admin_db` 37 张 / `billing_db` 8 张 / `worker_db` 6 张 = **122 张**；字段与后续变更以 `migrations/` 为准
+- **10 个 Stream**:`device_event_stream` / `alert_stream` / `charge_started_stream` / `charge_ended_stream` / `refund_required_stream` / `invoice_required_stream` / `webhook_retry_stream` / `comp_tx_stream` / `coupon_grant_required_stream` / `pricing_rule_changed_stream`
+- **角色载体**:终端用户→仅小程序;运营 / 财务 / 巡检 / 客服 / 管理员→同一 PC 后台。2026-10-01 已移除客服坐席配置、用户在线客服、告警配置及 OTA；反馈报修位于“设备运维”，客服角色的反馈处理和钱包风控审核职责保留
 - **客户模式**:单客户单部署 = 一套系统 = 一个付费客户,**不内置合伙人 / 区域代理**
 - **首版国标底线**:GB 47371—2026 七重防护;**支付底线**:价费分离;**安全底线**:等保三级

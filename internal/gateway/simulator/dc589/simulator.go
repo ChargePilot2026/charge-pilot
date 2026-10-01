@@ -262,7 +262,6 @@ func (c *charge) complete() bool {
 type board struct {
 	online           bool
 	cards            map[uint32]CardStatus
-	module           UpgradeModule
 	ports            map[byte]*PhysicalPort
 	rawConfig        []byte
 	removePower      uint16

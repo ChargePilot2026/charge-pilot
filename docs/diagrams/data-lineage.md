@@ -115,9 +115,7 @@
 | `gateway_db.device.id` | `user_db.charge_order.device_id` | 多笔订单 | 启动充电时 |
 | `gateway_db.device.id` | `gateway_db.telemetry.device_id` | 1:N (hash 16 表) | 实时上报 |
 | `gateway_db.device.id` | `gateway_db.device_session.device_id` | 1:N (按月分区) | 长连接生命周期 |
-| `admin_db.alert_rule.id` | `admin_db.alert_event.rule_id` | 1:N | 规则触发时 |
 | `admin_db.webhook_subscription.id` | `admin_db.webhook_delivery_log.subscription_id` | 1:N (按月分区) | Webhook 推送时 |
-| `admin_db.ota_package.id` | `admin_db.ota_schedule.package_id` | 1:N | OTA 推送调度时 |
 | `admin_db.split_template.id` | `admin_db.split_party.template_id` | 1:N (N ≤ 8) | 配置时 |
 | `worker_db.scheduled_task.task_code` | `worker_db.task_execution_log.task_code` | 1:N | 每次执行 |
 
@@ -137,7 +135,6 @@
 | `refund_required_stream` | user → `admin-cg` | admin 经 user 内部接口领取 `refund_record` → 调微信退款 → 经 user 回写结果 |
 | `invoice_required_stream` | user → `admin-cg` | admin_db.invoice_review(status=pending) |
 | `webhook_retry_stream` | `worker-cg` | 当前投递未配置；重试失败后进入 Redis DLQ |
-| `ota_schedule_stream` | `worker-cg`、`gateway-cg` | 当前 OTA 下发未配置；重试失败后分别进入 Redis DLQ |
 | `comp_tx_stream` | 当前 user 的 `refund_completed` → worker `worker-cg` | `worker_db.comp_tx_log` 仅审计退款结果；其他补偿消费者与 billing 状态同步未实现 |
 | `coupon_grant_required_stream` | `user-cg` | user 校验模板状态、发放时间、总/个人额度后按 event_id 写 `user_db.coupon_grant`;运营人工发券由 admin 走 user 内部 API |
 | `pricing_rule_changed_stream` | `billing-cg`、`user-cg` | billing 校验并记录事件；后续报价读取最新规则，user 记录缓存失效通知 |

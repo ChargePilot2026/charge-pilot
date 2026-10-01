@@ -11,7 +11,7 @@ function loadPage(relativePath, app, wx = {}) {
     require: require('node:module').createRequire(controllerPath(relativePath)),
     getApp: () => app,
     Page: value => { page = value; },
-    wx: { showToast() {}, showModal({ success }) { success?.({ confirm: true }); }, navigateBack() {}, setClipboardData({ success }) { success?.(); }, openCustomerServiceChat() {}, ...wx },
+    wx: { showToast() {}, showModal({ success }) { success?.({ confirm: true }); }, navigateBack() {}, setClipboardData({ success }) { success?.(); }, ...wx },
     Date, Promise, setImmediate,
   });
   page.setData = (value, callback) => { Object.assign(page.data, value); callback?.(); };
@@ -87,16 +87,6 @@ test('invoice application blocks an order with zero settled fees', async () => {
   await page.loadOrderDetail({ order_id: 20 });
   assert.equal(page.data.selected, null);
   assert.match(page.data.error, /费用为零/);
-});
-
-test('customer service opens only with a configured WeChat entry', async () => {
-  let opened;
-  const app = { globalData: { token: 'token' }, request: async () => ({ available: true, corp_id: 'ww123', entry_url: 'https://work.weixin.qq.com/kf/1', agent_wechat: 'cs1' }) };
-  const page = loadPage('pages/cs/chat.js', app, { openCustomerServiceChat: options => { opened = options; options.complete(); } });
-  await page.load();
-  page.openChat();
-  assert.equal(opened.corpId, 'ww123');
-  assert.equal(opened.extInfo.url, 'https://work.weixin.qq.com/kf/1');
 });
 
 test('fault report sends the selected device and a constrained category', async () => {

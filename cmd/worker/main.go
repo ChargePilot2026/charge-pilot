@@ -113,13 +113,8 @@ func run(ctx context.Context) error {
 	internaljob.OpsAPI{WorkerDB: orms["worker"], ServiceToken: cfg.ServiceToken, DLQ: dlq}.Register(router)
 	// 退款结果是从 channel 异步送来的；消费端保证只投递一次，并把每次尝试记进 comp_tx_log。
 	refundResults := outbox.ResultConsumer{UserDB: orms["user"], WorkerDB: orms["worker"], Stream: stream, Group: "refund-result"}
-	alertEngine := alerts.Evaluator{GatewayDB: orms["gateway"], AdminDB: orms["admin"]}
 	deviceAlerts := alerts.DeviceSynchronizer{GatewayDB: orms["gateway"], AdminDB: orms["admin"]}
 	scheduler := schedule.Scheduler{DB: orms["worker"], Handlers: map[string]schedule.Handler{
-		"alert_evaluate": func(ctx context.Context) (uint64, error) {
-			count, err := alertEngine.Evaluate(ctx)
-			return uint64(count), err
-		},
 		"webhook_dispatch": func(ctx context.Context) (uint64, error) {
 			count, err := webhooks.PublishBatch(ctx)
 			return uint64(count), err

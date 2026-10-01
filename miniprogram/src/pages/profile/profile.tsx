@@ -43,8 +43,6 @@ return (<><View className="container"><DevelopmentAccount />{!!(needsLogin) && (
 <View style={inlineStyle({"display": "flex", "justifyContent": "space-between", "padding": "16rpx 0"})} onClick={event("goPhoneBind", {})}><Text>{"📱 绑定手机号"}</Text>
 <Text className="text-secondary">{"›"}</Text></View>
 <View style={inlineStyle({"display": "flex", "justifyContent": "space-between", "padding": "16rpx 0"})} onClick={event("goAnnouncements", {})}><Text>{"📢 公告"}</Text>
-<Text className="text-secondary">{"›"}</Text></View>
-<View style={inlineStyle({"display": "flex", "justifyContent": "space-between", "padding": "16rpx 0"})} onClick={event("goCustomerService", {})}><Text>{"💬 在线客服"}</Text>
 <Text className="text-secondary">{"›"}</Text></View></View>
 {!!(!needsLogin) && (<View className="card" onClick={event("onLogout", {})} style={inlineStyle({"textAlign": "center", "color": "#999"})}>{"退出登录"}</View>)}</View></>);
 }

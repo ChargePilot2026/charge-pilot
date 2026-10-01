@@ -119,9 +119,6 @@ func TestAdminPagesIntegration(t *testing.T) {
 				"DELETE FROM pricing_rule WHERE name = 'legacy unbound' OR template_id IN (SELECT id FROM pricing_template WHERE " + pagesTemplates + ") OR station_id IN (SELECT id FROM station WHERE " + pagesStations + ")",
 				"DELETE FROM pricing_template WHERE " + pagesTemplates,
 				"DELETE FROM announcement WHERE title = '测试公告' OR title LIKE '%pages%'",
-				// 坐席的 DELETE 路由是"停用"不是物理删除（坐席记录要留痕），所以
-				// 每跑一次就多一条停用坐席，后台列表会一版版变长。测试得自己摘。
-				"DELETE FROM customer_service_config WHERE agent_wechat = 'pages_seat'",
 				"DELETE FROM webhook_subscription WHERE name = '测试订阅' OR name LIKE '%pages%' OR url LIKE '%pages%'",
 				// 匹配的是板子本身，而不是它随哪一批导入进来的：一批失败的导入照样
 				// 会记下它当时见到的那个板子身份，而挡下下一次针对同一块板子的那次
@@ -144,7 +141,7 @@ func TestAdminPagesIntegration(t *testing.T) {
 				"DELETE FROM charge_order WHERE order_no LIKE 'PAGES_%' OR " + pagesDevices,
 				"DELETE FROM payment_order WHERE " + pagesPayment,
 				"DELETE FROM invoice_request WHERE invoice_no = 'PAGES_INVOICE'",
-				"DELETE FROM feedback WHERE content LIKE '%pages_seat%' OR user_id IN (SELECT id FROM user WHERE " + pagesUsers + ")",
+				"DELETE FROM feedback WHERE user_id IN (SELECT id FROM user WHERE " + pagesUsers + ")",
 				"DELETE FROM device_fault_report WHERE " + pagesDevices,
 				"DELETE FROM wallet_risk_freeze_link WHERE request_id IN ('55555555-5555-4555-8555-555555555555','88888888-8888-4888-8888-888888888888','44444444-4444-4444-8444-444444444444')",
 				// 审核表和解冻表记的都是谁签的字。正因为记了人，它们就成了每一轮各
@@ -296,7 +293,7 @@ func TestAdminPagesIntegration(t *testing.T) {
 		t.Fatalf("expired export file remains: %v", err)
 	}
 	call(adminToken, "GET", fmt.Sprintf("exports/%d/download", pdfTaskID), nil, 410)
-	for _, path := range []string{"stations", "devices", "orders", "users", "roles", "alerts", "announcements", "customer-service", "webhooks", "ota/packages", "ota/schedules", "settings/charging-schemes", "whitelabel", "coupons", "feedback", "device-fault-reports", "billing/meter-reviews", "billing/settlements", "billing/invoices", "billing/refunds", "billing/wallet-risks", "device-imports"} {
+	for _, path := range []string{"stations", "devices", "orders", "users", "roles", "alerts", "announcements", "webhooks", "settings/charging-schemes", "whitelabel", "coupons", "feedback", "device-fault-reports", "billing/meter-reviews", "billing/settlements", "billing/invoices", "billing/refunds", "billing/wallet-risks", "device-imports"} {
 		call(adminToken, "GET", path, nil, 200)
 		call("", "GET", path, nil, 401)
 	}
@@ -368,12 +365,6 @@ func TestAdminPagesIntegration(t *testing.T) {
 		t.Fatal(effective)
 	}
 	call(adminToken, "PUT", fmt.Sprintf("settings/charging-schemes/%v", schemeTemplate["id"]), gin.H{"scheme": scheme, "expected_version": 1}, 409)
-	seat := gin.H{"agent_wechat": "pages_seat", "agent_name": "测试客服", "path": "https://example.com/support", "priority": 5, "enabled": true}
-	seatID := data(call(adminToken, "POST", "customer-service", seat, 200))["id"]
-	seat["priority"] = 8
-	call(adminToken, "PUT", fmt.Sprintf("customer-service/%.0f", seatID), seat, 200)
-	call(adminToken, "DELETE", fmt.Sprintf("customer-service/%.0f", seatID), nil, 200)
-	call(adminToken, "GET", "customer-service", nil, 200)
 	call(adminToken, "POST", "announcements", gin.H{"title": "测试公告", "content": "本地验收", "scope": "global", "start_at": time.Now().UTC()}, 200)
 	hook := data(call(adminToken, "POST", "webhooks", gin.H{"name": "测试订阅", "url": "https://example.com/hook", "event_types": []string{"alert"}}, 200))
 	if len(hook["secret"].(string)) != 64 {
@@ -437,7 +428,7 @@ func TestAdminPagesIntegration(t *testing.T) {
 	call(adminToken, "GET", "devices?keyword=PAGESDEV01", nil, 200)
 	call(adminToken, "GET", "settings/device-capabilities?station_id="+fmt.Sprintf("%v", sid)+"&device_id=PAGESDEV01", nil, 200)
 	call(adminToken, "GET", fmt.Sprintf("stations/%v/charging-scheme?device_id=PAGESDEV01", sid), nil, 200)
-	for _, retired := range []string{"settings/pricing-templates", "settings/package-templates", "settings/charge-rules", "settings/device-pricing", "settings/station-policies", "settings/switch-tasks"} {
+	for _, retired := range []string{"settings/pricing-templates", "settings/package-templates", "settings/charge-rules", "settings/device-pricing", "settings/station-policies", "settings/switch-tasks", "ota/packages", "ota/schedules", "alert-rules", "alert-subscriptions"} {
 		call(adminToken, "GET", retired, nil, 404)
 	}
 	// 每一个读接口都要走一遍，而不是只走那些自以为会受影响的那些接口。

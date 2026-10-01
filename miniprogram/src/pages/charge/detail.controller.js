@@ -69,10 +69,9 @@ export default defineController({
       const result=await detailApp.request('POST',`/user/charge/${encodeURIComponent(order.order_no)}/feedback`,{rating:this.data.feedbackRatingIndex+1,category:this.data.feedbackCategoryValues[this.data.feedbackCategoryIndex],content:content||null});
       if(this._gone||generation!==detailApp._generation)return;
       if(!result||result.submitted!==true)throw new Error('反馈结果未确认，请刷新订单详情');
-      this.setData({order:{...order,feedback_submitted:true},feedbackContent:'',feedbackNotice:'感谢反馈，客服会按流程处理。'});
+      this.setData({order:{...order,feedback_submitted:true},feedbackContent:'',feedbackNotice:'感谢反馈，运营方会按流程处理。'});
     }catch(error){if(!this._gone&&generation===detailApp._generation)this.setData({feedbackError:error.message||'反馈提交失败，请重试'});}
     finally{if(!this._gone)this.setData({feedbackBusy:false});}
   },
   reportFault(){const order=this.data.order;if(order?.device_id)wx.navigateTo({url:'/pages/dev/fault?device_id='+encodeURIComponent(order.device_id)});},
-  customerService(){wx.navigateTo({url:'/pages/cs/chat?scene=complaint'});},
 });

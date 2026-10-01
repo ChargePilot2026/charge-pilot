@@ -327,28 +327,25 @@ func TestFullStopRemoveAndLongChargeBehavior(t *testing.T) {
 		})
 	}
 }
-func TestUpgradeModuleAllCommandsAndInvalidState(t *testing.T) {
-	var m UpgradeModule
-	if _, err := m.Exchange(wire.Frame{Command: 0xf4, Data: []byte{0, 0}}); err == nil {
-		t.Fatal("upgrade completed without connection")
-	}
-	if err := m.Simulate(); err != nil {
+func TestRebootStopsChargingWithoutChangingFirmware(t *testing.T) {
+	b, conn := capturedBoard(t, 2)
+	if err := b.start(context.Background(), wire.StartCommand{Port: 1, Mode: wire.ByTime, Quantity: 60, ConsumerType: 2}); err != nil {
 		t.Fatal(err)
 	}
-	if m.Stage != "completed" || len(m.Frames) != 6 {
-		t.Fatal(m)
+	conn.frames(t)
+	identity := b.config.Identity
+	if err := b.applyInput(Input{Type: "restart"}); err != nil {
+		t.Fatal(err)
 	}
-	for i, v := range m.Frames {
-		if v.Command != 0xf0+byte(i) {
-			t.Fatal(m.Frames)
-		}
+	if b.config.Identity != identity || len(b.charging) != 0 {
+		t.Fatal("reboot changed firmware identity or retained a charging session")
 	}
-	for _, cmd := range []byte{0xf1, 0xf3, 0xf5} {
-		if _, err := m.Exchange(wire.Frame{Command: cmd, Data: []byte{0}}); err != nil {
-			t.Fatal(err)
-		}
+	frames := conn.frames(t)
+	if len(frames) != 1 || frames[0].Command != wire.ChargeEnd {
+		t.Fatalf("reboot must report the interrupted charge: %+v", frames)
 	}
 }
+
 func TestTUIActionsValidateRangesAndStayOnSelectedPort(t *testing.T) {
 	m := terminalModel{port: 2, current: terminalActions[0], fields: []field{{"card", "42"}}}
 	in, err := m.event()

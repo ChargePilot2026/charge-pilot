@@ -42,6 +42,10 @@ func (a API) task(c *gin.Context) (Task, bool) {
 		httpapi.BadRequest(c, "task_code 无效")
 		return Task{}, false
 	}
+	if a.Scheduler.Handlers[code] == nil {
+		httpapi.Write(c, http.StatusNotFound, 1004, "定时任务不存在", nil)
+		return Task{}, false
+	}
 	var task Task
 	err := a.Scheduler.DB.WithContext(c.Request.Context()).Table("scheduled_task").Where("task_code = ?", code).Take(&task).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {

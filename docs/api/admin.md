@@ -4,12 +4,16 @@
 
 > 2026-09-29 已接入的 Go 后台认证及仪表盘契约见 [Go 后台认证](go-admin-auth.md)。现有 PC 页面的 Go 接口见 [Go 后台业务页面](go-admin-pages.md)；下文未在该清单登记的接口仍是目标设计。
 
+> 2026-10-01 已移除客服坐席配置和用户在线客服接口；反馈报修位于后台“设备运维”，反馈处理及客服角色的其他授权职责保留。
+
+> 2026-10-01 已移除告警配置（规则与订阅）和 OTA 整个功能；设备主动上报的烟雾、温度与故障告警及告警记录、确认、恢复保留。反馈报修归入设备运维。现有部署的历史表与数据不在本轮清理范围。
+
 **服务**:`admin`(`services/admin`)
 **对外地址**:`https://<customer-domain>/api/v1/admin/...`(经 Caddy 反代到 `admin:8082`)
 **鉴权**:JWT(HS256,§ 7.3.2)+ 角色权限(`permission_codes`)
 **OpenAPI 文档**:`GET /api/docs/openapi.json` + Swagger UI `/api/docs/swagger`
 
-> **本文件覆盖范围**:admin 服务全部 HTTP 端点,共 **112 个**,按业务域分为 12 组。所有写操作均产生 `audit_log`(§ 3.3.1 admin/audit_log.rs)。**数据归属**:admin_db 是单客户专用(沿用 § 1.2 / § 13.2),跨服务数据通过 HTTP 调用获取,**禁止直连其他 schema**。
+> **本文件覆盖范围**:下方目标端点清单共 **94 个**(含待校准的旧设计),按业务域分组。所有写操作均产生 `audit_log`(§ 3.3.1 admin/audit_log.rs)。**数据归属**:admin_db 是单客户专用(沿用 § 1.2 / § 13.2),跨服务数据通过 HTTP 调用获取,**禁止直连其他 schema**。
 
 ---
 
@@ -75,7 +79,7 @@
 | 段位 | 含义 | 示例 |
 | --- | --- | --- |
 | 1xxx | 通用错误 | 1001 未授权 / 1003 禁止访问 / 1004 资源不存在 / 1005 参数校验失败 |
-| 2xxx | 业务错误 | 2006 账号已锁定 / 2007 账号未激活 / 2008 角色不可分配 / 2009 站点名重复 / 2010 设备已下架 / 2011 计费规则已被引用 / 2012 退款已审核 / 2013 发票已审核 / 2014 公告已过期 / 2015 Webhook URL 不合法 / 2016 固件版本号已存在 / 2017 告警规则已停用 / 2020 导出任务不存在 |
+| 2xxx | 业务错误 | 2006 账号已锁定 / 2007 账号未激活 / 2008 角色不可分配 / 2009 站点名重复 / 2010 设备已下架 / 2011 计费规则已被引用 / 2012 退款已审核 / 2013 发票已审核 / 2014 公告已过期 / 2015 Webhook URL 不合法 / 2020 导出任务不存在 |
 | 3xxx | 第三方错误 | 3001 微信退款失败 / 3003 OSS 上传失败 |
 | 4xxx | 限流 | 4291 超过限流 |
 | 5xxx | 服务器错误 | 5001 内部错误 / 5003 服务暂时不可用 |
@@ -102,7 +106,7 @@
 
 ---
 
-## 端点清单(共 112 个)
+## 端点清单(共 94 个)
 
 ### A. 认证与账号(13 个)— `admin_user_role` + `role` + `permission`
 
@@ -165,7 +169,7 @@ admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故�
 | GET | `/api/v1/admin/orders/{order_id}` | 角色 | 订单详情(含价费分离 + 分账明细) |
 | GET | `/api/v1/admin/orders/{order_id}/timeline` | 角色 | 订单状态机时间线(状态变更 + 事件流水) |
 
-### E. 告警与风控(15 个)— `alert_rule` + `alert_subscription` + `alert_event` + `risk_config`
+### E. 告警与风控(6 个)— `alert_event` + `risk_config`
 
 | 方法 | 路径 | 鉴权 | 说明 |
 | --- | --- | --- | --- |
@@ -173,15 +177,6 @@ admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故�
 | GET | `/api/v1/admin/alerts/{alert_id}` | 角色 | 告警详情(含触发时的遥测快照) |
 | POST | `/api/v1/admin/alerts/{alert_id}/ack` | 角色 | 客户运营确认告警(填备注) |
 | POST | `/api/v1/admin/alerts/{alert_id}/resolve` | 角色 | 客户运营关闭告警(填处理结果) |
-| GET | `/api/v1/admin/alert-rules` | 角色 | 告警规则列表(客户自配) |
-| POST | `/api/v1/admin/alert-rules` | 角色 | 创建告警规则(阈值 + 触发条件) |
-| GET | `/api/v1/admin/alert-rules/{rule_id}` | 角色 | 规则详情 |
-| PUT | `/api/v1/admin/alert-rules/{rule_id}` | 角色 | 更新规则(调阈值 / 启停) |
-| DELETE | `/api/v1/admin/alert-rules/{rule_id}` | 角色 | 软删规则(若已被引用禁止删) |
-| GET | `/api/v1/admin/alert-subscriptions` | 角色 | 告警订阅列表(Webhook / 邮件接收方) |
-| POST | `/api/v1/admin/alert-subscriptions` | 角色 | 创建告警订阅(选事件类型 + 接收通道) |
-| PUT | `/api/v1/admin/alert-subscriptions/{sub_id}` | 角色 | 更新订阅 |
-| DELETE | `/api/v1/admin/alert-subscriptions/{sub_id}` | 角色 | 软删订阅 |
 | GET | `/api/v1/admin/risk-config` | 角色 | 风控配置查询(单例) |
 | PUT | `/api/v1/admin/risk-config` | 角色 | 更新风控配置(频次 / 金额阈值) |
 
@@ -232,7 +227,7 @@ admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故�
 
 资源是纯只读的：没有建号、改状态、解冻入口。冻结是风控动作，不在这里开第二个入口——两个入口能各自改同一列，迟早出现"一边解冻一边还在拦截"。
 
-### H. 公告 / 白标 / 客服配置(13 个)— `announcement` + `whitelabel_config` + `customer_service_config`
+### H. 公告 / 白标(7 个)— `announcement` + `whitelabel_config`
 
 | 方法 | 路径 | 鉴权 | 说明 |
 | --- | --- | --- | --- |
@@ -243,12 +238,6 @@ admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故�
 | DELETE | `/api/v1/admin/announcements/{ann_id}` | 角色 | 软删(撤回) |
 | GET | `/api/v1/admin/whitelabel` | `whitelabel.read` | 白标配置查询(单例 ID=1) |
 | PUT | `/api/v1/admin/whitelabel` | `whitelabel.update` | 更新小程序/后台品牌、服务信息、协议链接与自定义域名 |
-| GET | `/api/v1/admin/customer-service` | 角色 | 客服坐席配置列表 |
-| POST | `/api/v1/admin/customer-service` | 角色 | 新增客服坐席(微信客服链接 / 分流规则) |
-| GET | `/api/v1/admin/customer-service/{cs_id}` | 角色 | 坐席详情 |
-| PUT | `/api/v1/admin/customer-service/{cs_id}` | 角色 | 更新坐席 |
-| DELETE | `/api/v1/admin/customer-service/{cs_id}` | 角色 | 软删坐席(若被引用禁止删) |
-| POST | `/api/v1/admin/customer-service/{cs_id}/test-entry` | 角色 | 测试坐席链接(模拟小程序调用验证可达) |
 
 ### I. Webhook 订阅（当前 6 个已注册路由）
 
@@ -263,21 +252,6 @@ admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故�
 | DELETE | `/api/v1/admin/webhooks/{sub_id}` | 角色 | 软删订阅 |
 | GET | `/api/v1/admin/webhooks/{sub_id}/deliveries` | 角色 | 推送日志(分页 + 状态筛选) |
 | POST | `/api/v1/admin/webhooks/{sub_id}/test` | — | 未注册 |
-
-### J. OTA 配置（8 个已注册路由；调度创建/执行不可用）
-
-| 方法 | 路径 | 鉴权 | 说明 |
-| --- | --- | --- | --- |
-| GET | `/api/v1/admin/ota/packages` | JWT | 固件包元数据列表(最多 200 条) |
-| POST | `/api/v1/admin/ota/packages` | JWT | 创建元数据记录(不上传或校验固件文件) |
-| GET | `/api/v1/admin/ota/packages/{pkg_id}` | JWT | 固件包元数据详情 |
-| DELETE | `/api/v1/admin/ota/packages/{pkg_id}` | JWT | 软删除元数据(当前不检查调度引用) |
-| GET | `/api/v1/admin/ota/schedules` | JWT | 调度列表(最多 200 条) |
-| POST | `/api/v1/admin/ota/schedules` | JWT | 当前返回 503，不创建调度 |
-| GET | `/api/v1/admin/ota/schedules/{sched_id}` | JWT | 调度详情 |
-| POST | `/api/v1/admin/ota/schedules/{sched_id}` | JWT | 当前返回 503，不触发升级 |
-
-> 调度创建/触发、设备传输与 ACK 尚未接入；对应 handler 返回 503，不创建虚假的排队状态。固件包元数据写入目前不表示固件已上传、校验或签名。OTA 设置读写也因配置持久化未接入而返回 503。
 
 ### K. 计费与分账模板(15 个)— `pricing_rule` + `pricing_template` + `split_template` + `split_party`
 
@@ -323,13 +297,14 @@ admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故�
 | --- | --- | --- | --- | --- |
 | GET | `/api/v1/internal/alerts` | `device_id` 必填,`status=active` | `alerts=[{alert_id,device_id,severity,alert_type,created_at}]`,无告警返回空数组 | `1005` 参数错误 / `5003` 暂不可用 |
 | GET | `/api/v1/internal/stations/{station_id}` | 路径站点 ID | `{station_id,station_name,address,longitude,latitude,status}` | `1004` 站点不存在 / `5003` 暂不可用 |
-| GET | `/api/v1/internal/customer-service/entry` | `scene=general/refund/complaint` | `{agent_wechat,agent_name,entry_url,scene}` | `1000` 场景无效 / `1004` 无启用客服 |
 | GET | `/api/v1/internal/split-templates/{id}` | 模板 ID | `{id,code,name,mode,parties:[{id,party_code,party_name,ratio_bp}]}` | `1004` 模板不存在 / `5003` 暂不可用 |
 | POST | `/api/v1/internal/announcements/expire` | 空 JSON 对象 | `{expired_count}` | `5003` 暂不可用 |
 
-仅 `:8082` 内网监听,要求 `X-Service-Token`。调用方不直连 admin schema;告警读取按 `device_id` 过滤且仅返回当前有效记录。公告过期清理是 worker 专用写接口，按发布状态和结束时间幂等更新。客服入口从启用坐席中按优先级选取，客服 URL 必须为 HTTPS。小程序调用 `wx.openCustomerServiceChat` 还要求配置 `WECHAT_CUSTOMER_SERVICE_CORP_ID`；缺少任一项时 user 返回 `available=false`，可提供坐席微信号作为人工兜底。
+仅 `:8082` 内网监听,要求 `X-Service-Token`。调用方不直连 admin schema;告警读取按 `device_id` 过滤且仅返回当前有效记录。公告过期清理是 worker 专用写接口，按发布状态和结束时间幂等更新。
 
 ### 反馈与设备报修处理
+
+后台菜单位于“设备运维 → 反馈报修”。`feedback.read` 和 `feedback.reply` 归入设备权限分组；客服角色仍可按授权处理反馈和钱包风控审核，不再提供坐席配置或用户在线会话。
 
 | 方法 | 路径 | 权限 | 说明 |
 | --- | --- | --- | --- |
@@ -348,7 +323,7 @@ admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故�
 
 ## 仪表盘
 
-`GET /api/v1/admin/dashboard` 需要 `dashboard.read` 权限。admin 汇总 user 内部接口的 `charging_orders`、今日下单用户数、今日完成充电订单的结算金额及近七天每日完成订单/金额，再从 admin_db 读取当前 `active` 告警数。响应含 `updated_at`。结算金额为充电订单实结金额，尚未扣除后续退款，因此不能直接作为净营收。用户服务或数据库读取失败会返回错误，不会以 0 代替缺失数据。
+`GET /api/v1/admin/dashboard` 需要 `dashboard.read` 权限，返回充电中订单、本日订单/结算金额、总用户/新用户/本日充电用户、站点/设备及待处理告警共 9 项指标，另含近七天每日完成订单/金额与 `updated_at`。本日充电用户按 `started_at` 去重，结算金额按本日结束订单统计且未扣除后续退款，因此不能直接作为净营收。完整字段及北京时间口径见 [仪表盘契约](go-admin-auth.md#仪表盘统计字段2026-10-01)。数据库读取失败会返回错误，不会以 0 代替缺失数据。
 
 ### `POST /api/v1/admin/auth/login`
 
@@ -691,8 +666,7 @@ admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故�
       {
         "resource": "device",
         "permissions": [
-          { "permission_code": "device.read", "permission_name": "查看设备" },
-          { "permission_code": "device.ota.push", "permission_name": "推送 OTA" }
+          { "permission_code": "device.read", "permission_name": "查看设备" }
         ]
       }
     ]
@@ -744,7 +718,7 @@ admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故�
 2. 校验站点下无在线设备(`device_meta.status='online'` 在该站点下)→ 有则返回 `2010`(设备在线,先下架)
 3. 校验无进行中订单(通过 HTTP 调 user / billing 查)→ 有则返回 `2010`
 4. UPDATE `station.deleted_at=NOW(), deleted_by=$actor.id`(软删)
-5. 写 `audit_log`
+4. 写 `audit_log`
 
 **错误码**:`1004` / `2010`
 
@@ -777,11 +751,6 @@ admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故�
       "ports_fault": 0,
       "meter_total_kwh": "1234.56",
       "temperature_c": 32.5
-    },
-    "linked_ota": {                     // 若有进行中 OTA
-      "schedule_id": 8,
-      "target_version": "v1.3.0",
-      "progress_pct": 45
     }
   }
 }
@@ -789,7 +758,6 @@ admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故�
 
 **业务逻辑**:
 1. JOIN `device_meta` + `station`(查站点名)+ Redis `device:realtime:$device_id` 快照
-2. 若有进行中 OTA → JOIN `ota_schedule` + `ota_package`
 
 ---
 
@@ -969,7 +937,6 @@ admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故�
 1. 查 `alert_event WHERE id=$alert_id AND status='open'` → 不存在返回 `1004`
 2. UPDATE `status='acknowledged', acknowledged_by=$actor.id, acknowledged_at=NOW(), ack_comment=...`
 3. 写 `audit_log(action='alert.ack', actor_id=$actor.id)`
-4. **可选**:通过告警订阅通道推"已确认"通知(避免重复打扰值班人)
 
 ### `POST /api/v1/admin/alerts/{alert_id}/resolve`
 
@@ -980,7 +947,7 @@ admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故�
 {
   "resolution": "fixed",          // "fixed" 已修复 / "false_positive" 误报 / "ignored" 已知问题忽略
   "comment": "更换充电模块后恢复正常",
-  "related_device_action": "reboot"  // 可选:同时对设备执行的动作(reboot / firmware_update / none)
+  "related_device_action": "reboot"  // 可选:同时对设备执行的动作(reboot / none)
 }
 ```
 
@@ -988,41 +955,7 @@ admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故�
 1. 查 `alert_event` → 不存在返回 `1004`
 2. UPDATE `status='resolved', resolved_by=$actor.id, resolved_at=NOW(), resolution=..., resolve_comment=...`
 3. 若 `related_device_action='reboot'` → 调 gateway 服务的设备重启内部接口(路径见 `docs/api/gateway.md`)
-4. 若 `related_device_action='firmware_update'` → 校验 `alert_event.device_id` 是否在某个 OTA 调度中(本期不联动,留二期)
 5. 写 `audit_log`
-
-### `POST /api/v1/admin/alert-rules`
-
-**鉴权**:[角色] `alert_rule.create`
-
-**请求体**:
-```json
-{
-  "rule_name": "设备离线 > 30 min",
-  "rule_type": "device_offline",       // 枚举:device_offline / temperature_high / meter_abnormal / payment_failed
-  "device_filter": {                   // 设备筛选条件(可选)
-    "station_ids": [12, 13],
-    "vendor": "Xunda"
-  },
-  "trigger": {
-    "metric": "device_offline_duration_min",
-    "operator": ">",                    // > / >= / < / <= / == / !=
-    "threshold": 30,
-    "duration_min": 5                   // 持续 5 min 才触发(防抖)
-  },
-  "severity": "high",                  // "low" / "mid" / "high" / "critical"
-  "alert_subscription_ids": [1, 2],    // 关联订阅
-  "enabled": true
-}
-```
-
-**业务逻辑**:
-1. 校验 `rule_type` 在预置枚举内(防止胡乱定义)
-2. 校验 `device_filter` 中的 `station_ids` 存在
-3. 校验 `alert_subscription_ids` 全部存在且 `status='enabled'`
-4. 校验 `trigger` 字段类型与 `rule_type` 匹配(用 `rule_type → expected_metric` 映射表)
-5. INSERT `alert_rule` + 写 `audit_log`
-6. **缓存失效**:`DEL alert_rule:active`(worker 任务每 30 s 扫一次)
 
 ### `PUT /api/v1/admin/risk-config`
 
@@ -1186,7 +1119,7 @@ user 服务在单库事务中锁定模板，校验用户有效、模板处于发
 
 ---
 
-## H. 公告 / 白标 / 客服配置
+## H. 公告 / 白标
 
 ### `POST /api/v1/admin/announcements`
 
@@ -1333,81 +1266,6 @@ user 服务在单库事务中锁定模板，校验用户有效、模板处于发
 
 ---
 
-## J. OTA 配置
-
-> **当前实现边界**：固件包接口只读写 `ota_package` 元数据，不提供 OSS 预签名上传、文件校验/签名或细粒度 OTA 权限与审计；删除为软删除且当前未检查调度引用。`ota_schedule` 仅有最多 200 条列表和详情读取。创建调度、触发执行及 OTA 设置读写返回 503；调度消费者没有可用生产者，设备传输、ACK 与回滚未实现。以下详细请求示例是目标契约，不能据此认为 OTA 流程已可用。
-
-当前实际路由：`GET/POST /api/v1/admin/ota/packages`、`GET/DELETE /api/v1/admin/ota/packages/{id}`、`GET/POST /api/v1/admin/ota/schedules`、`GET/POST /api/v1/admin/ota/schedules/{id}`。调度 `POST /schedules/{id}` 返回 503；文档目标路径 `/execute`、调度更新/删除路由当前未注册。
-
-### `POST /api/v1/admin/ota/packages`
-
-**鉴权**:[角色] `ota.package.upload`
-
-**请求体**(multipart/form-data 或 JSON + OSS 预签名):
-```json
-{
-  "package_name": "Xunda-XD220V-v1.3.0",
-  "vendor": "Xunda",
-  "model": "XD-220V-10A",
-  "firmware_version": "v1.3.0",
-  "previous_version": "v1.2.3",      // 升级前的版本(可选)
-  "file_size_bytes": 2048576,
-  "file_sha256": "abc123...",          // 客户端上传后计算
-  "changelog": "1. 修复温度过高误报\n2. 优化充电曲线算法",
-  "release_type": "stable",            // "stable" / "beta" / "emergency"
-  "min_battery_for_install": 30       // 设备电量 ≥ 30% 才允许安装
-}
-```
-
-**业务逻辑**:
-1. 校验 `firmware_version` 唯一(`vendor + model + firmware_version` 复合唯一,UK)
-2. **OSS 上传**:客户端用本接口返回的预签名 URL 直传 OSS(节省 admin 带宽);admin 仅存元数据
-3. INSERT `ota_package(file_url=oss_url, file_sha256=..., ...)` + 写 `audit_log`
-4. 校验 `file_sha256` 与客户端传的一致性(可选)
-
-### `POST /api/v1/admin/ota/schedules`
-
-**鉴权**:[角色] `ota.schedule.create`
-
-**请求体**:
-```json
-{
-  "package_id": 12,
-  "target_filter": {                   // 目标设备筛选
-    "vendor": "Xunda",
-    "model": "XD-220V-10A",
-    "station_ids": [12, 13, 14],       // 空数组 = 全部匹配 vendor+model 的设备
-    "current_firmware_max": "v1.2.9"  // 仅升级 ≤ 此版本的设备
-  },
-  "scheduled_window": {
-    "start_at": "2026-09-26T02:00:00Z",  // 凌晨低峰
-    "end_at": "2026-09-26T05:00:00Z"
-  },
-  "rollout_strategy": "canary",        // "canary" 金丝雀(10%) / "batch" 分批(50% → 100%) / "all" 全量
-  "auto_rollback_on_failure": true,   // 失败自动回滚到 previous_version
-  "notify_on_complete": true           // 完成后通知客户运营
-}
-```
-
-**业务逻辑**:
-1. 校验 `package_id` 存在 + `release_type='stable'`
-2. 校验 `target_filter` 至少有一个筛选条件(防止误操作全网)
-3. 预演匹配设备数(SELECT COUNT)→ 返回 `preview_match_count` 给客户运营二次确认
-4. INSERT `ota_schedule(status='pending')` + 写 `audit_log`
-5. **异步触发** worker 任务在 `scheduled_window.start_at` 启动推送(写 `ota_schedule_stream`,§ 5.1 真实 Stream 名)
-
-### 目标接口：`POST /api/v1/admin/ota/schedules/{sched_id}/execute`（当前未注册）
-
-**鉴权**:[角色] `ota.schedule.execute`(客户管理员)
-
-**业务逻辑**:
-1. 查 `ota_schedule WHERE id=$sched_id AND status IN ('pending','paused')` → 否则返回 `2017`(状态不允许)
-2. **二次确认**(本期前端必须弹窗确认,后端校验 `confirm_token` header `X-OTA-Confirm=YES_I_AM_SURE`)
-3. UPDATE `status='running', started_at=NOW()` + 写 `audit_log`(高敏操作)
-4. 立即发 `ota_schedule_stream` 事件 → worker 消费 → 调 gateway 推 OTA
-
----
-
 ## K. 计费与分账模板
 
 ### `POST /api/v1/admin/settings/charge-rules`
@@ -1488,7 +1346,7 @@ user 服务在单库事务中锁定模板，校验用户有效、模板处于发
 | `page` | int | 1 | — |
 | `page_size` | int | 50 | 最大 200 |
 | `actor_id` | int | — | 按操作人过滤 |
-| `resource_type` | string | — | `user` / `station` / `device` / `coupon` / `webhook` / `ota` / `refund` / `invoice` 等 |
+| `resource_type` | string | — | `user` / `station` / `device` / `coupon` / `webhook` / `refund` / `invoice` 等 |
 | `resource_id` | string | — | 资源 ID |
 | `action` | string | — | `user.create` / `user.delete` / `webhook.create` 等 |
 | `started_from` | ISO 8601 | — | 起始时间 |

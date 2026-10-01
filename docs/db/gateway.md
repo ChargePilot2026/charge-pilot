@@ -10,6 +10,8 @@
 
 > **软删除策略**:跨 schema 对账见 `docs/cross-reference.md` § 5.5(权威源),本文档通用约定与之一致;若冲突,以 cross-reference 为准。
 
+> 2026-10-01 已移除告警配置（规则与订阅）和 OTA 整个功能；设备主动上报的烟雾、温度与故障告警及告警记录、确认、恢复保留。反馈报修归入设备运维。现有部署的历史表与数据不在本轮清理范围。
+
 ## 通用约定
 
 | 项目 | 约定 | 例外 |
@@ -20,7 +22,7 @@
 | 索引命名 | `pk_` / `uk_` / `idx_` 前缀 | 无 |
 | 外键 | **不声明** | 无 |
 
-## 表清单(6 张)
+## 表清单(7 张)
 
 | 表名 | 业务说明 | 分表策略 | 估算行数(单客户 5 年) |
 | --- | --- | --- | --- |
@@ -31,9 +33,8 @@
 | `telemetry_aggregate_15min` | **15 分钟聚合**(保留 3 年) | 按月分区 | 3 年 ≈ 5000 万 |
 | `telemetry_aggregate_hourly` | **小时聚合**(保留 3 年) | 按月分区 | 3 年 ≈ 1.3 亿 |
 | `raw_frame_log` | 原始协议帧日志 | 按月分区 | ~3000 万 |
-| `ota_command` | OTA 下行指令日志 | 按月分区 | ~1 万 |
 
-> **本文件首批设计全部 8 张表**(gateway_db 表较少,一次性写完)。
+> **本文件当前设计 7 张表**(gateway_db 表较少,一次性写完)。
 
 ### 容量估算假设前提
 
@@ -80,7 +81,7 @@
 | `vendor_code` | `VARCHAR(8)` | UNIQUE, NOT NULL | — | 厂商代码(2-4 字母,如 `xx`) |
 | `vendor_name` | `VARCHAR(64)` | NOT NULL | — | 厂商名称(如"某科技公司") |
 | `protocol_version` | `VARCHAR(32)` | NOT NULL | — | 协议版本(如 `v1.0`) |
-| `public_key` | `TEXT` | NULL | NULL | 厂商公钥(OTA 固件签名验证用,§ 6.6) |
+| `public_key` | `TEXT` | NULL | NULL | 厂商公钥(历史配置字段保留) |
 | `contact_phone` | `VARCHAR(32)` | NULL | NULL | 联系电话 |
 | `status` | `ENUM('enabled','disabled')` | NOT NULL | `'enabled'` | 启用 / 停用 |
 | `created_at` | `DATETIME(3)` | NOT NULL | — | 创建时间 |
@@ -107,7 +108,7 @@
 
 - **预置**:系统初始化脚本 INSERT 5-10 家预置厂商
 - **新增**:客户运营在 PC 后台"厂商管理"新增 → 填代码 / 名称 / 协议版本 → INSERT
-- **公钥**:OTA 固件验签时用(§ 6.6),客户上传厂商公钥后填
+- **公钥**:历史厂商配置字段保留，当前不用于固件升级
 
 ---
 
@@ -299,7 +300,7 @@
 
 - **当前入库**:gateway 收到 TCP JSON 遥测帧 → 校验有限数值/SOC 范围 → INSERT 测量值并更新聚合。完整七重防护阈值检测尚未接入
 - **充电中快照**:`user-api` 收到小程序轮询时查最新 N 条 → 缓存到 Redis(`snapshot:{order_id}`,TTL 10s)
-- **告警触发**:自动 `alert_rule` 匹配尚未接入；TCP 设备主动上报 `alert` 帧时才发布 `alert_stream`
+- **告警触发**:保留设备主动上报的故障与烟雾事件，不读取阈值规则配置
 - **当前聚合**:原始遥测与 15 分钟/小时聚合在同一事务更新；不是 worker 定时重算
 - **数据清理**:原始遥测与聚合数据的归档、保留期删除尚未接入
 - `raw_frame_log` 当前没有写入路径；设备日志 API 未注册
@@ -324,7 +325,7 @@
 | `device_id` | `VARCHAR(32)` | NOT NULL | — | 设备 ID |
 | `direction` | `ENUM('rx','tx')` | NOT NULL | — | 方向:rx 接收 / tx 发送 |
 | `protocol` | `ENUM('tcp','mqtt')` | NOT NULL | — | 协议 |
-| `frame_type` | `VARCHAR(32)` | NOT NULL | — | 帧类型(心跳 / 遥测 / 事件 / 命令 / OTA 等) |
+| `frame_type` | `VARCHAR(32)` | NOT NULL | — | 帧类型(心跳 / 遥测 / 事件 / 命令等) |
 | `raw_frame` | `VARBINARY(4096)` | NOT NULL | — | 原始帧字节(限长 4KB) |
 | `parse_status` | `ENUM('success','parse_failed')` | NOT NULL | `'success'` | 解析状态(排障关键) |
 | `parse_error` | `VARCHAR(256)` | NULL | NULL | 解析错误信息(`parse_failed` 时填) |
@@ -356,59 +357,7 @@
 
 ---
 
-## 表 6:`gateway_db.gateway_db.ota_command`
-
-**业务说明**:**OTA 下行指令日志**。记录每次下发给设备的 OTA 指令(推送 / 取消 / 回滚)。**按月分区**。
-
-**关键业务规则**:
-
-- 仅记录下行 OTA 指令(上行结果通过 `device_event_stream` 消费)
-- **不软删除**
-
-### 字段定义
-
-| 字段 | 类型 | 约束 | 默认 | 说明 |
-| --- | --- | --- | --- | --- |
-| `id` | `BIGINT UNSIGNED` | PK, AUTO_INCREMENT | — | 主键 |
-| `device_id` | `VARCHAR(32)` | NOT NULL | — | 设备 ID |
-| `schedule_id` | `BIGINT UNSIGNED` | NOT NULL | — | 关联 `admin_db.ota_schedule.id` |
-| `command_type` | `ENUM('download','apply','rollback','cancel')` | NOT NULL | — | 指令类型 |
-| `firmware_url` | `VARCHAR(512)` | NULL | NULL | 固件 URL(`download` 时填) |
-| `firmware_sha256` | `CHAR(64)` | NULL | NULL | 固件 SHA-256 |
-| `firmware_signature` | `VARCHAR(512)` | NULL | NULL | 厂商签名 |
-| `command_status` | `ENUM('sent','acked','timeout','failed')` | NOT NULL | `'sent'` | 指令状态 |
-| `sent_at` | `DATETIME(3)` | NOT NULL | — | 发送时间 |
-| `acked_at` | `DATETIME(3)` | NULL | NULL | 设备确认时间 |
-| `failure_reason` | `VARCHAR(256)` | NULL | NULL | 失败原因 |
-| `partition_key` | `DATE` | NOT NULL | — | 分区键 |
-
-### 索引
-
-| 索引名 | 字段 | 类型 | 用途 |
-| --- | --- | --- | --- |
-| `pk_ota_command` | `id` | 主键 | — |
-| `idx_ota_command_device_sent` | `device_id`, `sent_at` | 普通 | 查某设备的 OTA 历史 |
-| `idx_ota_command_schedule` | `schedule_id`, `command_type` | 普通 | 反查某调度的所有指令 |
-| `idx_ota_command_status_sent` | `command_status`, `sent_at` | 普通 | 查超时 / 失败的指令 |
-
-### 约束
-
-- `command_status IN ('acked','timeout','failed')` 时,`acked_at` 或 `failure_reason` 至少一个 NOT NULL
-
-### 关系
-
-- 多对一 → `admin_db.ota_schedule.id`(跨服务,无外键)
-- 多对一 → `device.id`(跨表逻辑关联)
-
-### 业务规则
-
-- **下发指令**:目标设计由 worker 消费 `ota_schedule_stream` 后通过 MQTT 下行；当前 OTA handler 返回暂不可用并进入 Redis DLQ，本表没有 OTA 写入路径
-- **超时检测**:30 min 内未收到设备 ACK(`command_status='sent'` 持续 30 min)→ 视为超时(§ 6.6 双触发)→ `command_status='timeout'` + 触发回滚
-- **物理归档**:worker 每日扫表 → `sent_at < NOW() - 12 MONTH` → `DELETE`(DROP PARTITION)
-
----
-
-**gateway_db 全部 6 张表设计完成**
+**gateway_db 7 张表设计完成**
 
 > **下一文件**:`docs/db/billing.md`(billing_db,计费计算 + 分账执行 + 提现)。
 

@@ -23,7 +23,7 @@ import (
 
 // UserAccountAPI 提供小程序需要、
 // 而服务此前从未暴露过的客户侧账户视图：钱包、
-// 优惠券、发票、公告、客服入口、附近站点、手机号绑定和自助故障上报。
+// 优惠券、发票、公告、附近站点、手机号绑定和自助故障上报。
 type UserAccountAPI struct {
 	Auth         identity.SessionAuthenticator
 	UserDB       *gorm.DB
@@ -51,7 +51,6 @@ func (a UserAccountAPI) Register(r *gin.Engine) {
 	r.POST("/api/v1/user/wallet/refund", a.walletRefund)
 	r.GET("/api/v1/user/coupon/my", a.myCoupons)
 	r.GET("/api/v1/user/announcement/list", a.announcements)
-	r.GET("/api/v1/user/customer-service/entry", a.supportEntry)
 	r.GET("/api/v1/user/station/nearby", a.nearbyStations)
 	r.GET("/api/v1/user/station/:id", a.stationDetail)
 	r.POST("/api/v1/user/phone/bind", a.bindPhone)
@@ -508,7 +507,7 @@ func (a UserAccountAPI) myCoupons(c *gin.Context) {
 	httpapi.OK(c, gin.H{"items": out[start:end], "count": total, "total": total, "page": page, "page_size": size})
 }
 
-// ---- 公告与客服 ----
+// ---- 公告 ----
 
 func (a UserAccountAPI) announcements(c *gin.Context) {
 	page, pageSize, ok := readPaging(c)
@@ -545,38 +544,6 @@ func (a UserAccountAPI) announcements(c *gin.Context) {
 		continue
 	}
 	httpapi.OK(c, gin.H{"items": items, "page": page, "page_size": pageSize})
-}
-
-func (a UserAccountAPI) supportEntry(c *gin.Context) {
-	if _, ok := a.userID(c); !ok {
-		return
-	}
-	// 小程序渲染的是优先级最高且已启用的那个坐席。
-	var seat struct {
-		AgentWechat string  `gorm:"column:agent_wechat"`
-		AgentName   *string `gorm:"column:agent_name"`
-		Path        *string `gorm:"column:path"`
-		Priority    uint32  `gorm:"column:priority"`
-		Hours       *string `gorm:"column:working_hours_json"`
-	}
-	err := a.AdminDB.WithContext(c.Request.Context()).Table("customer_service_config").
-		Where("enabled = 1").Order("priority ASC, id ASC").Take(&seat).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		httpapi.OK(c, gin.H{"available": false, "message": "暂未配置在线客服，请通过电话联系我们"})
-		return
-	}
-	if err != nil {
-		httpapi.Write(c, 503, 5003, "客服入口暂时无法读取", nil)
-		return
-	}
-	payload := gin.H{"available": true, "agent_wechat": seat.AgentWechat, "priority": seat.Priority, "working_hours": seat.Hours}
-	if seat.AgentName != nil {
-		payload["agent_name"] = *seat.AgentName
-	}
-	if seat.Path != nil {
-		payload["path"] = *seat.Path
-	}
-	httpapi.OK(c, payload)
 }
 
 // ---- 站点 ----

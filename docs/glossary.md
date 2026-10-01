@@ -45,16 +45,16 @@
 | **服务(service)** | 5 个 Rust 服务(gateway/user/admin/billing/worker) | 模块 / 微服务 | 不用"子系统" |
 | **Schema** | MySQL 数据库内的逻辑分组 | 库名 / 实例名 | 5 个独立 schema |
 | **Stream** | Redis Stream 事件总线 | 消息队列 / Topic | 见 `技术规格.md` § 5.1(9 个) |
-| **OTA** | Over The Air,远程固件升级 | 远程升级 / 推送 | 全量发布 + 双备份区 |
+| **OTA** | Over The Air,远程固件升级 | 远程升级 / 推送 | 历史能力；2026-10-01 已移除固件管理、升级计划与协议升级控制 |
 
 ### 1.5 微信生态术语
 
 | 规范用词 | 含义 | 旧用词(弃用) | 备注 |
 | --- | --- | --- | --- |
 | **订阅消息(subscribe message)** | 用户授权后的小程序推送 | 小程序消息 / 通知 | 需用户主动 `wx.requestSubscribeMessage` |
-| **客服消息(customer service message)** | 客服主动联系用户 | 客服通知 | 见微信开发者文档 |
+| **客服消息(customer service message)** | 客服主动联系用户 | 客服通知 | 历史微信能力；2026-10-01 已移除本系统用户在线客服 |
 | **统一服务消息(uniform message)** | 一次性推送 | 旧版模板消息 | 已下线,**不要使用** |
-| **客服会话(customer service session)** | 微信原生客服 | 客服 / 在线客服 | 见 `需求分析.md` § 5.8 |
+| **客服会话(customer service session)** | 微信原生客服 | 客服 / 在线客服 | 历史需求术语；2026-10-01 已移除本系统坐席配置与用户在线会话 |
 | **openid** | 微信为每个用户分配的隐式身份 | 用户 ID / 微信 ID | 字段统一 `openid`,系统不要求额外认证 |
 
 ---

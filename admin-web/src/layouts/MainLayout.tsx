@@ -3,13 +3,12 @@ import { Layout, Menu, Avatar, Button, Dropdown, Typography, type MenuProps } fr
 import {
   DashboardOutlined, AlertOutlined, GiftOutlined, AccountBookOutlined,
   SettingOutlined, UserOutlined, LogoutOutlined, ThunderboltOutlined,
-  CustomerServiceOutlined,
 } from '@ant-design/icons';
 import { useEffect, useState, type ReactNode } from 'react';
 import { apiGet, apiPost, adminSession } from '../api/client';
 import type { SessionProfile } from '../api/session';
 
-const { Header, Sider, Content } = Layout;
+const { Header, Content } = Layout;
 const { Text } = Typography;
 
 type NavLink = { key: string; icon?: ReactNode; label: string; permission: string };
@@ -29,10 +28,6 @@ const sections: NavSection[] = [
     { key: '/coupons', label: '优惠券', permission: 'coupon.read' },
     { key: '/announcements', label: '公告', permission: 'announcement.read' },
   ] },
-  { key: 'service', icon: <CustomerServiceOutlined />, label: '客户服务', children: [
-    { key: '/customer-service', label: '客服坐席', permission: 'customer_service.read' },
-    { key: '/casework', label: '反馈与报修', permission: 'feedback.read' },
-  ] },
   { key: 'finance', icon: <AccountBookOutlined />, label: '财务管理', children: [
     { key: '/billing', label: '财务', permission: 'finance.read' },
     { key: '/exports', label: '数据导出', permission: 'finance.read' },
@@ -40,8 +35,7 @@ const sections: NavSection[] = [
   { key: 'device-ops', icon: <AlertOutlined />, label: '设备运维', children: [
     { key: '/vendors', label: '厂商', permission: 'vendor.read' },
     { key: '/alerts', label: '告警', permission: 'alert.read' },
-    { key: '/alert-rules', label: '告警配置', permission: 'alert.read' },
-    { key: '/ota', label: 'OTA', permission: 'ota.read' },
+    { key: '/casework', label: '反馈报修', permission: 'feedback.read' },
   ] },
   { key: 'system', icon: <SettingOutlined />, label: '系统管理', children: [
     { key: '/settings', label: '平台设置', permission: 'whitelabel.read' },
@@ -53,7 +47,6 @@ const sections: NavSection[] = [
 const links = [dashboard, ...sections.flatMap(section => section.children)];
 
 export default function MainLayout() {
-  const [collapsed, setCollapsed] = useState(false);
   const [, sessionChanged] = useState(0);
   useEffect(() => { const update = () => sessionChanged(v => v + 1); window.addEventListener('cp-session', update); window.addEventListener('storage', update); return () => { window.removeEventListener('cp-session', update); window.removeEventListener('storage', update); }; }, []);
   const sessionEpoch = adminSession.epoch();
@@ -81,9 +74,6 @@ export default function MainLayout() {
   const visibleSections = sections.map(section => ({ ...section, children: section.children.filter(link => permissions.has(link.permission)) }))
     .filter(section => section.children.length > 0);
   const selectedLink = links.find(link => pathname === link.key || link.key !== '/' && pathname.startsWith(link.key + '/'));
-  const activeSection = visibleSections.find(section => section.children.some(link => link.key === selectedLink?.key))?.key;
-  const [openKeys, setOpenKeys] = useState<string[]>(activeSection ? [activeSection] : []);
-  useEffect(() => { setOpenKeys(activeSection ? [activeSection] : []); }, [activeSection]);
   const menuItems: MenuProps['items'] = [
     ...(permissions.has(dashboard.permission) ? [dashboard] : []),
     ...visibleSections,
@@ -93,50 +83,37 @@ export default function MainLayout() {
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
-      <Sider collapsible collapsed={collapsed} onCollapse={setCollapsed} theme="dark" width={232} style={{ position: 'sticky', top: 0, height: '100vh', overflowY: 'auto' }}>
-        <div className="logo">
-          <svg viewBox="0 0 64 64" width="28" height="28">
-            <rect width="64" height="64" rx="12" fill="#1677ff" />
-            <path d="M22 12 L42 12 L36 28 L46 28 L26 52 L30 36 L20 36 Z" fill="#fff" stroke="#fff" strokeWidth="1.5" />
-          </svg>
-          {!collapsed && <span>ChargePilot</span>}
+      <Header className="layout-header">
+        <div className="layout-heading">
+          <Text strong className="layout-brand">ChargePilot ·</Text>
+          {selectedLink && <Typography.Title level={3} className="layout-page-title">{selectedLink.label}</Typography.Title>}
         </div>
         <Menu
-          theme="dark"
-          mode="inline"
+          mode="horizontal"
+          className="layout-navigation"
           aria-label="后台导航"
           selectedKeys={selectedLink && permissions.has(selectedLink.permission) ? [selectedLink.key] : []}
-          openKeys={collapsed ? undefined : openKeys}
-          onOpenChange={keys => setOpenKeys(keys.slice(-1))}
           items={menuItems}
           onClick={({ key }) => { if (links.some(link => link.key === key)) navigate(key); }}
         />
-      </Sider>
-      <Layout>
-        <Header className="layout-header">
-          <div className="layout-heading">
-            <Text strong className="layout-brand">ChargePilot ·</Text>
-            {selectedLink && <Typography.Title level={3} className="layout-page-title">{selectedLink.label}</Typography.Title>}
-          </div>
-          <Dropdown
-            trigger={['click']}
-            menu={{
-              items: [
-                { key: 'logout', icon: <LogoutOutlined />, label: '退出', onClick: onLogout },
-              ],
-            }}
-          >
-            <Button type="text" aria-label="账号菜单" style={{ height: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
-              <Avatar icon={<UserOutlined />} />
-              <span>{adminInfo?.username || 'admin'}</span>
-              <Text type="secondary" style={{ fontSize: 12 }}>{adminInfo?.role || ''}</Text>
-            </Button>
-          </Dropdown>
-        </Header>
-        <Content>
-          <Outlet />
-        </Content>
-      </Layout>
+        <Dropdown
+          trigger={['click']}
+          menu={{
+            items: [
+              { key: 'logout', icon: <LogoutOutlined />, label: '退出', onClick: onLogout },
+            ],
+          }}
+        >
+          <Button type="text" aria-label="账号菜单" style={{ height: 'auto', display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+            <Avatar icon={<UserOutlined />} />
+            <span>{adminInfo?.username || 'admin'}</span>
+            <Text type="secondary" style={{ fontSize: 12 }}>{adminInfo?.role || ''}</Text>
+          </Button>
+        </Dropdown>
+      </Header>
+      <Content>
+        <Outlet />
+      </Content>
     </Layout>
   );
 }

@@ -13,11 +13,8 @@ import CouponsPage from './pages/Coupons';
 import BillingPage from './pages/Billing';
 import SettingsPage from './pages/Settings';
 import WebhooksPage from './pages/Webhooks';
-import OTAPage from './pages/OTA';
 import AnnouncementsPage from './pages/Announcements';
-import CustomerServicePage from './pages/CustomerService';
 import CaseworkPage from './pages/Casework';
-import AlertRulesPage from './pages/AlertRules';
 import ExportsPage from './pages/Exports';
 import AuditLogsPage from './pages/AuditLogs';
 import TemplatesPage from './pages/Templates';
@@ -48,16 +45,13 @@ export default function App() {
 
         <Route path="users" element={<UsersPage />} />
         <Route path="alerts" element={<AlertsPage />} />
-        <Route path="alert-rules" element={<AlertRulesPage />} />
         <Route path="exports" element={<ExportsPage />} />
         <Route path="audit-logs" element={<AuditLogsPage />} />
         <Route path="coupons" element={<CouponsPage />} />
         <Route path="billing" element={<BillingPage />} />
         <Route path="settings" element={<SettingsPage />} />
         <Route path="webhooks" element={<WebhooksPage />} />
-        <Route path="ota" element={<OTAPage />} />
         <Route path="announcements" element={<AnnouncementsPage />} />
-        <Route path="customer-service" element={<CustomerServicePage />} />
         <Route path="casework" element={<CaseworkPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
