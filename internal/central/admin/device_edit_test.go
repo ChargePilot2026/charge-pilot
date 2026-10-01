@@ -13,20 +13,20 @@ import (
 )
 
 func deviceEditPayload() map[string]any {
-	return map[string]any{"model": nil, "serial_no": nil, "install_at": nil, "warranty_until": nil, "tags": []string{}, "expected_updated_at": "2026-10-01T01:02:03.456Z"}
+	return map[string]any{"model": nil, "serial_no": nil, "warranty_until": nil, "tags": []string{}, "expected_updated_at": "2026-10-01T01:02:03.456Z"}
 }
 
 func TestDeviceEditingRejectsInvalidRequestsBeforeWriting(t *testing.T) {
 	router := httpapi.NewRouter()
 	router.PUT("/devices/:id", (ResourceAPI{}).updateDevice)
 	invalid := map[string]map[string]any{}
-	for _, field := range []string{"model", "serial_no", "install_at", "warranty_until", "tags", "expected_updated_at"} {
+	for _, field := range []string{"model", "serial_no", "warranty_until", "tags", "expected_updated_at"} {
 		body := deviceEditPayload()
 		delete(body, field)
 		invalid["missing "+field] = body
 	}
 	for name, value := range map[string]any{
-		"model": 1, "serial_no": strings.Repeat("序", 129), "install_at": "2026-10-01",
+		"model": 1, "serial_no": strings.Repeat("序", 129),
 		"warranty_until": "0999-12-31T23:59:59Z", "tags": nil, "expected_updated_at": nil,
 	} {
 		body := deviceEditPayload()
@@ -42,9 +42,16 @@ func TestDeviceEditingRejectsInvalidRequestsBeforeWriting(t *testing.T) {
 		body["tags"] = tags
 		invalid[name] = body
 	}
-	body := deviceEditPayload()
-	body["install_at"], body["warranty_until"] = "2026-10-01T09:00:00+08:00", "2026-10-01T00:59:59Z"
-	invalid["warranty before installation"] = body
+	for name, warranty := range map[string]any{"without timezone": "2026-10-01T09:00:00", "date only": "2026-10-01", "wrong type": 123} {
+		body := deviceEditPayload()
+		body["warranty_until"] = warranty
+		invalid["warranty "+name] = body
+	}
+	for name, installAt := range map[string]any{"null": nil, "timestamp": "2026-10-01T09:00:00+08:00"} {
+		body := deviceEditPayload()
+		body["install_at"] = installAt
+		invalid["removed install_at "+name] = body
+	}
 	for _, field := range []string{"status", "station_id", "vendor_id", "device_id", "protocol_adapter", "charge_mode", "tags_json"} {
 		body := deviceEditPayload()
 		body[field] = "must not change"
@@ -75,7 +82,7 @@ func TestDeviceEditingRejectsInvalidRequestsBeforeWriting(t *testing.T) {
 func TestDeviceEditingNormalizesMetadataAndMilliseconds(t *testing.T) {
 	body := deviceEditPayload()
 	body["model"], body["serial_no"] = "  ", "  "+strings.Repeat("序", 128)+"  "
-	body["install_at"], body["warranty_until"] = "2026-10-01T09:00:00.1239+08:00", "2026-10-01T01:00:00.123Z"
+	body["warranty_until"] = "2026-10-01T09:00:00.1239+08:00"
 	body["tags"] = []string{"  " + strings.Repeat("标", 32) + "  ", "烟感"}
 	body["expected_updated_at"] = "2026-10-01T09:02:03.4569+08:00"
 	encoded, _ := json.Marshal(body)
@@ -90,8 +97,8 @@ func TestDeviceEditingNormalizesMetadataAndMilliseconds(t *testing.T) {
 	if row.Model != nil || row.SerialNo == nil || *row.SerialNo != strings.Repeat("序", 128) || row.Tags[0] != strings.Repeat("标", 32) {
 		t.Fatalf("text normalization failed: %+v", row)
 	}
-	if row.InstallAt.Format(time.RFC3339Nano) != "2026-10-01T01:00:00.123Z" || !row.InstallAt.Equal(*row.WarrantyUntil) || expected.Format(time.RFC3339Nano) != "2026-10-01T01:02:03.456Z" {
-		t.Fatalf("timestamp normalization failed: install=%s warranty=%s expected=%s", row.InstallAt, row.WarrantyUntil, expected)
+	if row.WarrantyUntil.Format(time.RFC3339Nano) != "2026-10-01T01:00:00.123Z" || expected.Format(time.RFC3339Nano) != "2026-10-01T01:02:03.456Z" {
+		t.Fatalf("timestamp normalization failed: warranty=%s expected=%s", row.WarrantyUntil, expected)
 	}
 	for _, raw := range []*string{nil, stringPointer("null"), stringPointer("[]")} {
 		device := Device{TagsJSON: raw, UpdatedAt: expected.In(time.FixedZone("UTC+8", 8*3600))}
@@ -99,7 +106,7 @@ func TestDeviceEditingNormalizesMetadataAndMilliseconds(t *testing.T) {
 			t.Fatal(err)
 		}
 		result, _ := json.Marshal(device)
-		if device.Tags == nil || !strings.Contains(string(result), `"tags":[]`) || strings.Contains(string(result), "tags_json") || device.UpdatedAt.Location() != time.UTC {
+		if device.Tags == nil || !strings.Contains(string(result), `"tags":[]`) || strings.Contains(string(result), "tags_json") || strings.Contains(string(result), "install_at") || device.UpdatedAt.Location() != time.UTC {
 			t.Fatalf("device response normalization: %s", result)
 		}
 	}

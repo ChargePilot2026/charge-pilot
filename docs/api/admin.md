@@ -742,7 +742,6 @@ admin 启动自动恢复循环，每 5 秒扫描到期任务。临时下游故�
       "port_count": 10,
       "firmware_version": "v1.2.3",
       "ocpp_version": null,
-      "install_at": "2026-08-01T10:00:00Z",
       "status": "online"
     },
     "realtime_snapshot": {             // 从 Redis 取最近一次遥测(TTL 60s)
@@ -1461,11 +1460,11 @@ user 服务在单库事务中锁定模板，校验用户有效、模板处于发
 
 ### 设备查询当前实现补充
 
-`GET /api/v1/admin/devices` 要求 `device.read`。参数：`page`（默认 1）、`page_size`（默认 20，1–100）、`keyword`（最多 128 字符，按设备编号、型号、有效站点名称做字面子串匹配）、`status`（enabled/disabled/retired/fault）、正整数 `station_id` / `vendor_id`。返回 `items,total,page,page_size,permissions`；每行包含 `station_name` 及 `model,serial_no,install_at,warranty_until,tags,updated_at` 管理资料，无标签时 `tags=[]`。状态为管理状态，不表示在线遥测。
+`GET /api/v1/admin/devices` 要求 `device.read`。参数：`page`（默认 1）、`page_size`（默认 20，1–100）、`keyword`（最多 128 字符，按设备编号、型号、有效站点名称做字面子串匹配）、`status`（enabled/disabled/retired/fault）、正整数 `station_id` / `vendor_id`。返回 `items,total,page,page_size,permissions`；每行包含 `station_name` 及 `model,serial_no,warranty_until,tags,updated_at` 管理资料，无标签时 `tags=[]`。状态为管理状态，不表示在线遥测。
 
 详情同样实时校验 `device.read`。设备订单入口要求 `device.read` 和 `order.read`，沿用订单分页/日期筛选，路径设备编号覆盖查询参数中的设备编号；已删除/不存在设备返回 404，上游故障按真实错误返回。
 
-`PUT /api/v1/admin/devices/{id}` 已于 2026-10-01 接入设备列表和站点工作区的设备编辑；`{id}` 为设备业务编号 `device_id`。复用 `device.operate` 权限，显式提交 `model,serial_no,install_at,warranty_until,tags,expected_updated_at` 六字段，返回完整设备 DTO。型号和序列号可空、最多 128 字符；时间可空且须为含时区的 RFC3339，保修截止不早于安装；标签最多 20 项，每项去除首尾空白后为 1–32 字符且不重复。`expected_updated_at` 使用最新详情返回的版本，按 UTC 毫秒比较，冲突返回 409/code `2009`。只修改五项管理资料，不修改设备身份、归属、协议、计费与状态；实时数据范围检查及 `device.update` 审计与写入同事务。完整约束见 [设备资料编辑](go-admin-pages.md#设备资料编辑2026-10-01)。
+`PUT /api/v1/admin/devices/{id}` 已于 2026-10-01 接入设备列表和站点工作区的设备编辑；`{id}` 为设备业务编号 `device_id`。复用 `device.operate` 权限，显式提交 `model,serial_no,warranty_until,tags,expected_updated_at` 五字段，返回完整设备 DTO。型号和序列号可空、最多 128 字符；保修截止时间可空且须为含时区的 RFC3339；标签最多 20 项，每项去除首尾空白后为 1–32 字符且不重复。`expected_updated_at` 使用最新详情返回的版本，按 UTC 毫秒比较，冲突返回 409/code `2009`。只修改四项管理资料，不修改设备身份、归属、协议、计费与状态；实时数据范围检查及 `device.update` 审计与写入同事务。完整约束见 [设备资料编辑](go-admin-pages.md#设备资料编辑2026-10-01)。
 
 ### 充电订单与支付订单当前实现（2026-10-01）
 

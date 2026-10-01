@@ -12,7 +12,7 @@ import { portStatusText, signalStrengthText } from '../utils/deviceTelemetry';
 
 interface Device {
   id: number; device_id: string; station_id?: number; station_name?: string;
-  vendor_id?: number; vendor_name?: string; last_heartbeat_at?: string; runtime_available?: boolean; model?: string; status: string; install_at?: string;
+  vendor_id?: number; vendor_name?: string; last_heartbeat_at?: string; runtime_available?: boolean; model?: string; status: string;
   signal_strength?: number | null; signal_at?: string | null;
   ports?: { port_no: number; status_code: number | null; status_at: string | null }[] | null;
 }
@@ -20,6 +20,7 @@ const statuses: Record<string, { label: string; color: string }> = {
   enabled: {label:'已启用',color:'green'}, disabled:{label:'已禁用',color:'red'},
   retired:{label:'已退役',color:'red'}, fault:{label:'故障',color:'volcano'},
 };
+const portStatusColors: Record<number, string> = { 0: 'green', 1: 'blue', 3: 'red', 4: 'orange' };
 const sampledAt = (value: string | null | undefined) => value ? `采样时间：${new Date(value).toLocaleString()}` : '采样时间未记录';
 const deviceSignal = (device: Device) => device.runtime_available === false ? '暂不可读取'
   : device.signal_strength == null ? '—'
@@ -27,10 +28,14 @@ const deviceSignal = (device: Device) => device.runtime_available === false ? '�
 const devicePorts = (device: Device) => device.runtime_available === false ? '暂不可读取'
   : !device.ports?.length ? '—'
     : <Space size={[0, 4]} wrap style={{ maxWidth: 320 }}>
-      {[...device.ports].sort((a, b) => a.port_no - b.port_no).map(port => <Tooltip key={port.port_no}
-        title={port.status_code == null ? '尚未上报端口状态' : sampledAt(port.status_at)}>
-        <Tag>{port.port_no}：{portStatusText(port.status_code)}</Tag>
-      </Tooltip>)}
+      {[...device.ports].sort((a, b) => a.port_no - b.port_no).map(port => {
+        const state = port.status_code == null ? '未上报' : portStatusText(port.status_code);
+        const description = `端口 ${port.port_no}：${state} · 最近上报时间：${port.status_at ? new Date(port.status_at).toLocaleString() : '—'}`;
+        return <Tooltip key={port.port_no} title={description}>
+          <Tag color={port.status_code == null ? 'default' : portStatusColors[port.status_code] || 'default'}
+            aria-label={description} tabIndex={0}>{port.port_no}</Tag>
+        </Tooltip>;
+      })}
     </Space>;
 export default function DevicesPage({ station, embedded = false, onConfigure }: {
   station?: { id: number; name: string; status: string };
@@ -109,7 +114,6 @@ export default function DevicesPage({ station, embedded = false, onConfigure }: 
         {title:'运营状态',dataIndex:'status',render:(s:string)=><Tag color={statuses[s]?.color || 'default'}>{statuses[s]?.label || s}</Tag>},
         {title:'信号强度',key:'signal',render:(_:unknown,d:Device)=>deviceSignal(d)},
         {title:'端口状态',key:'ports',width:320,render:(_:unknown,d:Device)=>devicePorts(d)},
-        {title:'安装时间',dataIndex:'install_at',render:(v?:string)=>v ? new Date(v).toLocaleString() : '-'},
         {title:'最后在线时间',key:'heartbeat',render:(_:unknown,d:Device)=>d.runtime_available===false?'暂不可读取':d.last_heartbeat_at?new Date(d.last_heartbeat_at).toLocaleString():'尚无心跳'},
         ...(permissions.includes('device.operate') || permissions.includes('pricing.read') && (onConfigure || permissions.includes('station.read')) ? [{title:'操作',key:'configuration',render:(_:unknown,d:Device)=><Space>
           {permissions.includes('device.operate')&&<Button type="link" onClick={() => setEditing(d.device_id)}>编辑</Button>}

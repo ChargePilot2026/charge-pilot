@@ -17,7 +17,7 @@ try{
  $headers=@{Authorization="Bearer $($login.data.token)"}
  $station=Sql "INSERT INTO station(code,name,longitude,latitude) VALUES ('$tag','${tag}_station',116,39); SELECT LAST_INSERT_ID();"
  $values=(1..505|ForEach-Object{"('${tag}_$_',$station,1,'${tag}_model','enabled')"}) -join ','
- Sql "INSERT INTO device_meta(device_id,station_id,vendor_id,model,status) VALUES $values; UPDATE device_meta SET status='disabled',vendor_id=2,install_at='2026-09-26 01:02:03' WHERE device_id='${tag}_1'; INSERT INTO device_meta(device_id,deleted_at) VALUES ('${tag}_deleted',UTC_TIMESTAMP());"|Out-Null
+ Sql "INSERT INTO device_meta(device_id,station_id,vendor_id,model,status) VALUES $values; UPDATE device_meta SET status='disabled',vendor_id=2,warranty_until='2026-09-26 01:02:03' WHERE device_id='${tag}_1'; INSERT INTO device_meta(device_id,deleted_at) VALUES ('${tag}_deleted',UTC_TIMESTAMP());"|Out-Null
  $a=(Invoke-RestMethod -Uri ($base+'?keyword='+$tag+'&page_size=100') -Headers $headers).data
  $b=(Invoke-RestMethod -Uri ($base+'?keyword='+$tag+'&page=6&page_size=100') -Headers $headers).data
  if($a.total -ne 505 -or $a.items.Count -ne 100 -or $b.items.Count -ne 5 -or $b.items[-1].device_id -ne "${tag}_1"){throw 'Pagination truncated or ordering invalid'}
@@ -33,7 +33,7 @@ try{
  $d=(Invoke-RestMethod -Uri ($base+'?keyword='+$tag+'%25') -Headers $headers).data
  if($d.total -ne 0){throw 'Literal percent interpreted as wildcard'}
  $detail=(Invoke-RestMethod -Uri "$base/${tag}_1" -Headers $headers).data
- if(!$detail.install_at -or $detail.vendor_id -ne 2){throw 'Detail decoding failed'}
+ if(!$detail.warranty_until -or $detail.vendor_id -ne 2){throw 'Detail decoding failed'}
  ExpectStatus "$base/${tag}_deleted" $headers 404
  foreach($q in @('?page=0','?page_size=101','?station_id=0','?vendor_id=0','?status=online','?unexpected=yes')){ExpectStatus ($base+$q) $headers 400}
  $orders=(Invoke-RestMethod -Uri "$base/${tag}_1/orders" -Headers $headers).data

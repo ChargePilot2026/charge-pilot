@@ -157,7 +157,6 @@
 | `status` | `ENUM('enabled','disabled','maintenance','fault','retired')` | NOT NULL | `'disabled'` | 设备状态 |
 | `last_online_at` | `DATETIME(3)` | NULL | NULL | 最近在线时间 |
 | `last_offline_at` | `DATETIME(3)` | NULL | NULL | 最近离线时间 |
-| `installed_at` | `DATE` | NULL | NULL | 安装日期 |
 | `registered_at` | `DATETIME(3)` | NOT NULL | — | 注册时间(首次连入) |
 | `created_at` | `DATETIME(3)` | NOT NULL | — | 创建时间 |
 | `updated_at` | `DATETIME(3)` | NOT NULL | — | 更新时间 |

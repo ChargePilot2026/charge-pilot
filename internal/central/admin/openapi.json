@@ -1376,7 +1376,7 @@
       },
       "put": {
         "summary": "编辑设备管理资料",
-        "description": "仅更新型号、管理序列号、安装时间、保修截止与标签；不变更设备身份、站点、厂商、协议、计费能力或运营状态。实时检查站点及厂商范围；写入与 device.update 审计同事务。expected_updated_at 使用 GET 返回的版本，按 UTC 毫秒比较，冲突返回 409/code 2009。",
+        "description": "仅更新型号、管理序列号、保修截止与标签；不变更设备身份、站点、厂商、协议、计费能力或运营状态。实时检查站点及厂商范围；写入与 device.update 审计同事务。expected_updated_at 使用 GET 返回的版本，按 UTC 毫秒比较，冲突返回 409/code 2009。",
         "security": [
           {
             "bearerAuth": []
@@ -5859,7 +5859,6 @@
         "required": [
           "model",
           "serial_no",
-          "install_at",
           "warranty_until",
           "tags",
           "expected_updated_at"
@@ -5877,17 +5876,11 @@
             "maxLength": 128,
             "description": "管理资料中的硬件序列号；去除首尾空白，空白字符串归为 null。"
           },
-          "install_at": {
-            "type": "string",
-            "format": "date-time",
-            "nullable": true,
-            "description": "含时区的 RFC3339 日期时间或 null；转换为 UTC 毫秒，年份为 1000–9999。"
-          },
           "warranty_until": {
             "type": "string",
             "format": "date-time",
             "nullable": true,
-            "description": "含时区的 RFC3339 日期时间或 null；转换为 UTC 毫秒，年份为 1000–9999。 安装时间和保修截止都有值时，保修截止不得早于安装时间。"
+            "description": "含时区的 RFC3339 日期时间或 null；转换为 UTC 毫秒，年份为 1000–9999。"
           },
           "tags": {
             "type": "array",
@@ -5921,7 +5914,6 @@
           "model",
           "serial_no",
           "status",
-          "install_at",
           "warranty_until",
           "tags",
           "updated_at",
@@ -5993,12 +5985,6 @@
               "retired",
               "fault"
             ]
-          },
-          "install_at": {
-            "type": "string",
-            "format": "date-time",
-            "nullable": true,
-            "description": "含时区的 RFC3339 日期时间或 null；转换为 UTC 毫秒，年份为 1000–9999。"
           },
           "warranty_until": {
             "type": "string",

@@ -222,7 +222,6 @@ CREATE TABLE `device_meta` (
   `protocol_adapter` varchar(32) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '' COMMENT '创建设备时选定的通信协议',
   `charge_mode` varchar(32) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'device_duration' COMMENT '设备计费方式标识，如 device_duration、device_energy、server_realtime_power',
   `serial_no` varchar(128) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '设备出厂序列号',
-  `install_at` datetime(3) DEFAULT NULL COMMENT '设备安装时间',
   `warranty_until` datetime(3) DEFAULT NULL COMMENT '设备保修截止日期',
   `status` enum('enabled','disabled','retired','fault') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'enabled' COMMENT '当前业务状态；取值 enabled / disabled / retired / fault',
   `tags_json` json DEFAULT NULL COMMENT '设备标签列表 JSON',
@@ -669,7 +668,7 @@ CREATE TABLE `whitelabel_config` (
 -- 初始化数据：内置权限、角色及系统默认配置。业务与演示数据另行创建。
 
 -- permission 默认记录
-INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (1,'device.operate','编辑资料及启停设备','device','编辑设备型号、序列号、安装时间、保修截止时间和标签，或切换运营状态；不停止已有订单','2026-09-30 19:22:11.260');
+INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (1,'device.operate','编辑资料及启停设备','device','编辑设备型号、序列号、保修截止时间和标签，或切换运营状态；不停止已有订单','2026-09-30 19:22:11.260');
 INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (2,'station.read','查看站点','station',NULL,'2026-09-30 19:22:11.651');
 INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (3,'station.create','新增站点','station',NULL,'2026-09-30 19:22:11.651');
 INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (4,'station.update','编辑站点','station',NULL,'2026-09-30 19:22:11.651');

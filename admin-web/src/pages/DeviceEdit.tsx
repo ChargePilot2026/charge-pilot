@@ -15,7 +15,6 @@ type DeviceDetails = {
   runtime_available?: boolean;
   model?: string | null;
   serial_no?: string | null;
-  install_at?: string | null;
   warranty_until?: string | null;
   tags: string[];
   updated_at: string;
@@ -23,7 +22,6 @@ type DeviceDetails = {
 type DeviceForm = {
   model?: string;
   serial_no?: string;
-  install_at?: Dayjs | null;
   warranty_until?: Dayjs | null;
   tags: string[];
 };
@@ -58,13 +56,11 @@ export default function DeviceEdit({ deviceID, onClose, onComplete }: {
       if (current !== generation.current || requestSession !== adminSession.epoch()) return;
       if (!details.updated_at || !dayjs(details.updated_at).isValid() || !Array.isArray(details.tags)
         || details.tags.some(tag => typeof tag !== 'string')
-        || (details.install_at && !dayjs(details.install_at).isValid())
         || (details.warranty_until && !dayjs(details.warranty_until).isValid())) {
         throw new Error('设备资料格式不完整，请重新加载后重试');
       }
       form.setFieldsValue({
         model: details.model || '', serial_no: details.serial_no || '',
-        install_at: details.install_at ? dayjs(details.install_at) : null,
         warranty_until: details.warranty_until ? dayjs(details.warranty_until) : null,
         tags: details.tags,
       });
@@ -105,7 +101,6 @@ export default function DeviceEdit({ deviceID, onClose, onComplete }: {
       await apiPut<DeviceDetails>('/api/v1/admin/devices/' + encodeURIComponent(deviceID), {
         model: values.model?.trim() || null,
         serial_no: values.serial_no?.trim() || null,
-        install_at: values.install_at?.toISOString() || null,
         warranty_until: values.warranty_until?.toISOString() || null,
         tags: values.tags.map(tag => tag.trim()),
         expected_updated_at: device.updated_at,
@@ -162,16 +157,7 @@ export default function DeviceEdit({ deviceID, onClose, onComplete }: {
       <Form.Item name="serial_no" label="序列号" rules={[textLength('序列号')]}>
         <Input maxLength={256} placeholder="设备序列号（选填）" />
       </Form.Item>
-      <Form.Item name="install_at" label="安装时间" rules={[dateRange]}>
-        <DatePicker showTime format="YYYY-MM-DD HH:mm:ss" placeholder="选择安装时间（选填）" style={{ width: '100%' }} />
-      </Form.Item>
-      <Form.Item name="warranty_until" label="质保到期时间" dependencies={['install_at']} rules={[dateRange, {
-        validator: (_: unknown, value?: Dayjs | null) => {
-          const installed = form.getFieldValue('install_at');
-          return !value || !installed || !value.isBefore(installed)
-            ? Promise.resolve() : Promise.reject(new Error('质保到期时间不能早于安装时间'));
-        },
-      }]}>
+      <Form.Item name="warranty_until" label="质保到期时间" rules={[dateRange]}>
         <DatePicker showTime format="YYYY-MM-DD HH:mm:ss" placeholder="选择质保到期时间（选填）" style={{ width: '100%' }} />
       </Form.Item>
       <Form.Item name="tags" label="标签" extra="最多 20 项，每项最多 32 个字符。" rules={[{

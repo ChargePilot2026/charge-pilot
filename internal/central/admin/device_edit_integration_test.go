@@ -120,7 +120,7 @@ func TestDeviceEditingPersistsMetadataWithinScopeAndAuditTransaction(t *testing.
 		body := deviceEditPayload()
 		body["expected_updated_at"] = version.In(time.FixedZone("UTC+8", 8*3600)).Format(time.RFC3339Nano)
 		body["model"], body["serial_no"] = " 双路型号 ", " SERIAL-"+tag+" "
-		body["install_at"], body["warranty_until"] = "2026-10-01T09:00:00.1239+08:00", "2027-10-01T09:00:00+08:00"
+		body["warranty_until"] = "2027-10-01T09:00:00.1239+08:00"
 		body["tags"] = []string{" 烟感 ", "测试夹具"}
 		return body
 	}
@@ -130,7 +130,7 @@ func TestDeviceEditingPersistsMetadataWithinScopeAndAuditTransaction(t *testing.
 		t.Fatalf("save returned %d: %s", response.Code, response.Body.String())
 	}
 	saved := read(own)
-	if saved.Model == nil || *saved.Model != "双路型号" || saved.SerialNo == nil || *saved.SerialNo != "SERIAL-"+tag || len(saved.Tags) != 2 || saved.Tags[0] != "烟感" || saved.InstallAt.Format(time.RFC3339Nano) != "2026-10-01T01:00:00.123Z" || !saved.UpdatedAt.Equal(original.Add(time.Millisecond)) {
+	if saved.Model == nil || *saved.Model != "双路型号" || saved.SerialNo == nil || *saved.SerialNo != "SERIAL-"+tag || len(saved.Tags) != 2 || saved.Tags[0] != "烟感" || saved.WarrantyUntil.Format(time.RFC3339Nano) != "2027-10-01T01:00:00.123Z" || !saved.UpdatedAt.Equal(original.Add(time.Millisecond)) {
 		t.Fatalf("saved metadata: %+v", saved)
 	}
 	if saved.Status != own.Status || saved.ProtocolAdapter != own.ProtocolAdapter || saved.ChargeMode != own.ChargeMode || *saved.StationID != *own.StationID || *saved.VendorID != *own.VendorID {
@@ -153,7 +153,7 @@ func TestDeviceEditingPersistsMetadataWithinScopeAndAuditTransaction(t *testing.
 		t.Fatalf("clear returned %d: %s", response.Code, response.Body.String())
 	}
 	cleared := read(own)
-	if cleared.Model != nil || cleared.SerialNo != nil || cleared.InstallAt != nil || cleared.WarrantyUntil != nil || len(cleared.Tags) != 0 || cleared.Tags == nil || !cleared.UpdatedAt.After(saved.UpdatedAt) {
+	if cleared.Model != nil || cleared.SerialNo != nil || cleared.WarrantyUntil != nil || len(cleared.Tags) != 0 || cleared.Tags == nil || !cleared.UpdatedAt.After(saved.UpdatedAt) {
 		t.Fatalf("clear failed: %+v", cleared)
 	}
 	// Two concurrent complete forms using the same version may never both succeed.
@@ -200,7 +200,9 @@ func TestDeviceEditingPersistsMetadataWithinScopeAndAuditTransaction(t *testing.
 	if err := json.Unmarshal([]byte(audits[1].AfterJSON), &after); err != nil {
 		t.Fatal(err)
 	}
-	if before["model"] != "双路型号" || after["model"] != nil || after["serial_no"] != nil || after["install_at"] != nil || after["warranty_until"] != nil || len(after["tags"].([]any)) != 0 {
+	_, beforeHasInstallAt := before["install_at"]
+	_, afterHasInstallAt := after["install_at"]
+	if before["model"] != "双路型号" || after["model"] != nil || after["serial_no"] != nil || beforeHasInstallAt || afterHasInstallAt || after["warranty_until"] != nil || len(after["tags"].([]any)) != 0 {
 		t.Fatalf("clear audit snapshots: before=%v after=%v", before, after)
 	}
 	// A status change also advances the version, so an open edit form becomes stale.
@@ -214,7 +216,7 @@ func TestDeviceEditingPersistsMetadataWithinScopeAndAuditTransaction(t *testing.
 	}
 	for _, path := range []string{"/devices/" + own.DeviceID, "/devices?keyword=edit-" + tag} {
 		response := request(http.MethodGet, path, nil)
-		if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "tags_json") || !strings.Contains(response.Body.String(), `"serial_no":`) || !strings.Contains(response.Body.String(), `"warranty_until":`) || !strings.Contains(response.Body.String(), `"updated_at":`) || !strings.Contains(response.Body.String(), `"tags":[`) {
+		if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "tags_json") || strings.Contains(response.Body.String(), "install_at") || !strings.Contains(response.Body.String(), `"serial_no":`) || !strings.Contains(response.Body.String(), `"warranty_until":`) || !strings.Contains(response.Body.String(), `"updated_at":`) || !strings.Contains(response.Body.String(), `"tags":[`) {
 			t.Fatalf("metadata response %s: %d %s", path, response.Code, response.Body.String())
 		}
 	}

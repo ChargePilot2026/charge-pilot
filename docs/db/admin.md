@@ -499,7 +499,7 @@
 
 ## 表 9:`admin_db.device_meta`
 
-> **当前 Go 实现补充（2026-10-01）**：下文同步副本与字段清单是历史设计。当前 `device_meta` 在 `migrations/admin_db/0001_init.sql` 中已包含 `model,serial_no,install_at,warranty_until,tags_json,updated_at`；后台可通过 `PUT /api/v1/admin/devices/{id}` 编辑这五项管理资料，以 `updated_at` 作毫秒并发检查并同事务写 `device.update` 审计。接口以 `tags` 数组公开标签，不返回 `tags_json`。身份、归属、协议、计费及运营状态不由此接口变更，具体约束见 [设备资料编辑](../api/go-admin-pages.md#设备资料编辑2026-10-01)。
+> **当前 Go 实现补充（2026-10-01）**：下文同步副本与字段清单是历史设计。当前 `device_meta` 在 `migrations/admin_db/0001_init.sql` 中已包含 `model,serial_no,warranty_until,tags_json,updated_at`；后台可通过 `PUT /api/v1/admin/devices/{id}` 编辑这四项管理资料，以 `updated_at` 作毫秒并发检查并同事务写 `device.update` 审计。接口以 `tags` 数组公开标签，不返回 `tags_json`。身份、归属、协议、计费及运营状态不由此接口变更，具体约束见 [设备资料编辑](../api/go-admin-pages.md#设备资料编辑2026-10-01)。
 
 **业务说明**:**设备配置元数据**(冗余自 `gateway_db.device`,加速 admin 查询)。客户运营在 PC 后台"设备管理"查看所有设备的型号 / 固件版本 / 所属站点 / 在线状态。
 
@@ -522,7 +522,6 @@
 | `firmware_version` | `VARCHAR(32)` | NULL | NULL | 当前固件版本 |
 | `online` | `BOOLEAN` | NOT NULL | `FALSE` | 在线状态(worker 从 gateway_db 同步) |
 | `last_online_at` | `DATETIME(3)` | NULL | NULL | 最近在线时间 |
-| `installed_at` | `DATE` | NULL | NULL | 安装日期 |
 | `status` | `ENUM('enabled','disabled','maintenance','retired')` | NOT NULL | `'enabled'` | 设备状态:启用 / 停用 / 维护中 / 退役 |
 | `last_sync_at` | `DATETIME(3)` | NOT NULL | — | 最近同步时间 |
 

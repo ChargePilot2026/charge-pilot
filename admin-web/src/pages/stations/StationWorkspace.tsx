@@ -101,7 +101,10 @@ export default function StationWorkspace({ station, permissions, revision = 0, i
           <Col xs={24} sm={12} lg={8}><Form.Item name="status" label="状态" rules={[{ required: true, message: '请选择站点状态' }]}><Select aria-label="站点运营状态" options={Object.entries(stationStatuses).map(([value, item]) => ({ value, label: item.label }))} /></Form.Item></Col>
           <Col xs={24} sm={12} lg={8}><Form.Item name="address" label="地址"><Input aria-label="站点地址" maxLength={255} /></Form.Item></Col>
           <Col xs={24} sm={12} lg={8}><Form.Item name="contact_phone" label="联系电话"><Input aria-label="联系电话" maxLength={32} /></Form.Item></Col>
-          <Col xs={24} sm={12} lg={8}><Form.Item name="longitude" label="经度" rules={[{ required: true, message: '请输入经度' }]}><InputNumber aria-label="经度" min={-180} max={180} precision={8} style={{ width: '100%' }} /></Form.Item></Col>
+          <Col xs={24} sm={12} lg={8}><Form.Item name="longitude" label="经度" rules={[{ required: true, message: '请输入经度' }]}
+            extra={<Typography.Link href="https://lbs.amap.com/tools/picker" target="_blank" rel="noopener noreferrer">坐标拾取器</Typography.Link>}>
+            <InputNumber aria-label="经度" min={-180} max={180} precision={8} style={{ width: '100%' }} />
+          </Form.Item></Col>
           <Col xs={24} sm={12} lg={8}><Form.Item name="latitude" label="纬度" rules={[{ required: true, message: '请输入纬度' }]}><InputNumber aria-label="纬度" min={-90} max={90} precision={8} style={{ width: '100%' }} /></Form.Item></Col>
         </Row>
         {saveError && <Alert role="alert" type="error" showIcon message={saveError} />}

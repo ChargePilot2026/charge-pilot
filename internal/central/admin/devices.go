@@ -31,10 +31,9 @@ type Device struct {
 	SignalAt         *time.Time         `json:"signal_at" gorm:"-"`
 	Ports            []DevicePortStatus `json:"ports" gorm:"-"` // 当前端口状态；未读取到端口时返回空数组。
 	RuntimeAvailable bool               `json:"runtime_available" gorm:"-"`
-	Model            *string            `json:"model"`      // 设备型号，可空；关键词搜索会匹配它。
-	SerialNo         *string            `json:"serial_no"`  // 设备出厂序列号，可空。
-	Status           string             `json:"status"`     // 设备状态：enabled 启用、disabled 停用、retired 退役、fault 故障。
-	InstallAt        *time.Time         `json:"install_at"` // 安装时间，可空表示尚未记录。
+	Model            *string            `json:"model"`     // 设备型号，可空；关键词搜索会匹配它。
+	SerialNo         *string            `json:"serial_no"` // 设备出厂序列号，可空。
+	Status           string             `json:"status"`    // 设备状态：enabled 启用、disabled 停用、retired 退役、fault 故障。
 	WarrantyUntil    *time.Time         `json:"warranty_until"`
 	Tags             []string           `json:"tags" gorm:"-"` // 对外标签数组；数据库 NULL 统一读为空数组。
 	TagsJSON         *string            `json:"-" gorm:"column:tags_json"`
@@ -63,7 +62,7 @@ func (s ResourceStore) deviceQuery(ctx context.Context) *gorm.DB {
 
 // deviceColumns 是设备列表与详情共用的列清单。刻意不含站点编码——迁移 admin_db/0044
 // 之后 station 表已经没有 code 列了。
-const deviceColumns = "d.id,d.device_id,d.station_id,d.vendor_id,d.model,d.serial_no,d.status,d.install_at,d.warranty_until,d.tags_json,d.updated_at,d.charge_mode,d.protocol_adapter,s.name AS station_name"
+const deviceColumns = "d.id,d.device_id,d.station_id,d.vendor_id,d.model,d.serial_no,d.status,d.warranty_until,d.tags_json,d.updated_at,d.charge_mode,d.protocol_adapter,s.name AS station_name"
 
 // normalizeMetadata 隐藏内部 JSON 存储形式，并让所有日期保持数据库的 UTC 毫秒精度。
 func (d *Device) normalizeMetadata() error {
@@ -80,10 +79,8 @@ func (d *Device) normalizeMetadata() error {
 		}
 	}
 	d.UpdatedAt = d.UpdatedAt.UTC().Truncate(time.Millisecond)
-	for _, value := range []*time.Time{d.InstallAt, d.WarrantyUntil} {
-		if value != nil {
-			*value = value.UTC().Truncate(time.Millisecond)
-		}
+	if d.WarrantyUntil != nil {
+		*d.WarrantyUntil = d.WarrantyUntil.UTC().Truncate(time.Millisecond)
 	}
 	return nil
 }
@@ -286,7 +283,6 @@ func (a ResourceAPI) setDeviceStatus(c *gin.Context) {
 type DeviceInput struct {
 	Model             json.RawMessage `json:"model"`
 	SerialNo          json.RawMessage `json:"serial_no"`
-	InstallAt         json.RawMessage `json:"install_at"`
 	WarrantyUntil     json.RawMessage `json:"warranty_until"`
 	Tags              json.RawMessage `json:"tags"`
 	ExpectedUpdatedAt json.RawMessage `json:"expected_updated_at"`
@@ -295,7 +291,7 @@ type DeviceInput struct {
 func (in DeviceInput) metadata() (Device, time.Time, error) {
 	var row Device
 	var expected time.Time
-	for _, value := range []json.RawMessage{in.Model, in.SerialNo, in.InstallAt, in.WarrantyUntil, in.Tags, in.ExpectedUpdatedAt} {
+	for _, value := range []json.RawMessage{in.Model, in.SerialNo, in.WarrantyUntil, in.Tags, in.ExpectedUpdatedAt} {
 		if len(value) == 0 {
 			return row, expected, fmt.Errorf("请完整提交设备资料和原更新时间")
 		}
@@ -342,14 +338,8 @@ func (in DeviceInput) metadata() (Device, time.Time, error) {
 	if row.SerialNo, err = text(in.SerialNo); err != nil {
 		return row, expected, err
 	}
-	if row.InstallAt, err = date(in.InstallAt); err != nil {
-		return row, expected, err
-	}
 	if row.WarrantyUntil, err = date(in.WarrantyUntil); err != nil {
 		return row, expected, err
-	}
-	if row.InstallAt != nil && row.WarrantyUntil != nil && row.WarrantyUntil.Before(*row.InstallAt) {
-		return row, expected, fmt.Errorf("保修截止时间不能早于安装时间")
 	}
 	if err := json.Unmarshal(in.Tags, &row.Tags); err != nil || row.Tags == nil || len(row.Tags) > 20 {
 		return row, expected, fmt.Errorf("标签必须是数组，最多 20 项")
@@ -413,14 +403,14 @@ func (a ResourceAPI) updateDevice(c *gin.Context) {
 		}
 		before := row
 		row.Model, row.SerialNo = metadata.Model, metadata.SerialNo
-		row.InstallAt, row.WarrantyUntil, row.Tags = metadata.InstallAt, metadata.WarrantyUntil, metadata.Tags
+		row.WarrantyUntil, row.Tags = metadata.WarrantyUntil, metadata.Tags
 		row.UpdatedAt = nextDeviceUpdateTime(row.UpdatedAt)
 		tags, err := json.Marshal(row.Tags)
 		if err != nil {
 			return err
 		}
 		if err := tx.Table("device_meta").Where("id=?", row.ID).Updates(map[string]any{
-			"model": row.Model, "serial_no": row.SerialNo, "install_at": row.InstallAt,
+			"model": row.Model, "serial_no": row.SerialNo,
 			"warranty_until": row.WarrantyUntil, "tags_json": string(tags), "updated_at": row.UpdatedAt,
 		}).Error; err != nil {
 			return err

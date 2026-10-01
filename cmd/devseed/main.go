@@ -277,8 +277,8 @@ func seedStation(ctx context.Context, adminDB *sql.DB) (int64, error) {
 // Device abilities follow its selected protocol.
 func seedDevice(ctx context.Context, adminDB *sql.DB, stationID int64) (string, error) {
 	if _, err := adminDB.ExecContext(ctx, `
-		INSERT INTO device_meta (device_id, station_id, model, serial_no, status, charge_mode, protocol_adapter, install_at)
-		VALUES (?, ?, ?, ?, 'enabled', 'server_energy', 'dc589', NOW(3))`,
+		INSERT INTO device_meta (device_id, station_id, model, serial_no, status, charge_mode, protocol_adapter)
+		VALUES (?, ?, ?, ?, 'enabled', 'server_energy', 'dc589')`,
 		demoDeviceID, stationID, demoDeviceModel, demoDeviceID); err != nil {
 		return "", err
 	}
