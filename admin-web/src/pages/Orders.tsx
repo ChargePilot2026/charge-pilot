@@ -15,13 +15,14 @@ import StationDetailsDrawer, { type StationReference } from './stations/StationD
 import type { StationRecord } from './stations/StationWorkspace';
 import { businessStatuses, businessStatusInfo, paymentStatuses, paymentStatusInfo, paymentStatusColors, chargingDuration, refundedAmount } from './orders/presentation';
 import { DEFAULT_PAGE_SIZE, TABLE_PAGINATION } from '../utils/tablePagination';
+import { isChargeUserID } from '../utils/chargeUserID';
 
 interface Order {
   live?: { at: string; stale: boolean; kwh: number; seconds: number; fee?: { electric_cents: number; service_cents: number; total_cents: number }; fee_unavailable?: string };
   live_unavailable?: string;
   order_id: number;
   order_no: string;
-  user_id: number;
+  user_id: string;
   device_id: string;
   port_no: number;
   station_id: number | null;
@@ -134,7 +135,7 @@ export default function OrdersPage() {
   const [detailReload, setDetailReload] = useState(0);
   const [timeline, setTimeline] = useState<OrderTimeline | null>(null);
   const [detailTab, setDetailTab] = useState('basic');
-  const [profileUser, setProfileUser] = useState<{ orderID: number; userID: number } | null>(null);
+  const [profileUser, setProfileUser] = useState<{ orderID: number; userID: string } | null>(null);
   const [permissions, setPermissions] = useState(cachedPermissions);
   const canReadChargeUsers = permissions.includes('charge_user.read');
   const canReadStations = permissions.includes('station.read');
@@ -280,10 +281,10 @@ export default function OrdersPage() {
           { key: 'business-status', label: '业务状态', children: statusTag(detail, 'business') },
           { key: 'payment-status', label: '支付状态', children: statusTag(detail, 'payment') },
           { key: 'start-source', label: '启动来源', children: startSourceTag(detail.start_source) },
-          { key: 'user', label: '用户 ID', children: canReadChargeUsers
+          { key: 'user', label: '用户 ID', children: canReadChargeUsers && isChargeUserID(detail.user_id)
             ? <Button type="link" style={{ padding: 0, height: 'auto' }} aria-label={`查看用户 ${detail.user_id} 档案`}
               onClick={() => setProfileUser({ orderID: detail.order_id, userID: detail.user_id })}>{detail.user_id}</Button>
-            : detail.user_id },
+            : isChargeUserID(detail.user_id) ? detail.user_id : '—' },
           { key: 'station', label: '站点', children: stationLink(detail, true) },
           { key: 'device', label: '设备 / 端口', children: `${detail.device_id} / ${detail.port_no}` },
           { key: 'created', label: '创建时间', children: time(detail.created_at), span: 2 },

@@ -31,3 +31,20 @@ test('recharge submit is single flight and account change clears private pending
  f.app._generation++;f.app.request=async()=>({user_id:'8',items:[]});await p.onShow();assert.equal(p.data.amount,'');assert.equal(p.data.pending,false);assert.equal(p.data.paying,false);
  release();await first;assert.equal(p.data.notice,'');assert.equal(f.storage.size,1);
 });
+
+test('recharge retries remain isolated for neighboring full Snowflake user IDs',async()=>{
+ const f=fixture(),p=f.create();
+ const a='9223372036854775806',b='9223372036854775807';let userID=a;
+ f.storage.set('cp_wallet_recharge_'+a,{request_id:'request-a',amount_cents:101});
+ f.storage.set('cp_wallet_recharge_'+b,{request_id:'request-b',amount_cents:202});
+ f.app.request=async()=>({user_id:userID,items:[]});
+ await p.onShow();assert.equal(p._key,'cp_wallet_recharge_'+a);assert.equal(p._pending.request_id,'request-a');
+ userID=b;f.app._generation++;await p.onShow();
+ assert.equal(p._key,'cp_wallet_recharge_'+b);assert.equal(p._pending.request_id,'request-b');assert.equal(p.data.amount,'2.02');
+});
+
+test('recharge rejects numeric user IDs before accessing private retry storage',async()=>{
+ const f=fixture(),p=f.create();f.app.request=async()=>({user_id:9223372036854775807,items:[]});
+ await p.onShow();assert.match(p.data.error,/充值记录响应异常/);assert.equal(p._key,null);
+ p.data.amount='10';await p.submit();assert.equal(f.posts.length,0);assert.equal(f.storage.size,0);
+});

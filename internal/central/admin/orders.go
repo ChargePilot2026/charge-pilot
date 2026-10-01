@@ -20,7 +20,7 @@ type OrderView struct {
 	LiveUnavailable     string                `json:"live_unavailable,omitempty" gorm:"-"`
 	OrderID             uint64                `json:"order_id"`                          // 充电订单主键
 	OrderNo             string                `json:"order_no"`                          // 业务订单号，对外展示和排障都用它
-	UserID              uint64                `json:"user_id"`                           // 下单用户 ID
+	UserID              uint64                `json:"user_id,string"`                    // 下单用户 ID
 	DeviceID            string                `json:"device_id"`                         // 设备 ID
 	PortNo              uint8                 `json:"port_no"`                           // 充电枪序号
 	StationID           *uint64               `json:"station_id"`                        // 所属站点 ID；指针，关联不上时为 null

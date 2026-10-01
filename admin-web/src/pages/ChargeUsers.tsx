@@ -5,6 +5,7 @@ import axios from 'axios';
 import { ApiEnvelope, apiGet } from '../api/client';
 import { LoadError } from '../components/LoadError';
 import { DEFAULT_PAGE_SIZE, TABLE_PAGINATION } from '../utils/tablePagination';
+import { isChargeUserID } from '../utils/chargeUserID';
 import ChargeUserProfileDrawer, {
   type ChargeUser, ChargeUserPhone as Phone, chargeUserName as name,
   chargeUserStatuses as statuses, chargeUserStatusTag as statusTag,
@@ -21,15 +22,22 @@ export default function ChargeUsersPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
-  const [selected, setSelected] = useState<number | null>(null);
+  const [selected, setSelected] = useState<string | null>(null);
   const generation = useRef(0);
 
   useEffect(() => {
     const current = ++generation.current;
     setLoading(true); setError(null);
     apiGet<ChargeUserPage>('/api/v1/admin/charge-users', query)
-      .then(result => { if (current === generation.current) setPage(result); })
-      .catch(e => { if (current === generation.current) setError(axios.isAxiosError<ApiEnvelope>(e) ? e.message : '加载失败，请稍后重试'); })
+      .then(result => {
+        if (current !== generation.current) return;
+        if (!Array.isArray(result?.items) || result.items.some(user => !isChargeUserID(user.id)
+          || user.inviter_id != null && !isChargeUserID(user.inviter_id))) {
+          throw new Error('用户编号响应格式不正确，请重新读取');
+        }
+        setPage(result);
+      })
+      .catch(e => { if (current === generation.current) setError(axios.isAxiosError<ApiEnvelope>(e) || e instanceof Error ? e.message : '加载失败，请稍后重试'); })
       .finally(() => { if (current === generation.current) setLoading(false); });
   }, [query, reload]);
 

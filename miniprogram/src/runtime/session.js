@@ -24,6 +24,7 @@ export const application = {
     this.globalData.token = ''; this.globalData.refreshToken = ''; this.globalData.userInfo = null;
     ['cp_token','cp_refresh_token','cp_user'].forEach(key => wx.removeStorageSync(key));
   },
+  /** @returns {Promise<import('./models').UserLogin>} */
   async login() {
     const generation = ++this._generation;
     const code = await new Promise        ((resolve,reject) => wx.login({success:(r     )=>resolve(r.code),fail:reject}));
@@ -31,6 +32,9 @@ export const application = {
     if (generation !== this._generation || this._loggingOut) {
       await this.rawRequest('POST','/public/auth/logout',undefined,session.refresh_token).catch(()=>{});
       throw new Error('登录已取消');
+    }
+    if (!session || typeof session.user_id !== 'string' || !/^[1-9]\d{0,19}$/.test(session.user_id)) {
+      throw new Error('用户编号响应格式不正确，请重新登录');
     }
     this.saveSession(session);
     return session;

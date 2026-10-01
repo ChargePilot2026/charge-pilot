@@ -10,6 +10,7 @@ import (
 
 	"github.com/ChargePilot2026/charge-pilot/internal/central/billing"
 	"github.com/ChargePilot2026/charge-pilot/internal/central/pricing"
+	"github.com/ChargePilot2026/charge-pilot/internal/platform/snowflake"
 	"github.com/google/uuid"
 )
 
@@ -55,7 +56,7 @@ func seedOrderContract(ctx context.Context, db *sql.DB, id, user int64, u demoUs
 	rule := pricing.Rule{ID: uint64(ruleID), StationID: uint64(station), Version: 1, Spec: s.SpecFor(s.Packages[0])}
 	offer := s.Offers(rule)[0]
 	snapshot, _ := json.Marshal(map[string]any{"rule": rule, "offer": offer})
-	intent, merchant := uuid.NewString(), fmt.Sprintf("DEMO-MERCHANT-%d", id)
+	intent, merchant := uuid.NewString(), ""
 	paid, refunded, status := price, int64(0), "paid"
 	if o.status == "cancelled" {
 		paid, status = 0, "closed"
@@ -64,6 +65,11 @@ func seedOrderContract(ctx context.Context, db *sql.DB, id, user int64, u demoUs
 		refunded, status = price-o.cents, "partial_refunded"
 	}
 	return withSeedTransaction(ctx, db, func(tx *sql.Tx) error {
+		paymentNumber, err := snowflake.NextSQL(ctx, tx)
+		if err != nil {
+			return err
+		}
+		merchant = "P" + strconv.FormatUint(paymentNumber, 10)
 		payment, err := tx.ExecContext(ctx, "INSERT INTO payment_order(order_no,biz_type,biz_id,user_id,pay_method,total_cents,paid_cents,refunded_cents,status,created_month) VALUES(?,'charge',?,?,'balance',?,?,?,?,?)", merchant, id, user, price, paid, refunded, status, created.Format("2006-01")+"-01")
 		if err != nil {
 			return err
@@ -88,7 +94,7 @@ func seedOrderContract(ctx context.Context, db *sql.DB, id, user int64, u demoUs
 		if err != nil {
 			return err
 		}
-		result := billing.Result{CalculationNo: fmt.Sprintf("FEE%020d", id), Source: source, ActualFee: fee}
+		result := billing.Result{CalculationNo: billing.CalculationNumber(orderNo, uint64(id)), Source: source, ActualFee: fee}
 		raw, _ := json.Marshal(result)
 		_, err = tx.ExecContext(ctx, "INSERT INTO charge_fee_receipt(charge_order_id,calculation_no,result_json,shortfall_cents) VALUES(?,?,?,0)", id, result.CalculationNo, string(raw))
 		return err

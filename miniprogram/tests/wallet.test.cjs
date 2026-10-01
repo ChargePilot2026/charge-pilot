@@ -77,3 +77,20 @@ test('wallet refund list exposes risk rejection and its review reason',async()=>
  const p=page('refund',{_generation:1,globalData:{token:'access'},request:async()=>({user_id:'7',total:1,items:[{request_id:'r',amount_cents:100,refunded_cents:0,status:'rejected',review:{comment:'核实后拒绝'},refund_orders:[]}]})},{getStorageSync(){}});
  await p.onShow();assert.equal(p.data.items[0].statusText,'审核已拒绝');assert.equal(p.data.items[0].review.comment,'核实后拒绝');
 });
+
+test('refund retries remain isolated for neighboring full Snowflake user IDs',async()=>{
+ const f=refundFixture(),p=f.open();
+ const a='9223372036854775806',b='9223372036854775807';let userID=a;
+ f.storage.set('cp_wallet_refund_'+a,{request_id:'request-a',amount_cents:101,reason:'first'});
+ f.storage.set('cp_wallet_refund_'+b,{request_id:'request-b',amount_cents:202,reason:'second'});
+ f.app.request=async()=>({user_id:userID,items:[],total:0});
+ await p.onShow();assert.equal(p._storageKey,'cp_wallet_refund_'+a);assert.equal(p._pending.request_id,'request-a');
+ userID=b;f.app._generation++;await p.onShow();
+ assert.equal(p._storageKey,'cp_wallet_refund_'+b);assert.equal(p._pending.request_id,'request-b');assert.equal(p.data.reason,'second');
+});
+
+test('refund rejects numeric user IDs before accessing private retry storage',async()=>{
+ const f=refundFixture(),p=f.open();f.app.request=async()=>({user_id:9223372036854775807,items:[],total:0});
+ await p.onShow();assert.match(p.data.error,/退款列表响应异常/);assert.equal(p._storageKey,null);
+ p.data.amount='10';await p.submit();assert.equal(f.posts.length,0);assert.equal(f.storage.size,0);
+});

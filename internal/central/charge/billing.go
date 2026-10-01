@@ -200,7 +200,7 @@ func (s BillingOrders) Apply(ctx context.Context, result billing.Result) error {
 			return billing.ErrConflict
 		}
 		fee, err := billing.PriceSource(source)
-		if err != nil || !reflect.DeepEqual(fee, result.ActualFee) || result.CalculationNo != fmt.Sprintf("FEE%020d", order.ID) {
+		if err != nil || !reflect.DeepEqual(fee, result.ActualFee) || result.CalculationNo != billing.CalculationNumber(order.OrderNo, order.ID) {
 			return billing.ErrConflict
 		}
 		var existing struct{ ResultJSON []byte }

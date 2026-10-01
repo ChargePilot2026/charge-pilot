@@ -3,7 +3,7 @@
 // 那个页面上的每个数字——订单数、消费额、钱包余额——都是 0，
 // 这会掩盖页面到底有没有读到正确的行。
 //
-// 它写入的每一行都在自然键上带 demo_ 前缀，-clean 只删这些行，不多不少。
+// 示例用户 openid 和设备编号带 demo_ 前缀，-clean 只删它们拥有的数据。
 // 这也是它做成 Go 程序而不是 .sql 文件的原因：user.phone_enc 是 AES-GCM 密文、
 // phone_hash 是不可逆摘要，示例行没法用纯 SQL 造出来。
 // 只有持有同一把密钥的代码，才能写出一行 C 端登录会认的记录。
@@ -25,6 +25,7 @@ import (
 
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/dbconn"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/phonecrypto"
+	"github.com/ChargePilot2026/charge-pilot/internal/platform/snowflake"
 )
 
 // demoPrefix 标记了本程序拥有的每一个自然键。清理就是按它匹配的，
@@ -206,7 +207,7 @@ func seed(ctx context.Context, userDB, adminDB *sql.DB) {
 		fail(fmt.Errorf("写入完整方案: %w", err))
 	}
 
-	for _, u := range demoUsers() {
+	for userIndex, u := range demoUsers() {
 		firstSeen := now.AddDate(0, 0, -u.daysAgo)
 		phoneEnc, phoneHash := []byte(nil), any(nil)
 		if u.phone != "" {
@@ -220,14 +221,22 @@ func seed(ctx context.Context, userDB, adminDB *sql.DB) {
 		if u.loginDays >= 0 {
 			lastLogin = now.AddDate(0, 0, -u.loginDays)
 		}
-		result, err := userDB.ExecContext(ctx, `
-			INSERT INTO user (openid, nickname, phone_enc, phone_hash, gender, status, first_seen_at, last_login_at, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			u.openid, nullString(u.nickname), phoneEnc, phoneHash, u.gender, u.status, firstSeen, lastLogin, firstSeen)
+		var userID int64
+		err := withSeedTransaction(ctx, userDB, func(tx *sql.Tx) error {
+			id, err := snowflake.NextSQL(ctx, tx)
+			if err != nil {
+				return err
+			}
+			userID = int64(id)
+			_, err = tx.ExecContext(ctx, `
+				INSERT INTO user (id, openid, nickname, phone_enc, phone_hash, gender, status, first_seen_at, last_login_at, created_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				userID, u.openid, nullString(u.nickname), phoneEnc, phoneHash, u.gender, u.status, firstSeen, lastLogin, firstSeen)
+			return err
+		})
 		if err != nil {
 			fail(fmt.Errorf("写入示例用户 %s: %w", u.nickname, err))
 		}
-		userID, _ := result.LastInsertId()
 
 		if _, err := userDB.ExecContext(ctx, `
 			INSERT INTO wallet_account (user_id, balance_cents, frozen_cents, status, created_at)
@@ -238,7 +247,7 @@ func seed(ctx context.Context, userDB, adminDB *sql.DB) {
 
 		orderCount := 0
 		for _, o := range u.orders {
-			created := now.AddDate(0, 0, -o.daysAgo)
+			created := now.AddDate(0, 0, -o.daysAgo).Add(-time.Duration(userIndex) * time.Second)
 			if err := seedOrder(ctx, userDB, userID, u, o, created, deviceID, stationID, ruleID); err != nil {
 				fail(fmt.Errorf("写入示例订单: %w", err))
 			}
@@ -301,7 +310,7 @@ func seedOrder(ctx context.Context, userDB *sql.DB, userID int64, u demoUser, o 
 	// charge_order 是按 created_month 做 RANGE 分区的，created_month 是分区键且
 	// 没有默认值，必须显式写入；写成订单创建时间的月初。
 	month := time.Date(created.Year(), created.Month(), 1, 0, 0, 0, 0, time.UTC)
-	orderNo := fmt.Sprintf("DEMO-%s-%d", month.Format("200601"), userID*100+int64(o.daysAgo))
+	orderNo := "C" + created.In(time.FixedZone("CST", 8*3600)).Format("20060102150405") + deviceID + "01"
 	// 已结束的订单必须写 ended_at。结算和首页都靠它：后台首页的"近 7 天完成
 	// 订单与结算金额"是按 ended_at 分天汇总的，示例数据一律留空的话，运营打开
 	// 后台第一眼看到的就是一张全 0 的表，还以为平台没数据。订单列表的"结束时间"
@@ -357,12 +366,12 @@ func remove(ctx context.Context, userDB, adminDB *sql.DB) {
 		query string
 		arg   any
 	}{
-		{"DELETE FROM charge_fee_receipt WHERE charge_order_id IN (SELECT id FROM charge_order WHERE order_no LIKE ?)", "DEMO-%"},
-		{"DELETE FROM charge_order_pricing WHERE charge_order_id IN (SELECT id FROM charge_order WHERE order_no LIKE ?)", "DEMO-%"},
-		{"DELETE FROM payment_order WHERE order_no LIKE ?", "DEMO-MERCHANT-%"},
+		{"DELETE FROM charge_fee_receipt WHERE charge_order_id IN (SELECT id FROM charge_order WHERE device_id = ?)", demoDeviceID},
+		{"DELETE FROM charge_order_pricing WHERE charge_order_id IN (SELECT id FROM charge_order WHERE device_id = ?)", demoDeviceID},
+		{"DELETE FROM payment_order WHERE user_id IN (SELECT id FROM user WHERE openid LIKE ?)", demoPrefix + "%"},
 		{"DELETE FROM charge_payment_intent WHERE openid LIKE ?", demoPrefix + "%"},
 		{"DELETE FROM device_fault_report WHERE device_id = ?", demoDeviceID},
-		{"DELETE FROM charge_order WHERE order_no LIKE ?", "DEMO-%"},
+		{"DELETE FROM charge_order WHERE device_id = ?", demoDeviceID},
 		{"DELETE FROM coupon_grant WHERE user_id IN (SELECT id FROM user WHERE openid LIKE ?)", demoPrefix + "%"},
 		{"DELETE FROM wallet_account WHERE user_id IN (SELECT id FROM user WHERE openid LIKE ?)", demoPrefix + "%"},
 		{"DELETE FROM user WHERE openid LIKE ?", demoPrefix + "%"},

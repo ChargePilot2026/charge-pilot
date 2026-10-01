@@ -13,6 +13,7 @@
 - Bearer 管理员会话；每次请求从数据库检查有效账号、角色及操作权限。菜单过滤仅改善界面，不能替代服务端授权。
 - JSON 响应采用 `code/message/data/request_id/trace_id`。非法参数 400、失效会话 401、无权 403、缺失记录 404、状态/重复冲突 409、依赖故障 503。不会把未知接口伪装为成功空列表。
 - 分页资源使用 `page`、`page_size`（1–100），返回 `items,total,page,page_size`；站点、设备、厂商包含按钮权限。其他简单配置列表当前仅返回 `items`，尚未全面分页。
+- 充电用户 ID（含 user_id/id/inviter_id）使用十进制字符串，新注册 ID 为无前缀 Snowflake；绑卡及发券以字符串提交用户 ID，兼容历史安全范围内的整数请求。管理员 ID 和订单内部主键不变。
 - 金额均为整数分；写接口限制请求大小、拒绝未知字段，操作人取自会话。数据库事务内写审计：admin 配置写 admin.audit_log，用户/退款/发票操作写 user.audit_log。
 - central 按逻辑模块连接 admin/user/billing 各自 schema，不拼跨 schema SQL。设备预建档通过 gateway 内部 HTTP，不直连 gateway 库。
 
@@ -27,7 +28,7 @@
 | 厂商 | GET/POST `/vendors`；GET/PUT `/vendors/{id}`；GET `/vendor-options` | 设备运维中的厂商管理：分页、编码/名称搜索、状态筛选、新建、编辑和启停；设备新建从可选厂商接口读取已启用厂商；不提供删除 |
 | 导入 | GET/POST `/device-imports`；POST `/device-imports/{import_id}/retry` | CSV 预览后提交 JSON，每批 1–100；gateway 幂等建档，再落 admin 元数据；失败保留批次供显式重试 |
 | 充电订单 | GET `/orders`、`/orders/{id}`、`/orders/{id}/timeline`、`/orders/{id}/process` | 仅充电业务；分页及订单号、设备、站点、业务状态、支付状态、启动来源、时间筛选；显示实际充电时长与累计成功退款金额；详情包含功率曲线页签 |
-| 支付订单 | GET `/payment-orders` | 只读支付流水，包含充电付款与钱包充值；支持订单号精确查询及业务类型、支付状态、支付方式筛选；不把充值列为充电订单 |
+| 支付订单 | GET `/payment-orders` | 只读支付流水，包含充电付款与钱包充值；支持订单号精确查询及业务类型、支付状态、支付方式和创建时间范围（created_from/created_to）筛选；不把充值列为充电订单 |
 | 充电用户 | GET `/charge-users`、`/charge-users/{id}` | 后台第一个以"人"而非以"单"为入口的视图：列表给昵称、完整手机号、状态、订单数、累计消费、钱包余额与最后登录，档案再给最近 20 笔订单（业务状态与支付状态分别展示，保留原内部 status）及券/报障计数。只读，不含建号与解冻。手机号按完整号码精确搜索，输入后四位查不出来（库中只有密文与不可逆哈希） |
 | 管理员 | GET/POST `/users`；GET `/roles`；PUT/DELETE `/admin-users/{id}` | 新建账号，密码 12–72 字节 bcrypt；只可分配不超出操作者权限的有效角色；支持资料、角色和状态管理，角色未改变的资料保存不撤销会话 |
 | 告警 | GET `/alerts`；POST `/alerts/{id}/ack` | 设备主动上报告警列表与确认；烟雾、温度和设备故障由 worker 同步，正常心跳可自动恢复 |

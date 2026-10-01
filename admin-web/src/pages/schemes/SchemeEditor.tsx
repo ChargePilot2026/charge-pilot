@@ -87,7 +87,7 @@ export default function SchemeEditor({ value: initial, onSave, saving = false }:
           : mode === 'duration' ? '设置套餐售价和购买时长；在线刷卡可指定其中一个时长套餐。'
           : '购买整数度电，支付价格按电费与服务费单价自动计算；实际用量按计量精度结算。'}</Typography.Paragraph>
         {packages.length === 0 ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={<Typography.Text type={missingPackages ? 'danger' : 'secondary'}>{`暂无${modes[mode]}套餐，点击右上角添加`}</Typography.Text>} /> :
-          <Table size="middle" rowKey="id" pagination={TABLE_PAGINATION} tableLayout="fixed" dataSource={packages}
+          <Table size="middle" rowKey="id" pagination={false} tableLayout="fixed" dataSource={packages}
           scroll={{ x: mode === 'amount' ? 600 : 800 }} columns={[
             { title: '套餐名称', render: (_, p) => <Input {...fieldProps(`packages.${p.id}.name`)} aria-label={`${modes[mode]}套餐名称`} value={p.name} onChange={e => patch({ packages: scheme.packages.map(a => a.id === p.id ? { ...a, name: e.target.value } : a) })} /> },
             ...(mode === 'amount' ? [] : [{ title: mode === 'duration' ? '购买时长（分钟）' : '购买电量（度）', width: 220, render: (_: unknown, p: Scheme['packages'][number]) => <InputNumber {...fieldProps(`packages.${p.id}.${mode === 'duration' ? 'minutes' : 'kwh'}`)} aria-label={mode === 'duration' ? '购买时长' : '购买电量'} min={1} max={mode === 'duration' ? 4320 : 65} precision={0} addonAfter={mode === 'duration' ? '分钟' : '度'} value={mode === 'duration' ? p.minutes : p.kwh} onChange={v => patch({ packages: scheme.packages.map(a => a.id === p.id ? { ...a, [mode === 'duration' ? 'minutes' : 'kwh']: v || 0 } : a) })} /> }]),
@@ -140,7 +140,7 @@ export default function SchemeEditor({ value: initial, onSave, saving = false }:
           {scheme.amount!.periods.length > 1 && <Popconfirm title="删除并合并到相邻时段？" onConfirm={() => { const periods = [...scheme.amount!.periods]; if (i === periods.length - 1) periods[i - 1] = { ...periods[i - 1], end_minute: 1440 }; periods.splice(i, 1); patch({ amount: { ...scheme.amount!, periods } }); }}><Button danger>删除</Button></Popconfirm>}
         </Space>}>
           {scheme.amount!.algorithm === 'server_energy' ? <Space wrap>电费 {rateInput(`amount.periods.${i}.electric_cents`, p.electric_cents, v => updatePeriod(i, { ...p, electric_cents: v }))} 服务费 {rateInput(`amount.periods.${i}.service_cents`, p.service_cents, v => updatePeriod(i, { ...p, service_cents: v }))}</Space> : <>
-            <Table size="middle" pagination={TABLE_PAGINATION} rowKey="tierIndex" dataSource={p.tiers?.map((tier, tierIndex) => ({ ...tier, tierIndex }))} columns={[
+            <Table size="middle" pagination={false} rowKey="tierIndex" dataSource={p.tiers?.map((tier, tierIndex) => ({ ...tier, tierIndex }))} columns={[
               { title: '功率范围（W，含上下限）', width: 250, render: (_, t) => { const j = t.tierIndex; return <Space size={8}>
                 <Typography.Text style={{ display: 'inline-block', minWidth: 40, textAlign: 'right' }}>{j === 0 ? 0 : p.tiers![j - 1].max_watts + 1}</Typography.Text>
                 <Typography.Text type="secondary">～</Typography.Text>

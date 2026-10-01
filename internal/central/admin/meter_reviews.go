@@ -3,6 +3,7 @@ package admin
 import (
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 
 	"github.com/ChargePilot2026/charge-pilot/internal/central/billing"
@@ -81,6 +82,12 @@ func (a ResourceAPI) meterReviews(c *gin.Context) {
 		return
 	}
 	for i := range rows {
+		publicSource, err := publicBillingSource(rows[i].SourceJSON)
+		if err != nil {
+			resourceFailure(c, err)
+			return
+		}
+		rows[i].SourceJSON = publicSource
 		rows[i].Reviews = []charge.MeterReview{}
 		if err := a.Store.UserDB.WithContext(c.Request.Context()).Where("charge_order_id=?", rows[i].ChargeOrderID).Order("id DESC").Find(&rows[i].Reviews).Error; err != nil {
 			resourceFailure(c, err)
@@ -88,6 +95,26 @@ func (a ResourceAPI) meterReviews(c *gin.Context) {
 		}
 	}
 	httpapi.OK(c, Page[entry]{Items: rows, Total: total, Page: q.Page, PageSize: q.PageSize})
+}
+
+// Preserve the exact persisted billing payload; only its public copy uses a
+// string user ID. Internal receipts still decode historical numeric IDs.
+func publicBillingSource(raw json.RawMessage) (json.RawMessage, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return raw, nil
+	}
+	var source map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &source); err != nil {
+		return nil, err
+	}
+	if value, ok := source["user_id"]; ok {
+		var id uint64
+		if err := json.Unmarshal(value, &id); err != nil {
+			return nil, err
+		}
+		source["user_id"], _ = json.Marshal(strconv.FormatUint(id, 10))
+	}
+	return json.Marshal(source)
 }
 
 // meterFailure 把核实相关的领域错误翻成管理端提示：状态被并发改动、原始数据对不上

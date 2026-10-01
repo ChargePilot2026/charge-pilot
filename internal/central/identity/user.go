@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/ChargePilot2026/charge-pilot/internal/platform/snowflake"
 	"github.com/go-sql-driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -21,7 +22,7 @@ type User struct {
 }
 
 type Profile struct {
-	UserID       uint64    `json:"user_id"`
+	UserID       uint64    `json:"user_id,string"`
 	Nickname     string    `json:"nickname"`
 	AvatarURL    string    `json:"avatar_url"`
 	PhoneBound   bool      `json:"phone_bound"`
@@ -89,7 +90,11 @@ func (s UserStore) loginOnce(ctx context.Context, openID, unionID string) (User,
 			return err
 		}
 		now := time.Now().UTC()
-		created := UserAccount{OpenID: openID, Status: "active", LastLoginAt: sql.NullTime{Time: now, Valid: true}}
+		id, err := snowflake.Next(tx)
+		if err != nil {
+			return err
+		}
+		created := UserAccount{ID: id, OpenID: openID, Status: "active", LastLoginAt: sql.NullTime{Time: now, Valid: true}}
 		if unionID != "" {
 			created.UnionID = sql.NullString{String: unionID, Valid: true}
 		}
@@ -148,7 +153,7 @@ type LoginIdentity struct {
 func (LoginIdentity) TableName() string { return "user_login_identity" }
 
 type UserAccount struct {
-	ID          uint64         `gorm:"column:id;primaryKey"`
+	ID          uint64         `gorm:"column:id;primaryKey;autoIncrement:false"`
 	OpenID      string         `gorm:"column:openid"`
 	UnionID     sql.NullString `gorm:"column:unionid"`
 	Status      string         `gorm:"column:status"`

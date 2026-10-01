@@ -17,7 +17,7 @@ export default defineController({
   try{
    const result=await app.request('GET','/user/wallet/recharges',{page});
    if(this._gone || seq!==this._seq || session!==app._generation)return;
-   if(!/^\d+$/.test(String(result.user_id)) || !Array.isArray(result.items))throw Error('充值记录响应异常');
+   if(!result || typeof result.user_id!=='string' || !/^[1-9]\d{0,19}$/.test(result.user_id) || !Array.isArray(result.items))throw Error('充值记录响应异常');
    this._key='cp_wallet_recharge_'+result.user_id;this._session=session;
    const saved=wx.getStorageSync(this._key);
    this._pending=saved && typeof saved.request_id==='string' && Number.isSafeInteger(saved.amount_cents)?saved:null;

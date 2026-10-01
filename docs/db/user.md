@@ -12,7 +12,7 @@
 
 | 项目 | 约定 | 例外 |
 | --- | --- | --- |
-| 主键 | `BIGINT UNSIGNED AUTO_INCREMENT`,字段名 `id` | 无 |
+| 主键 | `BIGINT UNSIGNED AUTO_INCREMENT`,字段名 `id` | `user.id` 由业务显式分配纯数字 Snowflake，历史自增 ID 保留 |
 | 业务唯一键 | UUID v4 或业务字符串(如 `order_no`),单独字段 | 无 |
 | 时间戳 | `created_at` / `updated_at`,类型 `DATETIME(3)`(毫秒精度) | 无 |
 | **软删除** | **本期启用**:每张业务表加 `deleted_at DATETIME(3) NULL` + `deleted_by BIGINT UNSIGNED NULL`(操作者 ID);删除 = `UPDATE ... SET deleted_at = NOW()`;**所有查询默认 `WHERE deleted_at IS NULL`**;`idx_*_deleted_at` 索引加速扫描;数据兜底靠 worker 周期任务物理归档(超 3 年) | 审计日志 / 幂等表 不软删 |
@@ -172,7 +172,7 @@
 | 字段 | 类型 | 约束 | 默认 | 说明 |
 | --- | --- | --- | --- | --- |
 | `id` | `BIGINT UNSIGNED` | PK, AUTO_INCREMENT | — | 主键 |
-| `order_no` | `CHAR(32)` | UNIQUE, NOT NULL | — | 业务订单号,格式 `CH + YYYYMMDDHHmmss + 12 位随机`(用户侧展示"充电订单号") |
+| `order_no` | `VARCHAR(64)` | UNIQUE, NOT NULL | — | 新业务订单号为 `C + 北京时间 YYYYMMDDHHmmss + 设备编号 + 两位端口(01–99)`；历史编号保留 |
 | `user_id` | `BIGINT UNSIGNED` | NOT NULL | — | 关联 `user.id` |
 | `device_id` | `VARCHAR(32)` | NOT NULL | — | 充电桩设备 ID(§ 6.2 格式约定) |
 | `port_id` | `VARCHAR(32)` | NOT NULL | — | 端口 ID(同一 device 下的物理插槽) |
@@ -281,7 +281,7 @@ PARTITION BY RANGE (TO_DAYS(created_month)) (
 | 字段 | 类型 | 约束 | 默认 | 说明 |
 | --- | --- | --- | --- | --- |
 | `id` | `BIGINT UNSIGNED` | PK, AUTO_INCREMENT | — | 主键 |
-| `order_no` | `CHAR(32)` | NOT NULL | — | 业务支付单号,格式 `PY + YYYYMMDDHHmmss + 12 位随机` |
+| `order_no` | `VARCHAR(64)` | NOT NULL | — | 新业务支付单号为 `P + 独立 Snowflake`；历史编号保留 |
 | `biz_type` | `ENUM('charge','recharge')` | NOT NULL | — | **业务类型**:`charge` 充电付款 / `recharge` 钱包充值 |
 | `biz_id` | `BIGINT UNSIGNED` | NULL | NULL | **关联的业务订单 ID**:`biz_type='charge'` 时 = `charge_order.id`;`biz_type='recharge'` 时 = NULL |
 | `user_id` | `BIGINT UNSIGNED` | NOT NULL | — | 付款用户 |

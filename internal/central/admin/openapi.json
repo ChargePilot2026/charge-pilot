@@ -2362,6 +2362,26 @@
                 "balance"
               ]
             }
+          },
+          {
+            "name": "created_from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "description": "支付订单创建时间起点(包含)，ISO 8601；留空不限制。"
+          },
+          {
+            "name": "created_to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "description": "支付订单创建时间终点(包含)，ISO 8601；不早于 created_from，留空不限制。"
           }
         ],
         "responses": {
@@ -6250,12 +6270,14 @@
           },
           "order_no": {
             "type": "string",
-            "maxLength": 64
+            "maxLength": 64,
+            "description": "新编号为 C + 北京时间 yyyyMMddHHmmss + 设备编号 + 两位端口(01–99)；历史编号保留。"
           },
           "user_id": {
-            "type": "integer",
-            "format": "int64",
-            "minimum": 1
+            "type": "string",
+            "pattern": "^[1-9][0-9]{0,19}$",
+            "maxLength": 20,
+            "description": "充电用户 ID；新用户为纯数字 Snowflake，以十进制字符串传输以保留精度，历史 ID 保持原值。"
           },
           "device_id": {
             "type": "string",
@@ -6538,12 +6560,14 @@
           },
           "order_no": {
             "type": "string",
-            "maxLength": 64
+            "maxLength": 64,
+            "description": "新编号为 P + 独立 Snowflake；历史编号保留。"
           },
           "user_id": {
-            "type": "integer",
-            "format": "int64",
-            "minimum": 1
+            "type": "string",
+            "pattern": "^[1-9][0-9]{0,19}$",
+            "maxLength": 20,
+            "description": "充电用户 ID；新用户为纯数字 Snowflake，以十进制字符串传输以保留精度，历史 ID 保持原值。"
           },
           "biz_type": {
             "type": "string",

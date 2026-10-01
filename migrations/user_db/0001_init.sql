@@ -208,7 +208,7 @@ CREATE TABLE `charge_event_log` (
 -- charge_fee_receipt：计费消费事件幂等回执
 CREATE TABLE `charge_fee_receipt` (
   `charge_order_id` bigint unsigned NOT NULL COMMENT '充电订单 ID',
-  `calculation_no` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '计费结果编号',
+  `calculation_no` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '新C充电订单对应B前缀编号；历史FEE计费编号保留',
   `result_json` json NOT NULL COMMENT '业务执行结果 JSON',
   `shortfall_cents` bigint NOT NULL DEFAULT '0' COMMENT '结算费用缺口，单位分',
   `created_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '记录创建时间',
@@ -252,7 +252,7 @@ CREATE TABLE `charge_meter_review` (
 -- charge_order：充电订单(纯生命周期)
 CREATE TABLE `charge_order` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT '记录主键 ID',
-  `order_no` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '北京时间启动请求年月日时分秒+设备编号+至少两位端口号',
+  `order_no` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'C+北京时间启动请求年月日时分秒+设备编号+两位端口号01–99',
   `user_id` bigint unsigned NOT NULL COMMENT '充电用户 ID',
   `device_id` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '设备全局唯一编号',
   `port_no` tinyint unsigned NOT NULL COMMENT '设备充电端口号，从 1 开始',
@@ -647,11 +647,11 @@ CREATE TABLE `payment_callback_idempotent` (
   UNIQUE KEY `uk_txn` (`wechat_transaction_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='微信支付回调幂等(30 天保留)';
 
--- payment_order：支付订单(支持 charge / wallet_recharge)
+-- payment_order：支付订单(支持 charge / wallet_recharge / charge_debt)
 CREATE TABLE `payment_order` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT '记录主键 ID',
-  `order_no` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '业务订单编号',
-  `biz_type` enum('charge','wallet_recharge') COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '关联业务类型；取值 charge / wallet_recharge',
+  `order_no` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'P+独立Snowflake支付单号；历史编号保留',
+  `biz_type` enum('charge','wallet_recharge','charge_debt') COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '关联业务类型；取值 charge / wallet_recharge / charge_debt',
   `biz_id` bigint unsigned NOT NULL COMMENT '关联 charge_order.id 或 wallet_txn.id',
   `user_id` bigint unsigned NOT NULL COMMENT '充电用户 ID',
   `pay_method` enum('wechat','balance','mixed','coupon') COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '订单支付方式；取值 wechat / balance / mixed / coupon',
@@ -824,9 +824,28 @@ CREATE TABLE `risk_freeze_log` (
   KEY `idx_user_status` (`user_id`,`status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='风控冻结记录(本期仅频次触发)';
 
+-- snowflake_state：用户和支付编号共享的持久化 Snowflake 分配状态
+CREATE TABLE `snowflake_state` (
+  `id` tinyint unsigned NOT NULL COMMENT '分配器标识；当前仅共享节点 0，固定为 1',
+  `last_millisecond` bigint unsigned NOT NULL DEFAULT '0' COMMENT '相对 2020-01-01 UTC 的最后逻辑毫秒；防止回拨或重启重复分配',
+  `sequence` smallint unsigned NOT NULL DEFAULT '0' COMMENT '同一逻辑毫秒内的 12 位序列，取值 0–4095',
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Snowflake 编号分配状态，业务事务内行锁串行分配';
+INSERT INTO `snowflake_state` (`id`,`last_millisecond`,`sequence`) VALUES (1,0,0);
+
+-- charge_debt_payment_request：欠费支付请求幂等回执
+CREATE TABLE `charge_debt_payment_request` (
+  `request_id` char(36) NOT NULL COMMENT '客户端 UUID 请求号；重复请求复用原支付订单',
+  `debt_id` bigint unsigned NOT NULL COMMENT '欠费记录 ID，防止同请求号支付不同欠费',
+  `payment_order_id` bigint unsigned NOT NULL COMMENT '对应支付订单 ID，关联原 Snowflake 支付单号',
+  `created_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '请求创建时间',
+  PRIMARY KEY (`request_id`),
+  KEY `idx_debt` (`debt_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='欠费支付请求幂等回执';
+
 -- user：终端用户
 CREATE TABLE `user` (
-  `id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT '记录主键 ID',
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT 'Snowflake 用户 ID，由业务显式分配；兼容历史自增 ID',
   `openid` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '微信 openid',
   `unionid` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '微信开放平台用户统一标识',
   `nickname` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '用户昵称',
@@ -966,6 +985,8 @@ CREATE TABLE `wallet_txn` (
 -- 初始化数据：内置权限、角色及系统默认配置。业务与演示数据另行创建。
 
 -- +goose Down
+DROP TABLE IF EXISTS `snowflake_state`;
+DROP TABLE IF EXISTS `charge_debt_payment_request`;
 -- 仅供一次性开发/测试库回退；删除当前库全部业务表。
 DROP TABLE IF EXISTS `wallet_txn`;
 DROP TABLE IF EXISTS `wallet_risk_review`;

@@ -24,7 +24,7 @@ type Bill struct {
 	BillNo         string     `json:"bill_no" gorm:"column:bill_no"`
 	ChargeOrderID  uint64     `json:"charge_order_id" gorm:"column:charge_order_id"`
 	PaymentOrderID *uint64    `json:"payment_order_id" gorm:"column:payment_order_id"`
-	UserID         uint64     `json:"user_id" gorm:"column:user_id"`
+	UserID         uint64     `json:"user_id,string" gorm:"column:user_id"`
 	DeviceID       string     `json:"device_id" gorm:"column:device_id"`
 	PortNo         uint8      `json:"port_no" gorm:"column:port_no"`
 	ElectricCents  int64      `json:"electric_cents" gorm:"column:electric_cents"`

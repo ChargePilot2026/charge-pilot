@@ -27,7 +27,7 @@ type Debt struct {
 	DebtNo           string     `json:"debt_no" gorm:"column:debt_no"`
 	ChargeOrderID    uint64     `json:"charge_order_id" gorm:"column:charge_order_id"`
 	PaymentOrderID   uint64     `json:"payment_order_id" gorm:"column:payment_order_id"`
-	UserID           uint64     `json:"user_id" gorm:"column:user_id"`
+	UserID           uint64     `json:"user_id,string" gorm:"column:user_id"`
 	DebtCents        int64      `json:"debt_cents" gorm:"column:debt_cents"`
 	PaidCents        int64      `json:"paid_cents" gorm:"column:paid_cents"`
 	Status           string     `json:"status" gorm:"column:status"`
@@ -128,25 +128,41 @@ func (s DebtStore) OpenDebtPayment(ctx context.Context, debtID uint64, clientReq
 	var paymentOrderID uint64
 	var amountCents int64
 	var openID string
-	orderNo := "DPAY" + clientRequestID
+	var orderNo string
 	err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var existing struct {
-			ID         uint64 `gorm:"column:id"`
-			UserID     uint64 `gorm:"column:user_id"`
-			TotalCents int64  `gorm:"column:total_cents"`
-		}
-		found := tx.Table("payment_order").Where("order_no = ?", orderNo).Take(&existing)
-		if found.Error == nil {
-			paymentOrderID = existing.ID
-			amountCents = existing.TotalCents
-			return s.loadPayer(tx, existing.UserID, &openID)
-		}
-		if !errors.Is(found.Error, gorm.ErrRecordNotFound) {
-			return found.Error
-		}
 		var debt Debt
 		if err := tx.Table("charge_debt").Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", debtID).Take(&debt).Error; err != nil {
 			return err
+		}
+		// Request receipts keep retries stable without encoding their UUID in
+		// the payment number. The debt lock serializes concurrent retries.
+		var request struct{ DebtID, PaymentOrderID uint64 }
+		found := tx.Table("charge_debt_payment_request").Where("request_id = ?", clientRequestID).Take(&request)
+		var existing PaymentOrderRecord
+		if found.Error == nil {
+			if request.DebtID != debtID {
+				return ErrPaymentIntentConflict
+			}
+			if err := tx.Where("id = ?", request.PaymentOrderID).Take(&existing).Error; err != nil {
+				return err
+			}
+		} else if errors.Is(found.Error, gorm.ErrRecordNotFound) {
+			// Older requests used a deterministic DPAY + UUID number.
+			found = tx.Where("order_no = ?", "DPAY"+clientRequestID).Take(&existing)
+			if found.Error != nil && !errors.Is(found.Error, gorm.ErrRecordNotFound) {
+				return found.Error
+			}
+		} else {
+			return found.Error
+		}
+		if existing.ID != 0 {
+			if existing.UserID != debt.UserID || existing.BizType != "charge_debt" || existing.BizID != debtID {
+				return ErrPaymentIntentConflict
+			}
+			paymentOrderID = existing.ID
+			amountCents = existing.TotalCents
+			orderNo = existing.OrderNo
+			return s.loadPayer(tx, existing.UserID, &openID)
 		}
 		outstanding := debt.Outstanding()
 		if outstanding <= 0 || debt.Status == "settled" || debt.Status == "waived" {
@@ -156,9 +172,14 @@ func (s DebtStore) OpenDebtPayment(ctx context.Context, debtID uint64, clientReq
 			return err
 		}
 		amountCents = outstanding
+		var err error
+		orderNo, err = newPaymentOrderNumber(tx)
+		if err != nil {
+			return err
+		}
 		if err := tx.Table("payment_order").Create(map[string]any{
 			"order_no": orderNo, "biz_type": "charge_debt", "biz_id": debt.ID, "user_id": debt.UserID,
-			"pay_method": "wechat", "total_cents": outstanding, "paid_cents": 0, "status": "pending",
+			"pay_method": "wechat", "total_cents": outstanding, "paid_cents": 0, "status": "initiated",
 			"created_month": utcDate(),
 		}).Error; err != nil {
 			return err
@@ -166,7 +187,13 @@ func (s DebtStore) OpenDebtPayment(ctx context.Context, debtID uint64, clientReq
 		if err := tx.Raw("SELECT LAST_INSERT_ID()").Scan(&paymentOrderID).Error; err != nil {
 			return err
 		}
-		return nil
+		err = tx.Table("charge_debt_payment_request").Create(map[string]any{
+			"request_id": clientRequestID, "debt_id": debtID, "payment_order_id": paymentOrderID,
+		}).Error
+		if isMySQLDuplicate(err) {
+			return ErrPaymentIntentConflict
+		}
+		return err
 	}, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return 0, "", 0, "", err

@@ -23,7 +23,7 @@ export default defineController({
   try{
    const result=await refundApp.request('GET','/user/wallet/refunds',{page,page_size:20});
    if(this._gone || generation!==this._generation || session!==refundApp._generation)return;
-   if(!result || !/^\d+$/.test(String(result.user_id)) || !Array.isArray(result.items))throw new Error('退款列表响应异常');
+   if(!result || typeof result.user_id!=='string' || !/^[1-9]\d{0,19}$/.test(result.user_id) || !Array.isArray(result.items))throw new Error('退款列表响应异常');
    this._storageKey='cp_wallet_refund_'+result.user_id;this._ownerSession=session;
    const saved=wx.getStorageSync(this._storageKey);
    this._pending=saved && typeof saved.request_id==='string' && Number.isSafeInteger(saved.amount_cents) ? saved:null;

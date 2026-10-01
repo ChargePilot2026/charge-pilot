@@ -43,7 +43,7 @@ func (s Store) Calculate(ctx context.Context, source Source) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	out := Result{CalculationNo: fmt.Sprintf("FEE%020d", source.ChargeOrderID), Source: source, ActualFee: fee}
+	out := Result{CalculationNo: CalculationNumber(source.OrderNo, source.ChargeOrderID), Source: source, ActualFee: fee}
 	err = s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Table("fee_receipt").Clauses(clause.OnConflict{DoUpdates: clause.Assignments(map[string]any{"charge_order_id": gorm.Expr("charge_order_id")})}).Create(map[string]any{"charge_order_id": source.ChargeOrderID, "source_json": string(payload)}).Error; err != nil {
 			return err

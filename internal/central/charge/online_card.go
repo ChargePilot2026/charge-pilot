@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/ChargePilot2026/charge-pilot/internal/central/pricing"
@@ -22,7 +21,7 @@ var ErrCardBalance = fmt.Errorf("%w：钱包可用余额不足", ErrCardOperatio
 type OnlineCard struct {
 	ID     uint64 `json:"id"`
 	CardNo string `json:"card_no"`
-	UserID uint64 `json:"user_id"`
+	UserID uint64 `json:"user_id,string"`
 	Status string `json:"status"`
 }
 
@@ -223,7 +222,10 @@ func (s CardStore) Swipe(ctx context.Context, cardNo, eventID string, port ScanR
 			estimate := pricing.Estimate{Mode: pricing.ModeDeviceDuration, EstimatedKWh: "0.000", EstimatedMinutes: p.Minutes, PrepaidCents: p.PriceCents, TotalCents: p.PriceCents, ChargeMode: 4, ChargeQuantity: spec.Scheme.Normalized().Card.MaxMinutes}
 			snapshot, _ := json.Marshal(map[string]any{"rule": rule, "offer": offer, "estimate": estimate})
 			intentID := uuid.NewString()
-			payNo := "CARD" + strings.ReplaceAll(out.OperationID, "-", "")
+			payNo, err := newPaymentOrderNumber(tx)
+			if err != nil {
+				return err
+			}
 			payment := PaymentOrderRecord{OrderNo: payNo, BizType: "charge", UserID: card.UserID, PayMethod: "balance", TotalCents: p.PriceCents, PaidCents: p.PriceCents, Status: "paid", PaidAt: sql.NullTime{Time: time.Now().UTC(), Valid: true}, CreatedMonth: utcDate()}
 			if err := tx.Create(&payment).Error; err != nil {
 				return err

@@ -13,7 +13,7 @@ SET sql_mode = 'STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION,ERROR_FOR_DIVISION_BY
 -- fee_calculation：计费明细
 CREATE TABLE `fee_calculation` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT '记录主键 ID',
-  `calculation_no` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '计费结果编号',
+  `calculation_no` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '新C充电订单对应B前缀编号；历史FEE计费编号保留',
   `order_no` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '业务订单编号',
   `charge_order_id` bigint unsigned NOT NULL COMMENT '充电订单 ID',
   `user_id` bigint unsigned NOT NULL COMMENT '充电用户 ID',
@@ -59,7 +59,7 @@ CREATE TABLE `fee_receipt` (
   `charge_order_id` bigint unsigned NOT NULL COMMENT '充电订单 ID',
   `source_json` json NOT NULL COMMENT '来源事件和计量数据快照 JSON',
   `calculation_id` bigint unsigned DEFAULT NULL COMMENT '计费结果 ID',
-  `calculation_no` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '计费结果编号',
+  `calculation_no` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '新C充电订单对应B前缀编号；历史FEE计费编号保留',
   `created_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '记录创建时间',
   PRIMARY KEY (`charge_order_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='计费事件幂等回执';

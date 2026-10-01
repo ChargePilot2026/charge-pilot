@@ -11,7 +11,7 @@ function page(app) {
   });
   p.setData=value=>Object.assign(p.data,value); return p;
 }
-const profile={nickname:'测试',wallet:{available_cents:4123,frozen_cents:100},registered_at:'2026-09-26T00:00:00Z',membership_card:null};
+const profile={user_id:'7',nickname:'测试',wallet:{available_cents:4123,frozen_cents:100},registered_at:'2026-09-26T00:00:00Z',membership_card:null};
 test('anonymous profile offers login without requesting data or navigating to a missing page',async()=>{
   const p=page({globalData:{token:''},request:()=>{throw Error('unexpected request');}});
   await p.refresh(); assert.equal(p.data.needsLogin,true); assert.equal(p.data.profile,null);
@@ -29,4 +29,12 @@ test('hidden page and successful logout do not accept stale profile responses',a
   assert.equal(p.data.profile,null);
   p._gone=false; const next=p.refresh(); p.onLogout(); await new Promise(setImmediate); resolve(profile); await next;
   assert.equal(p.data.profile,null); assert.equal(p.data.needsLogin,true);
+});
+
+test('profile keeps a Snowflake ID exact and rejects numeric ID responses',async()=>{
+  let userID='9223372036854775807';
+  const p=page({globalData:{token:'access'},request:async()=>({...profile,user_id:userID})});
+  await p.refresh();assert.equal(p.data.profile.user_id,userID);
+  userID=9223372036854775807;
+  await p.refresh();assert.equal(p.data.profile,null);assert.match(p.data.error,/用户编号响应格式不正确/);
 });

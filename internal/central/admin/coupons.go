@@ -183,13 +183,14 @@ func (a ResourceAPI) grantCoupon(c *gin.Context) {
 		return
 	}
 	var in struct {
-		RequestID string `json:"request_id"`
-		UserID    uint64 `json:"user_id"`
+		RequestID string            `json:"request_id"`
+		UserID    httpapi.DecimalID `json:"user_id"`
 	}
 	if !decodeResource(c, &in) {
 		return
 	}
-	if !requestIDPattern.MatchString(in.RequestID) || in.UserID == 0 {
+	userID := uint64(in.UserID)
+	if !requestIDPattern.MatchString(in.RequestID) || userID == 0 {
 		httpapi.BadRequest(c, "请求编号或用户编号无效")
 		return
 	}
@@ -203,7 +204,7 @@ func (a ResourceAPI) grantCoupon(c *gin.Context) {
 		var receipt struct{ CouponID, UserID, CouponGrantID uint64 }
 		err := tx.Table("coupon_grant_request").Where("request_id=?", in.RequestID).Take(&receipt).Error
 		if err == nil {
-			if receipt.CouponID != id || receipt.UserID != in.UserID {
+			if receipt.CouponID != id || receipt.UserID != userID {
 				return errConflict
 			}
 			grantID = receipt.CouponGrantID
@@ -217,7 +218,7 @@ func (a ResourceAPI) grantCoupon(c *gin.Context) {
 			return errConflict
 		}
 		var user struct{ Status string }
-		if err := tx.Table("user").Clauses(clause.Locking{Strength: "UPDATE"}).Where("id=? AND deleted_at IS NULL", in.UserID).Take(&user).Error; err != nil {
+		if err := tx.Table("user").Clauses(clause.Locking{Strength: "UPDATE"}).Where("id=? AND deleted_at IS NULL", userID).Take(&user).Error; err != nil {
 			return err
 		}
 		if user.Status != "active" {
@@ -227,7 +228,7 @@ func (a ResourceAPI) grantCoupon(c *gin.Context) {
 		if err := tx.Table("coupon_grant").Where("coupon_id=?", id).Count(&total).Error; err != nil {
 			return err
 		}
-		if err := tx.Table("coupon_grant").Where("coupon_id=? AND user_id=?", id, in.UserID).Count(&perUser).Error; err != nil {
+		if err := tx.Table("coupon_grant").Where("coupon_id=? AND user_id=?", id, userID).Count(&perUser).Error; err != nil {
 			return err
 		}
 		if (coupon.TotalQuota > 0 && total >= int64(coupon.TotalQuota)) || perUser >= int64(coupon.PerUserQuota) {
@@ -237,13 +238,13 @@ func (a ResourceAPI) grantCoupon(c *gin.Context) {
 		if coupon.EndAt != nil && coupon.EndAt.Before(expires) {
 			expires = *coupon.EndAt
 		}
-		if err := tx.Table("coupon_grant").Create(map[string]any{"coupon_id": id, "user_id": in.UserID, "grant_source": "manual", "status": "unused", "expired_at": expires, "source_event_id": in.RequestID}).Error; err != nil {
+		if err := tx.Table("coupon_grant").Create(map[string]any{"coupon_id": id, "user_id": userID, "grant_source": "manual", "status": "unused", "expired_at": expires, "source_event_id": in.RequestID}).Error; err != nil {
 			return err
 		}
 		if err := tx.Raw("SELECT LAST_INSERT_ID()").Scan(&grantID).Error; err != nil {
 			return err
 		}
-		if err := tx.Table("coupon_grant_request").Create(map[string]any{"request_id": in.RequestID, "coupon_id": id, "user_id": in.UserID, "coupon_grant_id": grantID}).Error; err != nil {
+		if err := tx.Table("coupon_grant_request").Create(map[string]any{"request_id": in.RequestID, "coupon_id": id, "user_id": userID, "coupon_grant_id": grantID}).Error; err != nil {
 			return err
 		}
 		auditPending = []auditEntry{{"grant", "coupon", id, nil, in, in.RequestID}}

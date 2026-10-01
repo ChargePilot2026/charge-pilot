@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"time"
 	"unicode/utf8"
 
@@ -15,7 +16,7 @@ import (
 type PaymentOrderView struct {
 	PaymentOrderID uint64     `json:"payment_order_id"`
 	OrderNo        string     `json:"order_no"`
-	UserID         uint64     `json:"user_id"`
+	UserID         uint64     `json:"user_id,string"`
 	BizType        string     `json:"biz_type"`       // charge 充电支付，wallet_recharge 余额充值。
 	PayMethod      string     `json:"pay_method"`     // wechat 微信支付，balance 余额支付。
 	Status         string     `json:"status"`         // 支付单内部流程状态，保留关闭和失败等原因。
@@ -32,6 +33,7 @@ type PaymentOrderView struct {
 type PaymentOrderQuery struct {
 	PageQuery
 	OrderNo, BizType, PayMethod, PaymentStatus string
+	From, To                                   *time.Time
 }
 
 // PaymentOrders 直接读取支付单，充值不会被误列为充电订单。
@@ -49,6 +51,12 @@ func (s ResourceStore) PaymentOrders(ctx context.Context, q PaymentOrderQuery) (
 	}
 	if q.PaymentStatus != "" {
 		query = query.Where("("+charge.PaymentStatusSQL+")=?", q.PaymentStatus)
+	}
+	if q.From != nil {
+		query = query.Where("p.created_at >= ?", q.From.UTC())
+	}
+	if q.To != nil {
+		query = query.Where("p.created_at <= ?", q.To.UTC())
 	}
 	if err := query.Session(&gorm.Session{}).Count(&out.Total).Error; err != nil {
 		return out, err
@@ -74,10 +82,38 @@ func (a ResourceAPI) paymentOrders(c *gin.Context) {
 		httpapi.BadRequest(c, "支付单号、用途、支付方式或支付状态无效")
 		return
 	}
+	var err error
+	q.From, q.To, err = paymentTimeRange(c.Query("created_from"), c.Query("created_to"))
+	if err != nil {
+		httpapi.BadRequest(c, err.Error())
+		return
+	}
 	out, err := a.Store.PaymentOrders(c.Request.Context(), q)
 	if err != nil {
 		resourceFailure(c, err)
 		return
 	}
 	httpapi.OK(c, out)
+}
+
+func paymentTimeRange(fromRaw, toRaw string) (*time.Time, *time.Time, error) {
+	var from, to *time.Time
+	for _, bound := range []struct {
+		raw    string
+		target **time.Time
+	}{{fromRaw, &from}, {toRaw, &to}} {
+		raw, target := bound.raw, bound.target
+		if raw == "" {
+			continue
+		}
+		value, err := time.Parse(time.RFC3339Nano, raw)
+		if err != nil || value.UTC().Year() < 1000 || value.UTC().Year() > 9999 {
+			return nil, nil, errors.New("时间格式须为 ISO 8601，且在有效日期范围内")
+		}
+		*target = &value
+	}
+	if from != nil && to != nil && from.After(*to) {
+		return nil, nil, errors.New("开始时间不能晚于结束时间")
+	}
+	return from, to, nil
 }

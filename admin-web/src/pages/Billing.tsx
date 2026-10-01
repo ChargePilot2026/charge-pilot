@@ -15,7 +15,7 @@ const invoiceEndpoint = '/api/v1/admin/billing/invoices';
 interface Invoice {
   invoice_request_id: number;
   invoice_no: string;
-  user_id: number;
+  user_id: string;
   biz_type: string;
   biz_id: number;
   total_cents: number;

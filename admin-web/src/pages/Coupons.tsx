@@ -4,6 +4,7 @@ import { PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import { apiGet, apiPost, apiPut } from '../api/client';
 import { LoadError } from '../components/LoadError';
 import { TABLE_PAGINATION, useTablePagination } from '../utils/tablePagination';
+import { isChargeUserID } from '../utils/chargeUserID';
 
 const { Title } = Typography;
 
@@ -22,7 +23,7 @@ export default function CouponsPage() {
   // 记住正在看哪张券的统计，否则失败后没有可重试的目标。
   const [statsTarget, setStatsTarget] = useState<Coupon | null>(null);
   const [form] = Form.useForm();
-  const [grantForm] = Form.useForm();
+  const [grantForm] = Form.useForm<{ user_id: string }>();
   const [loadError, setLoadError] = useState<string | null>(null);
   const [editForm] = Form.useForm();
 
@@ -125,7 +126,11 @@ export default function CouponsPage() {
       </Modal>
       <Modal title={`发放优惠券${grantCoupon ? `：${grantCoupon.name}` : ''}`} open={!!grantCoupon} onCancel={() => { setGrantCoupon(null); grantForm.resetFields(); }} onOk={onGrant}>
         <Form name="coupon_grant" form={grantForm} layout="vertical">
-          <Form.Item name="user_id" label="用户编号" rules={[{ required: true }, { type: 'number', min: 1 }]}><InputNumber precision={0} style={{ width: '100%' }} /></Form.Item>
+          <Form.Item name="user_id" label="用户编号" normalize={(value: string) => value.trim()}
+            rules={[{ required: true, message: '请输入用户编号' }, { validator: (_: unknown, value?: string) =>
+              !value || isChargeUserID(value) ? Promise.resolve() : Promise.reject(new Error('请输入有效的纯数字用户编号')) }]}>
+            <Input inputMode="numeric" placeholder="完整用户编号" />
+          </Form.Item>
           <Typography.Text type="secondary">服务端会检查用户状态、模板有效期、总发放量和每人额度。网络结果不确定时保持此弹窗并重试，避免重复发券。</Typography.Text>
         </Form>
       </Modal>

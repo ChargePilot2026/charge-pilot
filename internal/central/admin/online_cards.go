@@ -25,22 +25,23 @@ func (a ResourceAPI) onlineCards(c *gin.Context) {
 }
 func (a ResourceAPI) bindOnlineCard(c *gin.Context) {
 	var in struct {
-		CardNo string `json:"card_no"`
-		UserID uint64 `json:"user_id"`
-		Reason string `json:"reason"`
+		CardNo string            `json:"card_no"`
+		UserID httpapi.DecimalID `json:"user_id"`
+		Reason string            `json:"reason"`
 	}
 	if !decodeResource(c, &in) {
 		return
 	}
+	userID := uint64(in.UserID)
 	in.CardNo = strings.TrimSpace(in.CardNo)
-	if !charge.CanonicalCardNumber(in.CardNo) || in.UserID == 0 || !validText(strings.TrimSpace(in.Reason), 500) {
+	if !charge.CanonicalCardNumber(in.CardNo) || userID == 0 || !validText(strings.TrimSpace(in.Reason), 500) {
 		httpapi.BadRequest(c, "请填写32位十进制卡号、用户及核验绑定依据")
 		return
 	}
 	var id uint64
 	err := a.Store.UserDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
 		var user struct{ Status string }
-		if err := tx.Table("user").Where("id=? AND status='active' AND deleted_at IS NULL", in.UserID).Take(&user).Error; err != nil {
+		if err := tx.Table("user").Where("id=? AND status='active' AND deleted_at IS NULL", userID).Take(&user).Error; err != nil {
 			return err
 		}
 		var card charge.OnlineCard
@@ -51,16 +52,16 @@ func (a ResourceAPI) bindOnlineCard(c *gin.Context) {
 		if found.RowsAffected > 0 {
 			id = card.ID
 			if card.Status != "unbound" {
-				if card.UserID == in.UserID && card.Status == "active" {
+				if card.UserID == userID && card.Status == "active" {
 					return nil
 				}
 				return fmt.Errorf("%w: 卡已绑定，须先由原用户解绑", errConflict)
 			}
-			if err := tx.Model(&charge.OnlineCard{}).Where("id=?", id).Updates(map[string]any{"user_id": in.UserID, "status": "active"}).Error; err != nil {
+			if err := tx.Model(&charge.OnlineCard{}).Where("id=?", id).Updates(map[string]any{"user_id": userID, "status": "active"}).Error; err != nil {
 				return err
 			}
 		} else {
-			card = charge.OnlineCard{CardNo: in.CardNo, UserID: in.UserID, Status: "active"}
+			card = charge.OnlineCard{CardNo: in.CardNo, UserID: userID, Status: "active"}
 			if err := tx.Create(&card).Error; err != nil {
 				return err
 			}

@@ -6,7 +6,7 @@ const fs=require('node:fs');
 const {stripTypeScriptTypes}=require('node:module');
 function setup(handler) {
   let app; const storage=new Map();
-  const wx={getStorageSync:k=>storage.get(k),setStorageSync:(k,v)=>storage.set(k,v),removeStorageSync:k=>storage.delete(k),request:handler};
+  const wx={getStorageSync:k=>storage.get(k),setStorageSync:(k,v)=>storage.set(k,v),removeStorageSync:k=>storage.delete(k),request:handler,login:({success})=>success({code:'test-code'})};
   vm.runInNewContext(sessionSource(),{wx,App:value=>{app=value;}});
   app.saveSession({token:'old-access',refresh_token:'old-refresh'});
   return {app,storage};
@@ -48,4 +48,23 @@ test('business errors do not refresh and logout waits for refresh before revokin
   const refresh=app.refreshSession(); const logout=app.logout();
   release(); await refresh; await logout;
   assert.equal(revoked,'Bearer new-refresh'); assert.equal(app.globalData.token,'');
+});
+
+test('login preserves legacy and full Snowflake user IDs as decimal strings',async()=>{
+  for(const userID of ['7','9223372036854775807']){
+    const {app,storage}=setup(r=>ok(r,{token:'new-access',refresh_token:'new-refresh',user_id:userID,is_new_user:false}));
+    const result=await app.login();
+    assert.equal(result.user_id,userID);
+    assert.equal(typeof result.user_id,'string');
+    assert.equal(storage.get('cp_token'),'new-access');
+  }
+});
+
+test('login rejects numeric user IDs before replacing the existing session',async()=>{
+  for(const userID of [7,9223372036854775807]){
+    const {app,storage}=setup(r=>ok(r,{token:'new-access',refresh_token:'new-refresh',user_id:userID}));
+    await assert.rejects(app.login(),/用户编号响应格式不正确/);
+    assert.equal(app.globalData.token,'old-access');
+    assert.equal(storage.get('cp_refresh_token'),'old-refresh');
+  }
 });

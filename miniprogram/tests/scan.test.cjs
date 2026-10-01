@@ -85,3 +85,18 @@ test('missing or inconsistent operating status cannot default to enabled',async(
   assert.equal(p.data.selected,null);assert.equal(p.data.offers.length,0);assert.ok(p.data.error);
  }
 });
+
+test('simulation payment parameters preserve new P Snowflake numbers and historical PAY numbers',()=>{
+ const {paymentParams}=require('../src/utils/payment');
+ for(const merchantOrderNo of ['P9223372036854775807','P12345','PAYabcdef0123456789','PAYWABCDEF0123456789']){
+  const parsed=paymentParams({provider:'simulation',prepay_id:'SIM'+merchantOrderNo});
+  assert.deepEqual(parsed,{provider:'simulation',merchantOrderNo});
+ }
+});
+
+test('simulation payment parameters reject malformed P numbers rather than returning a different order',()=>{
+ const {paymentParams}=require('../src/utils/payment');
+ for(const prepay_id of ['SIMP0','SIMP1234','SIMP012345','SIMP12345suffix','SIMP12345678901234567890','SIMP1e19']){
+  assert.throws(()=>paymentParams({provider:'simulation',prepay_id}),/支付参数异常/);
+ }
+});

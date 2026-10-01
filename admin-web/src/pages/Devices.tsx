@@ -1,5 +1,4 @@
-import { Table, Typography, Tag, Space, Button, Input, Select, Popconfirm, Alert, Tooltip, message } from 'antd';
-import { ReloadOutlined } from '@ant-design/icons';
+import { Table, Tag, Space, Button, Input, Select, Popconfirm, Alert, Tooltip, message } from 'antd';
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { apiGet, apiPut, adminSession } from '../api/client';
@@ -105,17 +104,12 @@ export default function DevicesPage({ station, embedded = false, onConfigure }: 
     {permissions.includes('device.import') && !station && <DeviceImport onComplete={()=>setQuery({...query,page:1})}/>}
   </>;
   return <div className={embedded ? 'station-devices' : 'page-container'}>
-    {embedded && <Space wrap style={{marginBottom:12}}>
-      <Typography.Title level={5} style={{margin:0}}>{station ? '本站设备' : '设备'}</Typography.Title>
-      <Button icon={<ReloadOutlined/>} onClick={() => void load()}>刷新</Button>
-      {createActions}
-    </Space>}
     <div className="list-search-row"><Space wrap>
       <Input aria-label="设备关键词" placeholder={station ? '设备编号或型号' : '设备编号、型号或站点名称'} style={{width:320,maxWidth:'100%'}} maxLength={128} value={keyword} onChange={e=>setKeyword(e.target.value)} onPressEnter={search} allowClear/>
       <Select aria-label="设备状态" style={{width:140}} value={status} onChange={setStatus} options={[{value:'',label:'全部状态'},...Object.entries(statuses).map(([value,s])=>({value,label:s.label}))]}/>
       <Button onClick={search}>查询</Button>
       <Button onClick={()=>{setKeyword('');setStatus('');setQuery({...query,page:1,keyword:'',status:''});}}>重置</Button>
-    </Space>{!embedded && <Space wrap>{createActions}</Space>}</div>
+    </Space><Space wrap>{createActions}</Space></div>
     {error && <LoadError title="设备列表加载失败" detail={error} onRetry={() => void load()} />}
     {!loading&&data.some(d=>d.runtime_available===false)&&<Alert type="warning" showIcon style={{marginBottom:12}} message="部分设备的厂商及心跳信息暂不可读取，请刷新重试。"/>}
     <Table<Device> size="middle" rowKey="id" loading={loading} dataSource={data} scroll={{x:'max-content'}}

@@ -1,6 +1,6 @@
-import { Button, Form, Input, Select, Space, Table, Tag, Tooltip } from 'antd';
+import { Button, DatePicker, Form, Input, Select, Space, Table, Tag, Tooltip } from 'antd';
 import axios from 'axios';
-import dayjs from 'dayjs';
+import dayjs, { type Dayjs } from 'dayjs';
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { type ApiEnvelope, http } from '../api/client';
@@ -11,7 +11,7 @@ import { paymentStatuses, paymentStatusInfo, paymentStatusColors, refundedAmount
 interface PaymentOrder {
   payment_order_id: number;
   order_no: string;
-  user_id: number;
+  user_id: string;
   biz_type: string;
   pay_method: string;
   status: string;
@@ -25,7 +25,7 @@ interface PaymentOrder {
   charge_order_no: string | null;
 }
 interface PaymentOrderPage { items: PaymentOrder[]; total: number; page: number; page_size: number }
-interface Filters { order_no?: string; biz_type?: string; payment_status?: string; pay_method?: string }
+interface Filters { order_no?: string; biz_type?: string; payment_status?: string; pay_method?: string; period?: [Dayjs, Dayjs] }
 const businessTypes: Record<string, string> = { charge: '充电支付', wallet_recharge: '余额充值' };
 const paymentMethods: Record<string, string> = { wechat: '微信支付', balance: '余额支付' };
 const businessTypeColors: Record<string, string> = { charge: 'blue', wallet_recharge: 'purple' };
@@ -57,9 +57,11 @@ export default function PaymentOrdersPage() {
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true); setError('');
+    const { period, ...values } = filters;
     http.get<ApiEnvelope<PaymentOrderPage>>('/api/v1/admin/payment-orders', {
       signal: controller.signal,
-      params: { ...filters, ...pagination, order_no: filters.order_no?.trim() || undefined },
+      params: { ...values, ...pagination, order_no: values.order_no?.trim() || undefined,
+        created_from: period?.[0]?.toISOString(), created_to: period?.[1]?.toISOString() },
     }).then(response => { if (!controller.signal.aborted) setPage(response.data.data); })
       .catch(cause => { if (!controller.signal.aborted) setError(errorMessage(cause)); })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
@@ -70,6 +72,7 @@ export default function PaymentOrdersPage() {
     <Form form={form} layout="inline" style={{ display: 'flex', flexWrap: 'wrap', rowGap: 12, marginBottom: 20 }}
       onFinish={values => { setFilters(values); setPagination(current => ({ ...current, page: 1 })); }}>
       <Form.Item name="order_no" label="支付单号"><Input allowClear maxLength={64} placeholder="完整支付单号" /></Form.Item>
+      <Form.Item name="period" label="创建时间"><DatePicker.RangePicker showTime format="YYYY-MM-DD HH:mm" /></Form.Item>
       <Form.Item name="biz_type" label="用途"><Select allowClear placeholder="全部用途" style={{ width: 130 }}
         options={Object.entries(businessTypes).map(([value, label]) => ({ value, label }))} /></Form.Item>
       <Form.Item name="pay_method" label="支付方式"><Select allowClear placeholder="全部方式" style={{ width: 130 }}

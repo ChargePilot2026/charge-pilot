@@ -5,12 +5,12 @@ declare const wx: any;
 interface WxApp {
   globalData: {
     apiBase: string;
-    userInfo: any;
+    userInfo: import('../src/runtime/models').ChargeUserProfile | null;
     token: string;
     refreshToken: string;
   };
   logout(): Promise<void>;
-  login(): Promise<{ token: string; user_id: number; openid: string }>;
+  login(): Promise<import('../src/runtime/models').UserLogin>;
   request<T>(method: string, path: string, data?: unknown, auth?: boolean): Promise<T>;
 }
 

@@ -73,7 +73,7 @@ func (a API) login(c *gin.Context) {
 		httpapi.Write(c, http.StatusInternalServerError, 5001, "token signing failed", nil)
 		return
 	}
-	httpapi.OK(c, gin.H{"jwt": access, "token": access, "refresh_token": refresh, "user_id": user.ID, "is_new_user": user.IsNew, "jwt_expires_in": int(accessTTL.Seconds())})
+	httpapi.OK(c, gin.H{"jwt": access, "token": access, "refresh_token": refresh, "user_id": strconv.FormatUint(user.ID, 10), "is_new_user": user.IsNew, "jwt_expires_in": int(accessTTL.Seconds())})
 }
 
 func (a API) refresh(c *gin.Context) {

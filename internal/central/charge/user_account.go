@@ -226,7 +226,11 @@ func (a UserAccountAPI) walletRecharge(c *gin.Context) {
 			return err
 		}
 		now := time.Now().UTC()
-		order = PaymentOrderRecord{OrderNo: rechargeOrderNo(in.RequestID), BizType: "wallet_recharge", UserID: user, PayMethod: "wechat", TotalCents: in.AmountCents, Status: "initiated", ExpiredAt: sql.NullTime{Time: now.Add(30 * time.Minute), Valid: true}, CreatedMonth: time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)}
+		orderNo, err := newPaymentOrderNumber(tx)
+		if err != nil {
+			return err
+		}
+		order = PaymentOrderRecord{OrderNo: orderNo, BizType: "wallet_recharge", UserID: user, PayMethod: "wechat", TotalCents: in.AmountCents, Status: "initiated", ExpiredAt: sql.NullTime{Time: now.Add(30 * time.Minute), Valid: true}, CreatedMonth: time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)}
 		if err := tx.Create(&order).Error; err != nil {
 			return err
 		}
@@ -1027,12 +1031,6 @@ func readCoordinates(c *gin.Context) (float64, float64, bool) {
 		return 0, 0, false
 	}
 	return longitude, latitude, true
-}
-
-// rechargeOrderNo 推导充值的商户订单号。
-// PAY 前缀是支付渠道模拟器和微信都要求的形式。
-func rechargeOrderNo(requestID string) string {
-	return "PAYW" + strings.ToUpper(strings.ReplaceAll(requestID, "-", ""))
 }
 
 func mustJSON(value any) string {

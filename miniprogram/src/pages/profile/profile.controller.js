@@ -23,7 +23,11 @@ export default defineController({
     if (!app.globalData.token) return;
     this.setData({loading:true});
     try {
+      /** @type {import('../../runtime/models').ChargeUserProfile} */
       const p = await app.request     ('GET', '/user/profile');
+      if (!p || typeof p.user_id !== 'string' || !/^[1-9]\d{0,19}$/.test(p.user_id)) {
+        throw new Error('用户编号响应格式不正确，请重新读取');
+      }
       if (!this._gone && generation===this._generation) this.setData({profile:{...p,
         balanceText:(p.wallet.available_cents/100).toFixed(2),frozenText:(p.wallet.frozen_cents/100).toFixed(2),
         registeredText:p.registered_at.slice(0,10),

@@ -4,10 +4,11 @@ import dayjs from 'dayjs';
 import { adminSession, http, type ApiEnvelope } from '../../api/client';
 import { LoadError } from '../../components/LoadError';
 import { TABLE_PAGINATION } from '../../utils/tablePagination';
+import { isChargeUserID } from '../../utils/chargeUserID';
 import { businessStatusInfo, paymentStatusInfo } from '../orders/presentation';
 
 export interface ChargeUser {
-  id: number;
+  id: string;
   openid: string;
   union_id: string | null;
   nickname: string | null;
@@ -16,7 +17,7 @@ export interface ChargeUser {
   status: string;
   first_seen_at: string;
   last_login_at: string | null;
-  inviter_id: number | null;
+  inviter_id: string | null;
   created_at: string;
   phone: string;
   phone_bound: boolean;
@@ -60,9 +61,9 @@ export function ChargeUserPhone({ chargeUser }: { chargeUser: Pick<ChargeUser, '
   return <Typography.Text copyable={{ text: chargeUser.phone }} style={{ fontVariantNumeric: 'tabular-nums' }}>{chargeUser.phone}</Typography.Text>;
 }
 
-type ProfileState = { userID: number | null; detail: ChargeUserDetail | null; error: string; loading: boolean };
+type ProfileState = { userID: string | null; detail: ChargeUserDetail | null; error: string; loading: boolean };
 
-export default function ChargeUserProfileDrawer({ userID, onClose }: { userID: number | null; onClose: () => void }) {
+export default function ChargeUserProfileDrawer({ userID, onClose }: { userID: string | null; onClose: () => void }) {
   const [state, setState] = useState<ProfileState>({ userID: null, detail: null, error: '', loading: false });
   const [reload, setReload] = useState(0);
   const closeRef = useRef(onClose);
@@ -71,6 +72,10 @@ export default function ChargeUserProfileDrawer({ userID, onClose }: { userID: n
   useEffect(() => {
     if (userID == null) {
       setState({ userID: null, detail: null, error: '', loading: false });
+      return;
+    }
+    if (!isChargeUserID(userID)) {
+      setState({ userID, detail: null, error: '用户编号格式不正确，请重新打开档案', loading: false });
       return;
     }
     const controller = new AbortController();
@@ -90,7 +95,9 @@ export default function ChargeUserProfileDrawer({ userID, onClose }: { userID: n
       .then(response => {
         if (!current()) return;
         const detail = response.data.data;
-        if (!detail || detail.id !== userID) throw new Error('用户档案响应不完整，请重新读取');
+        if (!detail || detail.id !== userID || detail.inviter_id != null && !isChargeUserID(detail.inviter_id)) {
+          throw new Error('用户档案响应不完整，请重新读取');
+        }
         setState({ userID, detail, error: '', loading: false });
       })
       .catch(cause => {

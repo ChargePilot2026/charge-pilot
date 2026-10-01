@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"regexp"
 	"time"
 
 	"github.com/wechatpay-apiv3/wechatpay-go/core"
@@ -18,6 +19,9 @@ import (
 )
 
 var ErrInvalidPayment = errors.New("invalid or unverified payment")
+
+// The provider requires 6–32 ASCII characters and a merchant-wide unique ID.
+var wechatOrderNumber = regexp.MustCompile(`^[0-9A-Za-z_\-|*]{6,32}$`)
 
 type PrepayRequest struct {
 	MerchantOrderNo string
@@ -83,7 +87,7 @@ func NewWechatDirect(ctx context.Context, config Config) (*WechatDirect, error) 
 }
 
 func (w *WechatDirect) Prepay(ctx context.Context, request PrepayRequest) (PrepayParams, error) {
-	if w == nil || request.MerchantOrderNo == "" || request.OpenID == "" || request.AmountCents <= 0 || !request.ExpiresAt.After(time.Now()) {
+	if w == nil || !wechatOrderNumber.MatchString(request.MerchantOrderNo) || request.OpenID == "" || request.AmountCents <= 0 || !request.ExpiresAt.After(time.Now()) {
 		return PrepayParams{}, ErrInvalidPayment
 	}
 	resp, _, err := w.jsapi.PrepayWithRequestPayment(ctx, jsapi.PrepayRequest{

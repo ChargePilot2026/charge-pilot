@@ -50,10 +50,7 @@ func TestLoginAndRefreshIntegration(t *testing.T) {
 	cache := redis.NewClient(options)
 	defer cache.Close()
 	store := UserStore{DB: userORM}
-	openid := "go-test-login-identity-20260928"
-	_, _ = db.ExecContext(ctx, "DELETE FROM wallet_account WHERE user_id IN (SELECT id FROM user WHERE openid = ?)", openid)
-	_, _ = db.ExecContext(ctx, "DELETE FROM user WHERE openid = ?", openid)
-	_, _ = db.ExecContext(ctx, "DELETE FROM user_login_identity WHERE openid = ?", []byte(openid))
+	openid := "go-test-login-" + uuidPart(t)
 	defer db.ExecContext(ctx, "DELETE FROM wallet_account WHERE user_id IN (SELECT id FROM user WHERE openid = ?)", openid)
 	defer db.ExecContext(ctx, "DELETE FROM user WHERE openid = ?", openid)
 	defer db.ExecContext(ctx, "DELETE FROM user_login_identity WHERE openid = ?", []byte(openid))
@@ -80,6 +77,9 @@ func TestLoginAndRefreshIntegration(t *testing.T) {
 	if newCount != 1 {
 		t.Fatalf("created %d users", newCount)
 	}
+	if users[0].ID <= (1<<53)-1 || users[0].ID > (1<<63)-1 {
+		t.Fatalf("new user ID is not a standard 63-bit Snowflake: %d", users[0].ID)
+	}
 	var count int
 	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM wallet_account WHERE user_id = ?", users[0].ID).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("wallet count=%d err=%v", count, err)
@@ -101,10 +101,14 @@ func TestLoginAndRefreshIntegration(t *testing.T) {
 	if _, _, _, err := sessions.Rotate(ctx, original); !errors.Is(err, ErrInvalidRefresh) {
 		t.Fatalf("old refresh reused: %v", err)
 	}
+	rotated, rotatedSID, newest, err := sessions.Rotate(ctx, next)
+	if err != nil || rotated.ID != users[0].ID || rotatedSID != sid {
+		t.Fatalf("second rotate lost the user ID: %+v %s %v", rotated, rotatedSID, err)
+	}
 	if err := sessions.Revoke(ctx, original); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := sessions.Rotate(ctx, next); !errors.Is(err, ErrInvalidRefresh) {
+	if _, _, _, err := sessions.Rotate(ctx, newest); !errors.Is(err, ErrInvalidRefresh) {
 		t.Fatalf("logout did not revoke: %v", err)
 	}
 	if _, err := db.ExecContext(ctx, "UPDATE user SET status = 'frozen' WHERE id = ?", users[0].ID); err != nil {
@@ -160,17 +164,35 @@ func TestAuthHTTPIntegration(t *testing.T) {
 		Data struct {
 			JWT     string `json:"jwt"`
 			Refresh string `json:"refresh_token"`
+			UserID  string `json:"user_id"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &login); err != nil {
 		t.Fatal(err)
 	}
+	userID, err := strconv.ParseUint(login.Data.UserID, 10, 64)
+	if err != nil || userID <= (1<<53)-1 {
+		t.Fatalf("login user ID must be an exact decimal Snowflake string: %q", login.Data.UserID)
+	}
+	claims, err := jwt.Verify(login.Data.JWT, "user", time.Now())
+	if err != nil || claims.Subject != login.Data.UserID {
+		t.Fatalf("JWT user ID differs from the login response: %+v %v", claims, err)
+	}
+	defer cache.Del(ctx, sessionKey(claims.SessionID))
 	request = httptest.NewRequest(http.MethodGet, "/api/v1/user/profile", nil)
 	request.Header.Set("Authorization", "Bearer "+login.Data.JWT)
 	response = httptest.NewRecorder()
 	router.ServeHTTP(response, request)
 	if response.Code != 200 {
 		t.Fatalf("profile: %d %s", response.Code, response.Body.String())
+	}
+	var profile struct {
+		Data struct {
+			UserID string `json:"user_id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &profile); err != nil || profile.Data.UserID != login.Data.UserID {
+		t.Fatalf("profile user ID differs from the login response: %+v %v", profile, err)
 	}
 	request = httptest.NewRequest(http.MethodPost, "/api/v1/public/auth/refresh", nil)
 	request.Header.Set("Authorization", "Bearer "+login.Data.Refresh)
@@ -189,6 +211,13 @@ func TestAuthHTTPIntegration(t *testing.T) {
 	}
 	if refresh.Data.Refresh == login.Data.Refresh || refresh.Data.Refresh == "" {
 		t.Fatal("refresh token not rotated")
+	}
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/public/auth/refresh", nil)
+	request.Header.Set("Authorization", "Bearer "+refresh.Data.Refresh)
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != 200 {
+		t.Fatalf("second refresh lost the user ID: %d %s", response.Code, response.Body.String())
 	}
 	request = httptest.NewRequest(http.MethodPost, "/api/v1/public/auth/refresh", nil)
 	request.Header.Set("Authorization", "Bearer "+login.Data.Refresh)
@@ -210,6 +239,84 @@ func TestAuthHTTPIntegration(t *testing.T) {
 	router.ServeHTTP(response, request)
 	if response.Code != 401 {
 		t.Fatalf("revoked access token accepted: %d", response.Code)
+	}
+}
+
+func TestLegacyUserKeepsIDIntegration(t *testing.T) {
+	url := os.Getenv("TEST_USER_DATABASE_URL")
+	if url == "" {
+		t.Skip("set disposable test database URL")
+	}
+	ctx := context.Background()
+	db, err := dbconn.Open(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	orm, err := dbconn.WrapGORM(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	openid := "go-test-legacy-" + uuidPart(t)
+	legacyID := uint64(time.Now().UnixNano()%1_000_000_000_000) + 1_000_000
+	if _, err := db.ExecContext(ctx, "INSERT INTO user(id,openid) VALUES(?,?)", legacyID, openid); err != nil {
+		t.Fatal(err)
+	}
+	defer db.ExecContext(ctx, "DELETE FROM user WHERE openid=?", openid)
+	defer db.ExecContext(ctx, "DELETE FROM user_login_identity WHERE openid=?", []byte(openid))
+	store := UserStore{DB: orm}
+	for range 2 {
+		user, err := store.Login(ctx, openid, "")
+		if err != nil || user.ID != legacyID || user.IsNew {
+			t.Fatalf("legacy user was reassigned: %+v %v", user, err)
+		}
+	}
+}
+
+func TestLegacyNumericSessionRefreshIntegration(t *testing.T) {
+	redisURL := os.Getenv("TEST_REDIS_URL")
+	if redisURL == "" {
+		t.Skip("set disposable Redis URL")
+	}
+	options, err := redis.ParseURL(redisURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := redis.NewClient(options)
+	defer cache.Close()
+	ctx := context.Background()
+	sessions := Sessions{Redis: cache}
+	const legacyID = uint64(923456789012345678)
+	sid, token, err := sessions.Create(ctx, User{ID: legacyID, OpenID: "go-test-legacy-" + uuidPart(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cache.Del(ctx, sessionKey(sid))
+	stored, err := cache.Get(ctx, sessionKey(sid)).Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var legacy map[string]json.RawMessage
+	if err := json.Unmarshal(stored, &legacy); err != nil {
+		t.Fatal(err)
+	}
+	legacy["uid"] = json.RawMessage(strconv.FormatUint(legacyID, 10))
+	stored, err = json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.Set(ctx, sessionKey(sid), stored, refreshTTL).Err(); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		user, rotatedSID, next, err := sessions.Rotate(ctx, token)
+		if err != nil || user.ID != legacyID || rotatedSID != sid {
+			t.Fatalf("legacy session no longer refreshes: %+v %s %v", user, rotatedSID, err)
+		}
+		token = next
+	}
+	if err := sessions.Revoke(ctx, token); err != nil {
+		t.Fatal(err)
 	}
 }
 

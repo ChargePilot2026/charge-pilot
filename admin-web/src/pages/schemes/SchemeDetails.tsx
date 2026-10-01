@@ -1,4 +1,3 @@
-import { TABLE_PAGINATION } from '../../utils/tablePagination';
 import { Card, Descriptions, Space, Table, Tabs, Tag, Typography } from 'antd';
 import { type PackageMode, type Scheme, clock, displayLabels, modes, money } from './model';
 
@@ -10,7 +9,7 @@ const algorithms = {
 
 export default function SchemeDetails({ scheme }: { scheme: Scheme }) {
   const packages = (mode: PackageMode) => <Card size="small" title={`${modes[mode]}套餐`}>
-    <Table size="middle" rowKey="id" pagination={TABLE_PAGINATION} dataSource={scheme.packages.filter(p => p.mode === mode)} scroll={{ x: 480 }} columns={[
+    <Table size="middle" rowKey="id" pagination={false} dataSource={scheme.packages.filter(p => p.mode === mode)} scroll={{ x: 480 }} columns={[
       { title: '套餐', dataIndex: 'name' },
       { title: mode === 'amount' ? '充电预算' : '支付价格', render: (_, p) => money(p.price_cents) },
       ...(mode === 'duration' ? [{ title: '购买时长', render: (_: unknown, p: Scheme['packages'][number]) => `${p.minutes} 分钟` }]
@@ -31,7 +30,7 @@ export default function SchemeDetails({ scheme }: { scheme: Scheme }) {
           {amount.algorithm === 'server_energy' ? <Descriptions size="small" column={{ xs: 1, sm: 2 }} items={[
             { key: 'electric', label: '电费', children: `${money(period.electric_cents!)} / 度` },
             { key: 'service', label: '服务费', children: `${money(period.service_cents!)} / 度` },
-          ]} /> : <Table size="middle" pagination={TABLE_PAGINATION} rowKey="tierIndex" dataSource={period.tiers?.map((tier, tierIndex) => ({ ...tier, tierIndex }))} scroll={{ x: 480 }} columns={[
+          ]} /> : <Table size="middle" pagination={false} rowKey="tierIndex" dataSource={period.tiers?.map((tier, tierIndex) => ({ ...tier, tierIndex }))} scroll={{ x: 480 }} columns={[
             { title: '功率范围（含上下限）', render: (_, tier) => `${tier.tierIndex ? period.tiers![tier.tierIndex - 1].max_watts + 1 : 0}～${tier.max_watts} W` },
             { title: '电费', render: (_, tier) => `${money(tier.electric_cents)} / 小时` },
             { title: '服务费', render: (_, tier) => `${money(tier.service_cents)} / 小时` },

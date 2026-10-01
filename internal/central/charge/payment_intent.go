@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"strings"
 	"time"
 
 	"github.com/ChargePilot2026/charge-pilot/internal/central/payment"
@@ -22,7 +21,7 @@ type PaymentIntent struct {
 	IntentID        string           `json:"intent_id"`
 	MerchantOrderNo string           `json:"merchant_order_no"`
 	PaymentOrderID  uint64           `json:"payment_order_id"`
-	UserID          uint64           `json:"user_id"`
+	UserID          uint64           `json:"user_id,string"`
 	OpenID          string           `json:"-"`
 	DeviceID        string           `json:"device_id"`
 	PortNo          uint8            `json:"port_no"`
@@ -152,7 +151,7 @@ func (s PaymentIntentStore) Reserve(ctx context.Context, input IntentInput) (Pay
 		return PaymentIntent{}, err
 	}
 	intentID := uuid.NewString()
-	merchantOrderNo := "PAY" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	var merchantOrderNo string
 	expiresAt := time.Now().UTC().Add(5 * time.Minute).Truncate(time.Millisecond)
 	snapshot, err := json.Marshal(struct {
 		Rule       pricing.Rule     `json:"rule"`
@@ -179,6 +178,10 @@ func (s PaymentIntentStore) Reserve(ctx context.Context, input IntentInput) (Pay
 			return err
 		}
 		openid = identity.OpenID
+		merchantOrderNo, err = newPaymentOrderNumber(tx)
+		if err != nil {
+			return err
+		}
 		payable := estimate.TotalCents - discount
 		paymentOrder := PaymentOrderRecord{OrderNo: merchantOrderNo, BizType: "charge", BizID: 0,
 			UserID: input.UserID, PayMethod: "wechat", TotalCents: payable,

@@ -18,17 +18,17 @@ import (
 
 // ChargeUserRow 是后台充电用户列表的一行。
 type ChargeUserRow struct {
-	ID        uint64     `json:"id" gorm:"column:id"`                       // 充电用户主键，订单/钱包/券/报障都以它为外键
-	OpenID    string     `json:"openid" gorm:"column:openid"`               // 微信 openid，唯一登录身份
-	UnionID   *string    `json:"union_id" gorm:"column:unionid"`            // 微信 unionid；指针，仅同一开放平台账号下有值
-	Nickname  *string    `json:"nickname" gorm:"column:nickname"`           // 微信昵称；指针，未授权昵称时为 null，前端需回退到"用户 #id"
-	AvatarURL *string    `json:"avatar_url" gorm:"column:avatar_url"`       // 头像地址；指针，同上
-	Gender    string     `json:"gender" gorm:"column:gender"`               // 性别：unknown/male/female，未授权恒为 unknown
-	Status    string     `json:"status" gorm:"column:status"`               // 账号状态：active 正常 / frozen 冻结
-	FirstSeen time.Time  `json:"first_seen_at" gorm:"column:first_seen_at"` // 首次出现时间，即注册时间
-	LastLogin *time.Time `json:"last_login_at" gorm:"column:last_login_at"` // 最后登录时间；指针，从未登录过为 null
-	InviterID *uint64    `json:"inviter_id" gorm:"column:inviter_id"`       // 邀请人用户 ID；指针，自然注册无邀请人
-	CreatedAt time.Time  `json:"created_at" gorm:"column:created_at"`       // 记录创建时间
+	ID        uint64     `json:"id,string" gorm:"column:id"`                 // 充电用户主键，订单/钱包/券/报障都以它为外键
+	OpenID    string     `json:"openid" gorm:"column:openid"`                // 微信 openid，唯一登录身份
+	UnionID   *string    `json:"union_id" gorm:"column:unionid"`             // 微信 unionid；指针，仅同一开放平台账号下有值
+	Nickname  *string    `json:"nickname" gorm:"column:nickname"`            // 微信昵称；指针，未授权昵称时为 null，前端需回退到"用户 #id"
+	AvatarURL *string    `json:"avatar_url" gorm:"column:avatar_url"`        // 头像地址；指针，同上
+	Gender    string     `json:"gender" gorm:"column:gender"`                // 性别：unknown/male/female，未授权恒为 unknown
+	Status    string     `json:"status" gorm:"column:status"`                // 账号状态：active 正常 / frozen 冻结
+	FirstSeen time.Time  `json:"first_seen_at" gorm:"column:first_seen_at"`  // 首次出现时间，即注册时间
+	LastLogin *time.Time `json:"last_login_at" gorm:"column:last_login_at"`  // 最后登录时间；指针，从未登录过为 null
+	InviterID *uint64    `json:"inviter_id,string" gorm:"column:inviter_id"` // 邀请人用户 ID；指针，自然注册无邀请人
+	CreatedAt time.Time  `json:"created_at" gorm:"column:created_at"`        // 记录创建时间
 
 	// 以下几列不在主查询里联表，由 decorateChargeUsers 按当页 ID 批量回填。
 	// 手机号尤其只能这么做：user.phone_enc 是 AES-GCM 密文，phone_hash 是不可逆的

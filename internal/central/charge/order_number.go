@@ -11,7 +11,7 @@ import (
 // The start request is numbered before the device ACK exists. Keep this number
 // immutable for payment, command and callback correlation; StartedAt records ACK time.
 func chargeOrderNumber(at time.Time, device string, port uint8) (string, error) {
-	if at.IsZero() || device == "" || port == 0 {
+	if at.IsZero() || device == "" || port == 0 || port > 99 {
 		return "", ErrPaymentIntentConflict
 	}
 	for _, r := range device {
@@ -19,7 +19,11 @@ func chargeOrderNumber(at time.Time, device string, port uint8) (string, error) 
 			return "", ErrPaymentIntentConflict
 		}
 	}
-	no := fmt.Sprintf("%s%s%02d", pricingTime(at), device, port)
+	stamp := pricingTime(at)
+	if len(stamp) != 14 {
+		return "", ErrPaymentIntentConflict
+	}
+	no := fmt.Sprintf("C%s%s%02d", stamp, device, port)
 	if len(no) > 64 {
 		return "", ErrPaymentIntentConflict
 	}

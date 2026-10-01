@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,10 +20,41 @@ var ErrInvalidRefresh = errors.New("invalid or expired refresh token")
 const refreshTTL = 7 * 24 * time.Hour
 
 type sessionRecord struct {
-	UserID   uint64   `json:"uid"`
-	OpenID   string   `json:"openid"`
-	Digest   string   `json:"digest"`
-	Previous []string `json:"previous,omitempty"`
+	UserID   sessionUserID `json:"uid"`
+	OpenID   string        `json:"openid"`
+	Digest   string        `json:"digest"`
+	Previous []string      `json:"previous,omitempty"`
+}
+
+// Redis Lua cjson represents numbers as doubles. Keep user IDs as decimal strings,
+// while accepting the integer JSON values written by earlier versions.
+type sessionUserID uint64
+
+func (id sessionUserID) MarshalJSON() ([]byte, error) {
+	return json.Marshal(strconv.FormatUint(uint64(id), 10))
+}
+
+func (id *sessionUserID) UnmarshalJSON(raw []byte) error {
+	value := string(raw)
+	if len(raw) > 0 && raw[0] == '"' {
+		if err := json.Unmarshal(raw, &value); err != nil {
+			return err
+		}
+	}
+	if value == "" {
+		return ErrInvalidRefresh
+	}
+	for _, digit := range value {
+		if digit < '0' || digit > '9' {
+			return ErrInvalidRefresh
+		}
+	}
+	parsed, err := strconv.ParseUint(value, 10, 64)
+	if err != nil || parsed == 0 {
+		return ErrInvalidRefresh
+	}
+	*id = sessionUserID(parsed)
+	return nil
 }
 
 type Sessions struct{ Redis *redis.Client }
@@ -37,7 +69,7 @@ func (s Sessions) Create(ctx context.Context, user User) (string, string, error)
 		return "", "", err
 	}
 	token := "RT_" + sid + "." + secret
-	record, err := json.Marshal(sessionRecord{UserID: user.ID, OpenID: user.OpenID, Digest: digest(secret)})
+	record, err := json.Marshal(sessionRecord{UserID: sessionUserID(user.ID), OpenID: user.OpenID, Digest: digest(secret)})
 	if err != nil {
 		return "", "", err
 	}
@@ -52,6 +84,12 @@ local value = redis.call('GET', KEYS[1])
 if not value then return false end
 local record = cjson.decode(value)
 if record.digest ~= ARGV[1] then return false end
+if type(record.uid) == 'number' then
+  -- Read the original decimal digits, before cjson can round a legacy ID.
+  local uid = string.match(value, '"uid"%s*:%s*(%d+)%s*[,}]')
+  if not uid then return false end
+  record.uid = uid
+end
 record.digest = ARGV[2]
 record.previous = record.previous or {}
 table.insert(record.previous, ARGV[1])
@@ -84,7 +122,7 @@ func (s Sessions) Rotate(ctx context.Context, token string) (User, string, strin
 	if err := json.Unmarshal([]byte(value), &record); err != nil {
 		return User{}, "", "", err
 	}
-	return User{ID: record.UserID, OpenID: record.OpenID}, sid, "RT_" + sid + "." + newSecret, nil
+	return User{ID: uint64(record.UserID), OpenID: record.OpenID}, sid, "RT_" + sid + "." + newSecret, nil
 }
 
 func (s Sessions) Revoke(ctx context.Context, token string) error {
