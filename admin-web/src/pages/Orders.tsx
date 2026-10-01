@@ -1,5 +1,5 @@
 import { Alert, Button, DatePicker, Descriptions, Drawer, Form, Input, Select, Space, Spin, Table, Tabs, Tag, Timeline, Tooltip, Typography } from 'antd';
-import { DownOutlined, UpOutlined } from '@ant-design/icons';
+import { CreditCardOutlined, DownOutlined, QrcodeOutlined, UpOutlined, WalletOutlined } from '@ant-design/icons';
 import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import dayjs, { Dayjs } from 'dayjs';
@@ -64,7 +64,7 @@ interface Filters {
   period?: [Dayjs, Dayjs];
 }
 const refunds: Record<string, string> = { none: '无退款', processing: '退款中', refunded: '已全额退款', partial_refunded: '部分退款' };
-const businessStatusColors: Record<string, string> = { pending_start: '#ffa940', charging: '#4096ff', completed: '#73d13d' };
+const businessStatusColors: Record<string, string> = { pending_start: '#ffa940', charging: '#4096ff', completed: 'default' };
 const paymentStatusColors: Record<string, string> = { pending: '#ffa940', paid: '#73d13d', refunded: '#ff4d4f', partial_refunded: '#ff7a45' };
 const time = (value: string | null) => value ? dayjs(value).format('YYYY-MM-DD HH:mm:ss') : '—';
 const money = (value: number | null) => value == null ? '待结算' : `¥${(value / 100).toFixed(2)}`;
@@ -93,9 +93,9 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : '加载失败，请稍后重试';
 }
 const startSources: Record<string, string> = { payment: '扫码支付', balance: '余额支付', card: '在线卡' };
-const startSourceColors: Record<string, string> = { payment: '#73d13d', balance: '#36cfc9', card: '#4096ff' };
+const startSourceIcons = { payment: <QrcodeOutlined />, balance: <WalletOutlined />, card: <CreditCardOutlined /> };
 const startSourceTag = (source: Order['start_source']) => source && startSources[source]
-  ? <Tag color={startSourceColors[source]}>{startSources[source]}</Tag> : '—';
+  ? <Tag icon={startSourceIcons[source]}>{startSources[source]}</Tag> : '—';
 function initialFilters(orderNo?: string): Filters { return { station_id: 0, order_no: orderNo }; }
 
 export default function OrdersPage() {
