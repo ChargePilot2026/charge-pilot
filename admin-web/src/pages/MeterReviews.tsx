@@ -4,6 +4,7 @@ import dayjs from 'dayjs';
 import { adminSession, apiGet, apiPost } from '../api/client';
 import { money } from './schemes/model';
 import { LoadError } from '../components/LoadError';
+import { DEFAULT_PAGE_SIZE, TABLE_PAGINATION } from '../utils/tablePagination';
 
 type Segment = { started_at:string; ended_at:string; energy_wh:number };
 type Source = { offer?:{price_cents:number}; meter:{ started_at:string; ended_at:string; charged_wh:number; charged_seconds:number; segments?:Segment[] }; rule:{spec:{electric?:{periods:{end_minute:number;electric_cents:number;service_cents:number}[]};scheme?:{name:string}}} };
@@ -12,14 +13,14 @@ type Entry = { charge_order_id:number; order_no:string; reason:string; status:st
 const labels:Record<string,string> = {pending:'待核实',resolved:'已完成计费',awaiting_second:'待第二人复核',approved:'已复核通过',rejected:'已拒绝'};
 const format = (v:string)=>dayjs(v).format('YYYY-MM-DD HH:mm:ss');
 export default function MeterReviews(){
- const [rows,setRows]=useState<Entry[]>([]),[total,setTotal]=useState(0),[page,setPage]=useState(1),[status,setStatus]=useState('pending'),[keyword,setKeyword]=useState('');
+ const [rows,setRows]=useState<Entry[]>([]),[total,setTotal]=useState(0),[page,setPage]=useState(1),[pageSize,setPageSize]=useState<number>(DEFAULT_PAGE_SIZE),[status,setStatus]=useState('pending'),[keyword,setKeyword]=useState('');
  const [loading,setLoading]=useState(false),[error,setError]=useState(''),[selected,setSelected]=useState<Entry|null>(null),[editing,setEditing]=useState(false),[amountOpen,setAmountOpen]=useState(false),[rejecting,setRejecting]=useState(false),[saving,setSaving]=useState(false);
  const [reason,setReason]=useState(''),[request,setRequest]=useState(''),[epoch,setEpoch]=useState<string|null>(null);
  const [form]=Form.useForm(); const [amountForm]=Form.useForm();
  let actor=0,canReview=false;
  try{const p=JSON.parse(localStorage.getItem('cp_admin')||'null');actor=Number(p?.admin_user_id);canReview=p?.role==='customer_finance'&&p?.permissions?.includes('billing.meter.review');}catch{}
- async function load(){setLoading(true);setError('');try{const data=await apiGet<{items:Entry[];total:number}>('/api/v1/admin/billing/meter-reviews',{page,page_size:20,status,keyword});setRows(data.items);setTotal(data.total);}catch(e:any){setError(e.message||'核实队列读取失败');}finally{setLoading(false);}}
- useEffect(()=>{void load();},[page,status]);
+ async function load(){setLoading(true);setError('');try{const data=await apiGet<{items:Entry[];total:number}>('/api/v1/admin/billing/meter-reviews',{page,page_size:pageSize,status,keyword});setRows(data.items);setTotal(data.total);}catch(e:any){setError(e.message||'核实队列读取失败');}finally{setLoading(false);}}
+ useEffect(()=>{void load();},[page,pageSize,status]);
  const latest=selected?.reviews[0];
  function open(row:Entry){setSelected(row);setEditing(false);setEpoch(adminSession.epoch());}
  function propose(){if(!selected)return;setRequest(crypto.randomUUID());setEditing(true);form.setFieldsValue({reason:'',segments:[{started_at:format(selected.source.meter.started_at),ended_at:format(selected.source.meter.ended_at),energy_wh:selected.source.meter.charged_wh}]});}
@@ -29,13 +30,13 @@ export default function MeterReviews(){
  return <>
   <Space wrap style={{marginBottom:12}}><Input aria-label="核实订单号" placeholder="订单号" value={keyword} onChange={e=>setKeyword(e.target.value)}/><Select aria-label="核实状态" value={status} onChange={v=>{setStatus(v);setPage(1);}} options={[{value:'pending',label:'待核实'},{value:'resolved',label:'已完成计费'},{value:'',label:'全部'}]}/><Button onClick={()=>void load()} loading={loading}>查询核实队列</Button></Space>
   {error&&<LoadError title="计量核实队列加载失败" detail={error} onRetry={() => void load()}/>}
-  <Table rowKey="charge_order_id" loading={loading} dataSource={rows} pagination={{current:page,pageSize:20,total,onChange:setPage}} columns={[{title:'订单号',dataIndex:'order_no'},{title:'原因',dataIndex:'reason'},{title:'实际电量',render:(_,r)=>`${r.source?.meter?.charged_wh??'—'} Wh`},{title:'状态',render:(_,r)=><Tag>{labels[r.status==='resolved'?'resolved':r.reviews[0]?.status||r.status]}</Tag>},{title:'操作',render:(_,r)=><Button disabled={!r.source?.meter || !r.source?.rule} onClick={()=>open(r)}>查看核实</Button>}]}/>
+  <Table size="middle" rowKey="charge_order_id" loading={loading} dataSource={rows} pagination={{...TABLE_PAGINATION,current:page,pageSize,total,onChange:(nextPage,nextPageSize)=>{setPage(nextPageSize===pageSize?nextPage:1);setPageSize(nextPageSize);}}} columns={[{title:'订单号',dataIndex:'order_no'},{title:'原因',dataIndex:'reason'},{title:'实际电量',render:(_,r)=>`${r.source?.meter?.charged_wh??'—'} Wh`},{title:'状态',render:(_,r)=><Tag>{labels[r.status==='resolved'?'resolved':r.reviews[0]?.status||r.status]}</Tag>},{title:'操作',render:(_,r)=><Button disabled={!r.source?.meter || !r.source?.rule} onClick={()=>open(r)}>查看核实</Button>}]}/>
   <Drawer title="实际计量核实" width={800} open={!!selected} onClose={()=>{if(!saving){setSelected(null);setEditing(false);}}}>
    {selected&&<>
     <Alert type="info" showIcon message="可补充可靠分段读数，或依据设备原始记录填写最终收费金额。证据不足时可全额退款；最终实收不能超过预付金额。"/>
     {!selected.source.rule.spec.electric?.periods?.length&&<Alert type="info" message="本订单不使用分时电量计费，或缺少可靠计量；可填写最终收费金额及核对依据。"/>}<Descriptions column={1} items={[{key:'order',label:'订单',children:selected.order_no},{key:'time',label:'原始时段',children:`${format(selected.source.meter.started_at)} 至 ${format(selected.source.meter.ended_at)}`},{key:'budget',label:'预付上限',children:money(selected.source.offer?.price_cents??0)},{key:'wh',label:'实际总电量',children:`${selected.source.meter.charged_wh} Wh`},{key:'rates',label:'冻结电价（分/kWh）',children:(selected.source.rule.spec.electric?.periods||[]).map(p=>`至当天${p.end_minute}分钟: 电费 ${p.electric_cents??'功率档位'}，服务费 ${p.service_cents??'功率档位'}`).join('；')}]}/>
     {canReview&&selected.status==='pending'&&<Button onClick={()=>{setRequest(crypto.randomUUID());amountForm.setFieldsValue({electric:0,service:0,reason:''});setAmountOpen(true);}}>填写最终收费 / 全额退款</Button>}
-    {selected.reviews.map(r=><div key={r.id} style={{marginBottom:16}}><Typography.Text strong>{labels[r.status]} · 首次核实人 {r.first_reviewer_id} · 复核人 {r.second_reviewer_id||'—'}</Typography.Text><p>依据：{r.reason}{r.reject_reason?`；拒绝：${r.reject_reason}`:''}</p><Table size="small" pagination={false} rowKey="started_at" dataSource={r.corrected.meter.segments} columns={[{title:'开始',dataIndex:'started_at',render:format},{title:'结束',dataIndex:'ended_at',render:format},{title:'电量 Wh',dataIndex:'energy_wh'}]}/></div>)}
+    {selected.reviews.map(r=><div key={r.id} style={{marginBottom:16}}><Typography.Text strong>{labels[r.status]} · 首次核实人 {r.first_reviewer_id} · 复核人 {r.second_reviewer_id||'—'}</Typography.Text><p>依据：{r.reason}{r.reject_reason?`；拒绝：${r.reject_reason}`:''}</p><Table size="middle" pagination={TABLE_PAGINATION} rowKey="started_at" dataSource={r.corrected.meter.segments} columns={[{title:'开始',dataIndex:'started_at',render:format},{title:'结束',dataIndex:'ended_at',render:format},{title:'电量 Wh',dataIndex:'energy_wh'}]}/></div>)}
     {canReview&&selected.status==='pending'&&!editing&&(selected.source.rule.spec.electric?.periods?.length??0)>0&&(!latest||latest.status==='rejected')&&<Button type="primary" onClick={propose}>填写分段读数</Button>}
     {canReview&&latest?.status==='awaiting_second'&&latest.first_reviewer_id!==actor&&<Space><Button type="primary" loading={saving} onClick={()=>void decide(true)}>确认读数并恢复计费</Button><Button danger onClick={()=>{setReason('');setRejecting(true);}}>拒绝读数</Button></Space>}
     {latest?.status==='awaiting_second'&&latest.first_reviewer_id===actor&&<Alert type="info" message="等待另一名财务人员复核，不能自行确认。"/>}

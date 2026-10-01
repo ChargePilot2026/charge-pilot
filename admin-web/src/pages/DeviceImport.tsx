@@ -1,3 +1,4 @@
+import { TABLE_PAGINATION } from '../utils/tablePagination';
 import { Alert, Button, Modal, Space, Table, Typography } from 'antd';
 import { useState } from 'react';
 import axios from 'axios';
@@ -34,13 +35,13 @@ export default function DeviceImport({ onComplete }: { onComplete: () => void })
           catch (e) { setError(message(e)); }
         }} />
         {error && <LoadError title="导入批次加载失败" detail={error} />}
-        <Table rowKey="device_id" size="small" dataSource={devices} pagination={{ pageSize: 5 }} columns={[
+        <Table rowKey="device_id" size="middle" dataSource={devices} pagination={TABLE_PAGINATION} columns={[
           { title: '设备 ID', dataIndex: 'device_id' }, { title: '厂商 ID', dataIndex: 'vendor_id' },
           { title: '站点 ID', dataIndex: 'station_id' }, { title: '端口数', dataIndex: 'port_count' }, { title: '型号', dataIndex: 'model' },
         ]} />
         <Button type="primary" disabled={!devices.length} loading={busy} onClick={() => perform()}>确认导入 {devices.length} 台</Button>
         <Button disabled={busy} onClick={() => refresh().catch(e => setError(message(e)))}>刷新导入记录</Button>
-        <Table rowKey="import_id" size="small" dataSource={jobs} pagination={{ pageSize: 5 }} columns={[
+        <Table rowKey="import_id" size="middle" dataSource={jobs} pagination={TABLE_PAGINATION} columns={[
           { title: '批次', dataIndex: 'import_id' }, { title: '状态', dataIndex: 'status', render: value => ({ completed: '已完成', failed: '失败', pending: '待同步' }[value as string] || value) },
           { title: '错误', dataIndex: 'last_error' }, { title: '操作', render: (_, job) => job.status !== 'completed' && <Button disabled={busy} onClick={() => perform(job.import_id)}>重试</Button> },
         ]} />

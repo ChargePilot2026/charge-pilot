@@ -114,7 +114,10 @@ export default function MainLayout() {
       </Sider>
       <Layout>
         <Header className="layout-header">
-          <Text strong style={{ fontSize: 16 }}>ChargePilot · 二轮车充电运营管理</Text>
+          <div className="layout-heading">
+            <Text strong className="layout-brand">ChargePilot ·</Text>
+            {selectedLink && <Typography.Title level={3} className="layout-page-title">{selectedLink.label}</Typography.Title>}
+          </div>
           <Dropdown
             trigger={['click']}
             menu={{

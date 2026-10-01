@@ -1,12 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Table, Typography, Space, Button, Drawer, Modal, Form, Input, InputNumber, Select, Tag, message } from 'antd';
-import { PlusOutlined, ReloadOutlined } from '@ant-design/icons';
+import { Table, Space, Button, Drawer, Modal, Form, Input, InputNumber, Select, Tag, message } from 'antd';
+import { PlusOutlined } from '@ant-design/icons';
 import { apiGet, apiPost } from '../api/client';
 import { LoadError } from '../components/LoadError';
 import StationWorkspace, { stationStatuses, type StationRecord as Station } from './stations/StationWorkspace';
-
-const { Title } = Typography;
+import { DEFAULT_PAGE_SIZE, TABLE_PAGINATION } from '../utils/tablePagination';
 
 export default function StationsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -18,7 +17,7 @@ export default function StationsPage() {
   const [error, setError] = useState('');
   const [permissions,setPermissions] = useState<string[]>([]);
   const generation = useRef(0);
-  const [query,setQuery]=useState({page:1,page_size:20,keyword:'',status:''});
+  const [query,setQuery]=useState({page:1,page_size:DEFAULT_PAGE_SIZE,keyword:'',status:''});
   const [total,setTotal]=useState(0);
   const [keyword,setKeyword]=useState('');
   const [status,setStatus]=useState('');
@@ -84,24 +83,21 @@ export default function StationsPage() {
 
   return (
     <div className="page-container">
-      <Space style={{ marginBottom: 12 }}>
-        <Title level={3} style={{ margin: 0 }}>站点</Title>
-        <Button icon={<ReloadOutlined />} onClick={load}>刷新</Button>
-        <Button type="primary" icon={<PlusOutlined />} disabled={!permissions.includes('station.create')} onClick={create}>新建</Button>
-      </Space>
-      <Space wrap style={{display:'flex',marginBottom:12}}>
+      <div className="list-search-row"><Space wrap>
         <Input aria-label="站点关键词" placeholder="搜索名称或地址" maxLength={128} value={keyword} onChange={e=>setKeyword(e.target.value)} onPressEnter={()=>setQuery({...query,page:1,keyword,status})} allowClear />
         <Select aria-label="站点状态" value={status} onChange={setStatus} style={{width:140}} options={[{value:'',label:'全部状态'},{value:'active',label:'运营中'},{value:'disabled',label:'已停用'},{value:'construction',label:'建设中'}]} />
         <Button onClick={()=>setQuery({...query,page:1,keyword,status})}>查询</Button>
         <Button onClick={()=>{setKeyword('');setStatus('');setQuery({...query,page:1,keyword:'',status:''});}}>重置</Button>
       </Space>
+        <Button type="primary" icon={<PlusOutlined />} disabled={!permissions.includes('station.create')} onClick={create}>新建</Button>
+      </div>
       {error && <LoadError title="站点列表加载失败" detail={error} onRetry={() => void load()} />}
-      <Table
+      <Table size="middle"
         rowKey="id"
         loading={loading}
         dataSource={data}
         scroll={{ x: 900 }}
-        pagination={{current:query.page,pageSize:query.page_size,total,showSizeChanger:true,pageSizeOptions:[10,20,50,100],showTotal:n=>`共 ${n} 个站点`,onChange:(page,page_size)=>setQuery({...query,page:page_size===query.page_size?page:1,page_size})}}
+        pagination={{...TABLE_PAGINATION,current:query.page,pageSize:query.page_size,total,showTotal:n=>`共 ${n} 个站点`,onChange:(page,page_size)=>setQuery({...query,page:page_size===query.page_size?page:1,page_size})}}
         columns={[
           { title: '名称', dataIndex: 'name', render: (name: string, station: Station) => <Button type="link" style={{ paddingInline: 0 }} onClick={() => showWorkspace(station)}>{name}</Button> },
           { title: '地址', dataIndex: 'address' },

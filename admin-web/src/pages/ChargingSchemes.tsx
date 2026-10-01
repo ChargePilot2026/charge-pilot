@@ -1,3 +1,4 @@
+import { TABLE_PAGINATION } from '../utils/tablePagination';
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Drawer, Modal, Popconfirm, Space, Table, Tag, message } from 'antd';
 import { adminSession, apiDelete, apiGet, apiPost, apiPut } from '../api/client';
@@ -28,7 +29,7 @@ export default function ChargingSchemes() {
     <Space><Button onClick={() => void load()}>刷新</Button>{permissions.includes('pricing.rule.create') && <Button type="primary" onClick={() => setEditing({ scheme: blankScheme() })}>新建充电方案</Button>}</Space>
     <Alert type="info" showIcon message="完整方案包含费率、套餐与展示配置。到站点或设备工作区应用时复制；编辑、停用或删除模板不改变已应用方案与订单快照。" />
     {error && <Alert type="error" message={error} />}
-    <Table rowKey="id" dataSource={rows} columns={[
+    <Table pagination={TABLE_PAGINATION} size="middle" rowKey="id" dataSource={rows} columns={[
       { title: '方案名称', render: (_, r) => r.scheme.name }, { title: '版本', dataIndex: 'version' },
       { title: '用户入口', render: (_, r) => [...new Set(r.scheme.packages.map(p => modes[p.mode]))].join('、') },
       { title: '套餐数', render: (_, r) => r.scheme.packages.length },

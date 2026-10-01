@@ -1,3 +1,4 @@
+import { TABLE_PAGINATION } from '../../utils/tablePagination';
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react';
 import { Alert, App, Button, Card, Descriptions, Empty, Modal, Select, Space, Spin, Table, Tag, Typography } from 'antd';
 import { apiGet, apiPost } from '../../api/client';
@@ -318,7 +319,7 @@ export default function StationConfiguration({ station, deviceId, onDeviceChange
       <Typography.Paragraph type="secondary">{targetDevice
         ? '设备独立套餐优先；同模板的站点套餐被覆盖，其他通用套餐继续可选。'
         : '通用套餐供本站点设备使用；设备单独上架的同模板套餐优先。计费模板与套餐模板在「模板」页面的不同页签维护。'}</Typography.Paragraph>
-      <Table<Offer> rowKey="id" size="small" dataSource={activeOffers} pagination={false} scroll={{ x: 760 }} locale={{ emptyText: '暂无在售套餐' }} columns={[
+      <Table<Offer> rowKey="id" size="middle" dataSource={activeOffers} pagination={TABLE_PAGINATION} scroll={{ x: 760 }} locale={{ emptyText: '暂无在售套餐' }} columns={[
         { title: '名称', dataIndex: 'name' },
         { title: '来源', render: (_: unknown, offer: Offer) => <Tag color={isStationOffer(offer) ? 'default' : 'blue'}>{isStationOffer(offer) ? '站点通用' : '设备独立'}</Tag> },
         { title: '类型', dataIndex: 'mode', render: offerKind },
@@ -331,7 +332,7 @@ export default function StationConfiguration({ station, deviceId, onDeviceChange
       ]} />
     </Card>
     {!targetDevice && <Card size="small" title="设备例外配置">
-      <Table<DevicePricing> rowKey="device_id" size="small" dataSource={rows} scroll={{ x: 650 }} pagination={{ pageSize: 10, showSizeChanger: true }} locale={{ emptyText: '本站点暂无设备' }} columns={[
+      <Table<DevicePricing> rowKey="device_id" size="middle" dataSource={rows} scroll={{ x: 650 }} pagination={TABLE_PAGINATION} locale={{ emptyText: '本站点暂无设备' }} columns={[
         { title: '设备', dataIndex: 'device_id' },
         { title: '当前计费', render: (_: unknown, row: DevicePricing) => row.spec_json?.mode ? modeLabel(row.spec_json.mode) : '未配置' },
         { title: '计费来源', render: (_: unknown, row: DevicePricing) => <Tag color={row.own_rule_id ? 'blue' : 'default'}>{row.own_rule_id ? '设备独立' : '站点默认'}</Tag> },

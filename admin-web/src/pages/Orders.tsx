@@ -1,5 +1,5 @@
 import { Alert, Button, DatePicker, Descriptions, Drawer, Form, Input, Select, Space, Spin, Table, Tabs, Tag, Timeline, Tooltip, Typography } from 'antd';
-import { ReloadOutlined } from '@ant-design/icons';
+import { DownOutlined, UpOutlined } from '@ant-design/icons';
 import { useEffect, useState } from 'react';
 import dayjs, { Dayjs } from 'dayjs';
 import axios from 'axios';
@@ -8,6 +8,7 @@ import { LoadError } from '../components/LoadError';
 import ManualRefund from './ManualRefund';
 import OrderPackageDetails, { type SelectedPackage } from './orders/OrderPackageDetails';
 import OrderStationSelect from './orders/OrderStationSelect';
+import { DEFAULT_PAGE_SIZE, TABLE_PAGINATION } from '../utils/tablePagination';
 
 interface Order {
 	 live?: { at: string; stale: boolean; kwh: number; seconds: number; fee?: { electric_cents: number; service_cents: number; total_cents: number }; fee_unavailable?: string };
@@ -81,8 +82,12 @@ function initialFilters(): Filters { return { station_id: 0 }; }
 
 export default function OrdersPage() {
   const [form] = Form.useForm<Filters>();
+  const [filtersExpanded, setFiltersExpanded] = useState(false);
+  const deviceFilter = Form.useWatch('device_id', form);
+  const periodFilter = Form.useWatch('period', form);
+  const advancedFilterCount = Number(Boolean(deviceFilter?.trim())) + Number(Boolean(periodFilter?.length));
   const [filters, setFilters] = useState<Filters>(initialFilters);
-  const [pagination, setPagination] = useState({ page: 1, page_size: 20 });
+  const [pagination, setPagination] = useState({ page: 1, page_size: DEFAULT_PAGE_SIZE });
   const [reload, setReload] = useState(0);
   const [page, setPage] = useState<OrderPage | null>(null);
   const [loading, setLoading] = useState(false);
@@ -139,34 +144,39 @@ export default function OrdersPage() {
   }, [selected, detailReload]);
 
   return <div className="page-container">
-    <Space style={{ marginBottom: 16 }}>
-      <Typography.Title level={3} style={{ margin: 0 }}>订单</Typography.Title>
-      <Button icon={<ReloadOutlined />} onClick={() => setReload(value => value + 1)}>刷新</Button>
-    </Space>
-    <Form form={form} initialValues={filters} layout="inline" style={{ rowGap: 12, marginBottom: 20 }}
+    <Form form={form} initialValues={initialFilters()} layout="inline" style={{ display: 'block', marginBottom: 20 }}
       onFinish={values => { setFilters(values); setPagination(value => ({ ...value, page: 1 })); }}>
-      <Form.Item name="order_no" label="订单号"><Input allowClear maxLength={64} placeholder="完整订单号" /></Form.Item>
-      <Form.Item name="device_id" label="设备"><Input allowClear maxLength={64} placeholder="设备编号" /></Form.Item>
-      <Form.Item name="station_id" label="站点"><OrderStationSelect /></Form.Item>
-      <Form.Item name="status" label="状态"><Select allowClear placeholder="全部状态" style={{ width: 130 }}
-        options={Object.entries(statuses).map(([value, status]) => ({ value, label: status.label }))} /></Form.Item>
-      <Form.Item name="period" label="时间范围"><DatePicker.RangePicker showTime format="YYYY-MM-DD HH:mm" /></Form.Item>
-      <Form.Item><Space>
-        <Button type="primary" htmlType="submit">查询</Button>
-        <Button onClick={() => { const values = initialFilters(); form.resetFields(); form.setFieldsValue(values); setFilters(values); setPagination(value => ({ ...value, page: 1 })); }}>重置</Button>
-      </Space></Form.Item>
+      <div style={{ display: 'flex', flexWrap: 'wrap', rowGap: 12 }}>
+        <Form.Item name="order_no" label="订单号"><Input allowClear maxLength={64} placeholder="完整订单号" /></Form.Item>
+        <Form.Item name="station_id" label="站点"><OrderStationSelect /></Form.Item>
+        <Form.Item name="status" label="状态"><Select allowClear placeholder="全部状态" style={{ width: 130 }}
+          options={Object.entries(statuses).map(([value, status]) => ({ value, label: status.label }))} /></Form.Item>
+        <Form.Item><Space>
+          <Button type="primary" htmlType="submit">查询</Button>
+          <Button onClick={() => { const values = initialFilters(); form.resetFields(); form.setFieldsValue(values); setFilters(values); setFiltersExpanded(false); setPagination(value => ({ ...value, page: 1 })); }}>重置</Button>
+          <Button type="link" icon={filtersExpanded ? <UpOutlined /> : <DownOutlined />} aria-expanded={filtersExpanded}
+            aria-controls="order-advanced-filters" onClick={() => setFiltersExpanded(value => !value)}>
+            {filtersExpanded ? '收起条件' : '更多条件'}{advancedFilterCount > 0 && `（${advancedFilterCount}）`}
+          </Button>
+        </Space></Form.Item>
+      </div>
+      <div id="order-advanced-filters" style={{ display: filtersExpanded ? 'flex' : 'none', flexWrap: 'wrap', rowGap: 12, marginTop: 12 }}>
+        <Form.Item name="device_id" label="设备"><Input allowClear maxLength={64} placeholder="设备编号" /></Form.Item>
+        <Form.Item name="period" label="时间范围"><DatePicker.RangePicker showTime format="YYYY-MM-DD HH:mm" /></Form.Item>
+      </div>
     </Form>
-    <Typography.Paragraph type="secondary">时间范围留空时查询全部时间，时间按本地时区显示。尚未启动的订单按创建时间筛选。</Typography.Paragraph>
-    {page?.items.some(row => row.status === 'charging') && <Typography.Paragraph type="secondary">充电中显示最新设备电量；≈ 为按订单冻结费率计算的当前估算费用，每 5 秒刷新。（旧）表示读数已过期，费用停留在最后采样时刻。</Typography.Paragraph>}
     {error && <LoadError title="订单加载失败" detail={error} onRetry={() => setReload(value => value + 1)} />}
-    <Table<Order> rowKey="order_id" loading={loading} dataSource={page?.items || []} scroll={{ x: 1500 }}
+    <Table<Order> size="middle" rowKey="order_id" loading={loading} dataSource={page?.items || []} tableLayout="auto" scroll={{ x: 'max-content' }}
       locale={{ emptyText: error ? '暂时无法获取订单' : '当前条件下没有订单' }}
-      pagination={{ current: pagination.page, pageSize: pagination.page_size, total: page?.total || 0,
-        showSizeChanger: true, pageSizeOptions: [20, 50, 100], showTotal: total => `共 ${total} 笔`,
+      pagination={{ ...TABLE_PAGINATION, current: pagination.page, pageSize: pagination.page_size, total: page?.total || 0,
+        position: ['topRight', 'bottomRight'],
+        showTotal: total => `共 ${total} 笔`,
         onChange: (page, page_size) => setPagination({ page: page_size !== pagination.page_size ? 1 : page, page_size }) }}
       columns={[
-        { title: '订单号', dataIndex: 'order_no', width: 230, fixed: 'left', render: (value, row) => <Button type="link" style={{ padding: 0 }} onClick={() => setSelected(row.order_id)}>{value}</Button> },
-        { title: '站点 / 设备', key: 'device', width: 180, render: (_, row) => <><div>{row.station_name || '未关联站点'}</div><Typography.Text type="secondary">{row.device_id} · 端口 {row.port_no}</Typography.Text></> },
+        { title: '订单号', dataIndex: 'order_no', fixed: 'left', onCell: () => ({ style: { whiteSpace: 'nowrap' } }), render: (value, row) => <Button type="link" style={{ padding: 0 }} onClick={() => setSelected(row.order_id)}>{value}</Button> },
+        { title: '站点', dataIndex: 'station_name', width: 180, render: value => value || '未关联站点' },
+        { title: '设备', dataIndex: 'device_id', onCell: () => ({ style: { whiteSpace: 'nowrap' } }) },
+        { title: '端口', dataIndex: 'port_no', width: 80 },
         { title: '状态', dataIndex: 'status', width: 110, render: statusTag },
         { title: '电量 (kWh)', width: 130, render: (_, row) => orderMeter(row) },
         { title: '电费', width: 120, render: (_, row) => orderFee(row, 'electric') },
@@ -215,7 +225,7 @@ export default function OrdersPage() {
         {!detail.billing?.settlements.length && <Typography.Text type="secondary">暂无分账记录</Typography.Text>}
         {detail.billing?.settlements.map(settlement => <div key={settlement.settlement_id}>
           <Typography.Paragraph>{settlement.settlement_no} · {settlement.mode === 'mode_a' ? '全额分账' : '服务费分账'} · 分账池 {money(settlement.split_pool_cents)} · {settlement.status}</Typography.Paragraph>
-          <Table rowKey="party_code" size="small" pagination={false} dataSource={settlement.parties} columns={[
+          <Table rowKey="party_code" size="middle" pagination={TABLE_PAGINATION} dataSource={settlement.parties} columns={[
             { title: '参与方', key: 'party', render: (_, party) => party.party_name || party.party_code },
             { title: '比例', dataIndex: 'ratio_bp', render: value => `${(value / 100).toFixed(2)}%` },
             { title: '金额', dataIndex: 'amount_cents', render: money },

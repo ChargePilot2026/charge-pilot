@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { apiGet, apiPost, apiPut } from '../api/client';
 import { listVendors, vendorProtocolLabel, type Vendor } from '../api/vendors';
 import { LoadError } from '../components/LoadError';
+import { DEFAULT_PAGE_SIZE, TABLE_PAGINATION } from '../utils/tablePagination';
 
 type VendorForm = Pick<Vendor, 'vendor_code' | 'vendor_name' | 'adapter_class' | 'status'>;
 const protocolOptions = [{ value: 'dc589', label: 'DC589' }];
@@ -18,7 +19,7 @@ export default function VendorsPage() {
   const [error, setError] = useState('');
   const [keyword, setKeyword] = useState('');
   const [status, setStatus] = useState('');
-  const [query, setQuery] = useState({ page: 1, page_size: 20, keyword: '', status: '' });
+  const [query, setQuery] = useState({ page: 1, page_size: DEFAULT_PAGE_SIZE, keyword: '', status: '' });
   const generation = useRef(0);
 
   const [form] = Form.useForm<VendorForm>();
@@ -102,7 +103,6 @@ export default function VendorsPage() {
 
   return <div className="page-container">
     <Space wrap style={{ marginBottom: 12 }}>
-      <Typography.Title level={3} style={{ margin: 0 }}>厂商</Typography.Title>
       <Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button>
       {canCreate && <Button type="primary" icon={<PlusOutlined />} disabled={pendingID !== null} onClick={() => void showEditor()}>新建</Button>}
     </Space>
@@ -114,8 +114,8 @@ export default function VendorsPage() {
       <Button onClick={() => { setKeyword(''); setStatus(''); setQuery({ ...query, page: 1, keyword: '', status: '' }); }}>重置</Button>
     </Space>
     {error && <LoadError title="厂商列表加载失败" detail={error} onRetry={() => void load()} />}
-    <Table<Vendor> rowKey="id" loading={loading} dataSource={data} scroll={{ x: 700 }}
-      pagination={{ current: query.page, pageSize: query.page_size, total, showSizeChanger: true, pageSizeOptions: [10, 20, 50, 100], showTotal: count => `共 ${count} 个厂商`,
+    <Table<Vendor> size="middle" rowKey="id" loading={loading} dataSource={data} scroll={{ x: 700 }}
+      pagination={{ ...TABLE_PAGINATION, current: query.page, pageSize: query.page_size, total, showTotal: count => `共 ${count} 个厂商`,
         onChange: (page, page_size) => setQuery({ ...query, page: page_size === query.page_size ? page : 1, page_size }) }}
       columns={[
         { title: '厂商 ID', dataIndex: 'id', width: 120, render: (id: number) => <Typography.Text copyable={{ text: String(id), tooltips: ['复制厂商 ID', '已复制'] }}>{id}</Typography.Text> },

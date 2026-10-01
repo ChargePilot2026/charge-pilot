@@ -1,15 +1,13 @@
-import { Typography } from 'antd';
+import { Tabs } from 'antd';
 import { OtaPackages, OtaSchedules } from './OtaOps';
-
-const { Title } = Typography;
 
 export default function OTAPage() {
   return (
     <div className="page-container">
-      <Title level={3}>OTA 固件</Title>
-      <OtaPackages />
-      <div style={{ height: 24 }} />
-      <OtaSchedules />
+      <Tabs destroyOnHidden items={[
+        { key: 'packages', label: '固件管理', children: <OtaPackages /> },
+        { key: 'schedules', label: '升级计划', children: <OtaSchedules /> },
+      ]} />
     </div>
   );
 }

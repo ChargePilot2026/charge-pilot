@@ -2,8 +2,13 @@ html, body, #root { height: 100%; margin: 0; padding: 0; }
 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f0f2f5; }
 .logo { display: flex; align-items: center; height: 64px; padding: 0 16px; color: #fff; font-weight: 600; font-size: 16px; gap: 8px; }
 .logo svg { width: 28px; height: 28px; }
-.layout-header { display: flex; justify-content: space-between; align-items: center; padding: 0 24px; background: #fff; box-shadow: 0 1px 4px rgba(0,21,41,.08); }
+.layout-header { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 0 24px; background: #fff; box-shadow: 0 1px 4px rgba(0,21,41,.08); }
+.layout-heading { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.layout-brand { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 16px; }
+.layout-heading .layout-page-title.ant-typography { flex-shrink: 0; margin: 0; font-size: 20px; line-height: 28px; white-space: nowrap; }
 .page-container { padding: 16px; background: #fff; margin: 16px; border-radius: 8px; min-height: calc(100vh - 112px); }
+.list-search-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.list-search-row > :nth-child(2) { margin-inline-start: auto; }
 .stat-card { background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.05); }
 .login-bg { display: flex; align-items: center; justify-content: center; min-height: 100vh; background: linear-gradient(135deg, #1677ff 0%, #4096ff 100%); }
 .login-card { background: #fff; padding: 32px; border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,.12); width: 360px; }
@@ -19,7 +24,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 .pricing-tier-editor { margin-top: 12px; }
 .pricing-tier-scroll { max-width: 100%; overflow-x: auto; border: 1px solid #f0f0f0; border-radius: 6px; }
 .pricing-tier-table { border-collapse: collapse; width: 100%; min-width: 580px; table-layout: fixed; }
-.pricing-tier-table th, .pricing-tier-table td { padding: 10px 12px; text-align: left; vertical-align: top; border-bottom: 1px solid #f0f0f0; }
+.pricing-tier-table th, .pricing-tier-table td { padding: 12px 8px; text-align: left; vertical-align: top; border-bottom: 1px solid #f0f0f0; }
 .pricing-tier-table thead th { background: #fafafa; font-size: 12px; font-weight: 500; color: #666; }
 .pricing-tier-table th:last-child, .pricing-tier-table td:last-child { width: 56px; }
 .pricing-tier-table tbody th { font-weight: 400; font-size: 13px; }

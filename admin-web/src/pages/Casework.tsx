@@ -4,8 +4,9 @@ import { ReloadOutlined } from '@ant-design/icons';
 import { apiGet, apiPost } from '../api/client';
 import { formatTime } from '../utils/time';
 import { LoadError } from '../components/LoadError';
+import { DEFAULT_PAGE_SIZE, TABLE_PAGINATION } from '../utils/tablePagination';
 
-const { Title, Text } = Typography;
+const { Text } = Typography;
 const feedbackEndpoint = '/api/v1/admin/feedback';
 const faultsEndpoint = '/api/v1/admin/device-fault-reports';
 
@@ -67,6 +68,8 @@ export default function CaseworkPage() {
   const [faultStatusFilter, setFaultStatusFilter] = useState<string>();
   const [feedbackPage, setFeedbackPage] = useState(1);
   const [faultPage, setFaultPage] = useState(1);
+  const [feedbackPageSize, setFeedbackPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
+  const [faultPageSize, setFaultPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
   const [feedbackTotal, setFeedbackTotal] = useState(0);
   const [faultTotal, setFaultTotal] = useState(0);
   const [feedbackLoading, setFeedbackLoading] = useState(false);
@@ -92,7 +95,7 @@ export default function CaseworkPage() {
   const loadFeedback = async () => {
     setFeedbackLoading(true);
     try {
-      const result = await apiGet<ListResult<Feedback>>(feedbackEndpoint, { page: feedbackPage, page_size: 50, ...(feedbackStatusFilter ? { status: feedbackStatusFilter } : {}) });
+      const result = await apiGet<ListResult<Feedback>>(feedbackEndpoint, { page: feedbackPage, page_size: feedbackPageSize, ...(feedbackStatusFilter ? { status: feedbackStatusFilter } : {}) });
       setFeedback(Array.isArray(result?.items) ? result.items : []);
       setFeedbackTotal(result?.total || 0);
       setFeedbackError(null);
@@ -103,7 +106,7 @@ export default function CaseworkPage() {
   const loadFaults = async () => {
     setFaultLoading(true);
     try {
-      const result = await apiGet<ListResult<Fault>>(faultsEndpoint, { page: faultPage, page_size: 50, ...(faultStatusFilter ? { status: faultStatusFilter } : {}) });
+      const result = await apiGet<ListResult<Fault>>(faultsEndpoint, { page: faultPage, page_size: faultPageSize, ...(faultStatusFilter ? { status: faultStatusFilter } : {}) });
       setFaults(Array.isArray(result?.items) ? result.items : []);
       setFaultTotal(result?.total || 0);
       setFaultError(null);
@@ -111,8 +114,8 @@ export default function CaseworkPage() {
     finally { setFaultLoading(false); }
   };
 
-  useEffect(() => { void loadFeedback(); }, [feedbackStatusFilter, feedbackPage]);
-  useEffect(() => { void loadFaults(); }, [faultStatusFilter, faultPage]);
+  useEffect(() => { void loadFeedback(); }, [feedbackStatusFilter, feedbackPage, feedbackPageSize]);
+  useEffect(() => { void loadFaults(); }, [faultStatusFilter, faultPage, faultPageSize]);
 
   const submitReply = async () => {
     if (!replying || saving) return;
@@ -211,10 +214,9 @@ export default function CaseworkPage() {
   ];
 
   return <div className="page-container">
-    <Space style={{ marginBottom: 12 }}><Title level={3} style={{ margin: 0 }}>反馈与报修</Title></Space>
     <Tabs items={[
-      { key: 'feedback', label: '评价与投诉', children: <><Space style={{ marginBottom: 12 }}><Select allowClear placeholder="全部状态" style={{ width: 150 }} value={feedbackStatusFilter} onChange={(value) => { setFeedbackPage(1); setFeedbackStatusFilter(value); }} options={Object.entries(feedbackStatus).map(([value, label]) => ({ value, label }))} /><Button icon={<ReloadOutlined />} onClick={() => void loadFeedback()} loading={feedbackLoading}>刷新</Button></Space>{feedbackError && <LoadError title="评价与投诉加载失败" detail={feedbackError} onRetry={() => void loadFeedback()} />}<Table rowKey="id" loading={feedbackLoading} dataSource={feedback} columns={feedbackColumns} scroll={{ x: 1100 }} pagination={{ current: feedbackPage, pageSize: 50, total: feedbackTotal, onChange: setFeedbackPage, showTotal: (total) => `共 ${total} 条` }} /></> },
-      { key: 'faults', label: '设备报修', children: <><Space style={{ marginBottom: 12 }}><Select allowClear placeholder="全部状态" style={{ width: 150 }} value={faultStatusFilter} onChange={(value) => { setFaultPage(1); setFaultStatusFilter(value); }} options={Object.entries(faultStatus).map(([value, label]) => ({ value, label }))} /><Button icon={<ReloadOutlined />} onClick={() => void loadFaults()} loading={faultLoading}>刷新</Button></Space>{faultError && <LoadError title="设备报修加载失败" detail={faultError} onRetry={() => void loadFaults()} />}<Table rowKey="id" loading={faultLoading} dataSource={faults} columns={faultColumns} scroll={{ x: 1200 }} pagination={{ current: faultPage, pageSize: 50, total: faultTotal, onChange: setFaultPage, showTotal: (total) => `共 ${total} 条` }} /></> },
+      { key: 'feedback', label: '评价与投诉', children: <><Space style={{ marginBottom: 12 }}><Select allowClear placeholder="全部状态" style={{ width: 150 }} value={feedbackStatusFilter} onChange={(value) => { setFeedbackPage(1); setFeedbackStatusFilter(value); }} options={Object.entries(feedbackStatus).map(([value, label]) => ({ value, label }))} /><Button icon={<ReloadOutlined />} onClick={() => void loadFeedback()} loading={feedbackLoading}>刷新</Button></Space>{feedbackError && <LoadError title="评价与投诉加载失败" detail={feedbackError} onRetry={() => void loadFeedback()} />}<Table size="middle" rowKey="id" loading={feedbackLoading} dataSource={feedback} columns={feedbackColumns} scroll={{ x: 1100 }} pagination={{ ...TABLE_PAGINATION, current: feedbackPage, pageSize: feedbackPageSize, total: feedbackTotal, onChange: (nextPage, nextPageSize) => { setFeedbackPage(nextPageSize === feedbackPageSize ? nextPage : 1); setFeedbackPageSize(nextPageSize); }, showTotal: (total) => `共 ${total} 条` }} /></> },
+      { key: 'faults', label: '设备报修', children: <><Space style={{ marginBottom: 12 }}><Select allowClear placeholder="全部状态" style={{ width: 150 }} value={faultStatusFilter} onChange={(value) => { setFaultPage(1); setFaultStatusFilter(value); }} options={Object.entries(faultStatus).map(([value, label]) => ({ value, label }))} /><Button icon={<ReloadOutlined />} onClick={() => void loadFaults()} loading={faultLoading}>刷新</Button></Space>{faultError && <LoadError title="设备报修加载失败" detail={faultError} onRetry={() => void loadFaults()} />}<Table size="middle" rowKey="id" loading={faultLoading} dataSource={faults} columns={faultColumns} scroll={{ x: 1200 }} pagination={{ ...TABLE_PAGINATION, current: faultPage, pageSize: faultPageSize, total: faultTotal, onChange: (nextPage, nextPageSize) => { setFaultPage(nextPageSize === faultPageSize ? nextPage : 1); setFaultPageSize(nextPageSize); }, showTotal: (total) => `共 ${total} 条` }} /></> },
     ]} />
     <Modal title="回复用户反馈" open={!!replying} onCancel={() => setReplying(null)} onOk={() => void submitReply()} confirmLoading={saving} destroyOnHidden>
       {replying && <><Text type="secondary">用户 {replying.user_id} · {category[replying.category] || replying.category}</Text><p style={{ whiteSpace: 'pre-wrap' }}>{replying.content || '未填写文字'}</p>{replying.images?.length ? imageLinks(replying.images) : null}<Form form={form} layout="vertical" style={{ marginTop: 16 }}><Form.Item name="reply_content" label="回复内容" rules={[{ required: true, whitespace: true, max: 2000 }]}><Input.TextArea rows={5} maxLength={2000} showCount /></Form.Item></Form></>}

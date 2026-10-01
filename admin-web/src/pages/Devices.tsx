@@ -6,6 +6,7 @@ import { apiGet, apiPut, adminSession } from '../api/client';
 import DeviceImport from './DeviceImport';
 import DeviceCreate from './DeviceCreate';
 import { LoadError } from '../components/LoadError';
+import { DEFAULT_PAGE_SIZE, TABLE_PAGINATION } from '../utils/tablePagination';
 
 interface Device {
   id: number; device_id: string; station_id?: number; station_name?: string;
@@ -28,7 +29,7 @@ export default function DevicesPage({ station, embedded = false, onConfigure }: 
   const [total,setTotal]=useState(0);
   const [keyword,setKeyword]=useState('');
   const [status,setStatus]=useState('');
-  const [query,setQuery]=useState({page:1,page_size:20,keyword:'',status:''});
+  const [query,setQuery]=useState({page:1,page_size:DEFAULT_PAGE_SIZE,keyword:'',status:''});
   const generation=useRef(0);
   const [operating,setOperating]=useState<string>();
   const operatingRef=useRef(false);
@@ -61,23 +62,26 @@ export default function DevicesPage({ station, embedded = false, onConfigure }: 
     if (configure) params.set('device_id', device.device_id);
     navigate(`/stations?${params.toString()}`);
   };
+  const createActions = <>
+    {permissions.includes('device.import') && (!station || station.status === 'active') && <DeviceCreate station={station} canReadStations={permissions.includes('station.read')} onComplete={()=>setQuery({...query,page:1})}/>}
+    {permissions.includes('device.import') && !station && <DeviceImport onComplete={()=>setQuery({...query,page:1})}/>}
+  </>;
   return <div className={embedded ? 'station-devices' : 'page-container'}>
-    <Space wrap style={{marginBottom:12}}>
-      <Typography.Title level={embedded ? 5 : 3} style={{margin:0}}>{station ? '本站设备' : '设备'}</Typography.Title>
+    {embedded && <Space wrap style={{marginBottom:12}}>
+      <Typography.Title level={5} style={{margin:0}}>{station ? '本站设备' : '设备'}</Typography.Title>
       <Button icon={<ReloadOutlined/>} onClick={load}>刷新</Button>
-      {permissions.includes('device.import') && (!station || station.status === 'active') && <DeviceCreate station={station} canReadStations={permissions.includes('station.read')} onComplete={()=>setQuery({...query,page:1})}/>}
-      {permissions.includes('device.import') && !station && <DeviceImport onComplete={()=>setQuery({...query,page:1})}/>}
-    </Space>
-    <div style={{marginBottom:12}}><Space wrap>
+      {createActions}
+    </Space>}
+    <div className="list-search-row"><Space wrap>
       <Input aria-label="设备关键词" placeholder={station ? '设备编号或型号' : '设备编号、型号或站点名称'} style={{width:320,maxWidth:'100%'}} maxLength={128} value={keyword} onChange={e=>setKeyword(e.target.value)} onPressEnter={search} allowClear/>
       <Select aria-label="设备状态" style={{width:140}} value={status} onChange={setStatus} options={[{value:'',label:'全部状态'},...Object.entries(statuses).map(([value,s])=>({value,label:s.label}))]}/>
       <Button onClick={search}>查询</Button>
       <Button onClick={()=>{setKeyword('');setStatus('');setQuery({...query,page:1,keyword:'',status:''});}}>重置</Button>
-    </Space></div>
+    </Space>{!embedded && <Space wrap>{createActions}</Space>}</div>
     {error && <LoadError title="设备列表加载失败" detail={error} onRetry={() => void load()} />}
     {!loading&&data.some(d=>d.runtime_available===false)&&<Alert type="warning" showIcon style={{marginBottom:12}} message="部分设备的厂商及心跳信息暂不可读取，请刷新重试。"/>}
-    <Table<Device> rowKey="id" loading={loading} dataSource={data} scroll={{x:800}}
-      pagination={{current:query.page,pageSize:query.page_size,total,showSizeChanger:true,pageSizeOptions:[10,20,50,100],showTotal:n=>`共 ${n} 台设备`,onChange:(page,page_size)=>setQuery({...query,page:page_size===query.page_size?page:1,page_size})}}
+    <Table<Device> size="middle" rowKey="id" loading={loading} dataSource={data} scroll={{x:800}}
+      pagination={{...TABLE_PAGINATION,current:query.page,pageSize:query.page_size,total,showTotal:n=>`共 ${n} 台设备`,onChange:(page,page_size)=>setQuery({...query,page:page_size===query.page_size?page:1,page_size})}}
       columns={[
         {title:'设备编号',dataIndex:'device_id'},
         {title:'型号',dataIndex:'model',render:(v?:string)=>v || '-'},

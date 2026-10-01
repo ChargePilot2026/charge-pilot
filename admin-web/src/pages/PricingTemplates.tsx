@@ -1,3 +1,4 @@
+import { TABLE_PAGINATION } from '../utils/tablePagination';
 import { useEffect, useState } from 'react';
 import { Alert, Button, Collapse, Descriptions, Divider, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Spin, Steps, Switch, Table, Tag, message } from 'antd';
 import { apiGet, apiPost, apiPut } from '../api/client';
@@ -631,7 +632,7 @@ export default function PricingTemplates() {
     <Alert type="info" showIcon style={{ marginBottom: 12 }}
       message="计费模板描述计费口径与用户端展示；套餐在本页「套餐模板」页签维护。模板需要「应用到站点/设备」后才生效，修改模板不会改变已应用站点的现行计费。" />
     {listError && <LoadError title="计费模板列表加载失败" detail={listError} onRetry={() => void load()} />}
-    <Table rowKey="id" dataSource={templates} loading={loading} scroll={{ x: 1000 }} columns={[
+    <Table pagination={TABLE_PAGINATION} size="middle" rowKey="id" dataSource={templates} loading={loading} scroll={{ x: 1000 }} columns={[
       { title: '名称', render: (_: unknown, r: Template) => <>{r.name}<div style={{ color: '#999' }}>v{r.version}{r.remark ? ` · ${r.remark}` : ''}</div></> },
       { title: '计费方式', render: (_: unknown, r: Template) => <Tag color={r.spec && isServerBilled(r.spec.mode) ? 'blue' : 'purple'}>{modeLabel(r.spec?.mode)}</Tag> },
       { title: '费率', render: (_: unknown, r: Template) => describeSpec(r.spec) },

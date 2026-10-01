@@ -1,10 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Typography, Card, Form, Input, Button, Space, message } from 'antd';
+import { Card, Form, Input, Button, Space, message } from 'antd';
 import { SaveOutlined } from '@ant-design/icons';
 import { apiGet, apiPut } from '../api/client';
 import { LoadError } from '../components/LoadError';
-
-const { Title } = Typography;
 
 export default function SettingsPage() {
   const [whitelabel, setWhitelabel] = useState<Record<string, unknown>>({});
@@ -34,7 +32,6 @@ export default function SettingsPage() {
 
   return (
     <div className="page-container">
-      <Title level={3}>平台设置</Title>
       {loadError && <LoadError title="平台设置加载失败" detail={loadError} onRetry={() => setReload(v => v + 1)} />}
       <Card>
         <Form form={form} layout="vertical" initialValues={whitelabel} onFinish={onSave}>

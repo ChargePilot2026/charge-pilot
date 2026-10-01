@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol"
 	"github.com/google/uuid"
@@ -317,5 +318,10 @@ func eventKey(event protocol.Event) string {
 	_, _ = hash.Write([]byte(event.Type))
 	_, _ = hash.Write(event.SessionID[:])
 	_, _ = hash.Write(event.RawPayload)
+	if event.Type == protocol.Fault {
+		// C0 没有故障序号；相同报文可以在恢复后再次出现。
+		// 每次接收独立持久化，持续故障的去重由告警状态处理。
+		_, _ = hash.Write([]byte(event.ReceivedAt.UTC().Format(time.RFC3339Nano)))
+	}
 	return hex.EncodeToString(hash.Sum(nil))
 }

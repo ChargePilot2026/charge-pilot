@@ -7,8 +7,9 @@ import Refunds from './Refunds';
 import MeterReviews from './MeterReviews';
 import WalletRisks from './WalletRisks';
 import { LoadError } from '../components/LoadError';
+import { TABLE_PAGINATION } from '../utils/tablePagination';
 
-const { Title, Text } = Typography;
+const { Text } = Typography;
 const invoiceEndpoint = '/api/v1/admin/billing/invoices';
 
 interface Invoice {
@@ -96,7 +97,6 @@ export default function BillingPage() {
 
   return (
     <div className="page-container">
-      <Title level={3}>财务</Title>
       <Tabs items={[
         { key: 'wallet-risks', label: '钱包风控审核', children: <WalletRisks /> },
         { key: 'settlements', label: '分账明细', children: <Settlements /> },
@@ -111,7 +111,7 @@ export default function BillingPage() {
                 <Button icon={<ReloadOutlined />} onClick={() => void loadInvoices()} loading={loadingInvoices}>刷新</Button>
                 {invoiceError && <LoadError title="发票队列加载失败" detail={invoiceError} onRetry={() => void loadInvoices()} />}
               </Space>
-              <Table rowKey="invoice_request_id" loading={loadingInvoices} dataSource={invoices} scroll={{ x: 1120 }} columns={[
+              <Table size="middle" rowKey="invoice_request_id" loading={loadingInvoices} dataSource={invoices} scroll={{ x: 1120 }} pagination={TABLE_PAGINATION} columns={[
                 { title: '申请单', dataIndex: 'invoice_no', width: 190 },
                 { title: '抬头 / 税号', render: (_: unknown, row: Invoice) => <><div>{row.title}</div><Text type="secondary">{row.tax_no || '个人抬头'}</Text></> },
                 { title: '用户', dataIndex: 'user_id', width: 90 },

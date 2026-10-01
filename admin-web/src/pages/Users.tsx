@@ -4,8 +4,9 @@ import { KeyOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import { apiDelete, apiGet, apiPost, apiPut } from '../api/client';
 import { formatTime } from '../utils/time';
 import { LoadError } from '../components/LoadError';
+import { DEFAULT_PAGE_SIZE, TABLE_PAGINATION } from '../utils/tablePagination';
 
-const { Title, Text, Paragraph } = Typography;
+const { Text, Paragraph } = Typography;
 
 interface AdminUser {
   id: number;
@@ -37,6 +38,7 @@ export default function UsersPage() {
   const [rows, setRows] = useState<AdminUser[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [creating, setCreating] = useState(false);
@@ -53,7 +55,7 @@ export default function UsersPage() {
     setLoading(true);
     setError('');
     try {
-      const data = await apiGet<{ items: AdminUser[]; total: number }>(`/api/v1/admin/admin-users?page=${page}&page_size=20`);
+      const data = await apiGet<{ items: AdminUser[]; total: number }>(`/api/v1/admin/admin-users?page=${page}&page_size=${pageSize}`);
       setRows(data.items || []);
       setTotal(data.total || 0);
     } catch (e: any) {
@@ -61,7 +63,7 @@ export default function UsersPage() {
     } finally {
       setLoading(false);
     }
-  }, [page]);
+  }, [page, pageSize]);
 
   // 角色列表读不到时不能把下拉留空：空下拉会被理解成「系统里没有角色」，
   // 于是管理员根本建不出来，也看不出是接口问题。
@@ -198,14 +200,13 @@ export default function UsersPage() {
   return (
     <div className="page-container">
       <Space style={{ marginBottom: 12 }} wrap>
-        <Title level={3} style={{ margin: 0 }}>管理员</Title>
         <Button icon={<ReloadOutlined />} onClick={() => void load()} loading={loading}>刷新</Button>
         <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreating(true)}>新建账号</Button>
         {error && <LoadError title="管理员列表加载失败" detail={error} onRetry={() => void load()} />}
       </Space>
-      <Table<AdminUser>
+      <Table<AdminUser> size="middle"
         rowKey="id" loading={loading} dataSource={rows} scroll={{ x: 1100 }}
-        pagination={{ current: page, pageSize: 20, total, showSizeChanger: false, onChange: setPage }}
+        pagination={{ ...TABLE_PAGINATION, current: page, pageSize, total, onChange: (nextPage, nextPageSize) => { setPage(nextPageSize === pageSize ? nextPage : 1); setPageSize(nextPageSize); } }}
         columns={[
           { title: '用户名', dataIndex: 'username', width: 160 },
           { title: '显示名', dataIndex: 'display_name', width: 130, render: (v: string | null) => v || '—' },

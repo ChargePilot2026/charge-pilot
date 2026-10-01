@@ -4,8 +4,9 @@ import { DownloadOutlined, ReloadOutlined } from '@ant-design/icons';
 import { apiGet, apiPost } from '../api/client';
 import { formatTime } from '../utils/time';
 import { LoadError } from '../components/LoadError';
+import { useTablePagination } from '../utils/tablePagination';
 
-const { Title, Text, Paragraph } = Typography;
+const { Text, Paragraph } = Typography;
 const endpoint = '/api/v1/admin/exports';
 
 interface ExportTask {
@@ -35,6 +36,8 @@ const statusMeta: Record<string, { color: string; label: string }> = {
 export default function ExportsPage() {
   const { message } = App.useApp();
   const [rows, setRows] = useState<ExportTask[]>([]);
+  const [total, setTotal] = useState(0);
+  const { pagination, tablePagination } = useTablePagination();
   const [allowed, setAllowed] = useState<string[]>([]);
   const [maxRows, setMaxRows] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -57,11 +60,13 @@ export default function ExportsPage() {
     setLoading(true);
     setError('');
     const [tasks, resources] = await Promise.allSettled([
-      apiGet<{ items: ExportTask[] }>(`${endpoint}?page=1&page_size=50`),
+      apiGet<{ items: ExportTask[]; total: number }>(`${endpoint}?page=${pagination.page}&page_size=${pagination.page_size}`),
       apiGet<{ items: string[]; max_rows: number }>(`${endpoint}/resources`),
     ]);
-    if (tasks.status === 'fulfilled') setRows(tasks.value.items || []);
-    else setError(tasks.reason?.message || '导出记录读取失败');
+    if (tasks.status === 'fulfilled') {
+      setRows(tasks.value.items || []);
+      setTotal(tasks.value.total || 0);
+    } else setError(tasks.reason?.message || '导出记录读取失败');
     if (resources.status === 'fulfilled') {
       setAllowed(resources.value.items || []);
       setMaxRows(resources.value.max_rows || 0);
@@ -69,7 +74,7 @@ export default function ExportsPage() {
       setAllowed([]);
     }
     setLoading(false);
-  }, []);
+  }, [pagination.page, pagination.page_size]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -116,7 +121,6 @@ export default function ExportsPage() {
   return (
     <div className="page-container">
       <Space style={{ marginBottom: 12 }} wrap>
-        <Title level={3} style={{ margin: 0 }}>数据导出</Title>
         <Button icon={<ReloadOutlined />} onClick={() => void load()} loading={loading}>刷新</Button>
         <Button type="primary" disabled={!canCreate || allowed.length === 0} onClick={() => setCreating(true)}>创建导出</Button>
         {error && <LoadError title="导出记录加载失败" detail={error} onRetry={() => void load()} />}
@@ -128,8 +132,8 @@ export default function ExportsPage() {
       ) : (
         <Paragraph type="secondary">导出文件 24 小时后过期，下载时会再次校验权限。</Paragraph>
       )}
-      <Table<ExportTask>
-        rowKey="id" loading={loading} dataSource={rows} scroll={{ x: 900 }} pagination={false}
+      <Table<ExportTask> size="middle"
+        rowKey="id" loading={loading} dataSource={rows} scroll={{ x: 900 }} pagination={{ ...tablePagination, total }}
         columns={[
           { title: '任务号', dataIndex: 'task_no', width: 220 },
           { title: '资源', dataIndex: 'resource', width: 120, render: (v: string) => resourceLabel[v] || v },

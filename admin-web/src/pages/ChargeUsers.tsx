@@ -1,10 +1,11 @@
 import { Alert, Avatar, Button, Descriptions, Drawer, Form, Input, Select, Space, Spin, Table, Tag, Typography } from 'antd';
-import { ReloadOutlined, SearchOutlined } from '@ant-design/icons';
+import { SearchOutlined } from '@ant-design/icons';
 import { useEffect, useRef, useState } from 'react';
 import dayjs from 'dayjs';
 import axios from 'axios';
 import { ApiEnvelope, apiGet } from '../api/client';
 import { LoadError } from '../components/LoadError';
+import { DEFAULT_PAGE_SIZE, TABLE_PAGINATION } from '../utils/tablePagination';
 
 interface ChargeUser {
   id: number;
@@ -62,8 +63,7 @@ function Phone({ chargeUser }: { chargeUser: Pick<ChargeUser, 'phone' | 'phone_b
 export default function ChargeUsersPage() {
   const [form] = Form.useForm();
   const [filters, setFilters] = useState({ keyword: '', status: '' });
-  const [pagination, setPagination] = useState({ page: 1, page_size: 20 });
-  const [query, setQuery] = useState({ page: 1, page_size: 20, keyword: '', status: '' });
+  const [query, setQuery] = useState({ page: 1, page_size: DEFAULT_PAGE_SIZE, keyword: '', status: '' });
   const [page, setPage] = useState<ChargeUserPage | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -95,10 +95,6 @@ export default function ChargeUsersPage() {
   }, [selected, detailReload]);
 
   return <div className="page-container">
-    <Space style={{ marginBottom: 16 }}>
-      <Typography.Title level={3} style={{ margin: 0 }}>充电用户</Typography.Title>
-      <Button icon={<ReloadOutlined />} onClick={() => setReload(value => value + 1)}>刷新</Button>
-    </Space>
     <Form form={form} layout="inline" initialValues={filters} style={{ rowGap: 12, marginBottom: 20 }}
       onFinish={values => { setFilters(values); setQuery(value => ({ ...value, page: 1, ...values })); }}>
       <Form.Item name="keyword" label="关键词">
@@ -119,11 +115,11 @@ export default function ChargeUsersPage() {
       手机号按完整号码精确查询：库中只存密文与不可逆哈希，没有可用于模糊匹配的明文，输入后四位之类的片段查不出来。
     </Typography.Paragraph>
     {error && <LoadError title="充电用户加载失败" detail={error} onRetry={() => setReload(value => value + 1)} />}
-    <Table<ChargeUser> rowKey="id" loading={loading} dataSource={page?.items || []} scroll={{ x: 1200 }}
+    <Table<ChargeUser> size="middle" rowKey="id" loading={loading} dataSource={page?.items || []} scroll={{ x: 1200 }}
       locale={{ emptyText: error ? '暂时无法获取充电用户' : '当前条件下没有充电用户' }}
-      pagination={{ current: pagination.page, pageSize: pagination.page_size, total: page?.total || 0,
-        showSizeChanger: true, pageSizeOptions: [20, 50, 100], showTotal: total => `共 ${total} 位用户`,
-        onChange: (page, page_size) => { setPagination({ page, page_size }); setQuery(value => ({ ...value, page: page_size !== value.page_size ? 1 : page, page_size })); } }}
+      pagination={{ ...TABLE_PAGINATION, current: query.page, pageSize: query.page_size, total: page?.total || 0,
+        showTotal: total => `共 ${total} 位用户`,
+        onChange: (page, page_size) => setQuery(value => ({ ...value, page: page_size !== value.page_size ? 1 : page, page_size })) }}
       expandable={{ expandedRowRender: chargeUser => <Space direction="vertical" size={2}>
         <Typography.Text type="secondary">用户 ID {chargeUser.id} · openid {chargeUser.openid}{chargeUser.union_id ? ` · unionid ${chargeUser.union_id}` : ''}</Typography.Text>
         <Typography.Text type="secondary">首次出现 {time(chargeUser.first_seen_at)}{chargeUser.inviter_id ? ` · 邀请人 #${chargeUser.inviter_id}` : ' · 自然注册'}</Typography.Text>
@@ -173,7 +169,7 @@ export default function ChargeUsersPage() {
         ]} />
         <Typography.Title level={5}>最近订单</Typography.Title>
         {!detail.recent_orders.length && <Typography.Text type="secondary">该用户暂无充电订单</Typography.Text>}
-        <Table<ChargeUserOrder> rowKey="order_id" size="small" pagination={false} dataSource={detail.recent_orders}
+        <Table<ChargeUserOrder> rowKey="order_id" size="middle" pagination={TABLE_PAGINATION} dataSource={detail.recent_orders}
           locale={{ emptyText: '暂无订单' }} columns={[
             { title: '订单号', dataIndex: 'order_no' },
             { title: '设备', dataIndex: 'device_id' },

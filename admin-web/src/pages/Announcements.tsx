@@ -1,10 +1,9 @@
+import { TABLE_PAGINATION } from '../utils/tablePagination';
 import { useEffect, useState } from 'react';
-import { Table, Typography, Space, Button, Modal, Form, Input, DatePicker, Select, message } from 'antd';
+import { Table, Space, Button, Modal, Form, Input, DatePicker, Select, message } from 'antd';
 import { PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import { apiGet, apiPost } from '../api/client';
 import { LoadError } from '../components/LoadError';
-
-const { Title } = Typography;
 
 interface Announcement { id: number; title: string; content: string; scope: string; status: string; }
 
@@ -45,12 +44,11 @@ export default function AnnouncementsPage() {
   return (
     <div className="page-container">
       <Space style={{ marginBottom: 12 }}>
-        <Title level={3} style={{ margin: 0 }}>公告</Title>
         <Button icon={<ReloadOutlined />} onClick={load}>刷新</Button>
         <Button type="primary" icon={<PlusOutlined />} onClick={() => setOpen(true)}>新建</Button>
       </Space>
       {loadError && <LoadError title="公告列表加载失败" detail={loadError} onRetry={load} />}
-      <Table rowKey="id" loading={loading} dataSource={data}
+      <Table pagination={TABLE_PAGINATION} size="middle" rowKey="id" loading={loading} dataSource={data}
         columns={[
           { title: '标题', dataIndex: 'title' },
           { title: '范围', dataIndex: 'scope', width: 120 },

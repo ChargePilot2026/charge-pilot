@@ -3,6 +3,7 @@ import { Alert, Button, Input, Modal, Select, Space, Table, Tag, Typography } fr
 import type { ColumnsType } from 'antd/es/table';
 import { apiGet, apiPost } from '../api/client';
 import { LoadError } from '../components/LoadError';
+import { DEFAULT_PAGE_SIZE, TABLE_PAGINATION } from '../utils/tablePagination';
 
 interface RiskReview {
   actor_id: string;
@@ -46,6 +47,7 @@ function actionTitle(action: Action) {
 
 export default function WalletRisks() {
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
   const [status, setStatus] = useState<QueueStatus>('pending');
   const [reload, setReload] = useState(0);
   const [items, setItems] = useState<Risk[]>([]);
@@ -72,7 +74,7 @@ export default function WalletRisks() {
     setError('');
     setItems([]);
     apiGet<{ items: Risk[]; total: number }>(
-      `/api/v1/admin/billing/wallet-risks?page=${page}&page_size=20&status=${status}`,
+      `/api/v1/admin/billing/wallet-risks?page=${page}&page_size=${pageSize}&status=${status}`,
     ).then(result => {
       if (current) {
         setItems(result.items);
@@ -84,7 +86,7 @@ export default function WalletRisks() {
       if (current) setLoading(false);
     });
     return () => { current = false; };
-  }, [page, reload, status]);
+  }, [page, pageSize, reload, status]);
 
   const open = (item: Risk, action: Action) => {
     session.current = localStorage.getItem('cp_session_epoch') || '';
@@ -208,12 +210,12 @@ export default function WalletRisks() {
       />
       <Button onClick={() => setReload(value => value + 1)} disabled={loading || busy}>刷新</Button>
     </Space>
-    <Table<Risk>
+    <Table<Risk> size="middle"
       rowKey="request_id"
       dataSource={items}
       loading={loading}
       scroll={{ x: 1650 }}
-      pagination={{ current: page, pageSize: 20, total, showSizeChanger: false, onChange: setPage }}
+      pagination={{ ...TABLE_PAGINATION, current: page, pageSize, total, onChange: (nextPage, nextPageSize) => { setPage(nextPageSize === pageSize ? nextPage : 1); setPageSize(nextPageSize); } }}
       columns={columns}
     />
     <Modal

@@ -1,10 +1,11 @@
+import { TABLE_PAGINATION } from '../utils/tablePagination';
 import { useEffect, useState } from 'react';
 import { Button, Form, Input, InputNumber, Modal, Space, Switch, Table, Tag, Typography, message } from 'antd';
 import { MessageOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import { apiDelete, apiGet, apiPost, apiPut } from '../api/client';
 import { LoadError } from '../components/LoadError';
 
-const { Title, Text } = Typography;
+const { Text } = Typography;
 const endpoint = '/api/v1/admin/customer-service';
 
 interface Seat {
@@ -86,7 +87,6 @@ export default function CustomerServicePage() {
   return (
     <div className="page-container">
       <Space style={{ marginBottom: 12 }}>
-        <Title level={3} style={{ margin: 0 }}>客服坐席</Title>
         <Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button>
         <Button type="primary" icon={<PlusOutlined />} onClick={create}>添加坐席</Button>
       </Space>
@@ -94,7 +94,7 @@ export default function CustomerServicePage() {
         小程序客服入口使用优先级最高的启用坐席。微信原生客服还需要配置 WECHAT_CUSTOMER_SERVICE_CORP_ID 和 HTTPS 客服链接。
       </Text>
       {listError && <LoadError title="客服坐席加载失败" detail={listError} onRetry={load} />}
-      <Table rowKey="id" loading={loading} dataSource={items} columns={[
+      <Table pagination={TABLE_PAGINATION} size="middle" rowKey="id" loading={loading} dataSource={items} columns={[
         { title: '坐席名称', dataIndex: 'agent_name', render: (name: string | null, seat: Seat) => name || seat.agent_wechat },
         { title: '微信号', dataIndex: 'agent_wechat' },
         { title: '客服入口', dataIndex: 'path', render: (path: string | null) => path ? <a href={path} target="_blank" rel="noreferrer">打开链接</a> : <Text type="secondary">未配置</Text> },

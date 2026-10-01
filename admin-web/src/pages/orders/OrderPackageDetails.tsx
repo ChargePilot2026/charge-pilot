@@ -1,3 +1,4 @@
+import { TABLE_PAGINATION } from '../../utils/tablePagination';
 import { Alert, Card, Descriptions, Empty, Space, Table, Tag, Typography } from 'antd';
 import { type PackageMode, type Scheme, clock, modes, money } from '../schemes/model';
 
@@ -44,8 +45,8 @@ export default function OrderPackageDetails({ value }: { value: SelectedPackage 
       {amount.algorithm === 'server_energy' ? <Descriptions column={{ xs: 1, sm: 2, md: 2, lg: 2, xl: 2, xxl: 2 }} items={[
         { key: 'electric', label: '电费', children: `${money(period.electric_cents ?? 0)} / 度` },
         { key: 'service', label: '服务费', children: `${money(period.service_cents ?? 0)} / 度` },
-      ]} /> : <Table size="small" pagination={false} rowKey={(_, i) => String(i)} dataSource={period.tiers} scroll={{ x: 480 }} columns={[
-        { title: '功率范围（含上下限）', render: (_, tier, i) => `${i ? period.tiers![i - 1].max_watts + 1 : 0}～${tier.max_watts} W` },
+      ]} /> : <Table size="middle" pagination={TABLE_PAGINATION} rowKey="tierIndex" dataSource={period.tiers?.map((tier, tierIndex) => ({ ...tier, tierIndex }))} scroll={{ x: 480 }} columns={[
+        { title: '功率范围（含上下限）', render: (_, tier) => `${tier.tierIndex ? period.tiers![tier.tierIndex - 1].max_watts + 1 : 0}～${tier.max_watts} W` },
         { title: '电费', render: (_, tier) => `${money(tier.electric_cents)} / 小时` },
         { title: '服务费', render: (_, tier) => `${money(tier.service_cents ?? 0)} / 小时` },
       ]} />}

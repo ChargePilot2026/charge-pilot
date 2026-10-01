@@ -1,11 +1,10 @@
-import { useCallback, useEffect, useState } from 'react';
-import { Table, Typography, Tag, Space, Button, Modal, Form, Input, Select, Alert, message } from 'antd';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Table, Tag, Space, Button, Modal, Form, Input, Select, Alert, message } from 'antd';
 import { PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import { apiGet, apiPost } from '../api/client';
 import { formatTime } from '../utils/time';
 import { LoadError } from '../components/LoadError';
-
-const { Title } = Typography;
+import { TABLE_PAGINATION, useTablePagination } from '../utils/tablePagination';
 
 interface Webhook { id: number; name: string; url: string; enabled: boolean; event_types: string[]; secret_prefix: string; }
 
@@ -22,48 +21,89 @@ interface Delivery {
   delivered_at: string;
 }
 
-export default function WebhooksPage() {
-  const [data, setData] = useState<Webhook[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [open, setOpen] = useState(false);
-  const [newSecret, setNewSecret] = useState('');
+function WebhookDeliveryLogs({ subscription }: { subscription: Webhook }) {
   const [log, setLog] = useState<Delivery[]>([]);
-  const [logFor, setLogFor] = useState<Webhook | null>(null);
+  const [total, setTotal] = useState(0);
+  const { pagination, tablePagination } = useTablePagination();
   const [logLoading, setLogLoading] = useState(false);
-  const [listError, setListError] = useState<string | null>(null);
   const [logError, setLogError] = useState<string | null>(null);
   const [resending, setResending] = useState<number | null>(null);
-  const [form] = Form.useForm();
+  const logRequest = useRef(0);
 
-  const loadLog = useCallback(async (sub: Webhook) => {
+  const loadLog = useCallback(async () => {
+    const request = ++logRequest.current;
     setLogLoading(true);
     try {
-      const data = await apiGet<{ items: Delivery[] }>(`/api/v1/admin/webhooks/${sub.id}/deliveries?page=1&page_size=50`);
+      const data = await apiGet<{ items: Delivery[]; total: number }>(`/api/v1/admin/webhooks/${subscription.id}/deliveries?page=${pagination.page}&page_size=${pagination.page_size}`);
+      if (request !== logRequest.current) return;
       setLog(data.items || []);
+      setTotal(data.total || 0);
       setLogError(null);
     } catch (e: any) {
+      if (request !== logRequest.current) return;
       // 投递日志读不出来时不能显示「暂无投递记录」——那会让运营以为这个订阅从没
       // 触发过，从而漏掉已经在堆积的失败投递。
       setLog([]); setLogError(e?.message || '投递日志读取失败');
     } finally {
-      setLogLoading(false);
+      if (request === logRequest.current) setLogLoading(false);
     }
-  }, []);
+  }, [subscription.id, pagination.page, pagination.page_size]);
+  const latestLoadLog = useRef(loadLog);
+  latestLoadLog.current = loadLog;
+
+  useEffect(() => {
+    void loadLog();
+    return () => { logRequest.current += 1; };
+  }, [loadLog]);
 
   const resend = async (row: Delivery) => {
-    if (!logFor) return;
     setResending(row.id);
     try {
-      await apiPost(`/api/v1/admin/webhooks/${logFor.id}/deliveries/${encodeURIComponent(row.event_id)}/retry`, {});
+      await apiPost(`/api/v1/admin/webhooks/${subscription.id}/deliveries/${encodeURIComponent(row.event_id)}/retry`, {});
       message.success('已重新入队，稍后刷新查看结果');
       await new Promise((resolve) => setTimeout(resolve, 1500));
-      await loadLog(logFor);
+      await latestLoadLog.current();
     } catch (e: any) {
       message.error(e?.message || '重发失败');
     } finally {
       setResending(null);
     }
   };
+
+  return <>
+    {logError && <LoadError title="投递日志加载失败" detail={logError} onRetry={() => void loadLog()} />}
+    <Alert type="info" showIcon style={{ marginBottom: 12 }}
+      message="每次投递都带 X-ChargePilot-Signature（HMAC-SHA256，签名覆盖「时间戳.请求体」），请据此校验来源。" />
+    {log.length === 0 && total === 0 && !logLoading && !logError && (
+      <Alert type="info" showIcon message="暂无投递记录"
+        description="订阅创建后，匹配事件由 worker 异步投递；每次投递（含失败）都会在此留痕。" />
+    )}
+    <Table<Delivery> rowKey="id" size="middle" loading={logLoading} dataSource={log} scroll={{ x: 900 }}
+      pagination={{ ...tablePagination, total }}
+      columns={[
+        { title: '事件', dataIndex: 'event_type', width: 140 },
+        { title: '事件 ID', dataIndex: 'event_id', width: 190, ellipsis: true },
+        { title: '响应', dataIndex: 'response_status', width: 90,
+          render: (v: number | null) => v == null ? <Tag color="red">未送达</Tag>
+            : <Tag color={v >= 200 && v < 300 ? 'green' : 'red'}>{v}</Tag> },
+        { title: '次数', dataIndex: 'attempt_count', width: 70 },
+        { title: '耗时', dataIndex: 'duration_ms', width: 90, render: (v: number | null) => v == null ? '—' : `${v} ms` },
+        { title: '错误', dataIndex: 'error_msg', ellipsis: true },
+        { title: '时间', dataIndex: 'delivered_at', width: 180, render: formatTime },
+        { title: '操作', width: 90, render: (_, row) =>
+          <Button type="link" onClick={() => void resend(row)} loading={resending === row.id}>重发</Button> },
+      ]} />
+  </>;
+}
+
+export default function WebhooksPage() {
+  const [data, setData] = useState<Webhook[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [newSecret, setNewSecret] = useState('');
+  const [logFor, setLogFor] = useState<Webhook | null>(null);
+  const [listError, setListError] = useState<string | null>(null);
+  const [form] = Form.useForm();
 
   const load = async () => {
     setLoading(true);
@@ -88,12 +128,11 @@ export default function WebhooksPage() {
   return (
     <div className="page-container">
       <Space style={{ marginBottom: 12 }}>
-        <Title level={3} style={{ margin: 0 }}>Webhook 订阅</Title>
         <Button icon={<ReloadOutlined />} onClick={load}>刷新</Button>
         <Button type="primary" icon={<PlusOutlined />} onClick={() => setOpen(true)}>新建</Button>
       </Space>
       {listError && <LoadError title="Webhook 列表加载失败" detail={listError} onRetry={load} />}
-      <Table rowKey="id" loading={loading} dataSource={data}
+      <Table size="middle" rowKey="id" loading={loading} dataSource={data} pagination={TABLE_PAGINATION}
         columns={[
           { title: '名称', dataIndex: 'name' },
           { title: 'URL', dataIndex: 'url', ellipsis: true },
@@ -103,7 +142,7 @@ export default function WebhooksPage() {
           { title: '状态', dataIndex: 'enabled', render: (e: boolean) =>
             <Tag color={e ? 'green' : 'default'}>{e ? '启用' : '禁用'}</Tag> },
           { title: '操作', width: 110, render: (_, row) =>
-            <Button type="link" onClick={() => { setLogFor(row); void loadLog(row); }}>投递日志</Button> },
+            <Button type="link" onClick={() => setLogFor(row)}>投递日志</Button> },
         ]}
       />
       <Modal title="新建 Webhook" open={open} onCancel={() => setOpen(false)} onOk={onCreate}>
@@ -129,30 +168,7 @@ export default function WebhooksPage() {
       </Modal>
       <Modal title={`${logFor?.name || ''} 投递日志`} open={!!logFor} onCancel={() => setLogFor(null)}
         footer={null} width={1000}>
-        {logError ? (
-          <LoadError title="投递日志加载失败" detail={logError}
-            onRetry={() => { if (logFor) void loadLog(logFor); }} />
-        ) : null}
-        <Alert type="info" showIcon style={{ marginBottom: 12 }}
-          message="每次投递都带 X-ChargePilot-Signature（HMAC-SHA256，签名覆盖「时间戳.请求体」），请据此校验来源。" />
-        {log.length === 0 && !logLoading && !logError ? (
-          <Alert type="info" showIcon message="暂无投递记录"
-            description="订阅创建后，匹配事件由 worker 异步投递；每次投递（含失败）都会在此留痕。" />
-        ) : null}
-        <Table<Delivery> rowKey="id" size="small" loading={logLoading} dataSource={log} scroll={{ x: 900 }} pagination={false}
-          columns={[
-            { title: '事件', dataIndex: 'event_type', width: 140 },
-            { title: '事件 ID', dataIndex: 'event_id', width: 190, ellipsis: true },
-            { title: '响应', dataIndex: 'response_status', width: 90,
-              render: (v: number | null) => v == null ? <Tag color="red">未送达</Tag>
-                : <Tag color={v >= 200 && v < 300 ? 'green' : 'red'}>{v}</Tag> },
-            { title: '次数', dataIndex: 'attempt_count', width: 70 },
-            { title: '耗时', dataIndex: 'duration_ms', width: 90, render: (v: number | null) => v == null ? '—' : `${v} ms` },
-            { title: '错误', dataIndex: 'error_msg', ellipsis: true },
-            { title: '时间', dataIndex: 'delivered_at', width: 180, render: formatTime },
-            { title: '操作', width: 90, render: (_, row) =>
-              <Button type="link" onClick={() => void resend(row)} loading={resending === row.id}>重发</Button> },
-          ]} />
+        {logFor && <WebhookDeliveryLogs key={logFor.id} subscription={logFor} />}
       </Modal>
     </div>
   );

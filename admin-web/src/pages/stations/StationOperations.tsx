@@ -1,3 +1,4 @@
+import { TABLE_PAGINATION } from '../../utils/tablePagination';
 import { useEffect, useRef, useState } from 'react';
 import { Alert, App, Button, Descriptions, Divider, Form, InputNumber, Modal, Select, Space, Spin, Switch, Table, Tabs, Tag } from 'antd';
 import { apiGet, apiPut } from '../../api/client';
@@ -238,7 +239,7 @@ export default function StationOperations({ station }: {
               options={[{ value: '', label: '全部状态' }, ...Object.entries(TASK_STATUS).map(([value, s]) => ({ value, label: s.label }))]} />
             <span style={{ color: '#666' }}>仅显示最近 200 条</span>
           </Space>
-          <Table<SwitchTask> rowKey="id" dataSource={tasks} loading={loading} scroll={{ x: 900 }}
+          <Table<SwitchTask> pagination={TABLE_PAGINATION} size="middle" rowKey="id" dataSource={tasks} loading={loading} scroll={{ x: 900 }}
             columns={[
               { title: '任务号', dataIndex: 'task_no' },
               { title: '站点', render: (_: unknown, r: SwitchTask) => r.station_name || `站点 #${r.station_id}` },
@@ -309,7 +310,7 @@ export default function StationOperations({ station }: {
           { key: 'completed', label: '完成时间', children: detail.task.completed_at ? new Date(detail.task.completed_at).toLocaleString() : '未完成' },
         ]} />
         <Divider orientation="left" plain>设备明细</Divider>
-        <Table<SwitchItem> rowKey="id" size="small" dataSource={detail.items} pagination={{ pageSize: 20 }}
+        <Table<SwitchItem> rowKey="id" size="middle" dataSource={detail.items} pagination={TABLE_PAGINATION}
           columns={[
             { title: '设备编号', dataIndex: 'device_id' },
             { title: '下发前', dataIndex: 'mode_before', render: (v?: string) => v || '未配置' },

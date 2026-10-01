@@ -3,6 +3,7 @@ import { Alert, App, Button, DatePicker, Descriptions, Form, Input, Modal, Selec
 import { ReloadOutlined } from '@ant-design/icons';
 import { adminSession, apiGet, apiPost } from '../api/client';
 import { LoadError } from '../components/LoadError';
+import { DEFAULT_PAGE_SIZE, TABLE_PAGINATION } from '../utils/tablePagination';
 
 const { Text, Paragraph } = Typography;
 
@@ -95,6 +96,7 @@ export function Settlements() {
   const [rows, setRows] = useState<Settlement[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
   const [status, setStatus] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -104,7 +106,7 @@ export function Settlements() {
     setLoading(true);
     setError('');
     try {
-      const query = new URLSearchParams({ page: String(page), page_size: '20' });
+      const query = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
       if (status) query.set('status', status);
       const data = await apiGet<{ items: Settlement[]; total: number }>(`${endpoint}/settlements?${query}`);
       setRows(data.items || []);
@@ -114,7 +116,7 @@ export function Settlements() {
     } finally {
       setLoading(false);
     }
-  }, [page, status]);
+  }, [page, pageSize, status]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -126,12 +128,12 @@ export function Settlements() {
           options={Object.entries(settlementStatus).map(([value, meta]) => ({ value, label: meta.label }))} />
         </Space>
       {error && <LoadError title="分账记录加载失败" detail={error} onRetry={() => void load()} />}
-      {rows.length === 0 && !loading ? (
+      {total === 0 && rows.length === 0 && !loading ? (
         <Alert type="info" showIcon message="暂无分账记录" description="订单计费完成后会按站点分账模板自动生成分账明细。" />
       ) : (
-        <Table<Settlement>
+        <Table<Settlement> size="middle"
           rowKey="id" loading={loading} dataSource={rows} scroll={{ x: 1100 }}
-          pagination={{ current: page, pageSize: 20, total, showSizeChanger: false, onChange: setPage }}
+          pagination={{ ...TABLE_PAGINATION, current: page, pageSize, total, onChange: (nextPage, nextPageSize) => { setPage(nextPageSize === pageSize ? nextPage : 1); setPageSize(nextPageSize); } }}
           columns={[
             { title: '分账单号', dataIndex: 'settlement_no', width: 190 },
             { title: '订单号', dataIndex: 'order_no', width: 180 },
@@ -155,7 +157,7 @@ export function Settlements() {
             ? [{ key: 'excluded', label: '不参与分账的电费', children: money(detail.split_pool_excluded_electric_cents) }] : []),
         ]} />}
         <Table<Party>
-          style={{ marginTop: 16 }} rowKey="party_id" size="small" pagination={false} dataSource={detail?.parties || []}
+          style={{ marginTop: 16 }} rowKey="party_id" size="middle" pagination={TABLE_PAGINATION} dataSource={detail?.parties || []}
           columns={[
             { title: '参与方', dataIndex: 'party_name', render: (v: string, r) => <>{v}<Text type="secondary"> （{r.party_code}）</Text></> },
             { title: '比例', dataIndex: 'ratio_bp', width: 90, render: (v: number) => `${(v / 100).toFixed(2)}%` },
@@ -175,6 +177,7 @@ export function Withdrawals() {
   const [rows, setRows] = useState<Withdraw[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
   const [status, setStatus] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -188,7 +191,7 @@ export function Withdrawals() {
     setLoading(true);
     setError('');
     try {
-      const query = new URLSearchParams({ page: String(page), page_size: '20' });
+      const query = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
       if (status) query.set('status', status);
       const data = await apiGet<{ items: Withdraw[]; total: number }>(`${endpoint}/withdraws?${query}`);
       setRows(data.items || []);
@@ -198,7 +201,7 @@ export function Withdrawals() {
     } finally {
       setLoading(false);
     }
-  }, [page, status]);
+  }, [page, pageSize, status]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -260,12 +263,12 @@ export function Withdrawals() {
           options={Object.entries(withdrawStatus).map(([value, meta]) => ({ value, label: meta.label }))} />
         </Space>
       {error && <LoadError title="提现记录加载失败" detail={error} onRetry={() => void load()} />}
-      {rows.length === 0 && !loading ? (
+      {total === 0 && rows.length === 0 && !loading ? (
         <Alert type="info" showIcon message="暂无提现申请" description="分账状态为已打款的参与方才有可提现余额。" />
       ) : (
-        <Table<Withdraw>
+        <Table<Withdraw> size="middle"
           rowKey="id" loading={loading} dataSource={rows} scroll={{ x: 1000 }}
-          pagination={{ current: page, pageSize: 20, total, showSizeChanger: false, onChange: setPage }}
+          pagination={{ ...TABLE_PAGINATION, current: page, pageSize, total, onChange: (nextPage, nextPageSize) => { setPage(nextPageSize === pageSize ? nextPage : 1); setPageSize(nextPageSize); } }}
           columns={[
             { title: '提现单号', dataIndex: 'withdraw_no', width: 210 },
             { title: '参与方', dataIndex: 'party_code', width: 150 },
@@ -320,6 +323,9 @@ export function Withdrawals() {
 export function Reconciliation() {
   const { message } = App.useApp();
   const [rows, setRows] = useState<Reconcile[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [running, setRunning] = useState(false);
@@ -331,14 +337,15 @@ export function Reconciliation() {
     setLoading(true);
     setError('');
     try {
-      const data = await apiGet<{ items: Reconcile[] }>(`${endpoint}/reconciles?page=1&page_size=50`);
+      const data = await apiGet<{ items: Reconcile[]; total: number }>(`${endpoint}/reconciles?page=${page}&page_size=${pageSize}`);
       setRows(data.items || []);
+      setTotal(data.total || 0);
     } catch (e: any) {
       setError(e?.message || '对账记录读取失败');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [page, pageSize]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -403,8 +410,9 @@ export function Reconciliation() {
         <Button icon={<ReloadOutlined />} onClick={() => void load()} loading={loading}>刷新</Button>
         </Space>
       {error && <LoadError title="对账记录加载失败" detail={error} onRetry={() => void load()} />}
-      <Table<Reconcile>
-        rowKey="id" loading={loading} dataSource={rows} scroll={{ x: 1000 }} pagination={false}
+      <Table<Reconcile> size="middle"
+        rowKey="id" loading={loading} dataSource={rows} scroll={{ x: 1000 }}
+        pagination={{ ...TABLE_PAGINATION, current: page, pageSize, total, onChange: (nextPage, nextPageSize) => { setPage(nextPageSize === pageSize ? nextPage : 1); setPageSize(nextPageSize); } }}
         columns={[
           { title: '日期', dataIndex: 'reconcile_date', width: 120 },
           { title: '类型', dataIndex: 'reconcile_type', width: 120, render: (v: string) => reconcileType[v] || v },
@@ -423,7 +431,7 @@ export function Reconciliation() {
       />
       <Modal title="差异明细" open={!!detail} onCancel={() => setDetail(null)} footer={null} width={760}>
         <Table<ReconcileDiff>
-          rowKey="ref" size="small" pagination={false} dataSource={detail?.diffs || []}
+          rowKey="ref" size="middle" pagination={TABLE_PAGINATION} dataSource={detail?.diffs || []}
           columns={[
             { title: '流水号', dataIndex: 'ref' },
             { title: '内部金额', dataIndex: 'internal_cents', render: money },

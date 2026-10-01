@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Alert, Button, Input, Modal, Select, Table } from 'antd';
 import { apiGet, apiPost } from '../api/client';
 import { LoadError } from '../components/LoadError';
+import { DEFAULT_PAGE_SIZE, TABLE_PAGINATION } from '../utils/tablePagination';
 
 interface Refund {
   id: string; refund_no: string; user_id: string; payment_order_id: string;
@@ -12,7 +13,7 @@ interface Refund {
 }
 const labels: Record<string, string> = { pending: '待处理', processing: '处理中', success: '已退款', failed: '退款异常', rejected: '审核已拒绝' };
 export default function Refunds() {
-  const [query, setQuery] = useState({ page: 1, page_size: 20, status: '', refund_no: '' });
+  const [query, setQuery] = useState({ page: 1, page_size: DEFAULT_PAGE_SIZE, status: '', refund_no: '' });
   const [items, setItems] = useState<Refund[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -54,8 +55,8 @@ export default function Refunds() {
       <Button loading={loading} onClick={() => setReload(v => v + 1)}>刷新</Button>
     </div>
     {error && <LoadError title="退款记录加载失败" detail={error} onRetry={() => setReload(v => v + 1)} />}
-    <Table<Refund> rowKey="id" dataSource={items} loading={loading} scroll={{ x: 1920 }}
-      pagination={{ current: query.page, pageSize: query.page_size, total, showSizeChanger: true, pageSizeOptions: [20, 50, 100], onChange: (page, page_size) => setQuery(q => ({ ...q, page, page_size })) }}
+    <Table<Refund> size="middle" rowKey="id" dataSource={items} loading={loading} scroll={{ x: 1920 }}
+      pagination={{ ...TABLE_PAGINATION, current: query.page, pageSize: query.page_size, total, onChange: (page, page_size) => setQuery(q => ({ ...q, page: page_size === q.page_size ? page : 1, page_size })) }}
       columns={[
         { title: '退款单号', dataIndex: 'refund_no', width: 220 },
         { title: '用户 ID', dataIndex: 'user_id', width: 130 },

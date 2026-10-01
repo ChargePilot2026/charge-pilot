@@ -1,17 +1,23 @@
+import { TABLE_PAGINATION } from '../utils/tablePagination';
 import { useEffect, useState } from 'react';
-import { Table, Tag, Typography, Space, Button, App } from 'antd';
+import { Table, Tag, Space, Button, App } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
 import { apiGet, apiPost } from '../api/client';
 import { formatTime } from '../utils/time';
 import { LoadError } from '../components/LoadError';
-
-const { Title } = Typography;
 
 interface Alert { id: number; device_id: string; severity: string; metric: string; status: string; created_at?: string; }
 
 const sevColor: Record<string, string> = {
   warning: 'gold', critical: 'orange', fatal: 'red',
 };
+const severityLabel: Record<string, string> = { warning: '警告', critical: '严重', fatal: '致命' };
+const statusLabel: Record<string, string> = { active: '待处理', acknowledged: '已确认', resolved: '已恢复', auto_resolved: '自动恢复' };
+const metricLabel: Record<string, string> = {
+  smoke: '烟雾告警', high_temperature: '高温告警', device_fault: '设备故障',
+  voltage_v: '电压', current_a: '电流', temperature_c: '温度', battery_soc: '电池电量', power_w: '功率', meter_kwh: '累计电量',
+};
+const displayMetric = (metric: string) => metricLabel[metric] || (metric.startsWith('port_fault_') ? `端口 ${metric.slice('port_fault_'.length)} 故障` : metric);
 
 export default function AlertsPage() {
   const [data, setData] = useState<Alert[]>([]);
@@ -37,7 +43,7 @@ export default function AlertsPage() {
   const onAck = async (id: number) => {
     try {
       await apiPost(`/api/v1/admin/alerts/${id}/ack`);
-      message.success('已 ACK');
+      message.success('已确认告警');
       load();
     } catch (e: any) {
       message.error(e?.message || '失败');
@@ -47,20 +53,19 @@ export default function AlertsPage() {
   return (
     <div className="page-container">
       <Space style={{ marginBottom: 12 }}>
-        <Title level={3} style={{ margin: 0 }}>告警</Title>
         <Button icon={<ReloadOutlined />} onClick={load}>刷新</Button>
       </Space>
       {loadError && <LoadError title="告警列表加载失败" detail={loadError} onRetry={load} />}
-      <Table
+      <Table pagination={TABLE_PAGINATION} size="middle"
         rowKey="id"
         loading={loading}
         dataSource={data}
         columns={[
           { title: '设备', dataIndex: 'device_id', width: 200 },
           { title: '严重度', dataIndex: 'severity', width: 100,
-            render: (s: string) => <Tag color={sevColor[s] || 'default'}>{s}</Tag> },
-          { title: '指标', dataIndex: 'metric', width: 140 },
-          { title: '状态', dataIndex: 'status', width: 120 },
+            render: (s: string) => <Tag color={sevColor[s] || 'default'}>{severityLabel[s] || s}</Tag> },
+          { title: '指标', dataIndex: 'metric', width: 140, render: displayMetric },
+          { title: '状态', dataIndex: 'status', width: 120, render: (value: string) => statusLabel[value] || value },
           { title: '时间', dataIndex: 'created_at', width: 180, render: formatTime },
           { title: '操作', width: 120,
             render: (_: unknown, r: Alert) => r.status === 'active' ? (

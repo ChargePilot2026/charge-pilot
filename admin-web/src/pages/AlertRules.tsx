@@ -3,8 +3,9 @@ import { Alert, App, Button, Form, Input, InputNumber, Modal, Popconfirm, Select
 import { PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import { apiDelete, apiGet, apiPost, apiPut } from '../api/client';
 import { LoadError } from '../components/LoadError';
+import { TABLE_PAGINATION, useTablePagination } from '../utils/tablePagination';
 
-const { Title, Text, Paragraph } = Typography;
+const { Text, Paragraph } = Typography;
 const endpoint = '/api/v1/admin/alert-rules';
 const subscriptionEndpoint = '/api/v1/admin/alert-subscriptions';
 
@@ -52,6 +53,8 @@ const thresholdText = (value: AlertRule['threshold']) => {
 export function AlertRules() {
   const { message } = App.useApp();
   const [rows, setRows] = useState<AlertRule[]>([]);
+  const [total, setTotal] = useState(0);
+  const { pagination, tablePagination } = useTablePagination();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [editing, setEditing] = useState<AlertRule | null>(null);
@@ -64,14 +67,15 @@ export function AlertRules() {
     setLoading(true);
     setError('');
     try {
-      const data = await apiGet<{ items: AlertRule[] }>(`${endpoint}?page=1&page_size=100`);
+      const data = await apiGet<{ items: AlertRule[]; total: number }>(`${endpoint}?page=${pagination.page}&page_size=${pagination.page_size}`);
       setRows(data.items || []);
+      setTotal(data.total || 0);
     } catch (e: any) {
       setError(e?.message || '告警规则读取失败');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [pagination.page, pagination.page_size]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -151,11 +155,12 @@ export function AlertRules() {
         <Button icon={<ReloadOutlined />} onClick={() => void load()} loading={loading}>刷新</Button>
         </Space>
       {error && <LoadError title="告警规则加载失败" detail={error} onRetry={() => void load()} />}
-      {rows.length === 0 && !loading ? (
+      {total === 0 && !loading ? (
         <Alert type="info" showIcon message="尚未配置告警规则" description="新建规则后，超出阈值的遥测会自动生成告警并推送给订阅方。" />
       ) : (
-        <Table<AlertRule>
+        <Table<AlertRule> size="middle"
           rowKey="id" loading={loading} dataSource={rows} scroll={{ x: 1000 }}
+          pagination={{ ...tablePagination, total }}
           columns={[
             { title: '名称', dataIndex: 'name', width: 180 },
             { title: '设备匹配', dataIndex: 'device_id_pattern', width: 150, render: (v: string) => <Text code>{v}</Text> },
@@ -307,8 +312,8 @@ export function AlertSubscriptions() {
       {rows.length === 0 && !loading ? (
         <Alert type="info" showIcon message="尚未配置告警订阅" description="订阅后，对应告警会推送到指定的 Webhook 或运营账号。" />
       ) : (
-        <Table<AlertSubscription>
-          rowKey="id" loading={loading} dataSource={rows} pagination={false}
+        <Table<AlertSubscription> size="middle"
+          rowKey="id" loading={loading} dataSource={rows} pagination={TABLE_PAGINATION}
           columns={[
             { title: 'ID', dataIndex: 'id', width: 80 },
             { title: '规则 ID', dataIndex: 'rule_id', width: 110, render: (v: number | null) => v ?? '全部规则' },
@@ -339,7 +344,6 @@ export function AlertSubscriptions() {
 export default function AlertRulesPage() {
   return (
     <div className="page-container">
-      <Title level={3}>告警配置</Title>
       <TabsLazy sections={[
         { key: 'rules', label: '告警规则', node: <AlertRules /> },
         { key: 'subscriptions', label: '告警订阅', node: <AlertSubscriptions /> },

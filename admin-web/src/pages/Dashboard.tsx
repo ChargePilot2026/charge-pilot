@@ -1,10 +1,11 @@
+import { TABLE_PAGINATION } from '../utils/tablePagination';
 import { useEffect, useState } from 'react';
 import { Alert, Button, Card, Col, Progress, Row, Space, Spin, Statistic, Table, Typography } from 'antd';
 import { ReloadOutlined, ThunderboltOutlined, DollarOutlined, UserOutlined, AlertOutlined } from '@ant-design/icons';
 import { apiGet } from '../api/client';
 import { LoadError } from '../components/LoadError';
 
-const { Title, Paragraph, Text } = Typography;
+const { Paragraph, Text } = Typography;
 
 interface TrendDay { day: string; completed_orders: number; settled_cents: number; }
 interface DashboardMetrics {
@@ -36,7 +37,6 @@ export default function DashboardPage() {
 
   return <div className="page-container">
     <Space style={{ marginBottom: 8 }}>
-      <Title level={3} style={{ margin: 0 }}>仪表盘</Title>
       <Button icon={<ReloadOutlined />} onClick={() => void load()} loading={loading}>刷新</Button>
     </Space>
     <Paragraph type="secondary">
@@ -53,7 +53,7 @@ export default function DashboardPage() {
       <Row gutter={[16, 16]} style={{ marginTop: 8 }}>
         <Col xs={24}>
           <Card title="近 7 天完成订单与结算金额">
-            <Table rowKey="day" size="small" pagination={false} dataSource={metrics?.daily_trend || []} columns={[
+            <Table rowKey="day" size="middle" pagination={TABLE_PAGINATION} dataSource={metrics?.daily_trend || []} columns={[
               { title: '日期', dataIndex: 'day', width: 150, render: (day: string) => day.slice(5) },
               { title: '完成订单', dataIndex: 'completed_orders', width: 160 },
               { title: '结算金额', dataIndex: 'settled_cents', width: 180, render: (cents: number) => `¥${(cents / 100).toFixed(2)}` },

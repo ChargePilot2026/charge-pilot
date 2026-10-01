@@ -3,8 +3,9 @@ import { Table, Typography, Tag, Space, Button, Input, Select, DatePicker, Drawe
 import { ReloadOutlined } from '@ant-design/icons';
 import { apiGet } from '../api/client';
 import { LoadError } from '../components/LoadError';
+import { DEFAULT_PAGE_SIZE, TABLE_PAGINATION } from '../utils/tablePagination';
 
-const { Title, Text, Paragraph } = Typography;
+const { Text, Paragraph } = Typography;
 
 interface AuditRow {
   id: number;
@@ -27,7 +28,7 @@ export default function AuditLogsPage() {
   const [rows, setRows] = useState<AuditRow[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [module, setModule] = useState('');
@@ -66,7 +67,6 @@ export default function AuditLogsPage() {
   return (
     <div className="page-container">
       <Space style={{ marginBottom: 12 }} wrap>
-        <Title level={3} style={{ margin: 0 }}>审计日志</Title>
         <Button icon={<ReloadOutlined />} onClick={() => void load()} loading={loading}>刷新</Button>
         <Input aria-label="操作人" placeholder="按操作人筛选" style={{ width: 200 }} maxLength={64}
           value={actor} onChange={e => setActor(e.target.value)}
@@ -82,8 +82,8 @@ export default function AuditLogsPage() {
       <Paragraph type="secondary">
         记录只追加不可修改。退款、提现、钱包放款、发票复核等资金操作与账号权限变更均在此留痕，可按操作前后快照核对。
       </Paragraph>
-      <Table<AuditRow> rowKey="id" loading={loading} dataSource={rows} scroll={{ x: 1000 }}
-        pagination={{ current: page, pageSize, total, showSizeChanger: true, onChange: (p, s) => { setPage(p); setPageSize(s); } }}
+      <Table<AuditRow> size="middle" rowKey="id" loading={loading} dataSource={rows} scroll={{ x: 1000 }}
+        pagination={{ ...TABLE_PAGINATION, current: page, pageSize, total, onChange: (p, s) => { setPage(s === pageSize ? p : 1); setPageSize(s); } }}
         columns={[
           { title: '时间', dataIndex: 'created_at', width: 200, render: (v: string) => new Date(v).toLocaleString() },
           { title: '操作人', dataIndex: 'actor_name', width: 120 },

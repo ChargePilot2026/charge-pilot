@@ -3,6 +3,7 @@ import { Tabs, Table, Typography, Tag, Space, Button, Modal, Form, Input, InputN
 import { PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import { apiGet, apiPost, apiPut } from '../api/client';
 import { LoadError } from '../components/LoadError';
+import { TABLE_PAGINATION, useTablePagination } from '../utils/tablePagination';
 
 const { Title } = Typography;
 
@@ -79,12 +80,11 @@ export default function CouponsPage() {
         { key: 'coupons', label: '优惠券', children: (
       <>
       <Space style={{ marginBottom: 12 }}>
-        <Title level={3} style={{ margin: 0 }}>优惠券</Title>
         <Button icon={<ReloadOutlined />} onClick={load}>刷新</Button>
         <Button type="primary" icon={<PlusOutlined />} onClick={() => setOpen(true)}>新建</Button>
       </Space>
       {loadError && <LoadError title="优惠券列表加载失败" detail={loadError} onRetry={() => void load()} />}
-      <Table rowKey="id" loading={loading} dataSource={data}
+      <Table size="middle" rowKey="id" loading={loading} dataSource={data} pagination={TABLE_PAGINATION}
         columns={[
           { title: '名称', dataIndex: 'name' },
           { title: '类型', dataIndex: 'discount_type', width: 100 },
@@ -161,6 +161,8 @@ const triggerLabel: Record<string, string> = {
 // 活动规则在这里配置而不是手写 SQL，这样活动窗口和预算就能在系统跑着的时候改。
 function ActivityRules({ coupons, reloadCoupons }: { coupons: Coupon[]; reloadCoupons: () => void }) {
   const [rows, setRows] = useState<any[]>([]);
+  const [total, setTotal] = useState(0);
+  const { pagination, tablePagination } = useTablePagination();
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
@@ -171,9 +173,12 @@ function ActivityRules({ coupons, reloadCoupons }: { coupons: Coupon[]; reloadCo
   const load = useCallback(async () => {
     setLoading(true);
     setLoadError(null);
-    try { setRows((await apiGet<{ items: any[] }>('/api/v1/admin/coupon-activities')).items || []); }
+    try {
+      const result = await apiGet<{ items: any[]; total: number }>('/api/v1/admin/coupon-activities', pagination);
+      setRows(result.items || []); setTotal(result.total);
+    }
     catch (e: any) { setLoadError(e?.message || '活动规则读取失败'); } finally { setLoading(false); }
-  }, []);
+  }, [pagination]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -219,7 +224,7 @@ function ActivityRules({ coupons, reloadCoupons }: { coupons: Coupon[]; reloadCo
         规则在触发事实发生的同一事务内评估。满减未达门槛、活动过期、预算耗尽都不会发放，也不会影响支付或订单本身。
       </Typography.Text>
       {loadError && <LoadError title="活动规则加载失败" detail={loadError} onRetry={() => void load()} />}
-      <Table rowKey="id" loading={loading} dataSource={rows} scroll={{ x: 1000 }}
+      <Table size="middle" rowKey="id" loading={loading} dataSource={rows} scroll={{ x: 1000 }} pagination={{ ...tablePagination, total }}
         columns={[
           { title: '名称', dataIndex: 'name' },
           { title: '触发', dataIndex: 'trigger_type', width: 110, render: (v: string) => triggerLabel[v] || v },

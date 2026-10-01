@@ -1,3 +1,4 @@
+import { TABLE_PAGINATION } from '../utils/tablePagination';
 import { useEffect, useState } from 'react';
 import { Alert, Button, Form, Input, InputNumber, Modal, Select, Space, Switch, Table, Tag, message } from 'antd';
 import { apiGet, apiPost, apiPut } from '../api/client';
@@ -185,7 +186,7 @@ export default function PackageTemplates() {
     <Alert type="info" showIcon style={{ marginBottom: 12 }}
       message="金额方案按现行费率消费，达到上限后停止；固定时长套餐按配置售价支付，到时停止，提前结束按未使用时长退款。应用会复制成一条在售记录，之后修改模板不会影响已上架的套餐。" />
     {listError && <LoadError title="套餐模板列表加载失败" detail={listError} onRetry={() => void load()} />}
-    <Table rowKey="id" dataSource={items} loading={loading} scroll={{ x: 1000 }} pagination={false} columns={[
+    <Table size="middle" rowKey="id" dataSource={items} loading={loading} scroll={{ x: 1000 }} pagination={TABLE_PAGINATION} columns={[
       { title: '名称', render: (_: unknown, r: PackageTemplate) => <>{r.name}<div style={{ color: '#999' }}>v{r.version}</div></> },
       { title: '排序', dataIndex: 'sort_order', width: 90, render: (v?: number) => (typeof v === 'number' ? v : <span style={{ color: '#999' }}>—</span>) },
       { title: '类型', dataIndex: 'kind', render: (k: string) => <Tag color={k === 'amount' ? 'blue' : 'green'}>{kindLabel(k)}</Tag> },

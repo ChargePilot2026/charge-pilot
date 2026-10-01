@@ -1,3 +1,4 @@
+import { TABLE_PAGINATION } from '../../utils/tablePagination';
 import { useEffect, useState } from 'react';
 import { Alert, Button, Collapse, Descriptions, Input, InputNumber, Modal, Select, Space, Spin, Table, Tag } from 'antd';
 import { apiPost } from '../../api/client';
@@ -109,7 +110,7 @@ export default function PricingPreview({ draft, onClose }: { draft: PreviewDraft
     <div>开始：{minuteToClock(result.start_minute)}；持续 {result.minutes} 分钟；{result.channel === 'card' ? '刷卡' : '扫码'}；实测电量 {(result.energy_wh / 1000).toFixed(3)} 度；含电损计费电量 {(result.fee.billable_wh / 1000).toFixed(3)} 度。</div>
     <div>功率过程：{result.segments.map(s => `${s.watts} 瓦 × ${s.minutes} 分钟`).join(' → ')}。</div>
     {spec.mode === 'server_max_power' && <div>按整场最高功率 {Math.max(...result.segments.map(s => s.watts))} 瓦选档，整场使用开始时段的费率。</div>}
-    <Table size="small" pagination={false} scroll={{ x: 640 }} dataSource={calculationRows(spec, result)} columns={[
+    <Table size="middle" pagination={TABLE_PAGINATION} scroll={{ x: 640 }} dataSource={calculationRows(spec, result)} columns={[
       { title: '采用费率', render: (_, r) => `第 ${r.period + 1} 时段${r.tier >= 0 ? ` · 第 ${r.tier + 1} 档` : ''}` },
       { title: '电费计算（倍率前）', dataIndex: 'electric' }, { title: '服务费计算', dataIndex: 'service' },
     ]} />
@@ -145,7 +146,7 @@ export default function PricingPreview({ draft, onClose }: { draft: PreviewDraft
         { key: 'float', label: '涓流策略', children: `${(spec.time_charge.float_power_deci_watts || 0) / 10} 瓦，最长 ${spec.time_charge.float_seconds || 0} 秒` },
       ]} />}
     </> : <>
-      <Collapse style={{ marginTop: 16 }} items={[{ key: 'rates', label: '完整时段与功率档位费率', children: <Table size="small" pagination={false} dataSource={spec.electric!.periods.flatMap((period, pi, all) => (period.tiers || [null]).map((tier, ti) => ({ key: `${pi}-${ti}`, time: `${minuteToClock(pi ? all[pi - 1].end_minute : 0)}–${minuteToClock(period.end_minute)}`, power: tier ? `${ti ? period.tiers![ti - 1].max_watts + 1 : 0}–${tier.max_watts} 瓦${ti === period.tiers!.length - 1 ? '（超出仍按末档）' : ''}` : '不分档', electric: `${money(tier?.electric_cents ?? period.electric_cents)} ${tierRateUnits(spec.mode).electric}`, service: spec.service?.basis === 'minute_power' ? `${money(tier?.service_cents)} ${tierRateUnits(spec.mode).service}` : '统一口径，见上方' })))} columns={[{ title: '时段', dataIndex: 'time' }, { title: '功率范围', dataIndex: 'power' }, { title: '电费单价', dataIndex: 'electric' }, { title: '服务费', dataIndex: 'service' }]} /> }]} />
+      <Collapse style={{ marginTop: 16 }} items={[{ key: 'rates', label: '完整时段与功率档位费率', children: <Table size="middle" pagination={TABLE_PAGINATION} dataSource={spec.electric!.periods.flatMap((period, pi, all) => (period.tiers || [null]).map((tier, ti) => ({ key: `${pi}-${ti}`, time: `${minuteToClock(pi ? all[pi - 1].end_minute : 0)}–${minuteToClock(period.end_minute)}`, power: tier ? `${ti ? period.tiers![ti - 1].max_watts + 1 : 0}–${tier.max_watts} 瓦${ti === period.tiers!.length - 1 ? '（超出仍按末档）' : ''}` : '不分档', electric: `${money(tier?.electric_cents ?? period.electric_cents)} ${tierRateUnits(spec.mode).electric}`, service: spec.service?.basis === 'minute_power' ? `${money(tier?.service_cents)} ${tierRateUnits(spec.mode).service}` : '统一口径，见上方' })))} columns={[{ title: '时段', dataIndex: 'time' }, { title: '功率范围', dataIndex: 'power' }, { title: '电费单价', dataIndex: 'electric' }, { title: '服务费', dataIndex: 'service' }]} /> }]} />
       <h4>自定义充电场景</h4>
       <Space wrap>
         <label>开始时间 <Input aria-label="预览开始时间" value={time} onChange={e => { setTime(e.target.value); setCustom(null); }} style={{ width: 100 }} /></label>

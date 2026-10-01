@@ -2,6 +2,8 @@
 
 项目尚未发布，五个 schema 各保留一份 `0001_init.sql`，直接定义完整表结构、索引、权限及计划任务种子。结构修改直接编辑对应 CREATE TABLE；发布前不新增递增迁移，不用 ALTER 兼容旧开发库。
 
+每张业务表和每个字段都必须写入 MySQL `COMMENT`，便于数据库工具直接显示含义。金额注明单位分，电量和时长注明单位，枚举注明取值，快照、幂等键、生成列和跨服务关联注明用途。新增字段时同步维护注释。
+
 初始化空库：配置 `DATABASE_URL_GATEWAY`、`DATABASE_URL_USER`、`DATABASE_URL_ADMIN`、`DATABASE_URL_BILLING`、`DATABASE_URL_WORKER`，执行 `go run ./cmd/migrate -schema all`。同一份 init 重复执行不会重复建表。数据库 URL 必须对应指定 schema。
 
 旧开发库不能沿用历史 Goose 版本：先备份，然后停止 central/gateway/worker，删除并重建这五个 schema（或清空本项目开发 MySQL 卷），再初始化并重启服务。初始化工具会拒绝包含旧迁移版本或没有 Goose 记录的旧表。**不要只删除 Goose 版本表**，业务表也必须重建。

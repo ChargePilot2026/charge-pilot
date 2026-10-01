@@ -3,6 +3,7 @@ import { Alert, App, Button, Form, Input, InputNumber, Modal, Popconfirm, Select
 import { PlusOutlined, ReloadOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { apiDelete, apiGet, apiPost } from '../api/client';
 import { LoadError } from '../components/LoadError';
+import { useTablePagination } from '../utils/tablePagination';
 
 const { Text, Paragraph } = Typography;
 const packagesEndpoint = '/api/v1/admin/ota/packages';
@@ -53,6 +54,8 @@ const sizeText = (bytes: number) => bytes > 1 << 20 ? `${(bytes / (1 << 20)).toF
 export function OtaPackages() {
   const { message } = App.useApp();
   const [rows, setRows] = useState<OtaPackage[]>([]);
+  const [total, setTotal] = useState(0);
+  const { pagination, tablePagination } = useTablePagination();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [open, setOpen] = useState(false);
@@ -63,14 +66,15 @@ export function OtaPackages() {
     setLoading(true);
     setError('');
     try {
-      const data = await apiGet<{ items: OtaPackage[] }>(`${packagesEndpoint}?page=1&page_size=100`);
+      const data = await apiGet<{ items: OtaPackage[]; total: number }>(`${packagesEndpoint}?page=${pagination.page}&page_size=${pagination.page_size}`);
       setRows(data.items || []);
+      setTotal(data.total || 0);
     } catch (e: any) {
       setError(e?.message || '固件包读取失败');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [pagination.page, pagination.page_size]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -115,11 +119,12 @@ export function OtaPackages() {
         <Button icon={<ReloadOutlined />} onClick={() => void load()} loading={loading}>刷新</Button>
         </Space>
       {error && <LoadError title="固件包加载失败" detail={error} onRetry={() => void load()} />}
-      {rows.length === 0 && !loading ? (
+      {total === 0 && rows.length === 0 && !loading ? (
         <Alert type="info" showIcon message="暂无固件包" description="登记并发布固件后即可创建 OTA 升级计划。" />
       ) : (
-        <Table<OtaPackage>
+        <Table<OtaPackage> size="middle"
           rowKey="id" loading={loading} dataSource={rows} scroll={{ x: 1000 }}
+          pagination={{ ...tablePagination, total }}
           columns={[
             { title: '编码', dataIndex: 'code', width: 150 },
             { title: '版本', dataIndex: 'version', width: 110 },
@@ -167,6 +172,8 @@ export function OtaPackages() {
 export function OtaSchedules() {
   const { message } = App.useApp();
   const [rows, setRows] = useState<OtaSchedule[]>([]);
+  const [total, setTotal] = useState(0);
+  const { pagination, tablePagination } = useTablePagination();
   const [packages, setPackages] = useState<OtaPackage[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -179,17 +186,18 @@ export function OtaSchedules() {
     setError('');
     try {
       const [schedules, firmware] = await Promise.all([
-        apiGet<{ items: OtaSchedule[] }>(`${schedulesEndpoint}?page=1&page_size=100`),
+        apiGet<{ items: OtaSchedule[]; total: number }>(`${schedulesEndpoint}?page=${pagination.page}&page_size=${pagination.page_size}`),
         apiGet<{ items: OtaPackage[] }>(`${packagesEndpoint}?page=1&page_size=100&status=published`),
       ]);
       setRows(schedules.items || []);
+      setTotal(schedules.total || 0);
       setPackages(firmware.items || []);
     } catch (e: any) {
       setError(e?.message || '升级计划读取失败');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [pagination.page, pagination.page_size]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -250,11 +258,12 @@ export function OtaSchedules() {
         <Button icon={<ReloadOutlined />} onClick={() => void load()} loading={loading}>刷新</Button>
         </Space>
       {error && <LoadError title="升级计划加载失败" detail={error} onRetry={() => void load()} />}
-      {rows.length === 0 && !loading ? (
+      {total === 0 && rows.length === 0 && !loading ? (
         <Alert type="info" showIcon message="暂无升级计划" description="选择一个已发布的固件包即可创建计划。" />
       ) : (
-        <Table<OtaSchedule>
+        <Table<OtaSchedule> size="middle"
           rowKey="id" loading={loading} dataSource={rows} scroll={{ x: 1000 }}
+          pagination={{ ...tablePagination, total }}
           columns={[
             { title: 'ID', dataIndex: 'id', width: 70 },
             { title: '固件', dataIndex: 'package_id', width: 90, render: (v: number) => {
