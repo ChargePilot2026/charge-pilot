@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol"
+	"github.com/ChargePilot2026/charge-pilot/internal/protocol"
 )
 
 // deviceSessionRow 映射 device_session；created_month 为分区键和联合主键的一部分，读写必须保留。

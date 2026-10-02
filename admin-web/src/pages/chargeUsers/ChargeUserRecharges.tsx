@@ -50,7 +50,7 @@ export default function ChargeUserRecharges({ userID }: { userID: string }) {
     window.addEventListener('storage', invalidate);
     setPage(null); setError(''); setLoading(true);
     const request = { signal: controller.signal, params: pagination, cpEpoch: epoch };
-    http.get<ApiEnvelope<RechargePage>>(`/api/v1/admin/charge-users/${userID}/recharges`, request).then(response => {
+    http.get<ApiEnvelope<RechargePage>>(`/api/v1/admin/users/${userID}/recharges`, request).then(response => {
       if (!current()) return;
       const result = response.data.data;
       if (!result || !Array.isArray(result.items) || result.items.some(row => row.user_id !== userID || row.biz_type !== 'wallet_recharge')) {

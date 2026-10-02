@@ -3,6 +3,9 @@ package charge
 import (
 	"context"
 	"encoding/binary"
+	cardpkg "github.com/ChargePilot2026/charge-pilot/internal/central/card"
+	"github.com/ChargePilot2026/charge-pilot/internal/central/order"
+	"github.com/ChargePilot2026/charge-pilot/internal/central/payment"
 	"net/http"
 	"os"
 	"strconv"
@@ -10,8 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ChargePilot2026/charge-pilot/internal/central/channel"
 	"github.com/ChargePilot2026/charge-pilot/internal/central/identity"
-	"github.com/ChargePilot2026/charge-pilot/internal/central/payment"
 	"github.com/ChargePilot2026/charge-pilot/internal/central/pricing"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/auth"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/snowflake"
@@ -45,15 +48,15 @@ func TestPaymentNumberSources(t *testing.T) {
 		t.Fatal(err)
 	}
 	seen := map[string]bool{}
-	readPayment := func(no string) PaymentOrderRecord {
+	readPayment := func(no string) payment.PaymentOrderRecord {
 		t.Helper()
-		var row PaymentOrderRecord
+		var row payment.PaymentOrderRecord
 		if err := tx.Where("order_no=? AND user_id=?", no, userID).Take(&row).Error; err != nil {
 			t.Fatal(err)
 		}
 		return row
 	}
-	assertNewNumber := func(row PaymentOrderRecord) {
+	assertNewNumber := func(row payment.PaymentOrderRecord) {
 		t.Helper()
 		if !strings.HasPrefix(row.OrderNo, "P") {
 			t.Fatalf("new payment lacks P prefix: %+v", row)
@@ -64,14 +67,18 @@ func TestPaymentNumberSources(t *testing.T) {
 		}
 		seen[row.OrderNo] = true
 	}
-	port := func(no uint8) ScanResult {
-		return ScanResult{Kind: "port", DeviceID: tag, StationID: 9,
-			Port: &ScanPort{PortID: tag + ":" + strconv.Itoa(int(no)), DeviceID: tag, PortNo: no, Available: true, Online: true}}
+	port := func(no uint8) payment.ScanResult {
+		return payment.ScanResult{Kind: "port", DeviceID: tag, StationID: 9,
+			Port: &payment.ScanPort{PortID: tag + ":" + strconv.Itoa(int(no)), DeviceID: tag, PortNo: no, Available: true, Online: true}}
 	}
-	intents := PaymentIntentStore{DB: tx}
-	var scanPayment PaymentIntent
+	cardPort := func(no uint8) cardpkg.PortRef {
+		return cardpkg.PortRef{Found: true, Kind: "port", DeviceID: tag, StationID: 9,
+			PortID: tag + ":" + strconv.Itoa(int(no)), PortNo: no, Available: true, Online: true}
+	}
+	intents := payment.PaymentIntentStore{DB: tx}
+	var scanPayment payment.PaymentIntent
 	for no := uint8(1); no <= 2; no++ {
-		input := completeIntent(IntentInput{UserID: userID, ClientRequestID: uuid.NewString(), Port: port(no)}, 200)
+		input := completeIntent(payment.IntentInput{UserID: userID, ClientRequestID: uuid.NewString(), Port: port(no)}, 200)
 		first, err := intents.Reserve(ctx, input)
 		if err != nil {
 			t.Fatal(err)
@@ -84,8 +91,8 @@ func TestPaymentNumberSources(t *testing.T) {
 			scanPayment = first
 		}
 	}
-	callbacks := PaymentCallbackStore{DB: tx, ExpectedProvider: "simulation", ExpectedMerchantID: "numbering-simulation", ExpectedAppID: "wx_numbering_test"}
-	notification := VerifiedPayment{Provider: "simulation", MerchantID: callbacks.ExpectedMerchantID, AppID: callbacks.ExpectedAppID,
+	callbacks := payment.PaymentCallbackStore{DB: tx, ExpectedProvider: "simulation", ExpectedMerchantID: "numbering-simulation", ExpectedAppID: "wx_numbering_test"}
+	notification := payment.VerifiedPayment{Provider: "simulation", MerchantID: callbacks.ExpectedMerchantID, AppID: callbacks.ExpectedAppID,
 		MerchantOrderNo: scanPayment.MerchantOrderNo, TransactionID: "numbering-tx-" + tag, OpenID: openID, PaidCents: scanPayment.PayableCents, PaidAt: time.Now().UTC()}
 	confirmed, err := callbacks.Apply(ctx, notification)
 	if err != nil || confirmed.ChargeOrderID == 0 || confirmed.Replayed || !strings.HasPrefix(confirmed.ChargeOrderNo, "C") ||
@@ -100,30 +107,30 @@ func TestPaymentNumberSources(t *testing.T) {
 	}
 
 	cardUUID := uuid.New()
-	card := OnlineCard{CardNo: strconv.FormatUint(uint64(binary.LittleEndian.Uint32(cardUUID[:4])|1), 10), UserID: userID, Status: "active"}
-	if err := tx.Create(&card).Error; err != nil {
+	cardRow := cardpkg.OnlineCard{CardNo: strconv.FormatUint(uint64(binary.LittleEndian.Uint32(cardUUID[:4])|1), 10), UserID: userID, Status: "active"}
+	if err := tx.Create(&cardRow).Error; err != nil {
 		t.Fatal(err)
 	}
 	scheme := pricing.Scheme{Name: "payment number card fixture", Packages: []pricing.Package{{ID: 1, Name: "120分钟", Mode: "duration", PriceCents: 200, Minutes: 120}},
 		Card: pricing.CardPolicy{PackageID: 1, MaxMinutes: 600}, Display: pricing.DefaultDisplay()}.Normalized()
 	rule := pricing.Rule{ID: 31, StationID: 9, Version: 1, Spec: scheme.SpecFor(scheme.Packages[0])}
-	cards := CardStore{DB: tx}
+	cards := cardpkg.CardStore{DB: tx}
 	for no := uint8(3); no <= 4; no++ {
 		event := uuid.NewString()
-		first, err := cards.Swipe(ctx, card.CardNo, event, port(no), rule)
+		first, err := cards.Swipe(ctx, cardRow.CardNo, event, cardPort(no), rule)
 		if err != nil {
 			t.Fatal(err)
 		}
-		var order ChargeOrderRecord
+		var order order.ChargeOrderRecord
 		if err := tx.Where("id=? AND user_id=?", first.ChargeOrderID, userID).Take(&order).Error; err != nil {
 			t.Fatal(err)
 		}
-		var paid PaymentOrderRecord
+		var paid payment.PaymentOrderRecord
 		if err := tx.Where("id=?", order.PaymentOrderID.Int64).Take(&paid).Error; err != nil || paid.PayMethod != "balance" {
 			t.Fatalf("card payment: %+v %v", paid, err)
 		}
 		assertNewNumber(paid)
-		if replay, err := cards.Swipe(ctx, card.CardNo, event, port(no), pricing.Rule{}); err != nil || replay.OperationID != first.OperationID || replay.ChargeOrderID != first.ChargeOrderID {
+		if replay, err := cards.Swipe(ctx, cardRow.CardNo, event, cardPort(no), pricing.Rule{}); err != nil || replay.OperationID != first.OperationID || replay.ChargeOrderID != first.ChargeOrderID {
 			t.Fatalf("card event replay changed payment: %+v %v", replay, err)
 		}
 	}
@@ -139,7 +146,7 @@ func TestPaymentNumberSources(t *testing.T) {
 	}
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	UserAccountAPI{Auth: identity.SessionAuthenticator{JWT: jwt, Sessions: scanSession{}, Users: identity.UserStore{DB: tx}}, UserDB: tx, Prepay: payment.Simulator{}}.Register(router)
+	UserAccountAPI{Auth: identity.SessionAuthenticator{JWT: jwt, Sessions: scanSession{}, Users: identity.UserStore{DB: tx}}, UserDB: tx, Prepay: channel.Simulator{}}.Register(router)
 	requests := &authenticatedRouter{Engine: router, token: token}
 	for range 2 {
 		request := map[string]any{"request_id": uuid.NewString(), "amount_cents": 1000}
@@ -156,13 +163,13 @@ func TestPaymentNumberSources(t *testing.T) {
 	}
 
 	var payments, charges, walletTxns int64
-	if err := tx.Model(&PaymentOrderRecord{}).Where("user_id=?", userID).Count(&payments).Error; err != nil || payments != 6 {
+	if err := tx.Model(&payment.PaymentOrderRecord{}).Where("user_id=?", userID).Count(&payments).Error; err != nil || payments != 6 {
 		t.Fatalf("replays created extra payments: %d %v", payments, err)
 	}
 	if err := tx.Table("wallet_txn").Where("user_id=?", userID).Count(&walletTxns).Error; err != nil || walletTxns != 2 {
 		t.Fatalf("card replay debited wallet twice: %d %v", walletTxns, err)
 	}
-	if err := tx.Model(&ChargeOrderRecord{}).Where("user_id=?", userID).Count(&charges).Error; err != nil || charges != 3 {
+	if err := tx.Model(&order.ChargeOrderRecord{}).Where("user_id=?", userID).Count(&charges).Error; err != nil || charges != 3 {
 		t.Fatalf("notification or card replay created extra charge orders: %d %v", charges, err)
 	}
 }

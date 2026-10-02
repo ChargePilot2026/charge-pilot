@@ -5,19 +5,22 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"github.com/ChargePilot2026/charge-pilot/internal/central/coupon"
+	"github.com/ChargePilot2026/charge-pilot/internal/central/payment"
+	"github.com/ChargePilot2026/charge-pilot/internal/central/refund"
+	"github.com/ChargePilot2026/charge-pilot/internal/central/settlement"
+	walletrefund "github.com/ChargePilot2026/charge-pilot/internal/central/wallet"
 	"math"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/ChargePilot2026/charge-pilot/internal/central/channel"
 	"github.com/ChargePilot2026/charge-pilot/internal/central/identity"
-	"github.com/ChargePilot2026/charge-pilot/internal/central/payment"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/httpapi"
-	"github.com/ChargePilot2026/charge-pilot/internal/platform/phone"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/serviceclient"
 	"github.com/gin-gonic/gin"
-	"github.com/go-sql-driver/mysql"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -25,15 +28,13 @@ import (
 
 // UserAccountAPI 提供钱包、优惠券、发票、公告、附近站点、手机号绑定及用户故障上报接口。
 type UserAccountAPI struct {
-	Auth             identity.SessionAuthenticator
-	UserDB           *gorm.DB
-	AdminDB          *gorm.DB
-	GatewayURL       string
-	ServiceToken     string
-	Gateway          serviceclient.Client
-	Prepay           PrepayProvider
-	DevelopmentPhone bool
-	PhoneExchange    func(context.Context, string) (string, error)
+	Auth         identity.SessionAuthenticator
+	UserDB       *gorm.DB
+	AdminDB      *gorm.DB
+	GatewayURL   string
+	ServiceToken string
+	Gateway      serviceclient.Client
+	Prepay       payment.PrepayProvider
 }
 
 // Register 注册用户账户路由；各处理器先验证会话，缺失或无效时返回 401。
@@ -48,8 +49,6 @@ func (a UserAccountAPI) Register(r *gin.Engine) {
 	r.GET("/api/v1/user/announcement/list", a.announcements)
 	r.GET("/api/v1/user/station/nearby", a.nearbyStations)
 	r.GET("/api/v1/user/station/:id", a.stationDetail)
-	r.POST("/api/v1/user/phone/bind", a.bindPhone)
-	r.POST("/api/v1/user/phone/unbind", a.unbindPhone)
 	r.POST("/api/v1/user/device/report-fault", a.reportFault)
 	r.GET("/api/v1/user/device/fault-reports", a.myFaultReports)
 	r.GET("/api/v1/user/device/fault-reports/:id/history", a.myFaultHistory)
@@ -181,7 +180,7 @@ func (a UserAccountAPI) walletRecharge(c *gin.Context) {
 		httpapi.Write(c, 409, 2009, "账号身份不可用", nil)
 		return
 	}
-	var order PaymentOrderRecord
+	var order payment.PaymentOrderRecord
 	err := a.UserDB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Serialize all wallet requests for one owner, including simultaneous retries.
 		var owner struct{ ID uint64 }
@@ -210,7 +209,7 @@ func (a UserAccountAPI) walletRecharge(c *gin.Context) {
 		err = tx.Table("wallet_recharge_request").Where("request_id=?", in.RequestID).Take(&prior).Error
 		if err == nil {
 			if prior.UserID != user || prior.AmountCents != in.AmountCents {
-				return ErrPaymentIntentConflict
+				return payment.ErrPaymentIntentConflict
 			}
 			return tx.Where("id=?", prior.PaymentOrderID).Take(&order).Error
 		}
@@ -218,17 +217,17 @@ func (a UserAccountAPI) walletRecharge(c *gin.Context) {
 			return err
 		}
 		now := time.Now().UTC()
-		orderNo, err := newPaymentOrderNumber(tx)
+		orderNo, err := payment.NewOrderNumber(tx)
 		if err != nil {
 			return err
 		}
-		order = PaymentOrderRecord{OrderNo: orderNo, BizType: "wallet_recharge", UserID: user, PayMethod: "wechat", TotalCents: in.AmountCents, Status: "initiated", ExpiredAt: sql.NullTime{Time: now.Add(30 * time.Minute), Valid: true}, CreatedMonth: time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)}
+		order = payment.PaymentOrderRecord{OrderNo: orderNo, BizType: "wallet_recharge", UserID: user, PayMethod: "wechat", TotalCents: in.AmountCents, Status: "initiated", ExpiredAt: sql.NullTime{Time: now.Add(30 * time.Minute), Valid: true}, CreatedMonth: time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)}
 		if err := tx.Create(&order).Error; err != nil {
 			return err
 		}
 		return tx.Table("wallet_recharge_request").Create(map[string]any{"request_id": in.RequestID, "user_id": user, "amount_cents": in.AmountCents, "payment_order_id": order.ID, "request_json": mustJSON(in)}).Error
 	})
-	if errors.Is(err, ErrPaymentIntentConflict) || errors.Is(err, errWalletFrozen) {
+	if errors.Is(err, payment.ErrPaymentIntentConflict) || errors.Is(err, errWalletFrozen) {
 		httpapi.Write(c, 409, 2009, "请求号冲突或钱包已冻结", nil)
 		return
 	}
@@ -239,8 +238,8 @@ func (a UserAccountAPI) walletRecharge(c *gin.Context) {
 	canPay := order.Status == "initiated" && order.ExpiredAt.Valid && order.ExpiredAt.Time.After(time.Now())
 	response := gin.H{"request_id": in.RequestID, "payment_order_id": order.ID, "merchant_order_no": order.OrderNo, "amount_cents": order.TotalCents, "status": order.Status, "can_pay": canPay}
 	if canPay {
-		var stored ChargePrepayRecord
-		var params payment.PrepayParams
+		var stored payment.ChargePrepayRecord
+		var params channel.PrepayParams
 		err := a.UserDB.WithContext(ctx).Where("payment_order_id=?", order.ID).Take(&stored).Error
 		if err == nil {
 			err = json.Unmarshal(stored.ParamsJSON, &params)
@@ -249,10 +248,10 @@ func (a UserAccountAPI) walletRecharge(c *gin.Context) {
 				httpapi.Write(c, 503, 5003, "支付渠道未配置", nil)
 				return
 			}
-			params, err = a.Prepay.Prepay(ctx, payment.PrepayRequest{MerchantOrderNo: order.OrderNo, OpenID: openid, AmountCents: order.TotalCents, ExpiresAt: order.ExpiredAt.Time})
+			params, err = a.Prepay.Prepay(ctx, channel.PrepayRequest{MerchantOrderNo: order.OrderNo, OpenID: openid, AmountCents: order.TotalCents, ExpiresAt: order.ExpiredAt.Time})
 			if err == nil {
 				encoded, _ := json.Marshal(params)
-				stored = ChargePrepayRecord{PaymentOrderID: order.ID, ParamsJSON: encoded, PrepayID: sql.NullString{String: params.PrepayID, Valid: params.PrepayID != ""}}
+				stored = payment.ChargePrepayRecord{PaymentOrderID: order.ID, ParamsJSON: encoded, PrepayID: sql.NullString{String: params.PrepayID, Valid: params.PrepayID != ""}}
 				err = a.UserDB.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&stored).Error
 				if err == nil {
 					err = a.UserDB.WithContext(ctx).Where("payment_order_id=?", order.ID).Take(&stored).Error
@@ -309,7 +308,7 @@ func (a UserAccountAPI) walletRefund(c *gin.Context) {
 				reason = *prior.Reason
 			}
 			if prior.UserID != user || prior.AmountCents != in.AmountCents || reason != in.Reason {
-				return ErrRefundConflict
+				return refund.ErrRefundConflict
 			}
 			return json.Unmarshal([]byte(prior.ResponseJSON), &response)
 		}
@@ -345,7 +344,7 @@ func (a UserAccountAPI) walletRefund(c *gin.Context) {
 			if err := tx.Table("wallet_account").Where("id=?", wallet.ID).Updates(map[string]any{"status": "frozen", "version": gorm.Expr("version+1")}).Error; err != nil {
 				return err
 			}
-		} else if err := ReserveWalletRefund(tx, WalletRefundReservation{RequestID: in.RequestID, UserID: user, AmountCents: in.AmountCents, Reason: in.Reason}); err != nil {
+		} else if err := walletrefund.ReserveRefund(tx, walletrefund.WalletRefundReservation{RequestID: in.RequestID, UserID: user, AmountCents: in.AmountCents, Reason: in.Reason}); err != nil {
 			return err
 		}
 		response = map[string]any{"request_id": in.RequestID, "status": status, "refund_cents": in.AmountCents}
@@ -355,7 +354,7 @@ func (a UserAccountAPI) walletRefund(c *gin.Context) {
 	switch {
 	case errors.Is(err, ErrInsufficientBalance):
 		httpapi.Write(c, 409, 2009, "可用余额不足", nil)
-	case errors.Is(err, ErrRefundConflict):
+	case errors.Is(err, refund.ErrRefundConflict), errors.Is(err, walletrefund.ErrConflict):
 		httpapi.Write(c, 409, 2009, "申请冲突或原充值可退额度不足", nil)
 	case errors.Is(err, errWalletFrozen):
 		httpapi.Write(c, 409, 2009, "钱包已冻结，请等待审核", nil)
@@ -466,7 +465,7 @@ func (a UserAccountAPI) myCoupons(c *gin.Context) {
 		httpapi.BadRequest(c, "优惠券状态无效")
 		return
 	}
-	rows := []CouponGrant{}
+	rows := []coupon.CouponGrant{}
 	err := a.UserDB.WithContext(c.Request.Context()).Table("coupon_grant AS g").
 		Joins("JOIN coupon AS c2 ON c2.id = g.coupon_id AND c2.deleted_at IS NULL AND c2.status = 'active'").
 		Where("g.user_id = ? AND g.deleted_at IS NULL", userID).
@@ -810,78 +809,6 @@ func (a UserAccountAPI) deviceHeartbeats(ctx context.Context, rows []struct {
 
 // ---- 手机号 ----
 
-func (a UserAccountAPI) bindPhone(c *gin.Context) {
-	userID, ok := a.userID(c)
-	if !ok {
-		return
-	}
-	var in struct {
-		Phone string `json:"phone"`
-		Code  string `json:"code"`
-	}
-	if c.ShouldBindJSON(&in) != nil {
-		httpapi.BadRequest(c, "手机号请求无效")
-		return
-	}
-	if !a.DevelopmentPhone {
-		if in.Code == "" || in.Phone != "" {
-			httpapi.BadRequest(c, "请使用微信手机号授权凭证")
-			return
-		}
-		if a.PhoneExchange == nil {
-			httpapi.Write(c, 503, 5003, "手机号授权暂不可用", nil)
-			return
-		}
-		phone, err := a.PhoneExchange(c.Request.Context(), in.Code)
-		if err != nil {
-			httpapi.Write(c, 400, 1004, "手机号授权失败，请重新授权", nil)
-			return
-		}
-		in.Phone = phone
-	}
-	in.Phone = phone.Normalize(in.Phone)
-	if !phone.Valid(in.Phone) {
-		httpapi.BadRequest(c, "请输入有效的中国大陆手机号")
-		return
-	}
-	err := a.UserDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
-		// 查询提供明确的冲突提示，唯一索引兜底并发绑定。
-		var holder int64
-		if err := tx.Table("user").Where("phone = ? AND id <> ? AND deleted_at IS NULL", in.Phone, userID).Count(&holder).Error; err != nil {
-			return err
-		}
-		if holder > 0 {
-			return errPhoneTaken
-		}
-		return tx.Table("user").Where("id = ? AND deleted_at IS NULL", userID).
-			Updates(map[string]any{"phone": in.Phone}).Error
-	})
-	var duplicate *mysql.MySQLError
-	switch {
-	case errors.Is(err, errPhoneTaken) || errors.As(err, &duplicate) && duplicate.Number == 1062:
-		httpapi.Write(c, 409, 2009, "该手机号已绑定其他账号", nil)
-	case err != nil:
-		resourceWriteFailure(c, err)
-	default:
-		httpapi.OK(c, gin.H{"bound": true, "phone_masked": phone.Mask(in.Phone)})
-	}
-}
-
-func (a UserAccountAPI) unbindPhone(c *gin.Context) {
-	userID, ok := a.userID(c)
-	if !ok {
-		return
-	}
-	err := a.UserDB.WithContext(c.Request.Context()).Table("user").
-		Where("id = ? AND deleted_at IS NULL", userID).
-		Updates(map[string]any{"phone": nil}).Error
-	if err != nil {
-		resourceWriteFailure(c, err)
-		return
-	}
-	httpapi.OK(c, gin.H{"bound": false, "unbound": true})
-}
-
 // ---- 报修 ----
 
 func (a UserAccountAPI) reportFault(c *gin.Context) {
@@ -1084,7 +1011,7 @@ func (a UserAccountAPI) applyInvoice(c *gin.Context) {
 	}
 	// 开票金额取自计费回执，
 	// 与订单视图同源，绝不取自计费任务从不写入的列。
-	receipt := ChargeFeeRecord{}
+	receipt := settlement.ChargeFeeRecord{}
 	if err := a.UserDB.WithContext(ctx).Where("charge_order_id = ?", order.ID).Take(&receipt).Error; err != nil {
 		httpapi.Write(c, 409, 2009, "订单尚未计费，暂不能申请发票", nil)
 		return
@@ -1140,7 +1067,6 @@ func (a UserAccountAPI) applyInvoice(c *gin.Context) {
 var (
 	ErrInsufficientBalance = errors.New("可用余额不足")
 	errWalletFrozen        = errors.New("钱包已冻结")
-	errPhoneTaken          = errors.New("手机号已被占用")
 	errInvoiceDuplicate    = errors.New("订单已申请发票")
 )
 

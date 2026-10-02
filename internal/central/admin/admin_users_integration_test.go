@@ -28,7 +28,7 @@ func TestAdminProfileEditingKeepsUnchangedRoleAndSession(t *testing.T) {
 			args  []any
 		}{
 			{"DELETE FROM audit_log WHERE actor_id = ? AND actor_name = ?", []any{actor.ID, actor.Username}},
-			{"DELETE FROM admin_user_role WHERE id IN ?", []any{accountIDs}},
+			{"DELETE FROM admin_user WHERE id IN ?", []any{accountIDs}},
 			{"DELETE FROM role_permission WHERE role_id IN ?", []any{roleIDs}},
 			{"DELETE FROM role WHERE id IN ?", []any{roleIDs}},
 		} {
@@ -141,7 +141,7 @@ func TestAdminProfileEditingKeepsUnchangedRoleAndSession(t *testing.T) {
 	request(actor.ID, gin.H{"display_name": "Updated profile", "phone": "13800000000", "email": "selfedit@example.com", "role_id": actor.RoleID, "status": "active"}, http.StatusOK, false)
 	checkAccount(actor.ID, actor.RoleID, 7)
 	var updated AdminUserRow
-	if err := db.Table("admin_user_role").Where("id = ?", actor.ID).Take(&updated).Error; err != nil {
+	if err := db.Table("admin_user").Where("id = ?", actor.ID).Take(&updated).Error; err != nil {
 		t.Fatal(err)
 	}
 	if updated.DisplayName == nil || *updated.DisplayName != "Updated profile" || updated.Phone == nil || *updated.Phone != "13800000000" || updated.Email == nil || *updated.Email != "selfedit@example.com" {

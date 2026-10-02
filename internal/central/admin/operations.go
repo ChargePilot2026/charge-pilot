@@ -45,11 +45,10 @@ func (a ResourceAPI) registerOperations(r *gin.Engine) {
 			httpapi.OK(c, gin.H{"items": rows})
 		})
 	}
-	get("users", "admin_user.read", "admin_user_role", "id,username,display_name,role_id,status", true)
 	get("alerts", "alert.read", "alert_event", "id,device_id,severity,metric,status,created_at", false)
 	get("announcements", "announcement.read", "announcement", "id,title,content,scope,target_ids,status,start_at,end_at", true)
 	get("webhooks", "webhook.read", "webhook_subscription", "id,name,url,enabled,event_types,LEFT(secret,8) AS secret_prefix", true)
-	r.POST("/api/v1/admin/users", a.Auth.Require("admin_user.create"), a.createUser)
+	r.POST("/api/v1/admin/admin-users", a.Auth.Require("admin_user.create"), a.createUser)
 	r.POST("/api/v1/admin/alerts/:id/ack", a.Auth.Require("alert.ack"), a.ackAlert)
 	r.POST("/api/v1/admin/announcements", a.Auth.Require("announcement.create"), a.createAnnouncement)
 	r.POST("/api/v1/admin/webhooks", a.Auth.Require("webhook.create"), a.createWebhook)
@@ -186,7 +185,7 @@ func (a ResourceAPI) createUser(c *gin.Context) {
 	var id uint64
 	err = a.Store.AdminDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
 		row := map[string]any{"username": in.Username, "display_name": in.DisplayName, "password_hash": string(hash), "phone": in.Phone, "role_id": in.RoleID, "status": "active"}
-		if err := tx.Table("admin_user_role").Create(row).Error; err != nil {
+		if err := tx.Table("admin_user").Create(row).Error; err != nil {
 			return err
 		}
 		if err := tx.Raw("SELECT LAST_INSERT_ID()").Scan(&id).Error; err != nil {

@@ -7,24 +7,27 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol"
-	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol/dc589"
-	"github.com/google/uuid"
-	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 	"io"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ChargePilot2026/charge-pilot/internal/platform/serviceclient"
+	"github.com/ChargePilot2026/charge-pilot/internal/protocol"
+	"github.com/ChargePilot2026/charge-pilot/internal/protocol/dc589"
+	"github.com/google/uuid"
 )
 
+// CardDispatcher 把原生刷卡事件决策后回复设备；事件清单、决策冻结、
+// 投递推进与端口解析经 gateway 内部端点，本组件不持有 gateway 库句柄。
 type CardDispatcher struct {
-	GatewayDB                            *gorm.DB
+	Gateway                              serviceclient.Client
 	CentralURL, GatewayURL, ServiceToken string
 	Client                               *http.Client
 }
+
 type cardReply struct {
 	Accepted     bool                 `json:"accepted"`
 	DeviceID     string               `json:"device_id"`
@@ -36,22 +39,24 @@ type cardReply struct {
 }
 
 func (d CardDispatcher) Run(ctx context.Context) (int, error) {
-	if d.GatewayDB == nil || d.ServiceToken == "" {
+	if d.GatewayURL == "" || d.ServiceToken == "" {
 		return 0, errors.New("card dispatcher is not configured")
 	}
-	var rows []struct {
-		EventKey                string
-		EventJSON, ResponseJSON []byte
+	gateway := newGatewaySyncAPI(d.Gateway, d.GatewayURL, d.ServiceToken)
+	var list struct {
+		Items []struct {
+			EventKey string `json:"event_key"`
+			Payload  string `json:"payload"`
+			Response string `json:"response"`
+		} `json:"items"`
 	}
-	err := d.GatewayDB.WithContext(ctx).Table("card_event_delivery x").Select("x.event_key,e.event_json,x.response_json").Joins("JOIN device_event e ON e.event_key=x.event_key").Where("x.status='pending' AND x.next_attempt_at<=UTC_TIMESTAMP(3)").Order("e.id").Limit(100).Find(&rows).Error
-	if err != nil {
+	if err := gateway.get(ctx, "/api/v1/internal/card-events", &list); err != nil {
 		return 0, err
 	}
 	done := 0
 	var first error
-	for _, r := range rows {
-		reply, decisionErr := d.decisionFor(ctx, r.EventKey)
-		err = decisionErr
+	for _, item := range list.Items {
+		reply, err := d.decisionFor(ctx, gateway, item.EventKey, item.Payload, item.Response)
 		if err == nil && !reply.Accepted {
 			var ack struct {
 				Accepted bool `json:"accepted"`
@@ -69,12 +74,14 @@ func (d CardDispatcher) Run(ctx context.Context) (int, error) {
 			if len(message) > 255 {
 				message = message[:255]
 			}
-			if updateErr := d.GatewayDB.WithContext(ctx).Table("card_event_delivery").Where("event_key=?", r.EventKey).Updates(map[string]any{"attempts": gorm.Expr("attempts+1"), "next_attempt_at": time.Now().UTC().Add(5 * time.Second), "last_error": message}).Error; updateErr != nil {
-				return done, updateErr
+			var ignored struct{}
+			if aerr := gateway.post(ctx, "/api/v1/internal/card-events/advance", map[string]any{"event_key": item.EventKey, "outcome": "retry", "error": message}, &ignored); aerr != nil {
+				return done, aerr
 			}
 			continue
 		}
-		if err := d.GatewayDB.WithContext(ctx).Table("card_event_delivery").Where("event_key=?", r.EventKey).Updates(map[string]any{"status": "done", "last_error": nil}).Error; err != nil {
+		var ignored struct{}
+		if err := gateway.post(ctx, "/api/v1/internal/card-events/advance", map[string]any{"event_key": item.EventKey, "outcome": "done"}, &ignored); err != nil {
 			return done, err
 		}
 		done++
@@ -82,41 +89,40 @@ func (d CardDispatcher) Run(ctx context.Context) (int, error) {
 	return done, first
 }
 
-// Serialize the decision across workers and freeze it before a socket reply.
-// A lost central response is retried with the same committed event UUID.
-func (d CardDispatcher) decisionFor(ctx context.Context, key string) (cardReply, error) {
+// decisionFor 返回冻结后的决策回复：清单里已有冻结回复时直接使用；
+// 否则解析事件、决策并经 decide-finish 首写冻结，竞争输掉时采用胜出方回复。
+// 决策是事件的纯函数，首写冻结保证同一事件只有一个回复事实。
+func (d CardDispatcher) decisionFor(ctx context.Context, gateway gatewaySyncAPI, key, payload, frozen string) (cardReply, error) {
 	var reply cardReply
-	err := d.GatewayDB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var stored struct {
-			ResponseJSON []byte
-			Status       string
+	if frozen != "" {
+		return reply, json.Unmarshal([]byte(frozen), &reply)
+	}
+	var e protocol.Event
+	if json.Unmarshal([]byte(payload), &e) != nil || e.EventID != key || uuid.Validate(e.EventID) != nil {
+		return reply, errors.New("card event identity mismatch")
+	}
+	reply, err := d.decide(ctx, gateway, e)
+	if err != nil {
+		return reply, err
+	}
+	raw, _ := json.Marshal(reply)
+	var finish struct {
+		Stored       bool   `json:"stored"`
+		ResponseJSON string `json:"response_json"`
+	}
+	if err := gateway.post(ctx, "/api/v1/internal/card-events/decide-finish", map[string]any{"event_key": key, "response_json": string(raw)}, &finish); err != nil {
+		return reply, err
+	}
+	if !finish.Stored {
+		// 并发决策已先冻结：以胜出方回复为准，二者本应是同一事实。
+		if err := json.Unmarshal([]byte(finish.ResponseJSON), &reply); err != nil {
+			return reply, err
 		}
-		if err := tx.Table("card_event_delivery").Clauses(clause.Locking{Strength: "UPDATE"}).Where("event_key=?", key).Take(&stored).Error; err != nil {
-			return err
-		}
-		if len(stored.ResponseJSON) > 0 {
-			return json.Unmarshal(stored.ResponseJSON, &reply)
-		}
-		var row struct{ EventJSON []byte }
-		if err := tx.Table("device_event").Where("event_key=?", key).Take(&row).Error; err != nil {
-			return err
-		}
-		var e protocol.Event
-		if json.Unmarshal(row.EventJSON, &e) != nil || e.EventID != key || uuid.Validate(e.EventID) != nil {
-			return errors.New("card event identity mismatch")
-		}
-		var err error
-		reply, err = d.decide(ctx, e)
-		if err != nil {
-			return err
-		}
-		raw, _ := json.Marshal(reply)
-		return tx.Table("card_event_delivery").Where("event_key=?", key).Update("response_json", string(raw)).Error
-	})
-	return reply, err
+	}
+	return reply, nil
 }
 
-func (d CardDispatcher) decide(ctx context.Context, e protocol.Event) (cardReply, error) {
+func (d CardDispatcher) decide(ctx context.Context, gateway gatewaySyncAPI, e protocol.Event) (cardReply, error) {
 	r := cardReply{DeviceID: e.DeviceID, Session: hex.EncodeToString(e.SessionID[:]), CardNumber: e.CardNumber}
 	card := strconv.FormatUint(uint64(e.CardNumber), 10)
 	if e.Type == protocol.CardSwipe {
@@ -124,17 +130,20 @@ func (d CardDispatcher) decide(ctx context.Context, e protocol.Event) (cardReply
 			r.Kind, r.Invalid = protocol.CommandCardDenied, true
 			return r, nil
 		}
-		var port string
-		if err := d.GatewayDB.WithContext(ctx).Table("device_port").Where("device_id=? AND port_no=? AND deleted_at IS NULL", e.DeviceID, e.Port).Pluck("port_code", &port).Error; err != nil {
+		var resolved struct {
+			Found    bool   `json:"found"`
+			PortCode string `json:"port_code"`
+		}
+		if err := gateway.get(ctx, "/api/v1/internal/ports/resolve?device_id="+url.QueryEscape(e.DeviceID)+"&port_no="+strconv.Itoa(int(e.Port)), &resolved); err != nil {
 			return r, err
 		}
-		if port == "" {
+		if !resolved.Found {
 			return r, errors.New("card port not provisioned")
 		}
 		var op struct {
 			OperationID string `json:"operation_id"`
 		}
-		err := d.call(ctx, d.CentralURL, "POST", "/api/v1/internal/cards/swipe", map[string]any{"event_id": e.EventID, "card_no": card, "port_id": port, "occurred_at": e.ReceivedAt}, &op)
+		err := d.call(ctx, d.CentralURL, "POST", "/api/v1/internal/cards/swipe", map[string]any{"event_id": e.EventID, "card_no": card, "port_id": resolved.PortCode, "occurred_at": e.ReceivedAt}, &op)
 		if err == nil {
 			if uuid.Validate(op.OperationID) != nil {
 				return r, errors.New("card operation response missing identity")

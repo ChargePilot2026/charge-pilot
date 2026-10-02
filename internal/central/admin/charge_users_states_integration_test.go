@@ -86,9 +86,9 @@ func TestChargeUserRecentOrdersExposeIndependentStates(t *testing.T) {
 		t.Fatalf("recent order limit: %+v err=%v", limited.RecentOrders, err)
 	}
 	router := gin.New()
-	router.GET("/charge-users/:id", (ResourceAPI{Store: store}).chargeUser)
+	router.GET("/users/:id", (ResourceAPI{Store: store}).chargeUser)
 	response := httptest.NewRecorder()
-	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, fmt.Sprintf("/charge-users/%d", user.ID), nil))
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, fmt.Sprintf("/users/%d", user.ID), nil))
 	var envelope struct {
 		Data ChargeUserDetail `json:"data"`
 	}

@@ -12,10 +12,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ChargePilot2026/charge-pilot/internal/central/channel"
 	"github.com/ChargePilot2026/charge-pilot/internal/central/identity"
 	"github.com/ChargePilot2026/charge-pilot/internal/central/payment"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/auth"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/dbconn"
+	"github.com/ChargePilot2026/charge-pilot/internal/platform/dbutil"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/serviceclient"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -75,10 +77,14 @@ func accountRouterWithGateway(t *testing.T, userDB, adminDB *gorm.DB, userID uin
 	UserAccountAPI{
 		Auth:   identity.SessionAuthenticator{JWT: jwt, Sessions: identity.Sessions{Redis: client}, Users: identity.UserStore{DB: userDB}},
 		UserDB: userDB, AdminDB: adminDB, Gateway: serviceclient.Client{},
-		GatewayURL: gatewayURL, ServiceToken: "svc",
-		DevelopmentPhone: true, Prepay: payment.Simulator{},
+		GatewayURL: gatewayURL, ServiceToken: "svc", Prepay: channel.Simulator{},
 	}.Register(router)
-	DevelopmentPaymentAPI{Auth: identity.SessionAuthenticator{JWT: jwt, Sessions: identity.Sessions{Redis: client}, Users: identity.UserStore{DB: userDB}}, DB: userDB, Store: PaymentCallbackStore{DB: userDB, ExpectedProvider: "simulation", ExpectedMerchantID: "local-simulation", ExpectedAppID: "wx_local_dev"}}.Register(router)
+	identity.PhoneAPI{
+		Auth:             identity.SessionAuthenticator{JWT: jwt, Sessions: identity.Sessions{Redis: client}, Users: identity.UserStore{DB: userDB}},
+		DB:               userDB,
+		DevelopmentPhone: true,
+	}.Register(router)
+	payment.DevelopmentPaymentAPI{Auth: identity.SessionAuthenticator{JWT: jwt, Sessions: identity.Sessions{Redis: client}, Users: identity.UserStore{DB: userDB}}, DB: userDB, Store: payment.PaymentCallbackStore{DB: userDB, ExpectedProvider: "simulation", ExpectedMerchantID: "local-simulation", ExpectedAppID: "wx_local_dev"}}.Register(router)
 	// 使用请求包装器注入 Bearer 令牌，覆盖已注册路由；Gin 的 Use 只影响后续注册路由。
 	return &authenticatedRouter{Engine: router, token: token}
 }
@@ -219,7 +225,7 @@ func TestWalletRefundFreezesBalanceOnClaim(t *testing.T) {
 	userDB := openAccountDB(t, "TEST_USER_DATABASE_URL")
 	adminDB := openAccountDB(t, "TEST_ADMIN_DATABASE_URL")
 	userID := createUserWithWallet(t, userDB, 50000)
-	if err := userDB.Exec("INSERT INTO payment_order(order_no,biz_type,biz_id,user_id,pay_method,total_cents,paid_cents,status,wechat_transaction_id,created_month) VALUES(?,'wallet_recharge',0,?,'wechat',50000,50000,'paid',?,?)", "qa-refund-"+uuid.NewString(), userID, uuid.NewString(), utcDate()).Error; err != nil {
+	if err := userDB.Exec("INSERT INTO payment_order(order_no,biz_type,biz_id,user_id,pay_method,total_cents,paid_cents,status,wechat_transaction_id,created_month) VALUES(?,'wallet_recharge',0,?,'wechat',50000,50000,'paid',?,?)", "qa-refund-"+uuid.NewString(), userID, uuid.NewString(), dbutil.MonthStart()).Error; err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {

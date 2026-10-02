@@ -37,8 +37,9 @@ type Entry struct {
 	Payload []byte
 }
 
-// ConsumeBatch 读取并分发每条已配置流上的待处理记录。
-// 处理成功的记录被确认并删除；失败的记录保留下来，
+// ConsumeBatch 读取并分发每条已配置流上的记录。
+// 先回收本组 pending（上一轮失败保留的记录在此重投），再取新消息；
+// 处理成功的记录被确认并删除，失败的记录保留 pending，
 // 等重试预算耗尽后再移入死信流。
 func (d DLQ) ConsumeBatch(ctx context.Context, handler DLQHandler) (int, error) {
 	if d.Stream == nil || handler == nil {
@@ -46,7 +47,7 @@ func (d DLQ) ConsumeBatch(ctx context.Context, handler DLQHandler) (int, error) 
 	}
 	streams := d.Streams
 	if len(streams) == 0 {
-		streams = []string{"charge_events_stream", "charge_ended_stream", "refund_required_stream", "refund_succeeded_stream", "device_event_stream"}
+		streams = DefaultBusinessStreams
 	}
 	processed, firstErr := 0, error(nil)
 	for _, stream := range streams {
@@ -59,6 +60,10 @@ func (d DLQ) ConsumeBatch(ctx context.Context, handler DLQHandler) (int, error) 
 	return processed, firstErr
 }
 
+// DefaultBusinessStreams 是 DLQ 默认监控的业务流，
+// 事件发布端（central/gateway 出队）与消费端共享这份清单。
+var DefaultBusinessStreams = []string{"charge_events_stream", "charge_ended_stream", "refund_required_stream", "refund_succeeded_stream", "device_event_stream"}
+
 func (d DLQ) consumeStream(ctx context.Context, stream string, handler DLQHandler) (int, error) {
 	if err := d.Stream.XGroupCreateMkStream(ctx, stream, d.Consumer, "$").Err(); err != nil && !isBusyGroup(err) {
 		return 0, err
@@ -67,8 +72,26 @@ func (d DLQ) consumeStream(ctx context.Context, stream string, handler DLQHandle
 	if limit <= 0 {
 		limit = 100
 	}
+	processed, firstErr := 0, error(nil)
+	// 先回收 pending：失败未确认的记录由这里重投，预算耗尽转死信。
+	if n, err := d.dispatch(ctx, stream, "0", limit, handler); err != nil {
+		firstErr = err
+	} else {
+		processed += n
+	}
+	// 再取新消息；调用方按周期驱动，这里不阻塞。
+	if n, err := d.dispatch(ctx, stream, ">", limit, handler); err != nil && firstErr == nil {
+		firstErr = err
+	} else {
+		processed += n
+	}
+	return processed, firstErr
+}
+
+// dispatch 用同一处理语义消化一批记录（readID 为 ">" 取新消息，"0" 回收 pending）。
+func (d DLQ) dispatch(ctx context.Context, stream, readID string, limit int64, handler DLQHandler) (int, error) {
 	entries, err := d.Stream.XReadGroup(ctx, &redis.XReadGroupArgs{
-		Group: d.Consumer, Consumer: d.Consumer, Streams: []string{stream, ">"}, Count: limit, Block: -1,
+		Group: d.Consumer, Consumer: d.Consumer, Streams: []string{stream, readID}, Count: limit, Block: -1,
 	}).Result()
 	if errors.Is(err, redis.Nil) {
 		return 0, nil
@@ -81,22 +104,13 @@ func (d DLQ) consumeStream(ctx context.Context, stream string, handler DLQHandle
 		for _, message := range batch.Messages {
 			entry := decodeEntry(message)
 			if handlerErr := handler(ctx, stream, entry.EventID, entry.Source, entry.Payload); handlerErr != nil {
-				delivered, dlqErr := d.Stream.XAck(ctx, stream, d.Consumer, message.ID).Result()
-				if dlqErr != nil {
-					if firstErr == nil {
-						firstErr = dlqErr
-					}
-					continue
-				}
-				// 重试预算耗尽前保留 pending 状态，允许临时故障恢复后继续处理。
-				attempts := d.attempts(ctx, stream, message.ID)
-				if attempts >= d.maxAttempts() {
+				// 失败不确认：保留 pending 等待重投；
+				// attempts 达到上限后移入死信流。
+				if d.attempts(ctx, stream, message.ID) >= d.maxAttempts() {
 					if moveErr := d.moveToDeadLetter(ctx, stream, entry, handlerErr); moveErr != nil && firstErr == nil {
 						firstErr = moveErr
 					}
-				}
-				_ = delivered
-				if firstErr == nil {
+				} else if firstErr == nil {
 					firstErr = handlerErr
 				}
 				continue
@@ -126,20 +140,16 @@ func (d DLQ) maxAttempts() int {
 	return 5
 }
 
-// attempts 读取 Redis 为该消费组维护的待处理记录投递次数。
+// attempts 读取指定消息在本消费组的待处理投递次数。
+// 以消息 ID 为 XPENDING 区间，积压再多也只查这一条。
 func (d DLQ) attempts(ctx context.Context, stream, messageID string) int {
 	pending, err := d.Stream.XPendingExt(ctx, &redis.XPendingExtArgs{
-		Stream: stream, Group: d.Consumer, Start: "-", End: "+", Count: 100,
+		Stream: stream, Group: d.Consumer, Start: messageID, End: messageID, Count: 1,
 	}).Result()
 	if err != nil || len(pending) == 0 {
 		return 0
 	}
-	for _, item := range pending {
-		if item.ID == messageID {
-			return int(item.RetryCount)
-		}
-	}
-	return 0
+	return int(pending[0].RetryCount)
 }
 
 func (d DLQ) moveToDeadLetter(ctx context.Context, stream string, entry Entry, cause error) error {
@@ -161,6 +171,11 @@ func (d DLQ) moveToDeadLetter(ctx context.Context, stream string, entry Entry, c
 			"stream": stream, "entry_id": entry.ID, "reason": truncate(cause.Error(), 512),
 			"payload_json": string(entry.Payload), "status": "open", "created_month": month,
 		}).Error
+	}
+	// 先确认再从源流删除：XDEL 不清消费组的 PEL 幽灵，
+	// 不 XACK 的话 XPENDING 会一直挂着这条已删除记录。
+	if err := d.Stream.XAck(ctx, stream, d.Consumer, entry.ID).Err(); err != nil {
+		return err
 	}
 	return d.Stream.XDel(ctx, stream, entry.ID).Err()
 }

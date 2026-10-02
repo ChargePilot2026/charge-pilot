@@ -1,13 +1,12 @@
 package admin
 
 import (
-	"errors"
-	"time"
+	"context"
 
+	settlementpkg "github.com/ChargePilot2026/charge-pilot/internal/central/settlement"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/httpapi"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 // registerInvoices 挂载开票审核的三个接口。列表只读，要求 finance.read；审批和驳回
@@ -44,9 +43,23 @@ func (a ResourceAPI) financeActor(c *gin.Context, permission string) (Profile, b
 	return p, true
 }
 
-// reviewInvoice 处理审批和驳回，事务内锁定申请并校验当前审核状态。
-// 审批要求两个不同且仍有权限的审核人，第二签必须确认同一发票链接；驳回由单人完成。
-// 不满足状态或审核条件时返回 409。
+// invoiceReviewStore 装配 settlement 家族的开票双审存储；
+// 第二签的实时身份核对回读 admin 授权域的账号档案与权限。
+func (a ResourceAPI) invoiceReviewStore() settlementpkg.InvoiceReviewStore {
+	return settlementpkg.InvoiceReviewStore{
+		DB: a.Store.UserDB,
+		LookupReviewer: func(ctx context.Context, reviewerID uint64) (settlementpkg.ReviewerStatus, error) {
+			p, err := a.Auth.Store.Profile(ctx, reviewerID)
+			if err != nil {
+				return settlementpkg.ReviewerStatus{}, err
+			}
+			return settlementpkg.ReviewerStatus{Role: p.Role, Permitted: hasPermission(p, "invoice.review")}, nil
+		},
+	}
+}
+
+// reviewInvoice 处理审批和驳回。双审与申请单状态机的写入归属 settlement 家族，
+// 本 handler 只做输入校验、权限、审计与错误映射。
 func (a ResourceAPI) reviewInvoice(c *gin.Context) {
 	id, ok := pathID(c)
 	if !ok {
@@ -69,67 +82,22 @@ func (a ResourceAPI) reviewInvoice(c *gin.Context) {
 		httpapi.BadRequest(c, "请填写 HTTPS 发票链接或拒绝原因")
 		return
 	}
-	status := "rejected"
+	status := ""
+	var before map[string]any
 	var auditPending []auditEntry
 	err := a.auditedTransaction(c, a.Store.UserDB, &auditPending, func(tx *gorm.DB) error {
-		// 申请单本体：只用到审核状态和已有的发票链接。
-		var invoice struct {
-			ReviewStatus string  // 申请单当前审核状态，必须是 pending 才允许本次操作。
-			InvoiceURL   *string // 申请单上已有的发票链接，可空。
-		}
-		if err := tx.Table("invoice_request").Clauses(clause.Locking{Strength: "UPDATE"}).Where("id=? AND deleted_at IS NULL", id).Take(&invoice).Error; err != nil {
+		var err error
+		status, before, err = a.invoiceReviewStore().Review(c.Request.Context(), tx, id, settlementpkg.InvoiceDecision{
+			Approve: approve, InvoiceURL: in.InvoiceURL, Reason: in.Reason, ActorID: p.ID,
+		})
+		if err != nil {
 			return err
 		}
-		// 双审进度表：记录是否已有人审、审的是谁、发票链接是什么。
-		var review struct {
-			ReviewStatus     string  // awaiting_second 表示已首审待复核；空表示还没有审核记录。
-			FirstReviewerID  *uint64 // 首审人；nil 表示还没人首审。
-			SecondReviewerID *uint64 // 二审人；nil 表示尚未复核。
-			InvoiceURL       *string // 首审人登记的发票链接，二审必须原样提交。
-		}
-		err := tx.Table("invoice_admin_review").Where("invoice_request_id=?", id).Take(&review).Error
-		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-			return err
-		}
-		if invoice.ReviewStatus != "pending" {
-			return errConflict
-		}
-		if !approve {
-			if review.ReviewStatus != "" && review.ReviewStatus != "awaiting_second" {
-				return errConflict
-			}
-			if err := tx.Exec("INSERT INTO invoice_admin_review(invoice_request_id,review_status,reject_reason) VALUES (?,'rejected',?) ON DUPLICATE KEY UPDATE review_status='rejected',reject_reason=VALUES(reject_reason),invoice_url=NULL", id, in.Reason).Error; err != nil {
-				return err
-			}
-			if err := tx.Table("invoice_request").Where("id=?", id).Updates(map[string]any{"review_status": "rejected", "reviewed_by": p.ID, "reviewed_at": time.Now().UTC(), "reject_reason": in.Reason}).Error; err != nil {
-				return err
-			}
-		} else if review.FirstReviewerID == nil {
-			status = "awaiting_second"
-			if err := tx.Table("invoice_admin_review").Create(map[string]any{"invoice_request_id": id, "review_status": status, "first_reviewer_id": p.ID, "invoice_url": in.InvoiceURL}).Error; err != nil {
-				return err
-			}
-		} else {
-			if *review.FirstReviewerID == p.ID || review.ReviewStatus != "awaiting_second" || review.InvoiceURL == nil || *review.InvoiceURL != in.InvoiceURL {
-				return errConflict
-			}
-			first, err := a.Auth.Store.Profile(c.Request.Context(), *review.FirstReviewerID)
-			if err != nil || first.Role != "customer_finance" || !hasPermission(first, "invoice.review") {
-				return errConflict
-			}
-			status = "approved"
-			if err := tx.Table("invoice_admin_review").Where("invoice_request_id=?", id).Updates(map[string]any{"review_status": status, "second_reviewer_id": p.ID}).Error; err != nil {
-				return err
-			}
-			if err := tx.Table("invoice_request").Where("id=?", id).Updates(map[string]any{"review_status": "issued", "invoice_url": in.InvoiceURL, "reviewed_by": p.ID, "reviewed_at": time.Now().UTC()}).Error; err != nil {
-				return err
-			}
-		}
-		auditPending = []auditEntry{{status, "invoice", id, invoice, in, ""}}
+		auditPending = []auditEntry{{status, "invoice", id, before, in, ""}}
 		return nil
 	})
 	if err != nil {
-		resourceFailure(c, err)
+		resourceFailure(c, asConflict(err))
 		return
 	}
 	httpapi.OK(c, gin.H{"review_status": status})

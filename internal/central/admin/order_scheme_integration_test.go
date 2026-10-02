@@ -4,13 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	orderpkg "github.com/ChargePilot2026/charge-pilot/internal/central/order"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"testing"
 	"time"
 
-	"github.com/ChargePilot2026/charge-pilot/internal/central/charge"
 	"github.com/ChargePilot2026/charge-pilot/internal/central/pricing"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -61,9 +61,9 @@ func TestOrderSchemeNamesUseFrozenSnapshotsInOneBatch(t *testing.T) {
 	now := time.Now().UTC()
 	month := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 	device := "frozen-" + tag
-	orders := make([]charge.ChargeOrderRecord, 5)
+	orders := make([]orderpkg.ChargeOrderRecord, 5)
 	for i := range orders {
-		order := charge.ChargeOrderRecord{OrderNo: fmt.Sprintf("frozen-%s-%d", tag, i), UserID: user.ID, DeviceID: device, PortNo: 1, Status: "completed", PaymentStatus: "paid", CreatedMonth: month}
+		order := orderpkg.ChargeOrderRecord{OrderNo: fmt.Sprintf("frozen-%s-%d", tag, i), UserID: user.ID, DeviceID: device, PortNo: 1, Status: "completed", PaymentStatus: "paid", CreatedMonth: month}
 		if err := userDB.Create(&order).Error; err != nil {
 			t.Fatal(err)
 		}
@@ -92,7 +92,7 @@ func TestOrderSchemeNamesUseFrozenSnapshotsInOneBatch(t *testing.T) {
 		if i == 3 {
 			raw = []byte(`{}`)
 		}
-		if err := userDB.Create(&charge.ChargePricingSnapshotRecord{ChargeOrderID: order.ID, PaymentIntentID: uuid.NewString(), UserID: user.ID, PortCode: device + ":1", PricingSnapshot: raw}).Error; err != nil {
+		if err := userDB.Create(&orderpkg.ChargePricingSnapshotRecord{ChargeOrderID: order.ID, PaymentIntentID: uuid.NewString(), UserID: user.ID, PortCode: device + ":1", PricingSnapshot: raw}).Error; err != nil {
 			t.Fatal(err)
 		}
 	}

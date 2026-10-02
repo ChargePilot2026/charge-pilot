@@ -3,7 +3,6 @@ package charge
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,15 +12,17 @@ import (
 	"strings"
 	"time"
 
-	"gorm.io/gorm"
+	"github.com/ChargePilot2026/charge-pilot/internal/platform/serviceclient"
 )
 
+// Synchronizer 把设备启动回执同步给 central；回执清单与上报标记
+// 经 gateway 内部端点读写，本组件不持有 gateway 库句柄。
 type Synchronizer struct {
-	GatewayDB     *gorm.DB
-	CentralURL    string
+	Gateway       serviceclient.Client
 	GatewayURL    string
-	CommandFilter string
+	CentralURL    string
 	ServiceToken  string
+	CommandFilter string
 	Client        *http.Client
 }
 
@@ -39,26 +40,41 @@ type startResult struct {
 	OccurredAt    time.Time `json:"occurred_at"`
 }
 
+// gatewayStartResult 是 gateway start-results 端点返回的命令列子集。
+type gatewayStartResult struct {
+	CommandID     string     `json:"command_id"`
+	StopCommandID string     `json:"stop_command_id"`
+	ChargeOrderID uint64     `json:"charge_order_id"`
+	OrderNo       string     `json:"order_no"`
+	DeviceID      string     `json:"device_id"`
+	PortNo        uint8      `json:"port_no"`
+	PortID        *int64     `json:"port_id"`
+	Status        string     `json:"status"`
+	ResultCode    *int16     `json:"result_code"`
+	AckAt         *time.Time `json:"ack_at"`
+}
+
 // SyncBatch 可以安全重放：
 // central 按命令/订单只存一份结果，
 // 而 gateway 只有在 central 确认落库之后
 // 才把结果标记为已上报。
 func (s Synchronizer) SyncBatch(ctx context.Context) (int, error) {
-	if s.GatewayDB == nil || s.ServiceToken == "" {
+	if s.GatewayURL == "" || s.ServiceToken == "" {
 		return 0, errors.New("start result synchronizer is not configured")
 	}
 	base, err := url.Parse(s.CentralURL)
 	if err != nil || base.Host == "" || base.User != nil || base.Scheme != "http" && base.Scheme != "https" {
 		return 0, errors.New("invalid central URL")
 	}
-	query := s.GatewayDB.WithContext(ctx).Model(&workerChargeCommandRow{}).
-		Where("status IN ('acked','rejected') AND result_reported = FALSE AND result_code IS NOT NULL AND ack_at IS NOT NULL")
+	gateway := newGatewaySyncAPI(s.Gateway, s.GatewayURL, s.ServiceToken)
+	path := "/api/v1/internal/start-results"
 	if s.CommandFilter != "" {
-		query = query.Where("command_id = ?", s.CommandFilter)
+		path += "?command_id=" + url.QueryEscape(s.CommandFilter)
 	}
-	var rows []workerChargeCommandRow
-	err = query.Order("updated_at").Limit(50).Find(&rows).Error
-	if err != nil {
+	var reply struct {
+		Items []gatewayStartResult `json:"items"`
+	}
+	if err := gateway.get(ctx, path, &reply); err != nil {
 		return 0, err
 	}
 	client := s.Client
@@ -67,15 +83,16 @@ func (s Synchronizer) SyncBatch(ctx context.Context) (int, error) {
 	}
 	count := 0
 	var firstError error
-	for _, row := range rows {
-		if !row.PortID.Valid || row.PortID.Int64 <= 0 || !row.ResultCode.Valid || !row.AckAt.Valid || row.ResultCode.Int16 < 0 || row.ResultCode.Int16 > 255 {
+	reported := make([]string, 0, len(reply.Items))
+	for _, row := range reply.Items {
+		if row.PortID == nil || *row.PortID <= 0 || row.ResultCode == nil || row.AckAt == nil || *row.ResultCode < 0 || *row.ResultCode > 255 {
 			firstError = errors.New("invalid persisted start result")
 			continue
 		}
 		result := startResult{CommandID: row.CommandID, ChargeOrderID: row.ChargeOrderID,
 			OrderNo: row.OrderNo, DeviceID: row.DeviceID, PortNo: row.PortNo,
-			PortID: uint64(row.PortID.Int64), Success: row.Status == "acked",
-			ResultCode: uint8(row.ResultCode.Int16), OccurredAt: row.AckAt.Time.UTC()}
+			PortID: uint64(*row.PortID), Success: row.Status == "acked",
+			ResultCode: uint8(*row.ResultCode), OccurredAt: row.AckAt.UTC()}
 		if result.Success != (result.ResultCode == 0) {
 			firstError = errors.New("inconsistent persisted start result")
 			continue
@@ -98,30 +115,19 @@ func (s Synchronizer) SyncBatch(ctx context.Context) (int, error) {
 			}
 			continue
 		}
-		if err := s.GatewayDB.WithContext(ctx).Model(&workerChargeCommandRow{}).Where("command_id = ? AND status IN ('acked','rejected') AND result_reported = FALSE", row.CommandID).
-			Update("result_reported", true).Error; err != nil {
+		reported = append(reported, row.CommandID)
+		count++
+	}
+	if len(reported) > 0 {
+		var mark struct {
+			Marked int `json:"marked"`
+		}
+		if err := gateway.post(ctx, "/api/v1/internal/start-results/mark-reported", map[string]any{"command_ids": reported}, &mark); err != nil {
 			return count, err
 		}
-		count++
 	}
 	return count, firstError
 }
-
-type workerChargeCommandRow struct {
-	CommandID      string        `gorm:"column:command_id;primaryKey"`
-	StopCommandID  string        `gorm:"column:stop_command_id"`
-	ChargeOrderID  uint64        `gorm:"column:charge_order_id"`
-	OrderNo        string        `gorm:"column:order_no"`
-	DeviceID       string        `gorm:"column:device_id"`
-	PortNo         uint8         `gorm:"column:port_no"`
-	PortID         sql.NullInt64 `gorm:"column:port_id"`
-	Status         string        `gorm:"column:status"`
-	ResultReported bool          `gorm:"column:result_reported"`
-	ResultCode     sql.NullInt16 `gorm:"column:result_code"`
-	AckAt          sql.NullTime  `gorm:"column:ack_at"`
-}
-
-func (workerChargeCommandRow) TableName() string { return "charge_command" }
 
 func postStartResult(ctx context.Context, client *http.Client, base url.URL, token string, result startResult) error {
 	payload, err := json.Marshal(result)

@@ -28,7 +28,7 @@ export default function ChargeUsersPage() {
   useEffect(() => {
     const current = ++generation.current;
     setLoading(true); setError(null);
-    apiGet<ChargeUserPage>('/api/v1/admin/charge-users', query)
+    apiGet<ChargeUserPage>('/api/v1/admin/users', query)
       .then(result => {
         if (current !== generation.current) return;
         if (!Array.isArray(result?.items) || result.items.some(user => !isChargeUserID(user.id)

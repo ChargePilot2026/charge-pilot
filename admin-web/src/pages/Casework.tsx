@@ -142,7 +142,7 @@ export default function CaseworkPage() {
   // 读不到人时如果只把下拉留空，客服会以为「没有可指派的人」而直接放弃派单。
   const loadAdmins = async () => {
     try {
-      const result = await apiGet<{ items: AdminUser[] }>('/api/v1/admin/users');
+      const result = await apiGet<{ items: AdminUser[] }>('/api/v1/admin/admin-users?page_size=100');
       setAdmins((result.items || []).filter((user) => user.status === 'active'));
       setAdminsError(null);
     } catch (error: any) {

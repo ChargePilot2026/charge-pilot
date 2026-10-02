@@ -7,8 +7,8 @@ import (
 	"strings"
 
 	"github.com/ChargePilot2026/charge-pilot/internal/central/billing"
-	"github.com/ChargePilot2026/charge-pilot/internal/central/charge"
 	"github.com/ChargePilot2026/charge-pilot/internal/central/pricing"
+	"github.com/ChargePilot2026/charge-pilot/internal/central/settlement"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/httpapi"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -32,14 +32,14 @@ func (a ResourceAPI) resolveMeterAmount(c *gin.Context) {
 	if !ok {
 		return
 	}
-	var in charge.ManualSettlement
+	var in settlement.ManualSettlement
 	if !decodeResource(c, &in) {
 		return
 	}
 	in.ChargeOrderID = id
 	in.ActorID = p.ID
 	in.Reason = strings.TrimSpace(in.Reason)
-	if err := (charge.BillingOrders{DB: a.Store.UserDB}).ResolveAmount(c.Request.Context(), in); err != nil {
+	if err := (settlement.BillingOrders{DB: a.Store.UserDB}).ResolveAmount(c.Request.Context(), in); err != nil {
 		meterFailure(c, err)
 		return
 	}
@@ -54,12 +54,12 @@ func (a ResourceAPI) meterReviews(c *gin.Context) {
 	}
 	// entry 合并人工定价工单与计量核实记录，供列表一次返回。
 	type entry struct {
-		ChargeOrderID uint64               `json:"charge_order_id"`  // 计费订单主键（central_db），核实记录靠它关联。
-		OrderNo       string               `json:"order_no"`         // 订单号，列表关键词搜索的就是它。
-		Reason        string               `json:"reason"`           // 兜底原因：自动计费为什么没能算出费用，供人工核实参考。
-		Status        string               `json:"status"`           // 兜底单状态：pending 待核实、resolved 已处置。
-		SourceJSON    json.RawMessage      `json:"source"`           // 设备上报的原始计量数据（source_json），为空表示设备根本没上报可用数据。
-		Reviews       []charge.MeterReview `json:"reviews" gorm:"-"` // 该订单下的核实记录，按时间倒序；gorm:"-" 表示不由本行查询直接装载。
+		ChargeOrderID uint64                   `json:"charge_order_id"`  // 计费订单主键（central_db），核实记录靠它关联。
+		OrderNo       string                   `json:"order_no"`         // 订单号，列表关键词搜索的就是它。
+		Reason        string                   `json:"reason"`           // 兜底原因：自动计费为什么没能算出费用，供人工核实参考。
+		Status        string                   `json:"status"`           // 兜底单状态：pending 待核实、resolved 已处置。
+		SourceJSON    json.RawMessage          `json:"source"`           // 设备上报的原始计量数据（source_json），为空表示设备根本没上报可用数据。
+		Reviews       []settlement.MeterReview `json:"reviews" gorm:"-"` // 该订单下的核实记录，按时间倒序；gorm:"-" 表示不由本行查询直接装载。
 	}
 	rows := []entry{}
 	db := a.Store.BillingDB.WithContext(c.Request.Context()).Table("manual_fee_review")
@@ -85,7 +85,7 @@ func (a ResourceAPI) meterReviews(c *gin.Context) {
 			return
 		}
 		rows[i].SourceJSON = publicSource
-		rows[i].Reviews = []charge.MeterReview{}
+		rows[i].Reviews = []settlement.MeterReview{}
 		if err := a.Store.UserDB.WithContext(c.Request.Context()).Where("charge_order_id=?", rows[i].ChargeOrderID).Order("id DESC").Find(&rows[i].Reviews).Error; err != nil {
 			resourceFailure(c, err)
 			return
@@ -141,7 +141,7 @@ func (a ResourceAPI) proposeMeter(c *gin.Context) {
 	if !ok {
 		return
 	}
-	// 请求体只在此使用，不入库：核实记录由 charge.BillingOrders 按这里的输入落库。
+	// 请求体只在此使用，不入库：核实记录由 settlement.BillingOrders 按这里的输入落库。
 	var in struct {
 		RequestID string                 `json:"request_id"` // 客户端生成的 UUID 幂等键。
 		Reason    string                 `json:"reason"`     // 核实依据，去空白后最长 500 字符。
@@ -155,7 +155,7 @@ func (a ResourceAPI) proposeMeter(c *gin.Context) {
 		httpapi.BadRequest(c, "请填写 UUID、核实依据及有效计量分段")
 		return
 	}
-	row, err := (charge.BillingOrders{DB: a.Store.UserDB}).ProposeMeter(c.Request.Context(), id, p.ID, in.RequestID, in.Reason, in.Segments)
+	row, err := (settlement.BillingOrders{DB: a.Store.UserDB}).ProposeMeter(c.Request.Context(), id, p.ID, in.RequestID, in.Reason, in.Segments)
 	if err != nil {
 		meterFailure(c, err)
 		return
@@ -188,7 +188,7 @@ func (a ResourceAPI) decideMeter(c *gin.Context) {
 		httpapi.BadRequest(c, "请提供审核记录、决定和拒绝依据")
 		return
 	}
-	var review charge.MeterReview
+	var review settlement.MeterReview
 	if err := a.Store.UserDB.WithContext(c.Request.Context()).Where("id=? AND charge_order_id=?", in.ReviewID, id).Take(&review).Error; err != nil {
 		resourceFailure(c, err)
 		return
@@ -200,7 +200,7 @@ func (a ResourceAPI) decideMeter(c *gin.Context) {
 			return
 		}
 	}
-	if err := (charge.BillingOrders{DB: a.Store.UserDB}).ReviewMeter(c.Request.Context(), id, in.ReviewID, p.ID, *in.Approve, in.Reason); err != nil {
+	if err := (settlement.BillingOrders{DB: a.Store.UserDB}).ReviewMeter(c.Request.Context(), id, in.ReviewID, p.ID, *in.Approve, in.Reason); err != nil {
 		meterFailure(c, err)
 		return
 	}

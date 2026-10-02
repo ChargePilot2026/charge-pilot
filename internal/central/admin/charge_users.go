@@ -77,12 +77,12 @@ type chargeUserStat struct {
 	LastOrderAt  *time.Time // 最近下单时间
 }
 
-// registerChargeUsers 注册用户列表、档案和充值记录，要求 charge_user.read 权限。
+// registerChargeUsers 注册用户列表、档案和充值记录，要求 user.read 权限。
 // 账号冻结和解冻由风控流程处理。
 func (a ResourceAPI) registerChargeUsers(r *gin.Engine) {
-	r.GET("/api/v1/admin/charge-users", a.Auth.Require("charge_user.read"), a.chargeUsers)
-	r.GET("/api/v1/admin/charge-users/:id", a.Auth.Require("charge_user.read"), a.chargeUser)
-	r.GET("/api/v1/admin/charge-users/:id/recharges", a.Auth.Require("charge_user.read"), a.chargeUserRecharges)
+	r.GET("/api/v1/admin/users", a.Auth.Require("user.read"), a.chargeUsers)
+	r.GET("/api/v1/admin/users/:id", a.Auth.Require("user.read"), a.chargeUser)
+	r.GET("/api/v1/admin/users/:id/recharges", a.Auth.Require("user.read"), a.chargeUserRecharges)
 }
 
 // chargeUsers 分页列出充电用户。

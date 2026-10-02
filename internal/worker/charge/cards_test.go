@@ -3,7 +3,7 @@ package charge
 import (
 	"context"
 	"errors"
-	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol"
+	"github.com/ChargePilot2026/charge-pilot/internal/protocol"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -52,15 +52,16 @@ func TestBalanceQueryAndInvalidPortProduceNativeReplies(t *testing.T) {
 	}))
 	defer server.Close()
 	d := CardDispatcher{CentralURL: server.URL, ServiceToken: "token"}
-	r, err := d.decide(context.Background(), protocol.Event{Type: protocol.CardBalanceQuery, DeviceID: "device", CardNumber: 17564161})
+	gateway := gatewaySyncAPI{}
+	r, err := d.decide(context.Background(), gateway, protocol.Event{Type: protocol.CardBalanceQuery, DeviceID: "device", CardNumber: 17564161})
 	if err != nil || r.Kind != protocol.CommandCardBalance || r.Invalid || r.BalanceUnits != 88 || r.Session != "000000000000" {
 		t.Fatalf("%+v %v", r, err)
 	}
-	r, err = d.decide(context.Background(), protocol.Event{Type: protocol.CardSwipe, Port: 255, CardNumber: 17564161})
+	r, err = d.decide(context.Background(), gateway, protocol.Event{Type: protocol.CardSwipe, Port: 255, CardNumber: 17564161})
 	if err != nil || r.Kind != protocol.CommandCardDenied || !r.Invalid {
 		t.Fatalf("%+v %v", r, err)
 	}
-	r, err = d.decide(context.Background(), protocol.Event{Type: protocol.CardBalanceQuery, CardNumber: 0})
+	r, err = d.decide(context.Background(), gateway, protocol.Event{Type: protocol.CardBalanceQuery, CardNumber: 0})
 	if err != nil || !r.Invalid || r.BalanceUnits != 0 {
 		t.Fatalf("%+v %v", r, err)
 	}

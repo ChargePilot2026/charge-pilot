@@ -3,8 +3,8 @@ package store
 import (
 	"context"
 	"database/sql"
-	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/dbconn"
+	"github.com/ChargePilot2026/charge-pilot/internal/protocol"
 	"github.com/google/uuid"
 	"os"
 	"testing"

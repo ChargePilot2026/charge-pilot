@@ -6,109 +6,202 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"sync/atomic"
+	"sync"
 	"testing"
 	"time"
 
-	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol"
-	"github.com/ChargePilot2026/charge-pilot/internal/platform/dbconn"
+	"github.com/ChargePilot2026/charge-pilot/internal/platform/serviceclient"
+	"github.com/ChargePilot2026/charge-pilot/internal/protocol"
 	"github.com/google/uuid"
 )
 
+// TestEndKeepsPortOwnedUntilCentralAcceptsMeter 验证第 5 批⑤之后的契约：
+// freeze 先于 central 提交；central 未确认时不释放端口；
+// 二次重放时冻结回执保持首写内容（即使计量证据已消失）。
 func TestEndKeepsPortOwnedUntilCentralAcceptsMeter(t *testing.T) {
-	for _, consumer := range []uint8{2, 3} {
-		t.Run(fmt.Sprint(consumer), func(t *testing.T) { testEndKeepsPortOwned(t, consumer) })
-	}
-}
-
-func testEndKeepsPortOwned(t *testing.T, consumer uint8) {
-	url := os.Getenv("TEST_GATEWAY_DATABASE_URL")
-	if url == "" {
-		t.Skip("set disposable gateway database URL")
-	}
 	ctx := context.Background()
-	db, err := dbconn.Open(ctx, url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	unique := uuid.NewString()
-	chargeOrderID := uint64(100000000000 + time.Now().UnixNano()%900000000000)
-	deviceID, orderNo := "board-"+unique, "ORD-"+unique
-	port, err := db.ExecContext(ctx, "INSERT INTO device_port (device_id,port_no,port_code,status,current_order_id) VALUES (?,1,?,'charging',?)", deviceID, "port-"+unique, orderNo)
-	if err != nil {
-		t.Fatal(err)
-	}
-	portID, _ := port.LastInsertId()
-	defer db.ExecContext(ctx, "DELETE FROM device_port WHERE id = ?", portID)
-	commandID, stopID := uuid.NewString(), uuid.NewString()
-	if _, err := db.ExecContext(ctx, `INSERT INTO charge_command (command_id,stop_command_id,charge_order_id,payment_order_id,order_no,user_id,device_id,port_no,port_code,port_id,owns_port,status,session_id,stop_session_id,result_reported)
-		VALUES (?,?,?,456,?,789,?,1,?,?,TRUE,'acked','010203040506','0708090a0b0c',TRUE)`, commandID, stopID, chargeOrderID, orderNo, deviceID, "port-"+unique, portID); err != nil {
-		t.Fatal(err)
-	}
-	defer db.ExecContext(ctx, "DELETE FROM charge_command WHERE command_id = ?", commandID)
-	defer db.ExecContext(ctx, "DELETE FROM charge_end_delivery WHERE charge_order_id=?", chargeOrderID)
+	const (
+		eventID       = uint64(42)
+		orderID       = uint64(9001)
+		portID        = int64(55)
+		heartbeatID   = uint64(7)
+		chargedWh     = uint32(125)
+		segmentFirst  = uint32(50)
+		segmentSecond = uint32(75)
+	)
+	orderNo := "ORD-" + uuid.NewString()
+	deviceID := "board-" + uuid.NewString()
 	start := time.Now().UTC().Truncate(time.Second).Add(-10 * time.Minute)
-	if _, err := db.ExecContext(ctx, "UPDATE charge_command SET ack_at=? WHERE command_id=?", start, commandID); err != nil {
-		t.Fatal(err)
-	}
-	heartbeat := protocol.Event{Protocol: "dc589", DeviceID: deviceID, Type: protocol.Heartbeat, ReceivedAt: start.Add(5 * time.Minute), ChargingPorts: []protocol.PortTelemetry{{Port: 1, ChargedSeconds: 300, ChargedMWh: 50000}}}
+
+	end := protocol.Event{Protocol: "dc589", DeviceID: deviceID, Port: 1, Type: protocol.ChargeEnd,
+		OrderNumber: fmt.Sprintf("%016d", orderID), ConsumerType: 2,
+		EnergyMilliKWh: chargedWh, ChargedSeconds: 600,
+		StartedAt: start, EndedAt: start.Add(10 * time.Minute), ReceivedAt: start.Add(10 * time.Minute)}
+	endJSON, _ := json.Marshal(end)
+	heartbeat := protocol.Event{Protocol: "dc589", DeviceID: deviceID, Type: protocol.Heartbeat,
+		ReceivedAt:    start.Add(5 * time.Minute),
+		ChargingPorts: []protocol.PortTelemetry{{Port: 1, ChargedSeconds: 300, ChargedMWh: 50000}}}
 	heartbeatJSON, _ := json.Marshal(heartbeat)
-	if _, err := db.ExecContext(ctx, "INSERT INTO device_event(event_key,protocol_name,device_id,event_type,event_json,received_at) VALUES(?,'dc589',?,'heartbeat',?,?)", uuid.NewString(), deviceID, heartbeatJSON, heartbeat.ReceivedAt); err != nil {
-		t.Fatal(err)
+
+	var mu sync.Mutex
+	var order []string
+	evidenceGone := false
+	releases := 0
+	var processed []uint64
+	frozenPayload := ""
+	frozenKey := ""
+	record := func(step string) {
+		mu.Lock()
+		order = append(order, step)
+		mu.Unlock()
 	}
-	defer db.ExecContext(ctx, "DELETE FROM device_event WHERE device_id=?", deviceID)
-	eventKey := uuid.NewString()
-	event := protocol.Event{Protocol: "dc589", DeviceID: deviceID, Port: 1, Type: protocol.ChargeEnd, OrderNumber: fmt.Sprintf("%016d", chargeOrderID), ConsumerType: consumer, EnergyMilliKWh: 125, ChargedSeconds: 600, StartedAt: start, EndedAt: start.Add(10 * time.Minute), ReceivedAt: start.Add(10 * time.Minute)}
-	data, _ := json.Marshal(event)
-	if _, err := db.ExecContext(ctx, "INSERT INTO device_event (event_key,protocol_name,device_id,event_type,port_no,event_json,received_at) VALUES (?,'dc589',?,'charge_end',1,?,?)", eventKey, deviceID, data, event.ReceivedAt); err != nil {
-		t.Fatal(err)
-	}
-	defer db.ExecContext(ctx, "DELETE FROM device_event WHERE event_key = ?", eventKey)
-	var calls atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Service-Token") != "test-token" {
+			t.Errorf("missing gateway authentication")
+			w.WriteHeader(401)
+			return
+		}
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/internal/end-events":
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"items": []map[string]any{{"id": eventID, "payload": string(endJSON)}}}})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/internal/charge-commands/by-order/9001":
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"found": true, "command": map[string]any{
+				"command_id": uuid.NewString(), "stop_command_id": uuid.NewString(),
+				"charge_order_id": orderID, "order_no": orderNo, "device_id": deviceID,
+				"port_no": 1, "port_id": portID, "status": "acked", "result_code": 0,
+				"ack_at": start.Format(time.RFC3339Nano),
+			}}})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/internal/devices/"+deviceID+"/meter-samples":
+			items := []map[string]any{}
+			mu.Lock()
+			gone := evidenceGone
+			mu.Unlock()
+			if !gone {
+				items = append(items, map[string]any{"id": heartbeatID, "payload": string(heartbeatJSON)})
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"items": items}})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/internal/charge-end-deliveries/freeze":
+			record("freeze")
+			var body struct {
+				DeviceEventID uint64 `json:"device_event_id"`
+				ChargeOrderID uint64 `json:"charge_order_id"`
+				Payload       string `json:"payload"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.DeviceEventID != eventID || body.ChargeOrderID != orderID {
+				t.Errorf("bad freeze body: %+v %v", body, err)
+				w.WriteHeader(400)
+				return
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			key := fmt.Sprintf("%d/%d", body.DeviceEventID, body.ChargeOrderID)
+			if frozenKey == "" {
+				frozenKey, frozenPayload = key, body.Payload
+				_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"frozen": false, "payload": body.Payload}})
+				return
+			}
+			if key != frozenKey {
+				w.WriteHeader(409)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"frozen": true, "payload": frozenPayload}})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/internal/ports/release":
+			record("release")
+			var body struct {
+				PortID  uint64 `json:"port_id"`
+				OrderNo string `json:"order_no"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.PortID != uint64(portID) || body.OrderNo != orderNo {
+				t.Errorf("bad release body: %+v %v", body, err)
+				w.WriteHeader(400)
+				return
+			}
+			mu.Lock()
+			releases++
+			mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"released": true}})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/internal/device-events/mark-processed":
+			record("mark-processed")
+			var body struct {
+				IDs []uint64 `json:"ids"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("bad mark body: %v", err)
+				w.WriteHeader(400)
+				return
+			}
+			mu.Lock()
+			processed = append(processed, body.IDs...)
+			mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"marked": len(body.IDs)}})
+		default:
+			t.Errorf("unexpected gateway request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(404)
+		}
+	}))
+	defer gateway.Close()
+
+	var centralCalls int
+	central := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		record("central")
 		if r.Header.Get("X-Service-Token") != "test-token" || r.URL.Path != "/api/v1/internal/charge-orders/"+orderNo+"/end-result" {
-			t.Errorf("bad request: %s", r.URL.Path)
+			t.Errorf("bad central request: %s", r.URL.Path)
 			w.WriteHeader(400)
 			return
 		}
 		var result endResult
-		if err := json.NewDecoder(r.Body).Decode(&result); err != nil || result.Meter.ChargedWh != 125 || result.PortID != uint64(portID) || len(result.Meter.Segments) != 2 || result.Meter.Segments[0].EnergyWh != 50 || result.Meter.Segments[1].EnergyWh != 75 {
-			t.Errorf("bad meter: %+v %v", result, err)
+		if err := json.NewDecoder(r.Body).Decode(&result); err != nil ||
+			result.Meter.ChargedWh != chargedWh || result.PortID != uint64(portID) ||
+			len(result.Meter.Segments) != 2 ||
+			result.Meter.Segments[0].EnergyWh != segmentFirst ||
+			result.Meter.Segments[1].EnergyWh != segmentSecond {
+			t.Errorf("bad meter: %+v %v", result.Meter, err)
 			w.WriteHeader(400)
 			return
 		}
-		if calls.Add(1) == 1 {
-			w.WriteHeader(503)
+		centralCalls++
+		if centralCalls == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
 		_, _ = w.Write([]byte(`{"code":0}`))
 	}))
-	defer server.Close()
-	syncer := EndSynchronizer{GatewayDB: testGORMDB(t, db), CentralURL: server.URL, ServiceToken: "test-token"}
+	defer central.Close()
+
+	syncer := EndSynchronizer{
+		Gateway:      serviceclient.Client{HTTP: gateway.Client()},
+		GatewayURL:   gateway.URL,
+		CentralURL:   central.URL,
+		ServiceToken: "test-token",
+	}
 	if count, err := syncer.SyncBatch(ctx); count != 0 || err == nil {
 		t.Fatalf("failed end accepted: %d %v", count, err)
 	}
-	var state string
-	if err := db.QueryRowContext(ctx, "SELECT status FROM device_port WHERE id = ?", portID).Scan(&state); err != nil || state != "charging" {
-		t.Fatalf("port released early: %s %v", state, err)
+	mu.Lock()
+	if releases != 0 {
+		t.Fatalf("port released before central accepted: %d", releases)
 	}
-	// 删除原始计量事件后，持久化的结束请求仍应保持不变。
-	if _, err := db.ExecContext(ctx, "DELETE FROM device_event WHERE device_id=? AND event_type='heartbeat'", deviceID); err != nil {
-		t.Fatal(err)
-	}
-	// 一条接收时间戳更早的迟到上报，
-	// 也不该改变用于重试的数据。
-	heartbeat.ChargingPorts[0].ChargedMWh = 60000
-	heartbeatJSON, _ = json.Marshal(heartbeat)
-	if _, err := db.ExecContext(ctx, "INSERT INTO device_event(event_key,protocol_name,device_id,event_type,event_json,received_at) VALUES(?,'dc589',?,'heartbeat',?,?)", uuid.NewString(), deviceID, heartbeatJSON, heartbeat.ReceivedAt); err != nil {
-		t.Fatal(err)
-	}
+	mu.Unlock()
+
+	// 计量证据消失后重试：冻结回执仍保持首写内容，端口随后释放。
+	mu.Lock()
+	evidenceGone = true
+	mu.Unlock()
 	if count, err := syncer.SyncBatch(ctx); count != 1 || err != nil {
 		t.Fatalf("retry end: %d %v", count, err)
 	}
-	if err := db.QueryRowContext(ctx, "SELECT status FROM device_port WHERE id = ?", portID).Scan(&state); err != nil || state != "idle" {
-		t.Fatalf("port not released: %s %v", state, err)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if releases != 1 {
+		t.Fatalf("port not released exactly once: %d", releases)
+	}
+	if len(processed) != 1 || processed[0] != eventID {
+		t.Fatalf("end event not marked processed: %v", processed)
+	}
+	want := []string{"freeze", "central", "freeze", "central", "release", "mark-processed"}
+	if fmt.Sprint(order) != fmt.Sprint(want) {
+		t.Fatalf("unexpected call order: %v", order)
 	}
 }

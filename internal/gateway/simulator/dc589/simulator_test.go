@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol"
-	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol/dc589"
+	"github.com/ChargePilot2026/charge-pilot/internal/protocol"
+	"github.com/ChargePilot2026/charge-pilot/internal/protocol/dc589"
 )
 
 // 通过实际 TCP 和网关适配器验证组帧、会话协商及载荷校验。

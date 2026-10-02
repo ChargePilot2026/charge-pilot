@@ -35,7 +35,7 @@ func TestAdminVendorsIntegration(t *testing.T) {
 		for _, query := range []string{
 			"DELETE FROM audit_log WHERE module='vendor' AND actor_id IN ?",
 			"DELETE FROM admin_data_scope WHERE admin_user_id IN ?",
-			"DELETE FROM admin_user_role WHERE id IN ?",
+			"DELETE FROM admin_user WHERE id IN ?",
 		} {
 			if len(accountIDs) > 0 {
 				if err := adb.Exec(query, accountIDs).Error; err != nil {
@@ -95,7 +95,7 @@ func TestAdminVendorsIntegration(t *testing.T) {
 	token := func(name, role string) (string, uint64) {
 		t.Helper()
 		name = prefix + "-" + name
-		if err := adb.Exec("INSERT INTO admin_user_role(username,password_hash,role_id) SELECT ?,'unused-test-hash',id FROM role WHERE code=? AND deleted_at IS NULL", name, role).Error; err != nil {
+		if err := adb.Exec("INSERT INTO admin_user(username,password_hash,role_id) SELECT ?,'unused-test-hash',id FROM role WHERE code=? AND deleted_at IS NULL", name, role).Error; err != nil {
 			t.Fatal(err)
 		}
 		var account Account

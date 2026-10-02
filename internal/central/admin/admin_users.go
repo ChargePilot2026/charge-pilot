@@ -16,7 +16,7 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// AdminUserRow 是 PC 后台管理员账号（admin_user_role 表）的列表行映射。
+// AdminUserRow 是 PC 后台管理员账号（admin_user 表）的列表行映射。
 // 账号归属 central_db，与终端用户 central_db.user 分开存放；一个账号一个主角色，权限由 role 展开。
 type AdminUserRow struct {
 	ID            uint64  `json:"id"`                 // 账号主键
@@ -57,7 +57,7 @@ func (a ResourceAPI) listAdminUsers(c *gin.Context) {
 		return
 	}
 	out := Page[AdminUserRow]{Items: []AdminUserRow{}, Page: page.Page, PageSize: page.PageSize}
-	query := a.Store.AdminDB.WithContext(c.Request.Context()).Table("admin_user_role AS u").Where("u.deleted_at IS NULL")
+	query := a.Store.AdminDB.WithContext(c.Request.Context()).Table("admin_user AS u").Where("u.deleted_at IS NULL")
 	if page.Status != "" {
 		query = query.Where("u.status = ?", page.Status)
 	}
@@ -150,7 +150,7 @@ func (a ResourceAPI) updateAdminUser(c *gin.Context) {
 	var before AdminUserRow
 	roleChanged := false
 	err := a.Store.AdminDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Table("admin_user_role").Clauses(clause.Locking{Strength: "UPDATE"}).
+		if err := tx.Table("admin_user").Clauses(clause.Locking{Strength: "UPDATE"}).
 			Where("id = ? AND deleted_at IS NULL", id).Take(&before).Error; err != nil {
 			return err
 		}
@@ -173,7 +173,7 @@ func (a ResourceAPI) updateAdminUser(c *gin.Context) {
 			// 仅角色变化时递增凭证版本；普通资料更新保留现有会话。
 			values["auth_version"] = gorm.Expr("auth_version + 1")
 		}
-		if err := tx.Table("admin_user_role").Where("id = ?", id).Updates(values).Error; err != nil {
+		if err := tx.Table("admin_user").Where("id = ?", id).Updates(values).Error; err != nil {
 			return err
 		}
 		return resourceAudit(tx, profile, "update", "admin_user", id, before, in, c.ClientIP(), c.GetHeader("X-Request-ID"))
@@ -208,7 +208,7 @@ func (a ResourceAPI) deleteAdminUser(c *gin.Context) {
 		return
 	}
 	var remaining int64
-	if err := a.Store.AdminDB.WithContext(c.Request.Context()).Table("admin_user_role AS u").
+	if err := a.Store.AdminDB.WithContext(c.Request.Context()).Table("admin_user AS u").
 		Joins("JOIN role AS r ON r.id = u.role_id").
 		Where("u.deleted_at IS NULL AND u.status = 'active' AND r.code = 'customer_admin' AND r.deleted_at IS NULL").
 		Where("u.id <> ?", id).Count(&remaining).Error; err != nil {
@@ -221,11 +221,11 @@ func (a ResourceAPI) deleteAdminUser(c *gin.Context) {
 	}
 	var before map[string]any
 	err := a.Store.AdminDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Table("admin_user_role").Clauses(clause.Locking{Strength: "UPDATE"}).
+		if err := tx.Table("admin_user").Clauses(clause.Locking{Strength: "UPDATE"}).
 			Where("id = ? AND deleted_at IS NULL", id).Take(&before).Error; err != nil {
 			return err
 		}
-		if err := tx.Table("admin_user_role").Where("id = ?", id).
+		if err := tx.Table("admin_user").Where("id = ?", id).
 			Updates(map[string]any{"deleted_at": time.Now().UTC(), "deleted_by": profile.ID, "status": "disabled", "auth_version": gorm.Expr("auth_version + 1")}).Error; err != nil {
 			return err
 		}
@@ -248,11 +248,11 @@ func (a ResourceAPI) unlockAdminUser(c *gin.Context) {
 	profile := c.MustGet("admin_profile").(Profile)
 	err := a.Store.AdminDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
 		var before map[string]any
-		if err := tx.Table("admin_user_role").Clauses(clause.Locking{Strength: "UPDATE"}).
+		if err := tx.Table("admin_user").Clauses(clause.Locking{Strength: "UPDATE"}).
 			Where("id = ? AND deleted_at IS NULL", id).Take(&before).Error; err != nil {
 			return err
 		}
-		if err := tx.Table("admin_user_role").Where("id = ?", id).
+		if err := tx.Table("admin_user").Where("id = ?", id).
 			Updates(map[string]any{"status": "active", "locked_until": nil, "failed_login_count": 0}).Error; err != nil {
 			return err
 		}
@@ -290,11 +290,11 @@ func (a ResourceAPI) resetAdminPassword(c *gin.Context) {
 	profile := c.MustGet("admin_profile").(Profile)
 	err = a.Store.AdminDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
 		var before map[string]any
-		if err := tx.Table("admin_user_role").Clauses(clause.Locking{Strength: "UPDATE"}).
+		if err := tx.Table("admin_user").Clauses(clause.Locking{Strength: "UPDATE"}).
 			Where("id = ? AND deleted_at IS NULL", id).Take(&before).Error; err != nil {
 			return err
 		}
-		if err := tx.Table("admin_user_role").Where("id = ?", id).
+		if err := tx.Table("admin_user").Where("id = ?", id).
 			Updates(map[string]any{"password_hash": string(hash), "auth_version": gorm.Expr("auth_version + 1"), "failed_login_count": 0, "locked_until": nil}).Error; err != nil {
 			return err
 		}
@@ -325,7 +325,7 @@ func (a ResourceAPI) adminUserMFA(c *gin.Context) {
 	var target struct {
 		Username string `gorm:"column:username"`
 	}
-	if err := a.Store.AdminDB.WithContext(c.Request.Context()).Table("admin_user_role").
+	if err := a.Store.AdminDB.WithContext(c.Request.Context()).Table("admin_user").
 		Select("username").Where("id = ? AND deleted_at IS NULL", id).Take(&target).Error; err != nil {
 		resourceFailure(c, err)
 		return
@@ -357,7 +357,7 @@ func (a ResourceAPI) adminUserMFA(c *gin.Context) {
 			return
 		}
 		// 登记阶段保存未启用密钥；confirm 验证成功后启用。
-		if err := a.Store.AdminDB.WithContext(c.Request.Context()).Table("admin_user_role").
+		if err := a.Store.AdminDB.WithContext(c.Request.Context()).Table("admin_user").
 			Where("id = ? AND deleted_at IS NULL", id).
 			Updates(map[string]any{"mfa_secret": secret, "mfa_enabled": false}).Error; err != nil {
 			resourceFailure(c, err)
@@ -375,11 +375,11 @@ func (a ResourceAPI) adminUserMFA(c *gin.Context) {
 		}
 		err := a.Store.AdminDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
 			var before map[string]any
-			if err := tx.Table("admin_user_role").Clauses(clause.Locking{Strength: "UPDATE"}).
+			if err := tx.Table("admin_user").Clauses(clause.Locking{Strength: "UPDATE"}).
 				Where("id = ? AND deleted_at IS NULL", id).Take(&before).Error; err != nil {
 				return err
 			}
-			if err := tx.Table("admin_user_role").Where("id = ?", id).
+			if err := tx.Table("admin_user").Where("id = ?", id).
 				Updates(map[string]any{"mfa_secret": in.Secret, "mfa_enabled": true, "auth_version": gorm.Expr("auth_version + 1")}).Error; err != nil {
 				return err
 			}
@@ -393,11 +393,11 @@ func (a ResourceAPI) adminUserMFA(c *gin.Context) {
 	case "disable":
 		err := a.Store.AdminDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
 			var before map[string]any
-			if err := tx.Table("admin_user_role").Clauses(clause.Locking{Strength: "UPDATE"}).
+			if err := tx.Table("admin_user").Clauses(clause.Locking{Strength: "UPDATE"}).
 				Where("id = ? AND deleted_at IS NULL", id).Take(&before).Error; err != nil {
 				return err
 			}
-			if err := tx.Table("admin_user_role").Where("id = ?", id).
+			if err := tx.Table("admin_user").Where("id = ?", id).
 				Updates(map[string]any{"mfa_secret": nil, "mfa_enabled": false, "auth_version": gorm.Expr("auth_version + 1")}).Error; err != nil {
 				return err
 			}

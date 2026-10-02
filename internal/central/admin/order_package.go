@@ -3,9 +3,9 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"github.com/ChargePilot2026/charge-pilot/internal/central/order"
 	"strings"
 
-	"github.com/ChargePilot2026/charge-pilot/internal/central/charge"
 	"github.com/ChargePilot2026/charge-pilot/internal/central/pricing"
 )
 
@@ -73,7 +73,7 @@ func (s ResourceStore) orderSchemeNames(ctx context.Context, rows []OrderView) e
 	if len(ids) == 0 {
 		return nil
 	}
-	var snapshots []charge.ChargePricingSnapshotRecord
+	var snapshots []order.ChargePricingSnapshotRecord
 	if err := s.UserDB.WithContext(ctx).Select("charge_order_id,pricing_snapshot").Where("charge_order_id IN ?", ids).Find(&snapshots).Error; err != nil {
 		return err
 	}
@@ -91,7 +91,7 @@ func (s ResourceStore) orderSchemeNames(ctx context.Context, rows []OrderView) e
 }
 
 func (s ResourceStore) orderPackage(ctx context.Context, id uint64) (*OrderPackage, error) {
-	var snapshot charge.ChargePricingSnapshotRecord
+	var snapshot order.ChargePricingSnapshotRecord
 	if err := s.UserDB.WithContext(ctx).Select("pricing_snapshot").Where("charge_order_id = ?", id).Find(&snapshot).Error; err != nil {
 		return nil, err
 	}

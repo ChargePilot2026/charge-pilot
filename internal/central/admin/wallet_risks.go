@@ -7,7 +7,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/ChargePilot2026/charge-pilot/internal/central/charge"
+	"github.com/ChargePilot2026/charge-pilot/internal/central/wallet"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/httpapi"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -164,8 +164,8 @@ func (a ResourceAPI) reviewWalletRisk(c *gin.Context) {
 // reserveWalletRefund 按申请金额拆分微信充值支付单，创建 automatic/pending 退款并冻结钱包余额。
 // 仅使用全额实付且有微信交易号的充值，扣除已有退款占用与已退金额；资金不足时整笔事务回滚。
 func reserveWalletRefund(tx *gorm.DB, req riskRequest) error {
-	err := charge.ReserveWalletRefund(tx, charge.WalletRefundReservation{RequestID: req.RequestID, UserID: req.UserID, AmountCents: req.AmountCents, Reason: "wallet risk approved"})
-	if errors.Is(err, charge.ErrRefundConflict) {
+	err := wallet.ReserveRefund(tx, wallet.WalletRefundReservation{RequestID: req.RequestID, UserID: req.UserID, AmountCents: req.AmountCents, Reason: "wallet risk approved"})
+	if errors.Is(err, wallet.ErrConflict) {
 		return errConflict
 	}
 	return err

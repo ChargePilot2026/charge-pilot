@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/ChargePilot2026/charge-pilot/internal/central/card"
+	orderpkg "github.com/ChargePilot2026/charge-pilot/internal/central/order"
 	"github.com/ChargePilot2026/charge-pilot/internal/central/pricing"
 	"github.com/gin-gonic/gin"
 )
 
-func (a UserQueryAPI) schemeView(ctx context.Context, order ChargeOrderRecord, payload gin.H) error {
-	var snapshot ChargePricingSnapshotRecord
+func (a UserQueryAPI) schemeView(ctx context.Context, order orderpkg.ChargeOrderRecord, payload gin.H) error {
+	var snapshot orderpkg.ChargePricingSnapshotRecord
 	if err := a.DB.WithContext(ctx).Where("charge_order_id=?", order.ID).Find(&snapshot).Error; err != nil {
 		return err
 	}
@@ -33,7 +35,7 @@ func (a UserQueryAPI) schemeView(ctx context.Context, order ChargeOrderRecord, p
 		return err
 	}
 	payload["billing_status"] = job.Status
-	operations := []CardOperation{}
+	operations := []card.CardOperation{}
 	if err := a.DB.WithContext(ctx).Where("charge_order_id=?", order.ID).Order("created_at").Find(&operations).Error; err != nil {
 		return err
 	}

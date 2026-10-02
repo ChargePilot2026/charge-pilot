@@ -3,6 +3,7 @@ package charge
 import (
 	"encoding/json"
 	"errors"
+	orderpkg "github.com/ChargePilot2026/charge-pilot/internal/central/order"
 	"net/url"
 	"strconv"
 	"strings"
@@ -32,7 +33,7 @@ func (a UserAccountAPI) submitFeedback(c *gin.Context) {
 			httpapi.BadRequest(c, "订单号无效")
 			return
 		}
-		var order ChargeOrderRecord
+		var order orderpkg.ChargeOrderRecord
 		if err := a.UserDB.WithContext(c.Request.Context()).Select("id").Where("order_no=? AND user_id=? AND deleted_at IS NULL", orderNo, userID).Take(&order).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				httpapi.Write(c, 404, 1004, "订单不存在", nil)

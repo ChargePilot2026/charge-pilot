@@ -3,10 +3,10 @@ package admin
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"strings"
 	"time"
 
+	settlementpkg "github.com/ChargePilot2026/charge-pilot/internal/central/settlement"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/httpapi"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -14,61 +14,9 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// WithdrawRow 映射 withdraw_request 的提现单。
-// 申请、审核和打款分别校验资金余额，数据库列显式映射到 Go 字段。
-type WithdrawRow struct {
-	ID           uint64  `gorm:"column:id" json:"id"`                       // 提现单主键 ID
-	WithdrawNo   string  `gorm:"column:withdraw_no" json:"withdraw_no"`     // 提现单号,形如 WD + UUID 前 24 位大写,全局唯一
-	PartyID      uint64  `gorm:"column:party_id" json:"party_id"`           // 分账参与方 ID,关联管理库 split_party.id
-	PartyCode    string  `gorm:"column:party_code" json:"party_code"`       // 参与方编码快照,申请时从 split_party 复制,便于对账不依赖联表
-	AmountCents  int64   `gorm:"column:amount_cents" json:"amount_cents"`   // 申请金额,单位分,必须为正数且不超过可提现余额
-	BankAccount  *string `gorm:"column:bank_account" json:"bank_account"`   // 收款账号快照(可空),来自参与方资料
-	BankName     *string `gorm:"column:bank_name" json:"bank_name"`         // 开户行名称快照(可空)
-	Status       string  `gorm:"column:status" json:"status"`               // 单据状态:pending 待审核 / approved 审核通过 / rejected 已驳回 / paid 已打款 / failed 失败
-	ReviewedBy   *uint64 `gorm:"column:reviewed_by" json:"reviewed_by"`     // 审核人管理员 ID(可空),审核后才写入
-	ReviewedAt   *string `gorm:"column:reviewed_at" json:"reviewed_at"`     // 审核时间(可空),形如 2006-01-02 15:04:05.000
-	RejectReason *string `gorm:"column:reject_reason" json:"reject_reason"` // 驳回原因(可空),最长 255 字符
-	PaidAt       *string `gorm:"column:paid_at" json:"paid_at"`             // 打款时间(可空),仅 paid 状态有值
-	Note         *string `gorm:"column:note" json:"note"`                   // 操作备注(可空),最长 255 字符
-	CreatedAt    string  `gorm:"column:created_at" json:"created_at"`       // 申请创建时间,UTC
-}
-
-// AvailableCents 返回该参与方当前可提现金额（单位分），等于已结算金额减去未完结申请占用的金额。
-func (s ResourceStore) AvailableCents(ctx context.Context, tx *gorm.DB, partyID uint64) (int64, error) {
-	return s.AvailableCentsExcluding(ctx, tx, partyID, 0)
-}
-
-// AvailableCentsExcluding 就是 AvailableCents，只是把 excludeID 这张单据从占用里剔除，
-// 供审核通过与打款两个动作使用，否则“本单占的余额”会把自己挡住。
-func (s ResourceStore) AvailableCentsExcluding(ctx context.Context, tx *gorm.DB, partyID, excludeID uint64) (int64, error) {
-	if tx == nil {
-		tx = s.BillingDB.WithContext(ctx)
-	}
-	var earned int64
-	// settlement_party_amount 不包含分区列，仅按 settlement_id 连接。
-	if err := tx.Table("settlement_party_amount AS p").
-		Joins("JOIN settlement AS st ON st.id = p.settlement_id").
-		Where("p.party_id = ? AND st.status = 'paid'", partyID).
-		Select("COALESCE(SUM(p.amount_cents),0)").Scan(&earned).Error; err != nil {
-		return 0, err
-	}
-	claimedQuery := tx.Table("withdraw_request").Where("party_id = ? AND status IN ('pending','approved')", partyID)
-	if excludeID != 0 {
-		claimedQuery = claimedQuery.Where("id <> ?", excludeID)
-	}
-	var claimed int64
-	if err := claimedQuery.Select("COALESCE(SUM(amount_cents),0)").Scan(&claimed).Error; err != nil {
-		return 0, err
-	}
-	if claimed > earned {
-		return 0, nil
-	}
-	return earned - claimed, nil
-}
-
 // Withdraws 分页返回提现单，支持按状态与关键字（单号或参与方编码）过滤，按 ID 倒序。
-func (s ResourceStore) Withdraws(ctx context.Context, page PageQuery) (Page[WithdrawRow], error) {
-	out := Page[WithdrawRow]{Items: []WithdrawRow{}, Page: page.Page, PageSize: page.PageSize}
+func (s ResourceStore) Withdraws(ctx context.Context, page PageQuery) (Page[settlementpkg.WithdrawRow], error) {
+	out := Page[settlementpkg.WithdrawRow]{Items: []settlementpkg.WithdrawRow{}, Page: page.Page, PageSize: page.PageSize}
 	query := s.BillingDB.WithContext(ctx).Table("withdraw_request")
 	if page.Status != "" {
 		query = query.Where("status = ?", page.Status)
@@ -86,8 +34,8 @@ func (s ResourceStore) Withdraws(ctx context.Context, page PageQuery) (Page[With
 	return out, nil
 }
 
-// createWithdraw 新建提现申请：在写单据的同一个事务里重算可提现余额，并发申请不会把余额提穿；
-// 相同请求号重放直接返回原单据，不重复占用余额；打款前的余额校验和模板有效性也在这里完成。
+// createWithdraw 新建提现申请：余额重算、参与方与模板有效性校验归属 settlement 家族，
+// 相同请求号重放直接返回原单据，不重复占用余额。本 handler 只做输入校验与审计编排。
 func (a ResourceAPI) createWithdraw(c *gin.Context) {
 	var in struct {
 		RequestID   string  `json:"request_id"`   // 客户端请求号,必须是 UUID,用于幂等
@@ -103,71 +51,26 @@ func (a ResourceAPI) createWithdraw(c *gin.Context) {
 		return
 	}
 	profile := c.MustGet("admin_profile").(Profile)
-	no := "WD" + strings.ToUpper(strings.ReplaceAll(in.RequestID, "-", ""))[:24]
+	var no string
 	err := a.Store.BillingDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
-		// 请求号及内容一致的重放返回已有单据，不重复创建。
-		var existing WithdrawRow // 幂等重放时命中的原单据,用来比对金额与参与方是否一致
-		found := tx.Table("withdraw_request").Where("withdraw_no = ?", no).Take(&existing)
-		if found.Error == nil {
-			if existing.AmountCents != in.AmountCents || existing.PartyID != in.PartyID {
-				return errConflict
-			}
-			return nil
-		}
-		if !errors.Is(found.Error, gorm.ErrRecordNotFound) {
-			return found.Error
-		}
-		var party struct {
-			ID         uint64  `gorm:"column:id"`                // 参与方主键 ID
-			Code       string  `gorm:"column:party_code"`        // 参与方编码
-			Name       string  `gorm:"column:party_name"`        // 参与方名称
-			BankAcc    *string `gorm:"column:bank_account"`      // 收款账号(可空)
-			BankName   *string `gorm:"column:bank_name"`         // 开户行(可空)
-			TemplateID uint64  `gorm:"column:split_template_id"` // 绑定的分账模板 ID,模板已删除或非 active 时不允许提现
-		}
-		// 参与方身份与计费共享 central_db，在同一事务中核对。
-		// split_party 没有 deleted_at：下线这件事记在父级模板上。
-		if err := tx.Table("split_party").
-			Select("id, party_code, party_name, bank_account, bank_name, split_template_id").
-			Where("id = ?", in.PartyID).Take(&party).Error; err != nil {
-			return err
-		}
-		var template struct {
-			Status  string  `gorm:"column:status"`     // 分账模板状态,只有 active 允许提现
-			Deleted *string `gorm:"column:deleted_at"` // 分账模板软删时间(可空),非空表示已下线
-		}
-		if err := tx.Table("split_template").
-			Select("status, deleted_at").Where("id = ?", party.TemplateID).Take(&template).Error; err != nil {
-			return err
-		}
-		if template.Deleted != nil || template.Status != "active" {
-			return errConflict
-		}
-		available, err := a.Store.AvailableCents(c.Request.Context(), tx, in.PartyID)
+		var err error
+		no, err = (settlementpkg.WithdrawStore{}).Create(c.Request.Context(), tx, settlementpkg.WithdrawInput{
+			RequestID: in.RequestID, PartyID: in.PartyID, AmountCents: in.AmountCents, Note: in.Note,
+		})
 		if err != nil {
-			return err
-		}
-		if available < in.AmountCents {
-			return errConflict
-		}
-		if err := tx.Table("withdraw_request").Create(map[string]any{
-			"withdraw_no": no, "party_id": in.PartyID, "party_code": party.Code, "amount_cents": in.AmountCents,
-			"bank_account": party.BankAcc, "bank_name": party.BankName, "status": "pending", "note": in.Note,
-		}).Error; err != nil {
 			return err
 		}
 		return resourceAudit(tx, profile, "create", "withdraw", in.PartyID, nil,
 			gin.H{"withdraw_no": no, "party_id": in.PartyID, "amount_cents": in.AmountCents}, c.ClientIP(), c.GetHeader("X-Request-ID"))
 	})
 	if err != nil {
-		resourceFailure(c, err)
+		resourceFailure(c, asConflict(err))
 		return
 	}
 	httpapi.OK(c, gin.H{"withdraw_no": no, "status": "pending"})
 }
 
-// decideWithdraw 按 approve 值审核提现，驳回须填写理由。
-// 锁定记录并校验状态；通过前排除当前申请后重算可提现余额，余额不足时返回冲突。
+// decideWithdraw 按 approve 值审核提现，驳回须填写理由；状态机与余额校验归属 settlement 家族。
 func (a ResourceAPI) decideWithdraw(c *gin.Context) {
 	no := strings.TrimSpace(c.Param("withdraw_no"))
 	var in struct {
@@ -182,56 +85,21 @@ func (a ResourceAPI) decideWithdraw(c *gin.Context) {
 		return
 	}
 	profile := c.MustGet("admin_profile").(Profile)
-	action := "approve"
 	err := a.Store.BillingDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
-		var row WithdrawRow
-		if err := tx.Table("withdraw_request").Clauses(clause.Locking{Strength: "UPDATE"}).Where("withdraw_no = ?", no).Take(&row).Error; err != nil {
+		action, rowID, err := (settlementpkg.WithdrawStore{}).Decide(c.Request.Context(), tx, no, profile.ID, settlementpkg.WithdrawDecision{Approve: in.Approve, Reason: in.Reason})
+		if err != nil {
 			return err
 		}
-		values := map[string]any{"reviewed_by": profile.ID, "reviewed_at": gorm.Expr("UTC_TIMESTAMP(3)")}
-		if in.Reason != nil && utf8Count(*in.Reason) > 255 {
-			return errConflict
-		}
-		switch {
-		case in.Approve != nil && *in.Approve:
-			if row.Status != "pending" {
-				return errConflict
-			}
-			// 本单 pending 金额已计入占用，余额校验时排除本单，避免重复计算。
-			available, err := a.Store.AvailableCentsExcluding(c.Request.Context(), tx, row.PartyID, row.ID)
-			if err != nil {
-				return err
-			}
-			if available < row.AmountCents {
-				return errConflict
-			}
-			values["status"] = "approved"
-		case in.Reason != nil:
-			// 驳回必须带理由，并且从两种未完结状态里都能发起。
-			if strings.TrimSpace(*in.Reason) == "" {
-				return errConflict
-			}
-			if row.Status != "pending" && row.Status != "approved" {
-				return errConflict
-			}
-			action, values["status"], values["reject_reason"] = "reject", "rejected", strings.TrimSpace(*in.Reason)
-		case in.Approve != nil:
-			// 驳回必须填写理由。
-			return errConflict
-		}
-		if err := tx.Table("withdraw_request").Where("withdraw_no = ? AND status = ?", no, row.Status).Updates(values).Error; err != nil {
-			return err
-		}
-		return resourceAudit(tx, profile, action, "withdraw", row.ID, nil, gin.H{"withdraw_no": no}, c.ClientIP(), c.GetHeader("X-Request-ID"))
+		return resourceAudit(tx, profile, action, "withdraw", rowID, nil, gin.H{"withdraw_no": no}, c.ClientIP(), c.GetHeader("X-Request-ID"))
 	})
 	if err != nil {
-		resourceFailure(c, err)
+		resourceFailure(c, asConflict(err))
 		return
 	}
 	httpapi.OK(c, gin.H{"withdraw_no": no})
 }
 
-// payWithdraw 登记打款结果：只有已通过的单据能置为 paid，且登记前会再次剔除本单校验余额；
+// payWithdraw 登记打款结果：状态推进与余额校验归属 settlement 家族；
 // 已打款的单据重复调用只回报状态，不会重复出款。
 func (a ResourceAPI) payWithdraw(c *gin.Context) {
 	no := strings.TrimSpace(c.Param("withdraw_no"))
@@ -245,42 +113,24 @@ func (a ResourceAPI) payWithdraw(c *gin.Context) {
 		httpapi.BadRequest(c, "提现单号无效")
 		return
 	}
+	profile := c.MustGet("admin_profile").(Profile)
+	alreadyPaid := false
 	err := a.Store.BillingDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
-		var row WithdrawRow
-		if err := tx.Table("withdraw_request").Clauses(clause.Locking{Strength: "UPDATE"}).Where("withdraw_no = ?", no).Take(&row).Error; err != nil {
-			return err
-		}
-		if row.Status == "paid" {
-			// 已经打款过：只回报已记录的状态，不再出一次款。
-			return nil
-		}
-		if row.Status != "approved" {
-			return errConflict
-		}
-		// 打款校验排除本张已审批单据的占用金额，避免重复扣减可用余额。
-		available, err := a.Store.AvailableCentsExcluding(c.Request.Context(), tx, row.PartyID, row.ID)
+		rowID, paid, err := (settlementpkg.WithdrawStore{}).Pay(c.Request.Context(), tx, no, in.Note)
 		if err != nil {
 			return err
 		}
-		if available < row.AmountCents {
-			return errConflict
+		if paid {
+			alreadyPaid = true
+			return nil
 		}
-		values := map[string]any{"status": "paid", "paid_at": gorm.Expr("UTC_TIMESTAMP(3)")}
-		if in.Note != nil && utf8Count(*in.Note) > 255 {
-			return errConflict
-		} else if in.Note != nil {
-			values["note"] = *in.Note
-		}
-		if err := tx.Table("withdraw_request").Where("withdraw_no = ? AND status = 'approved'", no).Updates(values).Error; err != nil {
-			return err
-		}
-		return resourceAudit(tx, c.MustGet("admin_profile").(Profile), "pay", "withdraw", row.ID, nil, gin.H{"withdraw_no": no}, c.ClientIP(), c.GetHeader("X-Request-ID"))
+		return resourceAudit(tx, profile, "pay", "withdraw", rowID, nil, gin.H{"withdraw_no": no}, c.ClientIP(), c.GetHeader("X-Request-ID"))
 	})
 	if err != nil {
-		resourceFailure(c, err)
+		resourceFailure(c, asConflict(err))
 		return
 	}
-	httpapi.OK(c, gin.H{"withdraw_no": no, "status": "paid"})
+	httpapi.OK(c, gin.H{"withdraw_no": no, "status": "paid", "already_paid": alreadyPaid})
 }
 
 // ReconcileRow 表示 finance_reconcile_log 中单日对账结果。

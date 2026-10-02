@@ -11,8 +11,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol"
-	wire "github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol/dc589"
+	"github.com/ChargePilot2026/charge-pilot/internal/protocol"
+	wire "github.com/ChargePilot2026/charge-pilot/internal/protocol/dc589"
 )
 
 // Input changes physical conditions or presents a card; no gateway/DB shortcut.

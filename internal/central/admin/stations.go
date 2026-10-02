@@ -6,6 +6,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/ChargePilot2026/charge-pilot/internal/central/settlement"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/httpapi"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -161,7 +162,7 @@ func (a ResourceAPI) saveStation(c *gin.Context, create bool) {
 	err := a.Store.AdminDB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
 		if create {
 			if input.SplitTemplateID != nil {
-				if err := requireUsableSplitTemplate(tx, *input.SplitTemplateID); err != nil {
+				if err := settlement.UsableTemplate(tx, *input.SplitTemplateID); err != nil {
 					return err
 				}
 			}

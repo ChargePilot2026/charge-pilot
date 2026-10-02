@@ -91,7 +91,7 @@ export default function UsersPage() {
     const values = await createForm.validateFields();
     setSaving(true);
     try {
-      await apiPost('/api/v1/admin/users', values);
+      await apiPost('/api/v1/admin/admin-users', values);
       message.success('账号已创建');
       setCreating(false);
       createForm.resetFields();

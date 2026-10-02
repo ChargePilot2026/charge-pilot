@@ -4,7 +4,7 @@ import (
 	"errors"
 
 	"github.com/ChargePilot2026/charge-pilot/internal/central/pricing"
-	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol"
+	"github.com/ChargePilot2026/charge-pilot/internal/protocol"
 	"testing"
 	"time"
 )

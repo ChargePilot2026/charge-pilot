@@ -872,8 +872,8 @@ CREATE TABLE `admin_field_mask` (
   UNIQUE KEY `uk_role_resource_field` (`role_id`,`resource`,`field`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='角色字段脱敏规则';
 
--- admin_user_role：管理员账号
-CREATE TABLE `admin_user_role` (
+-- admin_user：管理员账号（一账号一角色，role_id 内联）
+CREATE TABLE `admin_user` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT '记录主键 ID',
   `username` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '管理员登录用户名',
   `display_name` varchar(128) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '管理员显示名称',
@@ -1316,15 +1316,15 @@ INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`
 INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (6,'device.read','查看设备','device',NULL,'2026-09-30 19:22:11.655');
 INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (7,'finance.refund.read','查看退款记录','finance',NULL,'2026-09-30 19:22:11.672');
 INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (8,'finance.refund.retry','重试异常退款任务','finance',NULL,'2026-09-30 19:22:11.676');
-INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (9,'order.refund.review','双签审核退款','finance',NULL,'2026-09-30 19:22:11.680');
-INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (10,'order.refund.create','发起人工退款申请','finance',NULL,'2026-09-30 19:22:11.683');
-INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (11,'finance.wallet_risk.review','钱包退款风控审核','finance',NULL,'2026-09-30 19:22:11.688');
+INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (9,'order.refund.review','双签审核退款','refund',NULL,'2026-09-30 19:22:11.680');
+INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (10,'order.refund.create','发起人工退款申请','refund',NULL,'2026-09-30 19:22:11.683');
+INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (11,'finance.wallet_risk.review','钱包退款风控审核','refund',NULL,'2026-09-30 19:22:11.688');
 INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (12,'finance.wallet_risk.release','解除钱包退款风控冻结','finance',NULL,'2026-09-30 19:22:11.692');
 INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (13,'invoice.review','审核发票','finance',NULL,'2026-09-30 19:22:11.713');
-INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (14,'feedback.read','查看用户评价与投诉','device','查看用户提交的评价、投诉和建议','2026-09-30 19:22:11.718');
-INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (15,'feedback.reply','回复与关闭用户反馈','device','回复或关闭用户反馈','2026-09-30 19:22:11.718');
-INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (16,'fault.read','查看设备报修','inspection','查看用户和巡检提交的设备报修','2026-09-30 19:22:11.718');
-INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (17,'fault.dispatch','派单与处理设备报修','inspection','指派巡检人员并更新报修处理状态','2026-09-30 19:22:11.718');
+INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (14,'feedback.read','查看用户评价与投诉','feedback','查看用户提交的评价、投诉和建议','2026-09-30 19:22:11.718');
+INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (15,'feedback.reply','回复与关闭用户反馈','feedback','回复或关闭用户反馈','2026-09-30 19:22:11.718');
+INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (16,'fault.read','查看设备报修','fault','查看用户和巡检提交的设备报修','2026-09-30 19:22:11.718');
+INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (17,'fault.dispatch','派单与处理设备报修','fault','指派巡检人员并更新报修处理状态','2026-09-30 19:22:11.718');
 INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (18,'whitelabel.read','查看白标配置','settings','查看租户品牌和联系信息','2026-09-30 19:22:11.724');
 INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (19,'whitelabel.update','更新白标配置','settings','更新租户品牌、服务入口和展示信息','2026-09-30 19:22:11.724');
 INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (20,'dashboard.read','查看运营仪表盘','dashboard','查看充电订单、结算金额与待处理告警汇总','2026-09-30 19:22:11.729');
@@ -1367,7 +1367,7 @@ INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`
 INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (78,'coupon.activity.read','查看活动规则','coupon','查看优惠券活动规则与发放统计','2026-09-30 19:22:12.008');
 INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (79,'coupon.activity.manage','管理活动规则','coupon','创建、调整与停用优惠券活动规则','2026-09-30 19:22:12.008');
 INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (80,'audit.read','查看审计日志','audit','查看操作审计日志与操作前后快照','2026-09-30 19:22:12.041');
-INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (81,'charge_user.read','查看充电用户','charge_user','查看充电用户列表与档案,含完整手机号——持有本权限等同于持有全部充电用户手机号,授权需谨慎','2026-09-30 19:22:12.553');
+INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (81,'user.read','查看充电用户','user','查看充电用户列表与档案,含完整手机号——持有本权限等同于持有全部充电用户手机号,授权需谨慎','2026-09-30 19:22:12.553');
 INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (82,'vendor.read','查看厂商','vendor',NULL,'2026-09-30 19:22:12.560');
 INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (83,'vendor.create','新建厂商','vendor',NULL,'2026-09-30 19:22:12.560');
 INSERT INTO `permission` (`id`,`code`,`name`,`module`,`description`,`created_at`) VALUES (84,'vendor.update','编辑及启停厂商','vendor',NULL,'2026-09-30 19:22:12.560');
@@ -1673,7 +1673,7 @@ DROP TABLE IF EXISTS `device_import`;
 DROP TABLE IF EXISTS `audit_log`;
 DROP TABLE IF EXISTS `announcement`;
 DROP TABLE IF EXISTS `alert_event`;
-DROP TABLE IF EXISTS `admin_user_role`;
+DROP TABLE IF EXISTS `admin_user`;
 DROP TABLE IF EXISTS `admin_field_mask`;
 DROP TABLE IF EXISTS `admin_data_scope`;
 DROP TABLE IF EXISTS `snowflake_state`;

@@ -133,7 +133,7 @@ function OrderDetailsContent({ orderID, onClose, onChanged, onUserSelect, childr
   const changedRef = useRef(onChanged);
   closeRef.current = onClose;
   changedRef.current = onChanged;
-  const canReadChargeUsers = permissions.includes('charge_user.read');
+  const canReadChargeUsers = permissions.includes('user.read');
   const canReadStations = permissions.includes('station.read');
   const isCurrent = () => mounted.current && currentOrderID.current === orderID && !expired && session.current === adminSession.epoch();
 

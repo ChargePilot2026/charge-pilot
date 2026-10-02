@@ -38,7 +38,7 @@ export default function App() {
         <Route path="orders" element={<OrdersPage />} />
         <Route path="payment-orders" element={<PaymentOrdersPage />} />
         <Route path="security" element={<SecurityPage />} />
-        <Route path="charge-users" element={<ChargeUsersPage />} />
+        <Route path="users" element={<ChargeUsersPage />} />
         <Route path="online-cards" element={<OnlineCards />} />
         <Route path="devices" element={<DevicesPage />} />
         <Route path="vendors" element={<VendorsPage />} />
@@ -47,7 +47,7 @@ export default function App() {
         <Route path="pricing-templates" element={<Navigate to="/templates" replace />} />
         <Route path="package-templates" element={<Navigate to="/templates" replace />} />
 
-        <Route path="users" element={<UsersPage />} />
+        <Route path="admin-users" element={<UsersPage />} />
         <Route path="alerts" element={<AlertsPage />} />
         <Route path="exports" element={<ExportsPage />} />
         <Route path="audit-logs" element={<AuditLogsPage />} />

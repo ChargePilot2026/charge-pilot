@@ -26,7 +26,7 @@ ChargePilot 是单客户独立部署的二轮车充电运营平台。后端使�
 | --- | --- | --- | --- |
 | central | 用户身份、后台、站点、订单、支付、钱包、计价、退款、分账与审计 | `central_db` | HTTP `8080` |
 | gateway | 设备开通、TCP 会话、端口、命令、遥测、刷卡与结束报告 | `gateway_db` | HTTP `8083`、DC589/TCP `9100` |
-| worker | 持久任务、Outbox、命令与结果同步、停机、计费、退款、告警和外部投递 | 三库，执行状态存于 `worker_db` | HTTP `8085` |
+| worker | 持久任务、Outbox、命令与结果同步、停机、计费、退款、告警和外部投递 | 三库（仅 outbox 转发读 `event_outbox` 系列，业务访问全走 HTTP），执行状态存于 `worker_db` | HTTP `8085` |
 | migrate | Goose 初始化及版本检查 | 三库 | 无 |
 
 central 中的 AdminDB、UserDB、BillingDB 是同一数据库句柄的领域名称。跨服务操作通过持久任务、幂等回执和内部 API 协作。Redis Cache 保存会话等缓存；Redis Stream 保存事件，两者独立部署。
@@ -264,7 +264,7 @@ node scripts/dev/prepare.mjs
 该脚本核验本地项目、停止后端、先备份到 `.tmp/`，再重建三库并清空本项目两套 Redis，会清除业务、会话及事件。需要保留数据时不得执行。
 
 <details>
-<summary>全部业务表索引（101 张）</summary>
+<summary>全部业务表索引（100 张）</summary>
 
 | 数据库 | 表 | 职责 |
 | --- | --- | --- |
@@ -364,7 +364,6 @@ node scripts/dev/prepare.mjs
 | gateway_db | `telemetry_aggregate_15min` | 遥测 15 分钟聚合 |
 | gateway_db | `telemetry_aggregate_hourly` | 遥测小时聚合 |
 | gateway_db | `vendor` | 硬件厂适配器注册表 |
-| worker_db | `comp_tx_log` | 跨服务补偿事务 |
 | worker_db | `dlq_log` | 死信队列日志 |
 | worker_db | `dlq_replay_cursor` | DLQ 重放滑动游标 |
 | worker_db | `scheduled_task` | 定时任务定义 |
@@ -378,8 +377,8 @@ node scripts/dev/prepare.mjs
 
 | 周期 | 任务 |
 | --- | --- |
-| worker 每秒 | 设备告警、刷卡投递、付款后启动、启动/结束结果同步、Outbox 发布 |
-| worker 每 10 秒 | 自动停机、计费、退款、退款结果消费、可选监管投递 |
+| worker 每秒 | 告警同步触发、刷卡投递、付款后启动、启动/结束结果同步、Outbox 发布 |
+| worker 每 10 秒 | 自动停机、计费、退款派发、可选监管投递 |
 | worker 调度器每秒扫描 | 当前白名单只有 `webhook_dispatch`；数据库记录 cron、租约和执行结果 |
 | gateway 每 5 秒 | 用户停止和补偿停止重试 |
 | central 每小时 | 到期导出清理 |
@@ -392,13 +391,13 @@ node scripts/dev/prepare.mjs
 | `charge_ended_stream` | 结束的 Webhook 候选流，计费另读 `charge_billing_job` |
 | `charge_settled_stream` | 最终结算通知，当前无消费者且不在 Webhook 默认流中 |
 | `refund_required_stream` | 退款需求的 Webhook 候选流，执行另扫 `refund_record` |
-| `refund_succeeded_stream` | 已成功退款，兼容结果消费者及 Webhook 候选流 |
+| `refund_succeeded_stream` | 已成功退款，Webhook 候选流；结算由 central `RefundExecutor` 在退款派发行内完成，无独立结果消费者 |
 | `refund_result_stream` | 兼容输入，当前无生产者 |
 | `wallet_recharge_settled_stream` | 充值通知，当前无消费者，到账已在回调事务完成 |
-| `device_event_stream` | 设备 Webhook 候选流，告警另扫网关记录 |
+| `device_event_stream` | 设备 Webhook 候选流；告警同步由 worker 触发、central 经 gateway 内部端点拉取故障记录 |
 | `charge_events_stream` | 后台指定 Webhook 事件重投 |
 
-当前 Webhook 使用 `XRANGE` 扫描各默认流前 100 条，没有持续推进游标；缺少 `event_type/data` 格式的事件会跳过，因此不能保证全部事件持续投递。退款结果消费者只读新消息 `>`，未接入 pending 自动回收。通用 DLQ 组件有实现，worker 主程序未启用 `ConsumeBatch`、未配置 Streams 和 Replay 回调；DLQ 重放接口返回 503，积压映射为空。恢复操作前须检查实际任务、消费组及持久回执，不能据组件测试推定运行恢复完整。
+当前 Webhook 使用 `XRANGE` 扫描各默认流前 100 条，投递完成后删除已处理条目，因此不会重复外投；积压超过窗口时分多轮排空。缺少 `event_type/data` 格式的事件会跳过并保留给属主消费者，不阻塞投递。订阅清单与投递日志经 central 内部端点读写，worker 不直接访问 central_db。通用 DLQ 组件有实现，worker 主程序未启用 `ConsumeBatch`；DLQ 重放接口仅做查询与登记，重放处理器按流注册，未注册的流显式报错。恢复操作前须检查实际任务、消费组及持久回执，不能据组件测试推定运行恢复完整。
 
 ## 开发与验证
 

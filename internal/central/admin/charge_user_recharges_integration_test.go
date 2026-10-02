@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	paymentpkg "github.com/ChargePilot2026/charge-pilot/internal/central/payment"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ChargePilot2026/charge-pilot/internal/central/charge"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/auth"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -74,7 +74,7 @@ func TestChargeUserRechargesPaginationAndScopeIntegration(t *testing.T) {
 			t.Fatal(err)
 		}
 		if allow {
-			result := tx.Exec("INSERT INTO role_permission(role_id,permission_id) SELECT ?,id FROM permission WHERE code='charge_user.read'", role.ID)
+			result := tx.Exec("INSERT INTO role_permission(role_id,permission_id) SELECT ?,id FROM permission WHERE code='user.read'", role.ID)
 			if result.Error != nil || result.RowsAffected != 1 {
 				t.Fatalf("seed read permission: rows=%d err=%v", result.RowsAffected, result.Error)
 			}
@@ -115,7 +115,7 @@ func TestChargeUserRechargesPaginationAndScopeIntegration(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	var payments []charge.PaymentOrderRecord
+	var payments []paymentpkg.PaymentOrderRecord
 	states := []struct {
 		status, payment string
 		paid, refunded  int64
@@ -123,13 +123,13 @@ func TestChargeUserRechargesPaginationAndScopeIntegration(t *testing.T) {
 		{"initiated", "pending", 0, 0}, {"closed", "pending", 0, 0}, {"failed", "pending", 0, 0},
 		{"paid", "paid", 500, 0}, {"partial_refunded", "partial_refunded", 500, 125}, {"refunded", "refunded", 500, 500},
 	}
-	createPayment := func(owner uint64, biz string, index int, deleted bool) charge.PaymentOrderRecord {
+	createPayment := func(owner uint64, biz string, index int, deleted bool) paymentpkg.PaymentOrderRecord {
 		t.Helper()
 		state := states[3]
 		if index < len(states) {
 			state = states[index]
 		}
-		payment := charge.PaymentOrderRecord{OrderNo: fmt.Sprintf("recharge-%s-%d", tag, index), UserID: owner,
+		payment := paymentpkg.PaymentOrderRecord{OrderNo: fmt.Sprintf("recharge-%s-%d", tag, index), UserID: owner,
 			BizType: biz, PayMethod: "wechat", TotalCents: 500, PaidCents: state.paid, RefundedCents: state.refunded,
 			Status: state.status, CreatedMonth: time.Date(2077, 6, 1, 0, 0, 0, 0, time.UTC)}
 		if state.paid > 0 {
@@ -166,7 +166,7 @@ func TestChargeUserRechargesPaginationAndScopeIntegration(t *testing.T) {
 	api.registerChargeUsers(router)
 	request := func(t *testing.T, id uint64, query, token string) *httptest.ResponseRecorder {
 		t.Helper()
-		req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/admin/charge-users/%d/recharges%s", id, query), nil)
+		req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/admin/users/%d/recharges%s", id, query), nil)
 		if token != "" {
 			req.Header.Set("Authorization", "Bearer "+token)
 		}
@@ -188,7 +188,7 @@ func TestChargeUserRechargesPaginationAndScopeIntegration(t *testing.T) {
 		return envelope.Data
 	}
 	// 不同创建时间优先；同一创建时间按 ID 倒序，翻页不重复或遗漏。
-	want := []charge.PaymentOrderRecord{payments[0], payments[1]}
+	want := []paymentpkg.PaymentOrderRecord{payments[0], payments[1]}
 	for i := len(payments) - 1; i >= 2; i-- {
 		want = append(want, payments[i])
 	}

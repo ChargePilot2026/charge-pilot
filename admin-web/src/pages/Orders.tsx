@@ -46,7 +46,7 @@ export default function OrdersPage() {
   const [selected, setSelected] = useState<number | null>(null);
   const [profileUser, setProfileUser] = useState<{ orderID: number; userID: string } | null>(null);
   const [permissions, setPermissions] = useState(cachedPermissions);
-  const canReadChargeUsers = permissions.includes('charge_user.read');
+  const canReadChargeUsers = permissions.includes('user.read');
   const canReadStations = permissions.includes('station.read');
   const [listStation, setListStation] = useState<StationReference | null>(null);
 

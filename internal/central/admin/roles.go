@@ -97,7 +97,7 @@ func (a ResourceAPI) listRoles(c *gin.Context) {
 			return
 		}
 		rows[i].Permissions = withoutRetiredPermissions(codes)
-		if err := a.Store.AdminDB.WithContext(c.Request.Context()).Table("admin_user_role").
+		if err := a.Store.AdminDB.WithContext(c.Request.Context()).Table("admin_user").
 			Where("role_id = ? AND deleted_at IS NULL", rows[i].ID).Count(&rows[i].UserCount).Error; err != nil {
 			resourceFailure(c, err)
 			return
@@ -307,7 +307,7 @@ func (a ResourceAPI) deleteRole(c *gin.Context) {
 		return
 	}
 	var held int64
-	if err := a.Store.AdminDB.WithContext(c.Request.Context()).Table("admin_user_role").
+	if err := a.Store.AdminDB.WithContext(c.Request.Context()).Table("admin_user").
 		Where("role_id = ? AND deleted_at IS NULL", id).Count(&held).Error; err != nil {
 		resourceFailure(c, err)
 		return

@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -86,4 +87,27 @@ func randomID() string {
 		panic(err)
 	}
 	return hex.EncodeToString(b[:])
+}
+
+// ReadPaging 解析 page / page_size 查询参数，默认每页 fallback 条（上限 100）。
+// 参数无效时写 400 响应并返回 ok=false，调用方应直接返回。
+func ReadPaging(c *gin.Context, fallback int) (page, size int, ok bool) {
+	page, size = 1, fallback
+	if raw := c.Query("page"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > 100000 {
+			BadRequest(c, "分页参数无效")
+			return 0, 0, false
+		}
+		page = parsed
+	}
+	if raw := c.Query("page_size"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > 100 {
+			BadRequest(c, "分页参数无效：page_size 为 1–100")
+			return 0, 0, false
+		}
+		size = parsed
+	}
+	return page, size, true
 }

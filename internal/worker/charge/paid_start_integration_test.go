@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	centralcharge "github.com/ChargePilot2026/charge-pilot/internal/central/charge"
+	centralpayment "github.com/ChargePilot2026/charge-pilot/internal/central/payment"
 	"github.com/ChargePilot2026/charge-pilot/internal/central/pricing"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/dbconn"
 	"github.com/google/uuid"
@@ -43,10 +43,10 @@ func TestPaidStartDispatchRequiresCallbackCreatedOrder(t *testing.T) {
 		_, _ = db.ExecContext(ctx, "DELETE FROM user WHERE id = ?", userID)
 	}()
 	scheme := pricing.Scheme{Name: "Dispatch Test", Packages: []pricing.Package{{ID: 1, Name: "60 minutes", Mode: "duration", PriceCents: 140, Minutes: 60}}}.Normalized()
-	intent, err := (centralcharge.PaymentIntentStore{DB: testGORMDB(t, db)}).Reserve(ctx, centralcharge.IntentInput{
+	intent, err := (centralpayment.PaymentIntentStore{DB: testGORMDB(t, db)}).Reserve(ctx, centralpayment.IntentInput{
 		UserID: uint64(userID), ClientRequestID: uuid.NewString(),
-		Port: centralcharge.ScanResult{Kind: "port", DeviceID: "dispatch-device", StationID: 9,
-			Port: &centralcharge.ScanPort{PortID: "dispatch-device:1", DeviceID: "dispatch-device", PortNo: 1, Online: true, Available: true}},
+		Port: centralpayment.ScanResult{Kind: "port", DeviceID: "dispatch-device", StationID: 9,
+			Port: &centralpayment.ScanPort{PortID: "dispatch-device:1", DeviceID: "dispatch-device", PortNo: 1, Online: true, Available: true}},
 		Rule:  pricing.Rule{ID: 3, StationID: 9, Version: 1, Spec: scheme.SpecFor(scheme.Packages[0])},
 		Offer: &pricing.Offer{ID: 301, PackageID: 1, StationID: 9, Name: "60 minutes", Mode: "duration", PriceCents: 140, DurationMinutes: 60},
 	})
@@ -77,8 +77,8 @@ func TestPaidStartDispatchRequiresCallbackCreatedOrder(t *testing.T) {
 	if _, err := starter.DispatchBatch(ctx); err != nil || calls != 0 {
 		t.Fatalf("before callback: calls=%d err=%v", calls, err)
 	}
-	callback := centralcharge.PaymentCallbackStore{DB: testGORMDB(t, db), ExpectedProvider: "simulation", ExpectedMerchantID: "test-merchant", ExpectedAppID: "test-app"}
-	confirmed, err := callback.Apply(ctx, centralcharge.VerifiedPayment{Provider: "simulation", MerchantID: "test-merchant", AppID: "test-app",
+	callback := centralpayment.PaymentCallbackStore{DB: testGORMDB(t, db), ExpectedProvider: "simulation", ExpectedMerchantID: "test-merchant", ExpectedAppID: "test-app"}
+	confirmed, err := callback.Apply(ctx, centralpayment.VerifiedPayment{Provider: "simulation", MerchantID: "test-merchant", AppID: "test-app",
 		MerchantOrderNo: intent.MerchantOrderNo, TransactionID: transactionID, OpenID: intent.OpenID,
 		PaidCents: intent.Estimate.TotalCents, PaidAt: time.Now().UTC()})
 	if err != nil || confirmed.ChargeOrderID == 0 {

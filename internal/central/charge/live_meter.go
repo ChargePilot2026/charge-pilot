@@ -5,13 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/ChargePilot2026/charge-pilot/internal/central/card"
+	orderpkg "github.com/ChargePilot2026/charge-pilot/internal/central/order"
 	"net/url"
 	"slices"
 	"time"
 
 	"github.com/ChargePilot2026/charge-pilot/internal/central/pricing"
-	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/serviceclient"
+	"github.com/ChargePilot2026/charge-pilot/internal/protocol"
 	"gorm.io/gorm"
 )
 
@@ -61,7 +63,7 @@ func (s LiveMeterService) Read(ctx context.Context, id uint64, device string, po
 		view.FeeUnavailable = "计量证据超过范围，费用待结算"
 		return view, nil
 	}
-	var snapshot ChargePricingSnapshotRecord
+	var snapshot orderpkg.ChargePricingSnapshotRecord
 	if err := s.DB.WithContext(ctx).Where("charge_order_id=?", id).Take(&snapshot).Error; err != nil {
 		return view, err
 	}
@@ -73,7 +75,7 @@ func (s LiveMeterService) Read(ctx context.Context, id uint64, device string, po
 		view.FeeUnavailable = "缺少订单计费快照"
 		return view, nil
 	}
-	var card CardCharge
+	var card card.CardCharge
 	if err := s.DB.WithContext(ctx).Where("charge_order_id=?", id).Find(&card).Error; err != nil {
 		return view, err
 	}

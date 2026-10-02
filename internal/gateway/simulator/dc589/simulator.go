@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol/dc589"
+	"github.com/ChargePilot2026/charge-pilot/internal/protocol/dc589"
 )
 
 // Scenario 选择充电行为；各场景共用注册与心跳流程，仅改变启动后的执行结果。

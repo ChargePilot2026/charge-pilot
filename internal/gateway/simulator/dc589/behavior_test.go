@@ -5,7 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
-	wire "github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol/dc589"
+	wire "github.com/ChargePilot2026/charge-pilot/internal/protocol/dc589"
 	"net"
 	"path/filepath"
 	"strings"

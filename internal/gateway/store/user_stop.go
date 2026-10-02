@@ -7,7 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 
-	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol"
+	"github.com/ChargePilot2026/charge-pilot/internal/protocol"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"

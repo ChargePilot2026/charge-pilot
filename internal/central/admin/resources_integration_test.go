@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ChargePilot2026/charge-pilot/internal/central/charge"
-	"github.com/ChargePilot2026/charge-pilot/internal/central/payment"
+	"github.com/ChargePilot2026/charge-pilot/internal/central/channel"
+	refundpkg "github.com/ChargePilot2026/charge-pilot/internal/central/refund"
 	"github.com/ChargePilot2026/charge-pilot/internal/gateway/provision"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/auth"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/dbconn"
@@ -83,8 +83,8 @@ func TestAdminPagesIntegration(t *testing.T) {
 		}{
 			{adb, []string{
 				// 先删除账号关联的导出任务，再删除账号，确保归属子查询仍可匹配。
-				"DELETE FROM export_task WHERE task_no LIKE 'PAGES_%' OR task_no LIKE 'EXPBB000000%' OR requested_by IN (SELECT id FROM admin_user_role WHERE username LIKE 'pages-%')",
-				"DELETE FROM admin_user_role WHERE username LIKE 'pages-%'",
+				"DELETE FROM export_task WHERE task_no LIKE 'PAGES_%' OR task_no LIKE 'EXPBB000000%' OR requested_by IN (SELECT id FROM admin_user WHERE username LIKE 'pages-%')",
+				"DELETE FROM admin_user WHERE username LIKE 'pages-%'",
 				"DELETE FROM finance_reconcile_log WHERE reconcile_type = 'wechat_pay' AND reconcile_date IN ('2026-09-15','2026-10-01')",
 				"DELETE FROM split_party WHERE split_template_id IN (SELECT id FROM split_template WHERE code LIKE 'PAGES_%')",
 				"DELETE FROM split_template WHERE code LIKE 'PAGES_%'",
@@ -171,9 +171,9 @@ func TestAdminPagesIntegration(t *testing.T) {
 	ResourceAPI{Store: ResourceStore{AdminDB: adb, UserDB: udb, BillingDB: bdb}, Auth: a, GatewayURL: gateway.URL, ServiceToken: "test-service", ExportDir: t.TempDir()}.Register(router)
 	token := func(name, role string) string {
 		t.Helper()
-		exec(adb, "INSERT INTO admin_user_role(username,password_hash,role_id) SELECT ?,?,id FROM role WHERE code=? AND deleted_at IS NULL", name, "unused-test-hash", role)
+		exec(adb, "INSERT INTO admin_user(username,password_hash,role_id) SELECT ?,?,id FROM role WHERE code=? AND deleted_at IS NULL", name, "unused-test-hash", role)
 		var ac Account
-		if e := adb.Table("admin_user_role").Where("username=?", name).Take(&ac).Error; e != nil {
+		if e := adb.Table("admin_user").Where("username=?", name).Take(&ac).Error; e != nil {
 			t.Fatal(e)
 		}
 		sid, _, e := a.Sessions.Create(ctx, ac)
@@ -208,7 +208,7 @@ func TestAdminPagesIntegration(t *testing.T) {
 	}
 	data := func(v map[string]any) map[string]any { return v["data"].(map[string]any) }
 	var exportCreator uint64
-	if e := adb.Table("admin_user_role").Where("username = ?", "pages-admin").Pluck("id", &exportCreator).Error; e != nil || exportCreator == 0 {
+	if e := adb.Table("admin_user").Where("username = ?", "pages-admin").Pluck("id", &exportCreator).Error; e != nil || exportCreator == 0 {
 		t.Fatalf("export fixture creator: %d %v", exportCreator, e)
 	}
 	exec(adb, "INSERT INTO export_task(task_no,resource,status,requested_by,row_count,file_path) VALUES('PAGES_EXPORT_DETAIL','orders','completed',?,2,'/private/tmp/internal-only.csv')", exportCreator)
@@ -363,7 +363,7 @@ func TestAdminPagesIntegration(t *testing.T) {
 	call(adminToken, "POST", fp, gin.H{"action": "reply", "reply_content": "已处理"}, 200)
 	call(adminToken, "POST", fp, gin.H{"action": "close"}, 200)
 	var actor uint64
-	adb.Table("admin_user_role").Where("username='pages-admin'").Pluck("id", &actor)
+	adb.Table("admin_user").Where("username='pages-admin'").Pluck("id", &actor)
 	exec(udb, "INSERT INTO device_fault_report(device_id,user_id,report_source,fault_type,description) VALUES ('PAGESDEV01',?,'user','other','页面测试')", uid)
 	udb.Table("device_fault_report").Where("user_id=?", uid).Pluck("id", &fid)
 	fp = fmt.Sprintf("device-fault-reports/%d", fid)
@@ -438,7 +438,7 @@ func TestAdminPagesIntegration(t *testing.T) {
 	call(adminToken, "POST", "billing/refunds/"+rf+"/retry", gin.H{"reason": "测试立即执行"}, 200)
 	var rid uint64
 	udb.Table("refund_record").Where("refund_no=?", rf).Pluck("id", &rid)
-	executor := charge.RefundExecutor{DB: udb, Provider: payment.Simulator{}, ProviderName: "simulation"}
+	executor := refundpkg.RefundExecutor{DB: udb, Provider: channel.Simulator{}, ProviderName: "simulation"}
 	if e := executor.Execute(ctx, rid); e != nil {
 		t.Fatal(e)
 	}
@@ -504,10 +504,10 @@ func TestAdminPagesIntegration(t *testing.T) {
 
 }
 
-type closedRefundProvider struct{ payment.Simulator }
+type closedRefundProvider struct{ channel.Simulator }
 
-func (closedRefundProvider) CreateRefund(ctx context.Context, r payment.RefundRequest) (payment.RefundResult, error) {
-	result, e := (payment.Simulator{}).CreateRefund(ctx, r)
+func (closedRefundProvider) CreateRefund(ctx context.Context, r channel.RefundRequest) (channel.RefundResult, error) {
+	result, e := (channel.Simulator{}).CreateRefund(ctx, r)
 	result.Status = "CLOSED"
 	return result, e
 }

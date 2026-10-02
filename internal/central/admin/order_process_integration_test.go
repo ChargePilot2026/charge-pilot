@@ -3,6 +3,7 @@ package admin
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/ChargePilot2026/charge-pilot/internal/central/order"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ChargePilot2026/charge-pilot/internal/central/charge"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/httpapi"
 	"github.com/google/uuid"
 )
@@ -38,7 +38,7 @@ func TestOrderProcessLoadsCanonicalOrderAndRejectsDeletedOrder(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	month := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
-	order := charge.ChargeOrderRecord{OrderNo: "process-" + tag, UserID: user.ID, DeviceID: "process-board-" + tag, PortNo: 2, Status: "completed", CreatedMonth: month}
+	order := order.ChargeOrderRecord{OrderNo: "process-" + tag, UserID: user.ID, DeviceID: "process-board-" + tag, PortNo: 2, Status: "completed", CreatedMonth: month}
 	if err := tx.Create(&order).Error; err != nil {
 		t.Fatal(err)
 	}

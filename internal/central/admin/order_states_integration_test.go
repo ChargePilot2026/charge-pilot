@@ -3,11 +3,13 @@ package admin
 import (
 	"context"
 	"database/sql"
+	orderpkg "github.com/ChargePilot2026/charge-pilot/internal/central/order"
+	paymentpkg "github.com/ChargePilot2026/charge-pilot/internal/central/payment"
+	refundpkg "github.com/ChargePilot2026/charge-pilot/internal/central/refund"
 	"os"
 	"testing"
 	"time"
 
-	"github.com/ChargePilot2026/charge-pilot/internal/central/charge"
 	"github.com/google/uuid"
 )
 
@@ -53,9 +55,9 @@ func TestSeparateOrderListsAndThreeChargingSources(t *testing.T) {
 		{"wechat", "charge", "initiated", 0, 0},
 		{"wechat", "charge", "paid", 100, 0}, // soft-deleted payment is never joined.
 	}
-	payments := make([]charge.PaymentOrderRecord, len(paymentSpecs))
+	payments := make([]paymentpkg.PaymentOrderRecord, len(paymentSpecs))
 	for i, spec := range paymentSpecs {
-		p := charge.PaymentOrderRecord{OrderNo: "list-pay-" + tag + string(rune('a'+i)), UserID: user.ID,
+		p := paymentpkg.PaymentOrderRecord{OrderNo: "list-pay-" + tag + string(rune('a'+i)), UserID: user.ID,
 			BizType: spec.biz, PayMethod: spec.method, TotalCents: 500, PaidCents: spec.paid,
 			RefundedCents: spec.refunded, Status: spec.status, CreatedMonth: month}
 		if err := tx.Create(&p).Error; err != nil {
@@ -77,9 +79,9 @@ func TestSeparateOrderListsAndThreeChargingSources(t *testing.T) {
 		{0, "completed", "partial_refunded"}, {1, "charging", "paid"},
 		{2, "failed", "refunded"}, {5, "paid", "pending"},
 	}
-	orders := make([]charge.ChargeOrderRecord, len(orderSpecs))
+	orders := make([]orderpkg.ChargeOrderRecord, len(orderSpecs))
 	for i, spec := range orderSpecs {
-		order := charge.ChargeOrderRecord{OrderNo: "list-charge-" + tag + string(rune('a'+i)), UserID: user.ID,
+		order := orderpkg.ChargeOrderRecord{OrderNo: "list-charge-" + tag + string(rune('a'+i)), UserID: user.ID,
 			DeviceID: "list-device-" + tag, PortNo: 1, Status: spec.status, PaymentStatus: spec.pay,
 			PaymentOrderID: sql.NullInt64{Int64: int64(payments[spec.payment].ID), Valid: true}, CreatedMonth: month}
 		if err := tx.Create(&order).Error; err != nil {
@@ -90,7 +92,7 @@ func TestSeparateOrderListsAndThreeChargingSources(t *testing.T) {
 	if err := tx.Exec("INSERT INTO card_charge(charge_order_id,card_id,port_code,paid_cents,purchased_minutes,max_minutes,card_no,wallet_after_cents,package_json) VALUES(?,1,?,200,30,60,?,0,'{}')", orders[2].ID, tag, tag).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := tx.Create(&charge.RefundRecord{RefundNo: "list-refund-" + tag, PaymentOrderID: payments[0].ID,
+	if err := tx.Create(&refundpkg.RefundRecord{RefundNo: "list-refund-" + tag, PaymentOrderID: payments[0].ID,
 		UserID: user.ID, BizType: "charge", BizID: orders[0].ID, RefundCents: 10, Status: "pending", CreatedMonth: month}).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +133,7 @@ func TestSeparateOrderListsAndThreeChargingSources(t *testing.T) {
 	}{
 		{0, user.ID + 100000}, {0, user.ID}, {3, user.ID},
 	} {
-		order := charge.ChargeOrderRecord{OrderNo: "list-bad-link-" + tag + string(rune('a'+i)), UserID: link.owner,
+		order := orderpkg.ChargeOrderRecord{OrderNo: "list-bad-link-" + tag + string(rune('a'+i)), UserID: link.owner,
 			DeviceID: "other-list-" + tag, PortNo: 1, Status: "completed", PaymentStatus: "paid",
 			PaymentOrderID: sql.NullInt64{Int64: int64(payments[link.payment].ID), Valid: true}, CreatedMonth: month}
 		if err := tx.Create(&order).Error; err != nil {
@@ -155,7 +157,7 @@ func TestSeparateOrderListsAndThreeChargingSources(t *testing.T) {
 		t.Fatalf("payment pagination before=%d after=%+v err=%v", before.Total, all, err)
 	}
 	for i, spec := range paymentSpecs[:5] {
-		want := charge.SettledPaymentStatus(spec.paid, spec.refunded, spec.status)
+		want := orderpkg.SettledPaymentStatus(spec.paid, spec.refunded, spec.status)
 		got, err := store.PaymentOrders(ctx, PaymentOrderQuery{PageQuery: page, OrderNo: payments[i].OrderNo,
 			BizType: spec.biz, PayMethod: spec.method, PaymentStatus: want})
 		if err != nil || got.Total != 1 || len(got.Items) != 1 {

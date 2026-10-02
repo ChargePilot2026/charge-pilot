@@ -24,9 +24,14 @@ type TelemetryAPI struct {
 func (a TelemetryAPI) Register(router *gin.Engine) {
 	router.GET("/api/v1/internal/devices/:device_id/telemetry", a.curve)
 	router.GET("/api/v1/internal/devices/:device_id/charging-samples", a.chargingSamples)
+	// 批量取证挂在 /internal 根下：/devices 下已存在 :device_id 通配，
+	// 静态段 charging-evidence 会与其在 gin 基数树上冲突。
+	router.POST("/api/v1/internal/charging-evidence", a.chargingEvidence)
 	router.GET("/api/v1/internal/charge-orders/:order_no/process", a.chargeProcess)
 	router.GET("/api/v1/internal/devices/:device_id/historical-curve", a.historicalCurve)
 	router.POST("/api/v1/internal/devices/:device_id/backfill", a.backfill)
+	a.registerDeviceFaults(router)
+	a.registerWorkerSync(router)
 }
 
 func (a TelemetryAPI) authorized(c *gin.Context) bool {

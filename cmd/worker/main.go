@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -11,10 +12,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ChargePilot2026/charge-pilot/internal/delivery"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/config"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/dbconn"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/httpapi"
-	"github.com/ChargePilot2026/charge-pilot/internal/regulatory"
+	"github.com/ChargePilot2026/charge-pilot/internal/platform/serviceclient"
 	"github.com/ChargePilot2026/charge-pilot/internal/worker/alerts"
 	"github.com/ChargePilot2026/charge-pilot/internal/worker/billing"
 	"github.com/ChargePilot2026/charge-pilot/internal/worker/charge"
@@ -22,7 +24,6 @@ import (
 	"github.com/ChargePilot2026/charge-pilot/internal/worker/outbox"
 	"github.com/ChargePilot2026/charge-pilot/internal/worker/refund"
 	"github.com/ChargePilot2026/charge-pilot/internal/worker/schedule"
-	webhookdelivery "github.com/ChargePilot2026/charge-pilot/internal/worker/webhook"
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
@@ -58,8 +59,8 @@ func run(ctx context.Context) error {
 		}
 		orms[name] = orm
 	}
-	databases["user"], databases["admin"] = databases["central"], databases["central"]
-	orms["user"], orms["admin"] = orms["central"], orms["central"]
+	databases["user"] = databases["central"]
+	orms["user"] = orms["central"]
 	streamOptions, err := redis.ParseURL(cfg.RedisStreamURL)
 	if err != nil {
 		return err
@@ -94,28 +95,39 @@ func run(ctx context.Context) error {
 	publishers := []outbox.Publisher{
 		{Source: "gateway", DB: orms["gateway"], Stream: stream},
 		{Source: "user", DB: orms["user"], Stream: stream},
-		{Source: "admin", DB: orms["admin"], Stream: stream},
+		{Source: "admin", DB: orms["central"], Stream: stream},
 	}
-	startResults := charge.Synchronizer{GatewayDB: orms["gateway"], CentralURL: cfg.CentralInternalURL, GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken}
-	endResults := charge.EndSynchronizer{GatewayDB: orms["gateway"], CentralURL: cfg.CentralInternalURL, ServiceToken: cfg.ServiceToken}
-	paidStarts := charge.PaidStarter{UserDB: orms["user"], GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken}
-	cardEvents := charge.CardDispatcher{GatewayDB: orms["gateway"], CentralURL: cfg.CentralInternalURL, GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken}
-	autoStops := charge.AutoStopper{UserDB: orms["user"], GatewayDB: orms["gateway"], GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken}
-	billingJobs := billing.Dispatcher{CentralURL: cfg.CentralInternalURL, ServiceToken: cfg.ServiceToken}
-	refunds := refund.Dispatcher{CentralURL: cfg.CentralInternalURL, ServiceToken: cfg.ServiceToken}
-	webhooks := webhookdelivery.WebhookDeliverer{AdminDB: orms["admin"], Stream: stream}
-	var regulatoryReports *regulatory.Deliverer
+	// 内部服务调用共享连接池：此前各组件 Client 字段均未赋值，
+	// 每次请求新建 &http.Client{}，连接池完全不生效。
+	// 超时沿用各组件原回退值：内部同步调用 5s，长任务派发 30s，webhook 外投 10s。
+	internalHTTP := &http.Client{Timeout: 5 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
+	jobHTTP := &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
+	webhookHTTP := &http.Client{Timeout: 10 * time.Second}
+	startResults := charge.Synchronizer{Gateway: serviceclient.Client{HTTP: internalHTTP}, GatewayURL: cfg.GatewayInternalURL, CentralURL: cfg.CentralInternalURL, ServiceToken: cfg.ServiceToken, Client: internalHTTP}
+	endResults := charge.EndSynchronizer{Gateway: serviceclient.Client{HTTP: internalHTTP}, GatewayURL: cfg.GatewayInternalURL, CentralURL: cfg.CentralInternalURL, ServiceToken: cfg.ServiceToken, Client: internalHTTP}
+	paidStarts := charge.PaidStarter{UserDB: orms["user"], GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken, Client: internalHTTP}
+	cardEvents := charge.CardDispatcher{Gateway: serviceclient.Client{HTTP: internalHTTP}, CentralURL: cfg.CentralInternalURL, GatewayURL: cfg.GatewayInternalURL, ServiceToken: cfg.ServiceToken, Client: internalHTTP}
+	autoStops := charge.AutoStopper{CentralURL: cfg.CentralInternalURL, ServiceToken: cfg.ServiceToken, Client: serviceclient.Client{HTTP: jobHTTP}}
+	billingJobs := billing.Dispatcher{CentralURL: cfg.CentralInternalURL, ServiceToken: cfg.ServiceToken, Client: jobHTTP}
+	refunds := refund.Dispatcher{CentralURL: cfg.CentralInternalURL, ServiceToken: cfg.ServiceToken, Client: jobHTTP}
+	// webhook/regulatory 只向进程外投递：订阅清单、投递日志与报送状态
+	// 都经 central 内部端点读写，worker 不再持有 central 的 ORM/DB 句柄。
+	webhooks := delivery.WebhookDeliverer{Stream: stream, Central: serviceclient.Client{HTTP: webhookHTTP}, CentralURL: cfg.CentralInternalURL, ServiceToken: cfg.ServiceToken, Client: webhookHTTP}
+	var regulatoryReports *delivery.RegulatoryDeliverer
 	switch cfg.RegulatoryMode {
 	case "simulation":
-		regulatoryReports = &regulatory.Deliverer{DB: databases["admin"], Sender: regulatory.SimulationSender{}}
+		regulatoryReports = &delivery.RegulatoryDeliverer{Central: serviceclient.Client{HTTP: internalHTTP}, CentralURL: cfg.CentralInternalURL, ServiceToken: cfg.ServiceToken, Sender: delivery.SimulationSender{}}
 	case "http":
-		regulatoryReports = &regulatory.Deliverer{DB: databases["admin"], Sender: regulatory.HTTPSender{Endpoint: cfg.RegulatoryEndpoint, Secret: cfg.RegulatorySecret}}
+		regulatoryReports = &delivery.RegulatoryDeliverer{Central: serviceclient.Client{HTTP: internalHTTP}, CentralURL: cfg.CentralInternalURL, ServiceToken: cfg.ServiceToken, Sender: delivery.HTTPSender{Endpoint: cfg.RegulatoryEndpoint, Secret: cfg.RegulatorySecret, Client: webhookHTTP}}
 	}
-	dlq := outbox.DLQ{WorkerDB: orms["worker"], Stream: stream, Consumer: "worker-dlq"}
-	internaljob.OpsAPI{WorkerDB: orms["worker"], ServiceToken: cfg.ServiceToken, DLQ: dlq}.Register(router)
-	// 退款结果是从 channel 异步送来的；消费端保证只投递一次，并把每次尝试记进 comp_tx_log。
-	refundResults := outbox.ResultConsumer{UserDB: orms["user"], WorkerDB: orms["worker"], Stream: stream, Group: "refund-result"}
-	deviceAlerts := alerts.DeviceSynchronizer{GatewayDB: orms["gateway"], AdminDB: orms["admin"]}
+	dlq := outbox.DLQ{WorkerDB: orms["worker"], Stream: stream, Consumer: "worker-dlq", Streams: outbox.DefaultBusinessStreams}
+	// 死信重放按流分发：当前各业务流均无注册的重放处理器，
+	// 显式报错而不是假装成功；后续批次接入新处理器时在此登记。
+	replay := func(ctx context.Context, stream, eventID, source string, payload []byte) error {
+		return fmt.Errorf("stream %s has no registered replay handler", stream)
+	}
+	internaljob.OpsAPI{WorkerDB: orms["worker"], ServiceToken: cfg.ServiceToken, DLQ: dlq, Replay: replay}.Register(router)
+	deviceAlerts := alerts.Sync{CentralURL: cfg.CentralInternalURL, ServiceToken: cfg.ServiceToken, Client: serviceclient.Client{HTTP: internalHTTP}}
 	scheduler := schedule.Scheduler{DB: orms["worker"], Handlers: map[string]schedule.Handler{
 		"webhook_dispatch": func(ctx context.Context) (uint64, error) {
 			count, err := webhooks.PublishBatch(ctx)
@@ -171,9 +183,8 @@ func run(ctx context.Context) error {
 				if err := refunds.Run(refundCtx); err != nil && !errors.Is(err, context.Canceled) {
 					log.Printf("refund dispatch: %v", err)
 				}
-				if _, err := refundResults.ConsumeOnce(refundCtx); err != nil && !errors.Is(err, context.Canceled) {
-					log.Printf("refund result consumer: %v", err)
-				}
+				// 退款结算由 central 的 RefundExecutor 在派发行内直接完成，
+				// worker 不再消费退款结果流（原 ResultConsumer 已删除）。
 				if regulatoryReports != nil {
 					if _, err := regulatoryReports.RunBatch(refundCtx); err != nil && !errors.Is(err, context.Canceled) {
 						log.Printf("regulatory delivery: %v", err)

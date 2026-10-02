@@ -24,8 +24,8 @@ const sections: NavSection[] = [
     { key: '/templates', label: '模板', permission: 'pricing.read' },
   ] },
   { key: 'users', icon: <GiftOutlined />, label: '用户运营', children: [
-    { key: '/charge-users', label: '充电用户', permission: 'charge_user.read' },
-    { key: '/online-cards', label: '在线卡', permission: 'charge_user.read' },
+    { key: '/users', label: '充电用户', permission: 'user.read' },
+    { key: '/online-cards', label: '在线卡', permission: 'user.read' },
     { key: '/coupons', label: '优惠券', permission: 'coupon.read' },
     { key: '/announcements', label: '公告', permission: 'announcement.read' },
   ] },
@@ -40,7 +40,7 @@ const sections: NavSection[] = [
   ] },
   { key: 'system', icon: <SettingOutlined />, label: '系统管理', children: [
     { key: '/settings', label: '平台设置', permission: 'whitelabel.read' },
-    { key: '/users', label: '管理员', permission: 'admin_user.read' },
+    { key: '/admin-users', label: '管理员', permission: 'admin_user.read' },
     { key: '/webhooks', label: 'Webhook', permission: 'webhook.read' },
     { key: '/audit-logs', label: '审计日志', permission: 'audit.read' },
   ] },

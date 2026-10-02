@@ -3,10 +3,10 @@ package admin
 import (
 	"context"
 	"errors"
+	"github.com/ChargePilot2026/charge-pilot/internal/central/order"
 	"time"
 	"unicode/utf8"
 
-	"github.com/ChargePilot2026/charge-pilot/internal/central/charge"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/httpapi"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -54,7 +54,7 @@ func (s ResourceStore) PaymentOrders(ctx context.Context, q PaymentOrderQuery) (
 		query = query.Where("p.pay_method=?", q.PayMethod)
 	}
 	if q.PaymentStatus != "" {
-		query = query.Where("("+charge.PaymentStatusSQL+")=?", q.PaymentStatus)
+		query = query.Where("("+order.PaymentStatusSQL+")=?", q.PaymentStatus)
 	}
 	if q.From != nil {
 		query = query.Where("p.created_at >= ?", q.From.UTC())
@@ -67,7 +67,7 @@ func (s ResourceStore) PaymentOrders(ctx context.Context, q PaymentOrderQuery) (
 	}
 	// 标量子查询限制为一条，历史异常关联也不会放大分页总数。充值单始终不关联充电单。
 	linked := " FROM charge_order c WHERE p.biz_type='charge' AND c.payment_order_id=p.id AND c.user_id=p.user_id AND c.deleted_at IS NULL ORDER BY c.created_at DESC,c.id DESC LIMIT 1)"
-	columns := "p.id AS payment_order_id,p.order_no,p.user_id,p.biz_type,p.pay_method,p.status," + charge.PaymentStatusSQL + " AS payment_status," +
+	columns := "p.id AS payment_order_id,p.order_no,p.user_id,p.biz_type,p.pay_method,p.status," + order.PaymentStatusSQL + " AS payment_status," +
 		"p.total_cents,p.paid_cents,p.refunded_cents,p.paid_at,p.created_at," +
 		"(SELECT c.id" + linked + " AS charge_order_id,(SELECT c.order_no" + linked + " AS charge_order_no"
 	err := query.Select(columns).Order("p.created_at DESC,p.id DESC").Offset((q.Page - 1) * q.PageSize).Limit(q.PageSize).Scan(&out.Items).Error

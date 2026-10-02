@@ -18,7 +18,7 @@ var ErrCredentials = errors.New("用户名或密码错误")
 var ErrLocked = errors.New("账号已锁定，请在 30 分钟后重试")
 var ErrMFA = errors.New("此账号已启用双因素认证，当前登录入口暂不支持")
 
-// Account 是一个后台账号在 admin_user_role 表上的行，同时承载登录判定所需的全部字段。
+// Account 是一个后台账号在 admin_user 表上的行，同时承载登录判定所需的全部字段。
 // 敏感字段一律 json："-"，不会随任何接口返回。
 type Account struct {
 	AuthVersion      uint64         `json:"-"`             // 凭证版本号：改密或强制下线时自增，用于让已签发的令牌立即失效
@@ -34,8 +34,8 @@ type Account struct {
 	LockedUntil      sql.NullTime   `json:"-"`             // 锁定到期时间；可空，未锁定为 null
 }
 
-// TableName 指明 Account 映射到 admin_user_role（表名与模型名不一致，必须显式指定）。
-func (Account) TableName() string { return "admin_user_role" }
+// TableName 指明 Account 映射到 admin_user（表名与模型名不一致，必须显式指定）。
+func (Account) TableName() string { return "admin_user" }
 
 // Profile 保存鉴权后的管理员身份、权限及审计信息，存于 gin 上下文 admin_profile，不包含口令散列。
 type Profile struct {
@@ -205,7 +205,7 @@ func (s Store) Profile(ctx context.Context, id uint64) (Profile, error) {
 		Role     string
 		RoleName string
 	}
-	err := s.DB.WithContext(ctx).Table("admin_user_role AS a").Select("a.*, r.code AS role,r.name AS role_name").Joins("JOIN role AS r ON r.id=a.role_id AND r.deleted_at IS NULL").Where("a.id = ? AND a.status='active' AND a.deleted_at IS NULL", id).Take(&row).Error
+	err := s.DB.WithContext(ctx).Table("admin_user AS a").Select("a.*, r.code AS role,r.name AS role_name").Joins("JOIN role AS r ON r.id=a.role_id AND r.deleted_at IS NULL").Where("a.id = ? AND a.status='active' AND a.deleted_at IS NULL", id).Take(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return Profile{}, ErrCredentials
 	}

@@ -46,7 +46,7 @@ func TestDeviceEditingPersistsMetadataWithinScopeAndAuditTransaction(t *testing.
 		for _, station := range stations {
 			cleanup("DELETE FROM station WHERE id=? AND name=?", station.ID, station.Name)
 		}
-		cleanup("DELETE FROM admin_user_role WHERE id=? AND username=?", actor.ID, actor.Username)
+		cleanup("DELETE FROM admin_user WHERE id=? AND username=?", actor.ID, actor.Username)
 	})
 	if err := db.Create(&actor).Error; err != nil {
 		t.Fatal(err)

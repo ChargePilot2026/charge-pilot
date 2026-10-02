@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	orderpkg "github.com/ChargePilot2026/charge-pilot/internal/central/order"
+	settlementpkg "github.com/ChargePilot2026/charge-pilot/internal/central/settlement"
 	"net/url"
 	"strings"
 	"time"
@@ -54,26 +56,26 @@ func (a UserQueryAPI) Register(r *gin.Engine) {
 }
 
 // resolveOrder 读取订单并校验用户归属；越权与不存在返回相同错误。
-func (a UserQueryAPI) resolveOrder(c *gin.Context, orderNo string) (ChargeOrderRecord, bool) {
+func (a UserQueryAPI) resolveOrder(c *gin.Context, orderNo string) (orderpkg.ChargeOrderRecord, bool) {
 	userID, ok := a.Auth.Authenticate(c)
 	if !ok {
 		httpapi.Write(c, 401, 1001, "登录已失效，请重新登录", nil)
-		return ChargeOrderRecord{}, false
+		return orderpkg.ChargeOrderRecord{}, false
 	}
 	orderNo = strings.TrimSpace(orderNo)
 	if orderNo == "" || len(orderNo) > 64 {
 		httpapi.BadRequest(c, "订单号无效")
-		return ChargeOrderRecord{}, false
+		return orderpkg.ChargeOrderRecord{}, false
 	}
-	var order ChargeOrderRecord
+	var order orderpkg.ChargeOrderRecord
 	err := a.DB.WithContext(c.Request.Context()).Where("order_no = ? AND user_id = ? AND deleted_at IS NULL", orderNo, userID).Take(&order).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		httpapi.Write(c, 404, 1004, "充电订单不存在", nil)
-		return ChargeOrderRecord{}, false
+		return orderpkg.ChargeOrderRecord{}, false
 	}
 	if err != nil {
 		httpapi.Write(c, 503, 5003, "订单暂时无法读取", nil)
-		return ChargeOrderRecord{}, false
+		return orderpkg.ChargeOrderRecord{}, false
 	}
 	return order, true
 }
@@ -84,7 +86,7 @@ func (a UserQueryAPI) ongoing(c *gin.Context) {
 		httpapi.Write(c, 401, 1001, "登录已失效，请重新登录", nil)
 		return
 	}
-	var order ChargeOrderRecord
+	var order orderpkg.ChargeOrderRecord
 	err := a.DB.WithContext(c.Request.Context()).
 		Where("user_id = ? AND deleted_at IS NULL AND status IN ('paid','charging')", userID).
 		Order("id DESC").Take(&order).Error
@@ -334,7 +336,7 @@ func (a UserQueryAPI) historyCurve(c *gin.Context) {
 
 // fee 从已确认的计费回执读取订单费用及未结金额。
 func (a UserQueryAPI) fee(ctx context.Context, orderID uint64) (electric, service, total, shortfall int64, ok bool) {
-	var receipt ChargeFeeRecord
+	var receipt settlementpkg.ChargeFeeRecord
 	if err := a.DB.WithContext(ctx).Where("charge_order_id = ?", orderID).Take(&receipt).Error; err != nil {
 		return 0, 0, 0, 0, false
 	}
@@ -408,12 +410,12 @@ func (a UserQueryAPI) history(c *gin.Context) {
 		for _, r := range rows {
 			ids = append(ids, r.OrderID)
 		}
-		receipts := []ChargeFeeRecord{}
+		receipts := []settlementpkg.ChargeFeeRecord{}
 		if err := a.DB.WithContext(c.Request.Context()).Where("charge_order_id IN ?", ids).Find(&receipts).Error; err != nil {
 			httpapi.Write(c, 503, 5003, "费用暂时无法读取", nil)
 			return
 		}
-		byOrder := map[uint64]ChargeFeeRecord{}
+		byOrder := map[uint64]settlementpkg.ChargeFeeRecord{}
 		for _, receipt := range receipts {
 			byOrder[receipt.ChargeOrderID] = receipt
 		}

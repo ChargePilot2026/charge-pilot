@@ -46,7 +46,7 @@ func TestAdminLoginLifecycle(t *testing.T) {
 	const username = "integration-admin"
 	const password = "Local-test-password-2026"
 	defer db.Exec("DELETE FROM audit_log WHERE actor_name = ?", username)
-	defer db.Exec("DELETE FROM admin_user_role WHERE username = ?", username)
+	defer db.Exec("DELETE FROM admin_user WHERE username = ?", username)
 	var wg sync.WaitGroup
 	errs := make(chan error, 4)
 	for i := 0; i < 4; i++ {
@@ -66,7 +66,7 @@ func TestAdminLoginLifecycle(t *testing.T) {
 	// 直接创建登录生命周期测试夹具，避免依赖共享数据库为空。
 	// Bootstrap 仅初始化空安装，不覆盖已有管理员口令。
 	var created int
-	if err := db.QueryRow("SELECT COUNT(*) FROM admin_user_role WHERE username = ?", username).Scan(&created); err != nil {
+	if err := db.QueryRow("SELECT COUNT(*) FROM admin_user WHERE username = ?", username).Scan(&created); err != nil {
 		t.Fatal(err)
 	}
 	if created == 0 {
@@ -88,9 +88,9 @@ func TestAdminLoginLifecycle(t *testing.T) {
 	if err := store.Bootstrap(ctx, "bootstrap-must-not-appear", "Never-created-2026"); err != nil {
 		t.Fatal(err)
 	}
-	defer db.Exec("DELETE FROM admin_user_role WHERE username = ?", "bootstrap-must-not-appear")
+	defer db.Exec("DELETE FROM admin_user WHERE username = ?", "bootstrap-must-not-appear")
 	var intruders int
-	if err := db.QueryRow("SELECT COUNT(*) FROM admin_user_role WHERE username = ?", "bootstrap-must-not-appear").Scan(&intruders); err != nil {
+	if err := db.QueryRow("SELECT COUNT(*) FROM admin_user WHERE username = ?", "bootstrap-must-not-appear").Scan(&intruders); err != nil {
 		t.Fatal(err)
 	}
 	if intruders != 0 {
@@ -101,7 +101,7 @@ func TestAdminLoginLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	var count int
-	if err := db.QueryRow("SELECT COUNT(*) FROM admin_user_role WHERE username = ?", username).Scan(&count); err != nil || count != 1 {
+	if err := db.QueryRow("SELECT COUNT(*) FROM admin_user WHERE username = ?", username).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("count=%d err=%v", count, err)
 	}
 	jwt, _ := auth.NewJWT(strings.Repeat("x", 32))

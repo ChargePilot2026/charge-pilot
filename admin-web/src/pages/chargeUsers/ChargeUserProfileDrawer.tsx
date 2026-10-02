@@ -121,7 +121,7 @@ export default function ChargeUserProfileDrawer({ userID, onClose }: { userID: s
     window.addEventListener('storage', closeExpired);
     setState(previous => ({ userID, detail: previous.userID === userID ? previous.detail : null, error: '', loading: true }));
     const request = { signal: controller.signal, cpEpoch: epoch };
-    http.get<ApiEnvelope<ChargeUserDetail>>(`/api/v1/admin/charge-users/${userID}`, request)
+    http.get<ApiEnvelope<ChargeUserDetail>>(`/api/v1/admin/users/${userID}`, request)
       .then(response => {
         if (!current()) return;
         const detail = response.data.data;

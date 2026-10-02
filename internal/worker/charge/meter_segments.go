@@ -3,81 +3,80 @@ package charge
 import (
 	"context"
 	"encoding/json"
-	"errors"
+	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/ChargePilot2026/charge-pilot/internal/central/pricing"
-	"github.com/ChargePilot2026/charge-pilot/internal/gateway/protocol"
+	"github.com/ChargePilot2026/charge-pilot/internal/protocol"
 )
 
 func measuredSegments(start time.Time, end protocol.Event, samples []protocol.Event) []pricing.MeterSegment {
 	return pricing.MeasuredSegments(start, end, samples)
 }
 
-func (s EndSynchronizer) meterSegments(ctx context.Context, command workerChargeCommandRow, endID uint64, end protocol.Event) ([]pricing.MeterSegment, error) {
-	if !command.AckAt.Valid || end.StartedAt.IsZero() {
+// meterSegments 经 gateway 拉取计量证据：心跳在 [ack_at, end.ReceivedAt]
+// 内且 id 不超过结束事件的行，与旧直读实现同界。返回超过 10080 行时放弃
+// 分段（与旧实现一致，交由无分段路径处理）。
+func (s EndSynchronizer) meterSegments(ctx context.Context, gateway gatewaySyncAPI, command gatewayCommand, endID uint64, end protocol.Event) ([]pricing.MeterSegment, error) {
+	if command.AckAt == nil || end.StartedAt.IsZero() {
 		return nil, nil
 	}
-	var rows []workerDeviceEventRow
 	// 以 BB 事件 ID 固定心跳证据范围，排除结束后落库的延迟心跳，保证重放结果一致。
-	err := s.GatewayDB.WithContext(ctx).Where("device_id=? AND event_type='heartbeat' AND id<=? AND received_at>=? AND received_at<=?", end.DeviceID, endID, command.AckAt.Time, end.ReceivedAt).Order("id").Limit(10081).Find(&rows).Error
-	if err != nil {
+	path := "/api/v1/internal/devices/" + url.PathEscape(end.DeviceID) + "/meter-samples?ack_at=" +
+		url.QueryEscape(command.AckAt.UTC().Format(time.RFC3339Nano)) + "&end_at=" +
+		url.QueryEscape(end.ReceivedAt.UTC().Format(time.RFC3339Nano)) + "&end_id=" +
+		strconv.FormatUint(endID, 10)
+	var reply struct {
+		Items []struct {
+			ID      uint64 `json:"id"`
+			Payload string `json:"payload"`
+		} `json:"items"`
+	}
+	if err := gateway.get(ctx, path, &reply); err != nil {
 		return nil, err
 	}
-	if len(rows) > 10080 {
+	if len(reply.Items) > 10080 {
 		return nil, nil
 	}
-	samples := make([]protocol.Event, 0, len(rows))
-	for _, row := range rows {
+	samples := make([]protocol.Event, 0, len(reply.Items))
+	for _, row := range reply.Items {
 		var event protocol.Event
-		if err := json.Unmarshal(row.EventJSON, &event); err != nil {
+		if err := json.Unmarshal([]byte(row.Payload), &event); err != nil {
 			return nil, err
 		}
 		samples = append(samples, event)
 	}
-	return measuredSegments(command.AckAt.Time, end, samples), nil
+	return measuredSegments(*command.AckAt, end, samples), nil
 }
 
-// 在第一次 HTTP 尝试之前就把整份内部请求冻结。
+// freezeEndResult 在第一次 HTTP 尝试之前就把整份内部请求冻结。
 // 无论是延迟到达的遥测还是保留期清理，
 // 都不允许改动一份重放出去的结束回执。
-func (s EndSynchronizer) freezeEndResult(ctx context.Context, command workerChargeCommandRow, id uint64, event protocol.Event, candidate endResult) (endResult, error) {
-	var row struct{ PayloadJSON []byte }
-	query := s.GatewayDB.WithContext(ctx).Table("charge_end_delivery")
-	found := query.Where("device_event_id=?", id).Find(&row)
-	if found.Error != nil {
-		return candidate, found.Error
-	}
-	if found.RowsAffected == 0 {
-		segments, err := s.meterSegments(ctx, command, id, event)
-		if err != nil {
-			return candidate, err
-		}
-		candidate.Meter.Segments = segments
-		payload, err := json.Marshal(candidate)
-		if err != nil {
-			return candidate, err
-		}
-		// 并发重放下同一事件只首写一次；主键冲突按错误上抛，
-		// 由 SyncBatch 记录后下次重试走上方已冻结分支，不做静默空更新。
-		if err := s.GatewayDB.WithContext(ctx).Table("charge_end_delivery").Create(map[string]any{"device_event_id": id, "charge_order_id": candidate.ChargeOrderID, "payload_json": string(payload)}).Error; err != nil {
-			return candidate, err
-		}
-		if err := s.GatewayDB.WithContext(ctx).Table("charge_end_delivery").Where("device_event_id=?", id).Take(&row).Error; err != nil {
-			return candidate, err
-		}
-	}
-	var frozen endResult
-	if err := json.Unmarshal(row.PayloadJSON, &frozen); err != nil {
+// 冻结与身份校验在 gateway 单库内完成（忽略 segments 后语义一致即可）；
+// 本组件每次重放都重新计算候选 segments，冻结端点保证首写优先。
+func (s EndSynchronizer) freezeEndResult(ctx context.Context, gateway gatewaySyncAPI, command gatewayCommand, id uint64, event protocol.Event, candidate endResult) (endResult, error) {
+	segments, err := s.meterSegments(ctx, gateway, command, id, event)
+	if err != nil {
 		return candidate, err
 	}
-	base := frozen
-	base.Meter.Segments = nil
-	candidate.Meter.Segments = nil
-	a, _ := json.Marshal(base)
-	b, _ := json.Marshal(candidate)
-	if string(a) != string(b) {
-		return candidate, errors.New("frozen end result identity conflict")
+	candidate.Meter.Segments = segments
+	payload, err := json.Marshal(candidate)
+	if err != nil {
+		return candidate, err
+	}
+	var reply struct {
+		Payload string `json:"payload"`
+		Frozen  bool   `json:"frozen"`
+	}
+	if err := gateway.post(ctx, "/api/v1/internal/charge-end-deliveries/freeze", map[string]any{
+		"device_event_id": id, "charge_order_id": candidate.ChargeOrderID, "payload": string(payload),
+	}, &reply); err != nil {
+		return candidate, err
+	}
+	var frozen endResult
+	if err := json.Unmarshal([]byte(reply.Payload), &frozen); err != nil {
+		return candidate, err
 	}
 	return frozen, nil
 }

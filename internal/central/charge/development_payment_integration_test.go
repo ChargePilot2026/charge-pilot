@@ -2,7 +2,8 @@ package charge
 
 import (
 	"context"
-	"github.com/ChargePilot2026/charge-pilot/internal/central/payment"
+	"github.com/ChargePilot2026/charge-pilot/internal/central/channel"
+	refundpkg "github.com/ChargePilot2026/charge-pilot/internal/central/refund"
 	"github.com/google/uuid"
 	"os"
 	"testing"
@@ -83,7 +84,7 @@ func TestDevelopmentWalletCheckoutAndRefund(t *testing.T) {
 	if code, _ = callJSON(t, two, "POST", "/api/v1/user/wallet/refund", refund); code != 409 && code != 404 {
 		t.Fatalf("foreign refund %d", code)
 	}
-	exec := RefundExecutor{DB: db, Provider: payment.Simulator{}, ProviderName: "simulation"}
+	exec := refundpkg.RefundExecutor{DB: db, Provider: channel.Simulator{}, ProviderName: "simulation"}
 	if _, err := exec.Batch(context.Background()); err != nil {
 		t.Fatal(err)
 	}

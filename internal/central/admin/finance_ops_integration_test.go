@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"github.com/ChargePilot2026/charge-pilot/internal/central/settlement"
 	"os"
 	"testing"
 
@@ -95,9 +96,9 @@ func TestWithdrawalCanBeApprovedAndPaid(t *testing.T) {
 	ctx := context.Background()
 	partyID := settledParty(t, ctx, "approve", 10000, 30000)
 	billingDB := openFinanceDB(t, "TEST_BILLING_DATABASE_URL")
-	store := ResourceStore{BillingDB: billingDB, AdminDB: openFinanceDB(t, "TEST_ADMIN_DATABASE_URL")}
+	withdrawStore := settlement.WithdrawStore{DB: billingDB}
 
-	if _, err := store.AvailableCents(ctx, nil, partyID); err != nil {
+	if _, err := withdrawStore.AvailableCents(ctx, nil, partyID); err != nil {
 		t.Fatal(err)
 	}
 	no := "WD" + uuid.NewString()[:24]
@@ -107,7 +108,7 @@ func TestWithdrawalCanBeApprovedAndPaid(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 可用余额视图已经把这条 pending 记录抵扣掉了。
-	if available, err := store.AvailableCents(ctx, nil, partyID); err != nil || available != 10000 {
+	if available, err := withdrawStore.AvailableCents(ctx, nil, partyID); err != nil || available != 10000 {
 		t.Fatalf("available after reservation = %d (%v), want 10000", available, err)
 	}
 	// 审批余额检查必须排除当前提现单。
@@ -115,7 +116,7 @@ func TestWithdrawalCanBeApprovedAndPaid(t *testing.T) {
 		ID uint64 `gorm:"column:id"`
 	}
 	billingDB.Table("withdraw_request").Where("withdraw_no = ?", no).Take(&row)
-	available, err := store.AvailableCentsExcluding(ctx, nil, partyID, row.ID)
+	available, err := withdrawStore.AvailableCentsExcluding(ctx, nil, partyID, row.ID)
 	if err != nil || available != 30000 {
 		t.Fatalf("available excluding self = %d (%v), want 30000", available, err)
 	}
@@ -170,8 +171,8 @@ func TestSplitPartyLookupUsesExistingColumnsOnly(t *testing.T) {
 	// 余额查询 join settlement 时不带分区条件，
 	// 因为 settlement_party_amount 上没有 created_month 这一列。
 	billingDB := openFinanceDB(t, "TEST_BILLING_DATABASE_URL")
-	store := ResourceStore{BillingDB: billingDB, AdminDB: adminDB}
-	available, err := store.AvailableCents(ctx, nil, partyID)
+	withdrawStore := settlement.WithdrawStore{DB: billingDB}
+	available, err := withdrawStore.AvailableCents(ctx, nil, partyID)
 	if err != nil {
 		t.Fatalf("AvailableCents: %v", err)
 	}

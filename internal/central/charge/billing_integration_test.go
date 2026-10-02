@@ -5,21 +5,25 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	orderpkg "github.com/ChargePilot2026/charge-pilot/internal/central/order"
+	refundpkg "github.com/ChargePilot2026/charge-pilot/internal/central/refund"
+	settlementpkg "github.com/ChargePilot2026/charge-pilot/internal/central/settlement"
 	"os"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/ChargePilot2026/charge-pilot/internal/central/billing"
-	"github.com/ChargePilot2026/charge-pilot/internal/central/payment"
+	"github.com/ChargePilot2026/charge-pilot/internal/central/channel"
 	"github.com/ChargePilot2026/charge-pilot/internal/central/pricing"
 	"github.com/ChargePilot2026/charge-pilot/internal/platform/dbconn"
+	"github.com/ChargePilot2026/charge-pilot/internal/platform/dbutil"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
 type scopedBillingOrders struct {
-	BillingOrders
+	settlementpkg.BillingOrders
 	ID uint64
 }
 
@@ -100,12 +104,12 @@ func TestActualBillingPersistsAndRefundsOnce(t *testing.T) {
 		exec(userDB, "INSERT INTO user(openid) VALUES(?)", name)
 		var uid uint64
 		userDB.Table("user").Where("openid=?", name).Pluck("id", &uid)
-		exec(userDB, "INSERT INTO payment_order(order_no,biz_type,biz_id,user_id,pay_method,total_cents,paid_cents,wechat_transaction_id,status,created_month) VALUES(?,'charge',0,?,'wechat',250,250,?,'paid',?)", name, uid, "SIM-"+name, utcDate())
+		exec(userDB, "INSERT INTO payment_order(order_no,biz_type,biz_id,user_id,pay_method,total_cents,paid_cents,wechat_transaction_id,status,created_month) VALUES(?,'charge',0,?,'wechat',250,250,?,'paid',?)", name, uid, "SIM-"+name, dbutil.MonthStart())
 		var pid uint64
 		userDB.Table("payment_order").Where("order_no=?", name).Pluck("id", &pid)
 		start := time.Date(2026, 9, 29, 3, 30, 0, 0, time.UTC)
 		end := start.Add(time.Hour)
-		exec(userDB, "INSERT INTO charge_order(order_no,user_id,device_id,port_no,payment_order_id,status,started_at,ended_at,charged_kwh,charged_seconds,created_month) VALUES(?,?,'BILLING-TEST',1,?,'completed',?,?,?,3600,?)", name, uid, pid, start, end, fmt.Sprintf("%d.%03d", wh/1000, wh%1000), utcDate())
+		exec(userDB, "INSERT INTO charge_order(order_no,user_id,device_id,port_no,payment_order_id,status,started_at,ended_at,charged_kwh,charged_seconds,created_month) VALUES(?,?,'BILLING-TEST',1,?,'completed',?,?,?,3600,?)", name, uid, pid, start, end, fmt.Sprintf("%d.%03d", wh/1000, wh%1000), dbutil.MonthStart())
 		var id uint64
 		userDB.Table("charge_order").Where("order_no=?", name).Pluck("id", &id)
 		exec(userDB, "UPDATE payment_order SET biz_id=? WHERE id=?", id, pid)
@@ -116,7 +120,7 @@ func TestActualBillingPersistsAndRefundsOnce(t *testing.T) {
 		rule := pricing.Rule{ID: 1, StationID: 1, Version: 1, Spec: scheme.SpecFor(scheme.Packages[0])}
 		offer := scheme.Offers(rule)[0]
 		snap, _ := json.Marshal(map[string]any{"rule": rule, "offer": offer})
-		meter, _ := json.Marshal(EndMeter{ChargedWh: wh, ChargedSeconds: 3600, EndedAt: end})
+		meter, _ := json.Marshal(orderpkg.EndMeter{ChargedWh: wh, ChargedSeconds: 3600, EndedAt: end})
 		exec(userDB, "INSERT INTO charge_order_pricing(charge_order_id,payment_intent_id,user_id,port_code,pricing_snapshot) VALUES(?,?,?,?,?)", id, uuid.NewString(), uid, name, string(snap))
 		exec(userDB, "INSERT INTO charge_end_receipt(charge_order_id,stop_command_id,meter_json) VALUES(?,?,?)", id, uuid.NewString(), string(meter))
 		exec(userDB, "INSERT INTO charge_billing_job(charge_order_id) VALUES(?)", id)
@@ -160,7 +164,7 @@ func TestActualBillingPersistsAndRefundsOnce(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("fees %d", count)
 	}
-	var refund RefundRecord
+	var refund refundpkg.RefundRecord
 	if err := userDB.Where("payment_order_id=?", pid).Take(&refund).Error; err != nil || refund.RefundCents != 175 {
 		t.Fatalf("refund %+v %v", refund, err)
 	}
@@ -181,11 +185,11 @@ func TestActualBillingPersistsAndRefundsOnce(t *testing.T) {
 	if _, err := service.Run(ctx); err != nil {
 		t.Fatal(err)
 	}
-	userDB.Model(&RefundRecord{}).Where("payment_order_id=?", pid).Count(&count)
+	userDB.Model(&refundpkg.RefundRecord{}).Where("payment_order_id=?", pid).Count(&count)
 	if count != 1 {
 		t.Fatalf("duplicate refund %d", count)
 	}
-	executor := RefundExecutor{DB: userDB, Provider: payment.Simulator{}, ProviderName: "simulation"}
+	executor := refundpkg.RefundExecutor{DB: userDB, Provider: channel.Simulator{}, ProviderName: "simulation"}
 	if err := executor.Execute(ctx, refund.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +199,7 @@ func TestActualBillingPersistsAndRefundsOnce(t *testing.T) {
 		t.Fatalf("partial refund must finish order: %v", orderStates)
 	}
 	reviewID, _ := fixture(1000, true)
-	reviewService := billing.Service{Store: store, Orders: scopedBillingOrders{BillingOrders: BillingOrders{DB: userDB}, ID: reviewID}}
+	reviewService := billing.Service{Store: store, Orders: scopedBillingOrders{BillingOrders: settlementpkg.BillingOrders{DB: userDB}, ID: reviewID}}
 	if _, err := reviewService.Run(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -263,15 +267,15 @@ func TestActualBillingPersistsAndRefundsOnce(t *testing.T) {
 	if len(reviewStates) != 1 || reviewStates[0] != "resolved" {
 		t.Fatalf("review not resolved %v", reviewStates)
 	}
-	var endReceipt EndReceiptRecord
+	var endReceipt orderpkg.EndReceiptRecord
 	userDB.Where("charge_order_id=?", reviewID).Take(&endReceipt)
-	var originalMeter EndMeter
+	var originalMeter orderpkg.EndMeter
 	json.Unmarshal(endReceipt.MeterJSON, &originalMeter)
 	if len(originalMeter.Segments) != 0 {
 		t.Fatal("original meter overwritten")
 	}
 	debtID, debtPayment := fixture(6000, false)
-	debtService := billing.Service{Store: store, Orders: scopedBillingOrders{BillingOrders: BillingOrders{DB: userDB}, ID: debtID}}
+	debtService := billing.Service{Store: store, Orders: scopedBillingOrders{BillingOrders: settlementpkg.BillingOrders{DB: userDB}, ID: debtID}}
 	if _, err := debtService.Run(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +284,7 @@ func TestActualBillingPersistsAndRefundsOnce(t *testing.T) {
 	if shortfall != 0 {
 		t.Fatalf("shortfall %d", shortfall)
 	}
-	userDB.Model(&RefundRecord{}).Where("payment_order_id=?", debtPayment).Count(&count)
+	userDB.Model(&refundpkg.RefundRecord{}).Where("payment_order_id=?", debtPayment).Count(&count)
 	if count != 0 {
 		t.Fatal("underpaid order refunded")
 	}

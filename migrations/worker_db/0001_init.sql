@@ -10,30 +10,6 @@
 SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci;
 SET sql_mode = 'STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION,ERROR_FOR_DIVISION_BY_ZERO,NO_ZERO_DATE,NO_ZERO_IN_DATE';
 
--- comp_tx_log：跨服务补偿事务
-CREATE TABLE `comp_tx_log` (
-  `id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT '记录主键 ID',
-  `tx_id` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '补偿事务幂等标识',
-  `consumer_group` varchar(128) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '事件消费组标识',
-  `stream` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'Redis Stream 名称',
-  `payload_hash` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '请求或事件载荷摘要，用于检验幂等重试内容一致性',
-  `status` enum('pending','committed','compensated','failed') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'pending' COMMENT '当前业务状态；取值 pending / committed / compensated / failed',
-  `retry_count` int unsigned NOT NULL DEFAULT '0' COMMENT '已执行重试次数',
-  `last_error` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '最近一次执行错误信息',
-  `created_month` date NOT NULL COMMENT '月分区归属日期，取对应月份第一天',
-  `created_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '记录创建时间',
-  `committed_at` datetime(3) DEFAULT NULL COMMENT '补偿事务提交时间',
-  PRIMARY KEY (`id`,`created_month`),
-  UNIQUE KEY `uk_tx` (`tx_id`,`created_month`),
-  KEY `idx_status` (`status`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='跨服务补偿事务'
-/*!50100 PARTITION BY RANGE (to_days(`created_month`))
-(PARTITION p_init VALUES LESS THAN (740255) ENGINE = InnoDB,
- PARTITION p_2026m10 VALUES LESS THAN (740286) ENGINE = InnoDB,
- PARTITION p_2026m11 VALUES LESS THAN (740316) ENGINE = InnoDB,
- PARTITION p_2026m12 VALUES LESS THAN (740347) ENGINE = InnoDB,
- PARTITION p_max VALUES LESS THAN MAXVALUE ENGINE = InnoDB) */;
-
 -- dlq_log：死信队列日志
 CREATE TABLE `dlq_log` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT '记录主键 ID',
@@ -121,4 +97,3 @@ DROP TABLE IF EXISTS `task_execution_log`;
 DROP TABLE IF EXISTS `scheduled_task`;
 DROP TABLE IF EXISTS `dlq_replay_cursor`;
 DROP TABLE IF EXISTS `dlq_log`;
-DROP TABLE IF EXISTS `comp_tx_log`;
